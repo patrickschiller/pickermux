@@ -18,6 +18,11 @@ a fast local-model workflow with accurate context information, model-specific
 reasoning levels, and a strict routing boundary between native and external
 providers.
 
+![PickerMux model picker showing local LM Studio models alongside existing Codex models](assets/screenshots/pickermux-model-picker.png)
+
+*Load models in LM Studio, refresh PickerMux, and select them directly in Codex
+Desktop.*
+
 PickerMux is an unofficial community project. It is not affiliated with,
 endorsed by, or supported by OpenAI, Codex, or LM Studio.
 
