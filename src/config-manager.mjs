@@ -1,0 +1,1172 @@
+import { createHash, randomUUID } from "node:crypto";
+import {
+  chmod,
+  lstat,
+  mkdir,
+  open,
+  readFile,
+  rename,
+  stat,
+  unlink,
+} from "node:fs/promises";
+import { basename, dirname, resolve } from "node:path";
+
+const STATE_VERSION = 1;
+const MANAGED_KEYS = [
+  "model",
+  "model_provider",
+  "model_catalog_json",
+  "model_reasoning_effort",
+];
+const PICKER_REASONING_EFFORTS = new Set([
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+  "ultra",
+]);
+
+export const CONFIG_MARKERS = Object.freeze({
+  rootBegin: "# >>> lm-studio-model-router:p2 root >>>",
+  rootEnd: "# <<< lm-studio-model-router:p2 root <<<",
+  providerBegin: "# >>> lm-studio-model-router:p2 provider >>>",
+  providerEnd: "# <<< lm-studio-model-router:p2 provider <<<",
+});
+
+const LEGACY_P1_MARKERS = Object.freeze([
+  "# >>> lm-studio-model-router:p1 root >>>",
+  "# <<< lm-studio-model-router:p1 root <<<",
+  "# >>> lm-studio-model-router:p1 provider >>>",
+  "# <<< lm-studio-model-router:p1 provider <<<",
+]);
+
+export class ConfigManagerError extends Error {
+  constructor(code, message, details = undefined) {
+    super(message);
+    this.name = "ConfigManagerError";
+    this.code = code;
+    this.details = details;
+  }
+}
+
+/**
+ * Install the managed Codex provider configuration in a reversible,
+ * conflict-aware way.
+ *
+ * Required options:
+ *   configPath, statePath, model, modelProvider, modelCatalogJson,
+ *   provider: { name, baseUrl }
+ */
+export async function installConfig(options) {
+  const settings = normalizeInstallOptions(options);
+  const { configPath, statePath } = settings;
+
+  if (await pathExists(statePath)) {
+    throw failure(
+      "ALREADY_INSTALLED",
+      `State file already exists: ${statePath}`,
+    );
+  }
+
+  const current = await readConfigFile(configPath);
+  assertNoManagedMarkers(current.text);
+
+  const analysis = analyzeConfig(current.text, settings.provider.id);
+  const eol = analysis.eol;
+  const rootBlock = renderRootBlock(settings, eol);
+  const providerBlock = renderProviderBlock(settings.provider, eol);
+  const installedText = installBlocks(
+    analysis,
+    rootBlock,
+    providerBlock,
+    eol,
+  );
+
+  const backupPath = await allocateBackupPath(
+    configPath,
+    settings.backupDirectory,
+    settings.now,
+  );
+  await writeExactBackup(backupPath, current.bytes, current.mode);
+
+  const state = {
+    version: STATE_VERSION,
+    installedAt: settings.now.toISOString(),
+    configPath,
+    configExisted: current.exists,
+    configMode: current.mode,
+    backupPath,
+    providerId: settings.provider.id,
+    providerName: settings.provider.name,
+    providerBaseUrl: settings.provider.baseUrl,
+    model: settings.model,
+    modelReasoningEffort: settings.modelReasoningEffort,
+    catalog: settings.modelCatalogJson,
+    sourceSha256: sha256(current.bytes),
+    installedSha256: sha256(installedText),
+    metadataPreservation: {
+      mode: true,
+      extendedAttributes: false,
+    },
+    priorAssignments: analysis.assignments.map(({ key, raw, eol: lineEol }) => ({
+      key,
+      raw,
+      eol: lineEol,
+    })),
+    blocks: {
+      root: {
+        begin: CONFIG_MARKERS.rootBegin,
+        end: CONFIG_MARKERS.rootEnd,
+        sha256: sha256(rootBlock),
+      },
+      provider: {
+        begin: CONFIG_MARKERS.providerBegin,
+        end: CONFIG_MARKERS.providerEnd,
+        sha256: sha256(providerBlock),
+      },
+    },
+  };
+
+  let configWritten = false;
+  try {
+    await atomicWrite(configPath, installedText, current.mode, {
+      expectedSource: snapshotOf(current),
+      beforeCommit: settings.beforeConfigCommit,
+    });
+    configWritten = true;
+    await ensurePrivateDirectory(dirname(statePath));
+    await atomicWrite(statePath, `${JSON.stringify(state, null, 2)}\n`, 0o600);
+    await chmod(statePath, 0o600);
+  } catch (error) {
+    if (configWritten) {
+      try {
+        await atomicWrite(configPath, current.bytes, current.mode, {
+          expectedSource: {
+            exists: true,
+            sha256: sha256(installedText),
+          },
+        });
+      } catch {
+        // Preserve the original failure. The exact backup path is included below.
+      }
+    }
+    if (error?.code === "CONFIG_CHANGED_CONCURRENTLY") {
+      error.details = { ...(error.details ?? {}), backupPath };
+      throw error;
+    }
+    throw failure(
+      "INSTALL_FAILED",
+      `Could not install managed Codex configuration. Exact backup: ${backupPath}`,
+      { cause: error, backupPath },
+    );
+  }
+
+  return {
+    changed: true,
+    installed: true,
+    configPath,
+    statePath,
+    backupPath,
+    model: settings.model,
+    provider: settings.provider.id,
+    catalog: settings.modelCatalogJson,
+    providerId: settings.provider.id,
+    metadataPreservation: state.metadataPreservation,
+    warnings: [
+      "File mode is preserved; extended attributes are not preserved by the dependency-free atomic writer.",
+    ],
+  };
+}
+
+/**
+ * Change only the two picker-owned mutable values inside an otherwise healthy
+ * managed installation. Expected values provide a second CAS guard for a
+ * picker change that happens after the caller inspected the configuration.
+ */
+export async function setManagedPickerSelection(options = {}) {
+  const {
+    configPath,
+    statePath,
+    beforeConfigCommit,
+  } = normalizePathOptions(options);
+  const model = options.model;
+  const modelReasoningEffort = options.modelReasoningEffort;
+  requireNonEmptyString(model, "model");
+  if (!PICKER_REASONING_EFFORTS.has(modelReasoningEffort)) {
+    throw failure(
+      "INVALID_REASONING_EFFORT",
+      "modelReasoningEffort must be one of: none, minimal, low, medium, high, xhigh, max, or ultra.",
+    );
+  }
+
+  const expectedPairProvided =
+    options.expectedModel !== undefined ||
+    options.expectedModelReasoningEffort !== undefined;
+  if (
+    expectedPairProvided &&
+    (typeof options.expectedModel !== "string" ||
+      typeof options.expectedModelReasoningEffort !== "string")
+  ) {
+    throw failure(
+      "INVALID_ARGUMENT",
+      "expectedModel and expectedModelReasoningEffort must be supplied together.",
+    );
+  }
+
+  const state = await readState(statePath, { allowMissing: true });
+  if (!state) {
+    throw failure(
+      "STATE_MISSING",
+      `Managed picker state does not exist: ${statePath}`,
+    );
+  }
+  assertStateMatchesConfig(state, configPath);
+  if (
+    options.expectedInstallModel !== undefined &&
+    state.model !== options.expectedInstallModel
+  ) {
+    throw failure(
+      "INSTALL_DEFAULT_MISMATCH",
+      `Managed install default model differs from ${options.expectedInstallModel}.`,
+    );
+  }
+  if (
+    options.expectedInstallModelReasoningEffort !== undefined &&
+    state.modelReasoningEffort !== options.expectedInstallModelReasoningEffort
+  ) {
+    throw failure(
+      "INSTALL_DEFAULT_MISMATCH",
+      `Managed install default reasoning effort differs from ${options.expectedInstallModelReasoningEffort}.`,
+    );
+  }
+
+  const current = await readConfigFile(configPath, { mustExist: true });
+  const located = locateOwnedBlocks(current.text, state);
+  const pickerRoot = inspectPickerMutableRoot(located.root, state);
+  const modified = [];
+  if (!pickerRoot.safe) modified.push("root");
+  if (sha256(located.provider.text) !== state.blocks.provider.sha256) {
+    modified.push("provider");
+  }
+  if (!hasSafeProviderScopeTail(current.text, located.provider.end)) {
+    modified.push("provider-scope-tail");
+  }
+  if (modified.length > 0) {
+    throw failure(
+      "MANAGED_BLOCK_MODIFIED",
+      `Refusing picker update because managed block(s) were edited: ${modified.join(", ")}`,
+      { modified },
+    );
+  }
+  if (
+    expectedPairProvided &&
+    (pickerRoot.model !== options.expectedModel ||
+      pickerRoot.modelReasoningEffort !== options.expectedModelReasoningEffort)
+  ) {
+    throw failure(
+      "SELECTION_CHANGED_CONCURRENTLY",
+      "Refusing to replace a picker selection that changed after inspection.",
+      {
+        expected: {
+          model: options.expectedModel,
+          modelReasoningEffort: options.expectedModelReasoningEffort,
+        },
+        actual: {
+          model: pickerRoot.model,
+          modelReasoningEffort: pickerRoot.modelReasoningEffort,
+        },
+      },
+    );
+  }
+  if (
+    pickerRoot.model === model &&
+    pickerRoot.modelReasoningEffort === modelReasoningEffort
+  ) {
+    return {
+      changed: false,
+      configPath,
+      statePath,
+      model,
+      modelReasoningEffort,
+      previousModel: model,
+      previousModelReasoningEffort: modelReasoningEffort,
+    };
+  }
+
+  const replacement = renderPickerSelectionRoot(
+    located.root,
+    model,
+    modelReasoningEffort,
+  );
+  const updatedText =
+    current.text.slice(0, located.root.start) +
+    replacement +
+    current.text.slice(located.root.end);
+  await atomicWrite(configPath, updatedText, current.mode, {
+    expectedSource: snapshotOf(current),
+    beforeCommit: beforeConfigCommit,
+  });
+  return {
+    changed: true,
+    configPath,
+    statePath,
+    model,
+    modelReasoningEffort,
+    previousModel: pickerRoot.model,
+    previousModelReasoningEffort: pickerRoot.modelReasoningEffort,
+  };
+}
+
+/** Restore the immutable defaults recorded when the managed picker was installed. */
+export async function restoreManagedPickerDefaults(options = {}) {
+  requireNonEmptyString(options.defaultModel, "defaultModel");
+  if (!PICKER_REASONING_EFFORTS.has(options.defaultModelReasoningEffort)) {
+    throw failure(
+      "INVALID_REASONING_EFFORT",
+      "defaultModelReasoningEffort is not a supported picker effort.",
+    );
+  }
+  return setManagedPickerSelection({
+    ...options,
+    model: options.defaultModel,
+    modelReasoningEffort: options.defaultModelReasoningEffort,
+    expectedInstallModel: options.defaultModel,
+    expectedInstallModelReasoningEffort: options.defaultModelReasoningEffort,
+  });
+}
+
+/**
+ * Remove only the blocks owned by this manager and restore prior root
+ * assignments. A second uninstall is a safe no-op when no managed markers are
+ * left. Pass force=true only to remove blocks whose contents were edited while
+ * both boundary markers remain intact.
+ */
+export async function uninstallConfig(options) {
+  const {
+    configPath,
+    statePath,
+    force = false,
+    beforeConfigCommit,
+  } = normalizePathOptions(options);
+  const stateResult = await readState(statePath, { allowMissing: true });
+
+  if (!stateResult) {
+    const current = await readConfigFile(configPath);
+    if (containsAnyManagedMarker(current.text)) {
+      throw failure(
+        "ORPHANED_MANAGED_BLOCK",
+        "Managed markers exist, but the installation state file is missing.",
+      );
+    }
+    return { changed: false, installed: false, configPath, statePath };
+  }
+
+  const state = stateResult;
+  assertStateMatchesConfig(state, configPath);
+  const current = await readConfigFile(configPath, { mustExist: true });
+  const located = locateOwnedBlocks(current.text, state);
+  const pickerRoot = inspectPickerMutableRoot(located.root, state);
+
+  const modified = [];
+  for (const name of ["root", "provider"]) {
+    if (
+      sha256(located[name].text) !== state.blocks[name].sha256 &&
+      !(name === "root" && pickerRoot.safe)
+    ) {
+      modified.push(name);
+    }
+  }
+  if (!hasSafeProviderScopeTail(current.text, located.provider.end)) {
+    modified.push("provider-scope-tail");
+  }
+  if (modified.length > 0 && !force) {
+    throw failure(
+      "MANAGED_BLOCK_MODIFIED",
+      `Refusing uninstall because managed block(s) were edited: ${modified.join(", ")}`,
+      { modified },
+    );
+  }
+
+  const pristineInstall =
+    typeof state.installedSha256 === "string" &&
+    sha256(current.bytes) === state.installedSha256;
+  let restoredContents;
+
+  if (pristineInstall && state.configExisted !== false) {
+    try {
+      restoredContents = await readFile(state.backupPath);
+    } catch (error) {
+      if (!force) {
+        throw failure(
+          "BACKUP_UNREADABLE",
+          `Exact backup cannot be read: ${state.backupPath}`,
+          { cause: error },
+        );
+      }
+    }
+    if (
+      restoredContents &&
+      sha256(restoredContents) !== state.sourceSha256
+    ) {
+      if (!force) {
+        throw failure(
+          "BACKUP_MISMATCH",
+          `Exact backup checksum does not match installation state: ${state.backupPath}`,
+        );
+      }
+      restoredContents = undefined;
+    }
+  }
+
+  if (!restoredContents && !(pristineInstall && state.configExisted === false)) {
+    const prior = state.priorAssignments
+      .map((assignment) => `${assignment.raw}${assignment.eol ?? located.root.eol}`)
+      .join("");
+    const replacements = [
+      { ...located.root, replacement: prior },
+      { ...located.provider, replacement: "" },
+    ].sort((left, right) => right.start - left.start);
+
+    let restoredText = current.text;
+    for (const block of replacements) {
+      restoredText =
+        restoredText.slice(0, block.start) +
+        block.replacement +
+        restoredText.slice(block.end);
+    }
+    restoredContents = restoredText;
+  }
+
+  if (pristineInstall && state.configExisted === false) {
+    await atomicRemove(configPath, {
+      expectedSource: snapshotOf(current),
+      beforeCommit: beforeConfigCommit,
+    });
+  } else {
+    await atomicWrite(
+      configPath,
+      restoredContents,
+      pristineInstall ? (state.configMode ?? current.mode) : current.mode,
+      {
+      expectedSource: snapshotOf(current),
+      beforeCommit: beforeConfigCommit,
+      },
+    );
+  }
+  try {
+    await unlink(statePath);
+  } catch (error) {
+    throw failure(
+      "STATE_REMOVE_FAILED",
+      `Configuration was restored, but the state file could not be removed: ${statePath}`,
+      { cause: error },
+    );
+  }
+
+  return {
+    changed: true,
+    installed: false,
+    configPath,
+    statePath,
+    backupPath: state.backupPath,
+    model: state.model,
+    provider: state.providerId,
+    catalog: state.catalog,
+    metadataPreservation: state.metadataPreservation,
+    restoredAssignments: state.priorAssignments.map(({ key }) => key),
+  };
+}
+
+/** Return a non-mutating installation/health snapshot. */
+export async function getConfigStatus(options) {
+  const { configPath, statePath } = normalizePathOptions(options);
+  let current;
+  try {
+    current = await readConfigFile(configPath);
+  } catch (error) {
+    return {
+      installed: false,
+      healthy: false,
+      status: "unreadable-config",
+      configPath,
+      statePath,
+      error,
+    };
+  }
+
+  let state;
+  try {
+    state = await readState(statePath, { allowMissing: true });
+  } catch (error) {
+    return {
+      installed: containsAnyManagedMarker(current.text),
+      healthy: false,
+      status: "invalid-state",
+      configPath,
+      statePath,
+      error,
+    };
+  }
+
+  if (!state) {
+    const orphaned = containsAnyManagedMarker(current.text);
+    return {
+      installed: orphaned,
+      healthy: !orphaned,
+      status: orphaned ? "orphaned-managed-block" : "not-installed",
+      configPath,
+      statePath,
+    };
+  }
+
+  try {
+    assertStateMatchesConfig(state, configPath);
+    const located = locateOwnedBlocks(current.text, state);
+    const pickerRoot = inspectPickerMutableRoot(located.root, state);
+    const modifiedBlocks = ["root", "provider"].filter((name) => {
+      if (sha256(located[name].text) === state.blocks[name].sha256) return false;
+      return !(name === "root" && pickerRoot.safe);
+    });
+    if (!hasSafeProviderScopeTail(current.text, located.provider.end)) {
+      modifiedBlocks.push("provider-scope-tail");
+    }
+    return {
+      installed: true,
+      healthy: modifiedBlocks.length === 0,
+      status: modifiedBlocks.length === 0 ? "installed" : "modified",
+      configPath,
+      statePath,
+      backupPath: state.backupPath,
+      model: pickerRoot.model ?? state.model,
+      provider: state.providerId,
+      providerName: state.providerName,
+      catalog: state.catalog,
+      baseUrl: state.providerBaseUrl,
+      modelReasoningEffort:
+        pickerRoot.modelReasoningEffort ?? state.modelReasoningEffort,
+      providerId: state.providerId,
+      metadataPreservation: state.metadataPreservation,
+      modifiedBlocks,
+    };
+  } catch (error) {
+    return {
+      installed: true,
+      healthy: false,
+      status: "inconsistent",
+      configPath,
+      statePath,
+      error,
+    };
+  }
+}
+
+function normalizeInstallOptions(options = {}) {
+  const paths = normalizePathOptions(options);
+  const providerInput = options.provider ?? {};
+  const id = options.modelProvider ?? providerInput.id;
+  const modelCatalogJson = options.modelCatalogJson ?? options.catalogPath;
+  const modelReasoningEffort = options.modelReasoningEffort ?? "low";
+
+  requireNonEmptyString(options.model, "model");
+  requireNonEmptyString(id, "modelProvider/provider.id");
+  requireNonEmptyString(modelCatalogJson, "modelCatalogJson");
+  requireNonEmptyString(providerInput.name, "provider.name");
+  requireNonEmptyString(providerInput.baseUrl, "provider.baseUrl");
+  if (!PICKER_REASONING_EFFORTS.has(modelReasoningEffort)) {
+    throw failure(
+      "INVALID_REASONING_EFFORT",
+      "modelReasoningEffort must be one of: none, minimal, low, medium, high, xhigh, max, or ultra.",
+    );
+  }
+
+  if (!/^[A-Za-z0-9_-]+$/.test(id)) {
+    throw failure(
+      "INVALID_PROVIDER_ID",
+      "Provider ID may contain only letters, digits, underscores, and hyphens.",
+    );
+  }
+  if (providerInput.id && options.modelProvider && providerInput.id !== options.modelProvider) {
+    throw failure(
+      "PROVIDER_ID_MISMATCH",
+      "modelProvider and provider.id must match when both are supplied.",
+    );
+  }
+
+  const nowValue = options.now instanceof Date
+    ? options.now
+    : typeof options.now === "function"
+      ? options.now()
+      : new Date();
+  if (!(nowValue instanceof Date) || Number.isNaN(nowValue.valueOf())) {
+    throw failure("INVALID_DATE", "now must resolve to a valid Date.");
+  }
+
+  return {
+    ...paths,
+    model: options.model,
+    modelProvider: id,
+    modelCatalogJson,
+    modelReasoningEffort,
+    backupDirectory: options.backupDirectory
+      ? resolve(options.backupDirectory)
+      : dirname(paths.statePath),
+    beforeConfigCommit: paths.beforeConfigCommit,
+    now: nowValue,
+    provider: {
+      id,
+      name: providerInput.name,
+      baseUrl: providerInput.baseUrl.replace(/\/+$/, ""),
+      wireApi: providerInput.wireApi ?? "responses",
+      envKey: providerInput.envKey,
+      envKeyInstructions: providerInput.envKeyInstructions,
+      requiresOpenAIAuth:
+        providerInput.requiresOpenAiAuth ?? providerInput.requiresOpenAIAuth ?? false,
+      supportsWebsockets: providerInput.supportsWebsockets ?? false,
+      supportsStandaloneWebSearch:
+        providerInput.supportsStandaloneWebSearch ?? false,
+      requestMaxRetries: providerInput.requestMaxRetries,
+      streamMaxRetries: providerInput.streamMaxRetries,
+      streamIdleTimeoutMs: providerInput.streamIdleTimeoutMs,
+    },
+  };
+}
+
+function normalizePathOptions(options = {}) {
+  requireNonEmptyString(options.configPath, "configPath");
+  requireNonEmptyString(options.statePath, "statePath");
+  return {
+    configPath: resolve(options.configPath),
+    statePath: resolve(options.statePath),
+    force: options.force === true,
+    beforeConfigCommit:
+      typeof options.beforeConfigCommit === "function"
+        ? options.beforeConfigCommit
+        : undefined,
+  };
+}
+
+function requireNonEmptyString(value, label) {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw failure("INVALID_ARGUMENT", `${label} must be a non-empty string.`);
+  }
+}
+
+async function readConfigFile(path, { mustExist = false } = {}) {
+  try {
+    const metadata = await lstat(path);
+    if (metadata.isSymbolicLink()) {
+      throw failure("CONFIG_SYMLINK", `Refusing symbolic-link Codex config: ${path}`);
+    }
+    if (!metadata.isFile()) {
+      throw failure("CONFIG_NOT_REGULAR", `Codex config is not a regular file: ${path}`);
+    }
+    const bytes = await readFile(path);
+    return {
+      exists: true,
+      bytes,
+      text: bytes.toString("utf8"),
+      mode: metadata.mode & 0o777,
+    };
+  } catch (error) {
+    if (error?.code === "ENOENT" && !mustExist) {
+      return { exists: false, bytes: Buffer.alloc(0), text: "", mode: 0o600 };
+    }
+    if (error?.code === "ENOENT") {
+      throw failure("CONFIG_MISSING", `Codex config does not exist: ${path}`);
+    }
+    throw error;
+  }
+}
+
+async function readState(path, { allowMissing = false } = {}) {
+  let source;
+  try {
+    source = await readFile(path, "utf8");
+  } catch (error) {
+    if (allowMissing && error?.code === "ENOENT") return null;
+    throw error;
+  }
+
+  let state;
+  try {
+    state = JSON.parse(source);
+  } catch (error) {
+    throw failure("INVALID_STATE", `State file is not valid JSON: ${path}`, {
+      cause: error,
+    });
+  }
+  if (
+    state?.version !== STATE_VERSION ||
+    typeof state.configPath !== "string" ||
+    !Array.isArray(state.priorAssignments) ||
+    typeof state.blocks?.root?.sha256 !== "string" ||
+    typeof state.blocks?.provider?.sha256 !== "string"
+  ) {
+    throw failure("INVALID_STATE", `Unsupported or incomplete state file: ${path}`);
+  }
+  return state;
+}
+
+function analyzeConfig(source, providerId) {
+  const lines = splitLines(source);
+  const eol = detectEol(lines);
+  const firstTable = lines.findIndex((line) => isTableHeader(line.raw));
+  const rootEnd = firstTable === -1 ? lines.length : firstTable;
+  const assignments = [];
+
+  for (let index = 0; index < rootEnd; index += 1) {
+    const line = lines[index];
+    const parsed = parseManagedRootLine(line.raw);
+    if (!parsed) continue;
+    if (parsed.malformed) {
+      throw failure(
+        "MALFORMED_MANAGED_KEY",
+        `Malformed top-level ${parsed.key} assignment on line ${index + 1}.`,
+        { key: parsed.key, line: index + 1 },
+      );
+    }
+    assignments.push({
+      key: parsed.key,
+      raw: line.raw,
+      eol: line.eol,
+      index,
+      start: line.start,
+      end: line.end,
+    });
+  }
+
+  for (const key of MANAGED_KEYS) {
+    const matches = assignments.filter((assignment) => assignment.key === key);
+    if (matches.length > 1) {
+      throw failure(
+        "DUPLICATE_MANAGED_KEY",
+        `Duplicate top-level ${key} assignments found.`,
+        { key, lines: matches.map(({ index }) => index + 1) },
+      );
+    }
+  }
+
+  if (hasProviderTable(lines, providerId)) {
+    throw failure(
+      "PROVIDER_TABLE_CONFLICT",
+      `Provider table already exists: [model_providers.${providerId}]`,
+      { providerId },
+    );
+  }
+
+  return { lines, eol, firstTable, assignments };
+}
+
+function parseManagedRootLine(raw) {
+  const code = stripTomlComment(raw).trim();
+  if (code === "") return null;
+
+  const keyPattern = String.raw`(?:model_reasoning_effort|model_catalog_json|model_provider|model)`;
+  const candidate = code.match(
+    new RegExp(String.raw`^(?:"(${keyPattern})"|'(${keyPattern})'|(${keyPattern}))(?=\s|=|$)`),
+  );
+  if (!candidate) return null;
+
+  const key = candidate[1] ?? candidate[2] ?? candidate[3];
+  const assignment = code.match(
+    new RegExp(
+      String.raw`^(?:"${key}"|'${key}'|${key})\s*=\s*("(?:\\.|[^"\\])*"|'[^']*')\s*$`,
+    ),
+  );
+  return assignment ? { key, malformed: false } : { key, malformed: true };
+}
+
+function stripTomlComment(raw) {
+  let quote = null;
+  let escaped = false;
+  for (let index = 0; index < raw.length; index += 1) {
+    const character = raw[index];
+    if (quote === '"') {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') quote = null;
+    } else if (quote === "'") {
+      if (character === "'") quote = null;
+    } else if (character === '"' || character === "'") {
+      quote = character;
+    } else if (character === "#") {
+      return raw.slice(0, index);
+    }
+  }
+  return raw;
+}
+
+function isTableHeader(raw) {
+  const code = stripTomlComment(raw).trim();
+  return /^\[\[?.+?\]\]?$/.test(code);
+}
+
+function hasProviderTable(lines, providerId) {
+  const escaped = escapeRegex(providerId);
+  const pattern = new RegExp(
+    String.raw`^\[\[?\s*model_providers\s*\.\s*(?:${escaped}|"${escaped}"|'${escaped}')\s*\]\]?$`,
+  );
+  return lines.some((line) => pattern.test(stripTomlComment(line.raw).trim()));
+}
+
+function installBlocks(analysis, rootBlock, providerBlock, eol) {
+  const assignmentIndexes = new Set(
+    analysis.assignments.map((assignment) => assignment.index),
+  );
+  const filteredLines = analysis.lines.filter(
+    (_line, index) => !assignmentIndexes.has(index),
+  );
+
+  let insertionIndex;
+  insertionIndex = filteredLines.findIndex((line) => isTableHeader(line.raw));
+  if (insertionIndex === -1) insertionIndex = filteredLines.length;
+
+  const before = joinLines(filteredLines.slice(0, insertionIndex));
+  const after = joinLines(filteredLines.slice(insertionIndex));
+  const rootPrefix = before !== "" && !endsWithNewline(before) ? eol : "";
+  const managed = `${rootBlock}${providerBlock}`;
+  return `${before}${rootPrefix}${managed}${after}`;
+}
+
+function renderRootBlock(settings, eol) {
+  return [
+    CONFIG_MARKERS.rootBegin,
+    `model = ${tomlString(settings.model)}`,
+    `model_provider = ${tomlString(settings.modelProvider)}`,
+    `model_catalog_json = ${tomlString(settings.modelCatalogJson)}`,
+    `model_reasoning_effort = ${tomlString(settings.modelReasoningEffort)}`,
+    CONFIG_MARKERS.rootEnd,
+    "",
+  ].join(eol);
+}
+
+function renderProviderBlock(provider, eol) {
+  const lines = [
+    CONFIG_MARKERS.providerBegin,
+    `[model_providers.${provider.id}]`,
+    `name = ${tomlString(provider.name)}`,
+    `base_url = ${tomlString(provider.baseUrl)}`,
+    `wire_api = ${tomlString(provider.wireApi)}`,
+    `requires_openai_auth = ${provider.requiresOpenAIAuth}`,
+    `supports_websockets = ${provider.supportsWebsockets}`,
+    `supports_standalone_web_search = ${provider.supportsStandaloneWebSearch}`,
+  ];
+  if (provider.envKey) lines.push(`env_key = ${tomlString(provider.envKey)}`);
+  if (provider.envKeyInstructions) {
+    lines.push(`env_key_instructions = ${tomlString(provider.envKeyInstructions)}`);
+  }
+  appendInteger(lines, "request_max_retries", provider.requestMaxRetries);
+  appendInteger(lines, "stream_max_retries", provider.streamMaxRetries);
+  appendInteger(lines, "stream_idle_timeout_ms", provider.streamIdleTimeoutMs);
+  lines.push(CONFIG_MARKERS.providerEnd, "");
+  return lines.join(eol);
+}
+
+function appendInteger(lines, key, value) {
+  if (value === undefined) return;
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw failure("INVALID_ARGUMENT", `${key} must be a non-negative integer.`);
+  }
+  lines.push(`${key} = ${value}`);
+}
+
+function tomlString(value) {
+  requireNonEmptyString(value, "TOML string value");
+  return JSON.stringify(value)
+    .replace(/\\b/g, "\\u0008")
+    .replace(/\\f/g, "\\u000c");
+}
+
+function inspectPickerMutableRoot(block, state) {
+  const lines = splitLines(block.text);
+  let model;
+  let modelReasoningEffort;
+  let modelCount = 0;
+  let reasoningCount = 0;
+  const normalized = lines.map((line) => {
+    const modelMatch = /^model\s*=\s*("(?:[^"\\]|\\.)*")\s*$/u.exec(line.raw);
+    if (modelMatch) {
+      modelCount += 1;
+      try {
+        model = JSON.parse(modelMatch[1]);
+      } catch {
+        return line;
+      }
+      return { ...line, raw: `model = ${tomlString(state.model)}` };
+    }
+
+    const reasoningMatch = /^model_reasoning_effort\s*=\s*("(?:[^"\\]|\\.)*")\s*$/u.exec(
+      line.raw,
+    );
+    if (reasoningMatch) {
+      reasoningCount += 1;
+      try {
+        modelReasoningEffort = JSON.parse(reasoningMatch[1]);
+      } catch {
+        return line;
+      }
+      return {
+        ...line,
+        raw: `model_reasoning_effort = ${tomlString(state.modelReasoningEffort)}`,
+      };
+    }
+    return line;
+  });
+
+  const valuesAreSafe =
+    modelCount === 1 &&
+    reasoningCount === 1 &&
+    typeof model === "string" &&
+    model.length > 0 &&
+    !/[\u0000-\u001f\u007f]/u.test(model) &&
+    PICKER_REASONING_EFFORTS.has(modelReasoningEffort);
+  return {
+    safe:
+      valuesAreSafe &&
+      sha256(joinLines(normalized)) === state.blocks.root.sha256,
+    model: valuesAreSafe ? model : undefined,
+    modelReasoningEffort: valuesAreSafe ? modelReasoningEffort : undefined,
+  };
+}
+
+function renderPickerSelectionRoot(block, model, modelReasoningEffort) {
+  let modelCount = 0;
+  let reasoningCount = 0;
+  const replaced = splitLines(block.text).map((line) => {
+    if (/^model\s*=\s*"(?:[^"\\]|\\.)*"\s*$/u.test(line.raw)) {
+      modelCount += 1;
+      return { ...line, raw: `model = ${tomlString(model)}` };
+    }
+    if (
+      /^model_reasoning_effort\s*=\s*"(?:[^"\\]|\\.)*"\s*$/u.test(
+        line.raw,
+      )
+    ) {
+      reasoningCount += 1;
+      return {
+        ...line,
+        raw: `model_reasoning_effort = ${tomlString(modelReasoningEffort)}`,
+      };
+    }
+    return line;
+  });
+  if (modelCount !== 1 || reasoningCount !== 1) {
+    throw failure(
+      "MANAGED_BLOCK_MODIFIED",
+      "Managed picker root does not contain exactly one mutable selection pair.",
+    );
+  }
+  return joinLines(replaced);
+}
+
+function locateOwnedBlocks(source, state) {
+  return {
+    root: locateBlock(source, state.blocks.root, "root"),
+    provider: locateBlock(source, state.blocks.provider, "provider"),
+  };
+}
+
+function hasSafeProviderScopeTail(source, providerEnd) {
+  const tail = source.slice(providerEnd);
+  for (const line of splitLines(tail)) {
+    const code = stripTomlComment(line.raw).trim();
+    if (code === "") continue;
+    return isTableHeader(line.raw);
+  }
+  return true;
+}
+
+function locateBlock(source, definition, name) {
+  const lines = splitLines(source);
+  const begins = lines.filter((line) => line.raw === definition.begin);
+  const ends = lines.filter((line) => line.raw === definition.end);
+  if (begins.length !== 1 || ends.length !== 1 || begins[0].start >= ends[0].start) {
+    throw failure(
+      "MANAGED_BLOCK_BOUNDARY_INVALID",
+      `Managed ${name} block boundaries are missing, duplicated, or out of order.`,
+      { name, begins: begins.length, ends: ends.length },
+    );
+  }
+  const start = begins[0].start;
+  const end = ends[0].end;
+  return {
+    start,
+    end,
+    text: source.slice(start, end),
+    eol: begins[0].eol || detectEol(lines),
+  };
+}
+
+function assertNoManagedMarkers(source) {
+  if (containsAnyManagedMarker(source)) {
+    throw failure(
+      "EXISTING_MANAGED_MARKER",
+      "A managed model-router marker already exists; refusing to overwrite it.",
+    );
+  }
+}
+
+function containsAnyManagedMarker(source) {
+  return [...Object.values(CONFIG_MARKERS), ...LEGACY_P1_MARKERS].some((marker) =>
+    source.includes(marker),
+  );
+}
+
+function assertStateMatchesConfig(state, configPath) {
+  if (resolve(state.configPath) !== configPath) {
+    throw failure(
+      "STATE_CONFIG_MISMATCH",
+      `State belongs to another config: ${state.configPath}`,
+    );
+  }
+}
+
+async function allocateBackupPath(configPath, backupDirectory, date) {
+  const stamp = date.toISOString().replace(/[:.]/g, "-");
+  const base = `${resolve(backupDirectory)}/${basename(configPath)}.lm-studio-model-router.${stamp}.bak`;
+  for (let suffix = 0; suffix < 10_000; suffix += 1) {
+    const candidate = suffix === 0 ? base : `${base}.${suffix}`;
+    if (!(await pathExists(candidate))) return candidate;
+  }
+  throw failure("BACKUP_NAME_EXHAUSTED", "Could not allocate a backup filename.");
+}
+
+async function writeExactBackup(path, bytes, mode) {
+  await ensurePrivateDirectory(dirname(path));
+  const handle = await open(path, "wx", mode);
+  try {
+    await handle.writeFile(bytes);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  await chmod(path, mode);
+}
+
+async function atomicWrite(
+  path,
+  contents,
+  mode,
+  { expectedSource = undefined, beforeCommit = undefined } = {},
+) {
+  const directory = dirname(path);
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const temporary = `${directory}/.${basename(path)}.tmp-${process.pid}-${randomUUID()}`;
+  const handle = await open(temporary, "wx", mode);
+  try {
+    await handle.writeFile(contents);
+    await handle.sync();
+  } catch (error) {
+    await handle.close().catch(() => {});
+    await unlink(temporary).catch(() => {});
+    throw error;
+  }
+  await handle.close();
+  try {
+    await chmod(temporary, mode);
+    if (beforeCommit) await beforeCommit();
+    if (expectedSource) await assertSourceUnchanged(path, expectedSource);
+    await rename(temporary, path);
+  } catch (error) {
+    await unlink(temporary).catch(() => {});
+    throw error;
+  }
+}
+
+async function atomicRemove(
+  path,
+  { expectedSource = undefined, beforeCommit = undefined } = {},
+) {
+  if (beforeCommit) await beforeCommit();
+  if (expectedSource) await assertSourceUnchanged(path, expectedSource);
+  await unlink(path);
+}
+
+async function assertSourceUnchanged(path, expected) {
+  let actual;
+  try {
+    const bytes = await readFile(path);
+    actual = { exists: true, sha256: sha256(bytes) };
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+    actual = { exists: false, sha256: sha256(Buffer.alloc(0)) };
+  }
+  if (
+    actual.exists !== expected.exists ||
+    actual.sha256 !== expected.sha256
+  ) {
+    throw failure(
+      "CONFIG_CHANGED_CONCURRENTLY",
+      `Refusing to replace concurrently changed config: ${path}`,
+      { expected, actual },
+    );
+  }
+}
+
+async function ensurePrivateDirectory(path) {
+  await mkdir(path, { recursive: true, mode: 0o700 });
+  await chmod(path, 0o700);
+}
+
+async function pathExists(path) {
+  try {
+    await stat(path);
+    return true;
+  } catch (error) {
+    if (error?.code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+function splitLines(source) {
+  if (source === "") return [];
+  const lines = [];
+  const pattern = /([^\r\n]*)(\r\n|\n|\r|$)/g;
+  let match;
+  while ((match = pattern.exec(source)) !== null) {
+    if (match[0] === "") break;
+    const start = match.index;
+    lines.push({
+      raw: match[1],
+      eol: match[2],
+      start,
+      end: start + match[0].length,
+    });
+    if (match[2] === "") break;
+  }
+  return lines;
+}
+
+function joinLines(lines) {
+  return lines.map((line) => `${line.raw}${line.eol}`).join("");
+}
+
+function detectEol(lines) {
+  return lines.find((line) => line.eol)?.eol ?? "\n";
+}
+
+function endsWithNewline(value) {
+  return /(?:\r\n|\n|\r)$/.test(value);
+}
+
+function sha256(value) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function snapshotOf(config) {
+  return {
+    exists: config.exists,
+    sha256: sha256(config.bytes),
+  };
+}
+
+function escapeRegex(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function failure(code, message, details) {
+  return new ConfigManagerError(code, message, details);
+}

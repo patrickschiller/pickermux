@@ -1,0 +1,1080 @@
+import assert from "node:assert/strict";
+import http from "node:http";
+import { promisify } from "node:util";
+import * as zlib from "node:zlib";
+import test from "node:test";
+
+import {
+  assertRuntimeCompressionSupport,
+  decodeJsonBody,
+  runtimeSupportsZstd,
+} from "../src/body-codec.mjs";
+import { createResponsesProxy } from "../src/responses-proxy.mjs";
+
+async function listen(server) {
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
+  return server.address().port;
+}
+
+async function close(server) {
+  if (!server.listening) return;
+  await new Promise((resolve, reject) =>
+    server.close((error) => (error ? reject(error) : resolve())),
+  );
+}
+
+function httpRequest({ port, path = "/v1/responses", headers = {}, body = Buffer.alloc(0) }) {
+  return new Promise((resolve, reject) => {
+    const request = http.request(
+      {
+        hostname: "127.0.0.1",
+        port,
+        path,
+        method: "POST",
+        headers: { "content-length": String(body.length), ...headers },
+      },
+      (response) => {
+        const chunks = [];
+        response.on("data", (chunk) => chunks.push(chunk));
+        response.once("end", () =>
+          resolve({
+            statusCode: response.statusCode,
+            headers: response.headers,
+            body: Buffer.concat(chunks),
+          }),
+        );
+      },
+    );
+    request.once("error", reject);
+    request.end(body);
+  });
+}
+
+async function createProxyHarness({
+  registry,
+  nativeBaseUrl,
+  env,
+  limits,
+  credentialResolver,
+}) {
+  const handle = createResponsesProxy({
+    registry,
+    nativeBaseUrl,
+    env,
+    limits,
+    credentialResolver,
+  });
+  const server = http.createServer((request, response) => {
+    void handle(request, response, new URL(request.url, "http://proxy.local").pathname);
+  });
+  const port = await listen(server);
+  return { server, port };
+}
+
+test("body decoder supports gzip, deflate, Brotli and zstd when the runtime provides it", async (t) => {
+  const source = Buffer.from(JSON.stringify({ model: "native", input: "Hello 🌍" }));
+  const codecs = [
+    ["gzip", zlib.gzip],
+    ["deflate", zlib.deflate],
+    ["br", zlib.brotliCompress],
+  ];
+  if (typeof zlib.zstdCompress === "function") codecs.push(["zstd", zlib.zstdCompress]);
+
+  for (const [encoding, operation] of codecs) {
+    await t.test(encoding, async () => {
+      const encoded = await promisify(operation)(source);
+      assert.deepEqual(await decodeJsonBody(encoded, encoding, { maxBytes: 1024 }), {
+        model: "native",
+        input: "Hello 🌍",
+      });
+    });
+  }
+});
+
+test("runtime compression gate reflects native zstd availability", () => {
+  assert.equal(runtimeSupportsZstd(), typeof zlib.zstdDecompress === "function");
+  if (runtimeSupportsZstd()) assert.doesNotThrow(() => assertRuntimeCompressionSupport());
+});
+
+test("native route relays compressed request bytes, approved headers and SSE bytes unchanged", async (t) => {
+  let observed;
+  const upstream = http.createServer((request, response) => {
+    const chunks = [];
+    request.on("data", (chunk) => chunks.push(chunk));
+    request.once("end", () => {
+      observed = { path: request.url, headers: request.headers, body: Buffer.concat(chunks) };
+      response.writeHead(200, {
+        "content-type": "text/event-stream",
+        "set-cookie": "native-secret=1",
+        "x-upstream-id": "safe",
+      });
+      response.write("event: response.output_text.delta\ndata: {\"delta\":\"hi\"}\n\n");
+      response.end("event: response.completed\ndata: {}\n\n");
+    });
+  });
+  const upstreamPort = await listen(upstream);
+  t.after(() => close(upstream));
+
+  const registry = {
+    resolve(model) {
+      assert.equal(model, "gpt-5.6-sol");
+      return { kind: "native-openai", slug: model, upstreamModel: model };
+    },
+  };
+  const proxy = await createProxyHarness({
+    registry,
+    nativeBaseUrl: `http://127.0.0.1:${upstreamPort}/backend-api/codex`,
+  });
+  t.after(() => close(proxy.server));
+
+  const plain = Buffer.from(
+    JSON.stringify({
+      model: "gpt-5.6-sol",
+      reasoning: { effort: "ultra" },
+      prompt_cache_key: "native-cache-key-must-remain",
+      include: ["reasoning.encrypted_content"],
+      tools: [
+        { type: "web_search" },
+        { type: "namespace", name: "functions", tools: [] },
+      ],
+      input: [
+        {
+          type: "message",
+          role: "developer",
+          content: [{ type: "input_text", text: "native-developer-stays" }],
+        },
+        {
+          type: "function_call",
+          name: "native_canary",
+          encrypted_function_args: "native-must-remain-byte-exact",
+          internal_chat_message_metadata_passthrough: { native: true },
+        },
+      ],
+    }),
+  );
+  const encoded = await promisify(zlib.gzip)(plain);
+  const result = await httpRequest({
+    port: proxy.port,
+    headers: {
+      accept: "text/event-stream",
+      authorization: "Bearer native-token",
+      "chatgpt-account-id": "account",
+      "content-encoding": "gzip",
+      "content-type": "application/json",
+      cookie: "must-not-cross",
+      "proxy-authorization": "must-not-cross",
+      "x-codex-routing-hint": "native",
+      "x-openai-fedramp": "1",
+    },
+    body: encoded,
+  });
+
+  assert.equal(result.statusCode, 200);
+  assert.equal(result.headers["content-type"], "text/event-stream");
+  assert.equal(result.headers["x-upstream-id"], "safe");
+  assert.equal(result.headers["set-cookie"], undefined);
+  assert.match(result.body.toString(), /response\.completed/u);
+  assert.equal(observed.path, "/backend-api/codex/responses");
+  assert.deepEqual(observed.body, encoded);
+  assert.equal(observed.headers.authorization, "Bearer native-token");
+  assert.equal(observed.headers["chatgpt-account-id"], "account");
+  assert.equal(observed.headers["x-codex-routing-hint"], "native");
+  assert.equal(observed.headers.cookie, undefined);
+  assert.equal(observed.headers["proxy-authorization"], undefined);
+});
+
+test("external route rewrites model and effort while replacing all caller credentials", async (t) => {
+  let observed;
+  const upstream = http.createServer((request, response) => {
+    const chunks = [];
+    request.on("data", (chunk) => chunks.push(chunk));
+    request.once("end", () => {
+      observed = {
+        path: request.url,
+        headers: request.headers,
+        json: JSON.parse(Buffer.concat(chunks).toString("utf8")),
+      };
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end('{"ok":true}');
+    });
+  });
+  const upstreamPort = await listen(upstream);
+  t.after(() => close(upstream));
+  const registry = {
+    resolve(model) {
+      assert.equal(model, "lmstudio/qwen/qwen3.8-27b");
+      return {
+        kind: "external",
+        providerId: "lmstudio",
+        baseUrl: `http://127.0.0.1:${upstreamPort}/v1`,
+        allowPrivateNetwork: true,
+        upstreamModel: "qwen/qwen3.8-27b",
+        reasoningEffort: "low",
+        credentialEnv: "TEST_PROVIDER_TOKEN",
+      };
+    },
+  };
+  const proxy = await createProxyHarness({
+    registry,
+    env: { TEST_PROVIDER_TOKEN: "external-token" },
+  });
+  t.after(() => close(proxy.server));
+
+  const body = await promisify(zlib.brotliCompress)(
+    Buffer.from(
+      JSON.stringify({
+        model: "lmstudio/qwen/qwen3.8-27b",
+        reasoning: { effort: "ultra", summary: "auto" },
+        input: "test",
+      }),
+    ),
+  );
+  const result = await httpRequest({
+    port: proxy.port,
+    path: "/v1/responses/compact",
+    headers: {
+      accept: "application/json",
+      authorization: "Bearer chatgpt-token",
+      "chatgpt-account-id": "account",
+      "content-encoding": "br",
+      cookie: "chatgpt-cookie",
+      "x-codex-routing-hint": "native",
+      "x-oai-attestation": "attestation",
+    },
+    body,
+  });
+
+  assert.equal(result.statusCode, 200);
+  assert.equal(observed.path, "/v1/responses/compact");
+  assert.equal(observed.json.model, "qwen/qwen3.8-27b");
+  assert.deepEqual(observed.json.reasoning, { effort: "low", summary: "auto" });
+  assert.equal(observed.headers.authorization, "Bearer external-token");
+  assert.equal(observed.headers["content-encoding"], undefined);
+  assert.equal(observed.headers["chatgpt-account-id"], undefined);
+  assert.equal(observed.headers.cookie, undefined);
+  assert.equal(observed.headers["x-codex-routing-hint"], undefined);
+  assert.equal(observed.headers["x-oai-attestation"], undefined);
+  assert.doesNotMatch(JSON.stringify(observed), /chatgpt-token|chatgpt-cookie|attestation/u);
+});
+
+test("external route preserves caller reasoning when no route override is configured", async (t) => {
+  let observed;
+  const upstream = http.createServer((request, response) => {
+    const chunks = [];
+    request.on("data", (chunk) => chunks.push(chunk));
+    request.on("end", () => {
+      observed = JSON.parse(Buffer.concat(chunks).toString());
+      response.end("ok");
+    });
+  });
+  const upstreamPort = await listen(upstream);
+  t.after(() => close(upstream));
+  const proxy = await createProxyHarness({
+    registry: {
+      resolve: () => ({
+        kind: "external",
+        baseUrl: `http://127.0.0.1:${upstreamPort}/v1`,
+        allowPrivateNetwork: true,
+        upstreamModel: "vendor-model",
+      }),
+    },
+  });
+  t.after(() => close(proxy.server));
+
+  const body = Buffer.from(
+    JSON.stringify({ model: "vendor/public", reasoning: { effort: "medium" } }),
+  );
+  const result = await httpRequest({ port: proxy.port, body });
+  assert.equal(result.statusCode, 200);
+  assert.deepEqual(observed.reasoning, { effort: "medium" });
+});
+
+test("external route strips internal metadata canaries without changing other input fields", async (t) => {
+  let observed;
+  const upstream = http.createServer((request, response) => {
+    const chunks = [];
+    request.on("data", (chunk) => chunks.push(chunk));
+    request.on("end", () => {
+      observed = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end('{"ok":true}');
+    });
+  });
+  const upstreamPort = await listen(upstream);
+  t.after(() => close(upstream));
+  const proxy = await createProxyHarness({
+    registry: {
+      resolve: () => ({
+        kind: "external",
+        baseUrl: `http://127.0.0.1:${upstreamPort}/v1`,
+        allowPrivateNetwork: true,
+        upstreamModel: "qwen/qwen3.8-27b",
+      }),
+    },
+  });
+  t.after(() => close(proxy.server));
+
+  const body = Buffer.from(
+    JSON.stringify({
+      model: "lmstudio/qwen/qwen3.8-27b",
+      input: [
+        {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "canary-message" }],
+          internal_chat_message_metadata_passthrough: {
+            canary: "must-not-reach-external-upstream",
+          },
+          preserved_message_field: "message-stays",
+        },
+        {
+          type: "function_call",
+          call_id: "call-canary-1",
+          name: "canary_tool",
+          arguments: '{"safe":true}',
+          encrypted_function_args: "encrypted-canary-must-not-reach-upstream",
+          internal_chat_message_metadata_passthrough: "metadata-canary",
+          preserved_function_field: { nested: [1, 2, 3] },
+        },
+        {
+          type: "function_call_output",
+          call_id: "call-canary-1",
+          output: "unchanged-output",
+          encrypted_function_args: "not-a-function-call-so-this-field-stays",
+          preserved_output_field: true,
+        },
+        "primitive-input-stays",
+      ],
+      metadata: { topLevel: "unchanged" },
+    }),
+  );
+  const result = await httpRequest({ port: proxy.port, body });
+
+  assert.equal(result.statusCode, 200);
+  assert.equal(observed.model, "qwen/qwen3.8-27b");
+  assert.deepEqual(observed.metadata, { topLevel: "unchanged" });
+  assert.deepEqual(observed.input, [
+    {
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: "canary-message" }],
+      preserved_message_field: "message-stays",
+    },
+    {
+      type: "function_call",
+      call_id: "call-canary-1",
+      name: "canary_tool",
+      arguments: '{"safe":true}',
+      preserved_function_field: { nested: [1, 2, 3] },
+    },
+    {
+      type: "function_call_output",
+      call_id: "call-canary-1",
+      output: "unchanged-output",
+      encrypted_function_args: "not-a-function-call-so-this-field-stays",
+      preserved_output_field: true,
+    },
+    "primitive-input-stays",
+  ]);
+  assert.equal(
+    JSON.stringify(observed).includes("must-not-reach-external-upstream"),
+    false,
+  );
+  assert.equal(JSON.stringify(observed).includes("encrypted-canary"), false);
+});
+
+test("LM Studio route removes unsupported Codex fields without touching supported request data", async (t) => {
+  let observed;
+  const upstream = http.createServer((request, response) => {
+    const chunks = [];
+    request.on("data", (chunk) => chunks.push(chunk));
+    request.on("end", () => {
+      observed = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end('{"ok":true}');
+    });
+  });
+  const upstreamPort = await listen(upstream);
+  t.after(() => close(upstream));
+  const proxy = await createProxyHarness({
+    registry: {
+      resolve: () => ({
+        kind: "external",
+        providerKind: "lmstudio-responses",
+        baseUrl: `http://127.0.0.1:${upstreamPort}/v1`,
+        allowPrivateNetwork: true,
+        upstreamModel: "qwen/qwen3.8-27b",
+        reasoningEffort: "xhigh",
+        reasoningEfforts: ["none", "low", "medium", "xhigh"],
+      }),
+    },
+  });
+  t.after(() => close(proxy.server));
+
+  const result = await httpRequest({
+    port: proxy.port,
+    body: Buffer.from(JSON.stringify({
+      model: "lmstudio/qwen/qwen3.8-27b",
+      prompt_cache_key: "must-not-reach-lm-studio",
+      include: ["reasoning.encrypted_content", "message.input_image.image_url"],
+      reasoning: { effort: "max", summary: "auto" },
+      input: [
+        {
+          type: "message",
+          role: "developer",
+          content: [{ type: "input_text", text: "developer-canary" }],
+        },
+        {
+          type: "message",
+          role: "developer",
+          content: [{ type: "input_text", text: "second-developer-canary" }],
+        },
+        {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "user-stays" }],
+        },
+        {
+          type: "function_call",
+          namespace: "functions",
+          name: "nested_tool",
+          call_id: "call-history",
+          arguments: "{}",
+        },
+      ],
+      tools: [
+        { type: "web_search", external_web_access: true },
+        {
+          type: "namespace",
+          name: "functions",
+          description: "Codex namespace",
+          tools: [{ type: "function", name: "nested_tool", parameters: {} }],
+        },
+        {
+          type: "function",
+          name: "direct_tool",
+          description: "supported",
+          parameters: { type: "object", properties: {} },
+        },
+      ],
+      tool_choice: {
+        type: "namespace",
+        name: "functions",
+        function: { name: "nested_tool" },
+      },
+      parallel_tool_calls: true,
+      metadata: { preserved: true },
+    })),
+  });
+
+  assert.equal(result.statusCode, 200);
+  assert.equal(observed.model, "qwen/qwen3.8-27b");
+  assert.equal(observed.prompt_cache_key, undefined);
+  assert.deepEqual(observed.include, ["message.input_image.image_url"]);
+  assert.deepEqual(observed.reasoning, { effort: "xhigh", summary: "auto" });
+  assert.equal(observed.input[0].role, "system");
+  assert.deepEqual(
+    observed.input[0].content.map((part) => part.text),
+    ["developer-canary", "\n\n", "second-developer-canary"],
+  );
+  assert.equal(observed.input[1].role, "user");
+  assert.equal(observed.input[2].namespace, undefined);
+  assert.deepEqual(observed.tools.map((tool) => tool.type), ["function"]);
+  assert.deepEqual(observed.tools.map((tool) => tool.name), ["nested_tool"]);
+  assert.equal(observed.tool_choice, "required");
+  assert.equal(observed.parallel_tool_calls, false);
+  assert.deepEqual(observed.metadata, { preserved: true });
+});
+
+test("LM Studio namespace calls are mapped on request and restored in JSON responses", async (t) => {
+  let observed;
+  const upstream = http.createServer((request, response) => {
+    const chunks = [];
+    request.on("data", (chunk) => chunks.push(chunk));
+    request.on("end", () => {
+      observed = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      const call = {
+        type: "function_call",
+        name: observed.tools[0].name,
+        call_id: "call_namespace_1",
+        arguments: "{}",
+      };
+      const payload = JSON.stringify({ id: "resp_namespace", output: [call] });
+      response.writeHead(200, {
+        "content-type": "application/json",
+        "content-length": String(Buffer.byteLength(payload)),
+        etag: "must-be-removed-after-transform",
+      });
+      response.end(payload);
+    });
+  });
+  const upstreamPort = await listen(upstream);
+  t.after(() => close(upstream));
+  const proxy = await createProxyHarness({
+    registry: {
+      resolve: () => ({
+        kind: "external",
+        providerKind: "lmstudio-responses",
+        providerId: "lmstudio",
+        baseUrl: `http://127.0.0.1:${upstreamPort}/v1`,
+        allowPrivateNetwork: true,
+        upstreamModel: "qwen/local",
+      }),
+    },
+  });
+  t.after(() => close(proxy.server));
+
+  const result = await httpRequest({
+    port: proxy.port,
+    body: Buffer.from(
+      JSON.stringify({
+        model: "lmstudio/qwen/local",
+        input: "Use the tool",
+        tools: [
+          {
+            type: "namespace",
+            name: "workspace",
+            tools: [{ type: "function", name: "inspect", parameters: {} }],
+          },
+        ],
+        tool_choice: {
+          type: "namespace",
+          name: "workspace",
+          function: { name: "inspect" },
+        },
+      }),
+    ),
+  });
+
+  assert.equal(result.statusCode, 200);
+  assert.match(observed.tools[0].name, /^mbns_[0-9a-f]{56}$/u);
+  assert.deepEqual(observed.tools[0].parameters, {
+    type: "object",
+    properties: {},
+  });
+  assert.equal(observed.tool_choice, "required");
+  assert.equal(observed.parallel_tool_calls, false);
+  const payload = JSON.parse(result.body);
+  assert.deepEqual(payload.output[0], {
+    type: "function_call",
+    namespace: "workspace",
+    name: "inspect",
+    call_id: "call_namespace_1",
+    arguments: "{}",
+  });
+  assert.equal(result.headers.etag, undefined);
+});
+
+test("native and provider credentials stay isolated across sequential model switches", async (t) => {
+  const observed = [];
+  const upstream = http.createServer((request, response) => {
+    const chunks = [];
+    request.on("data", (chunk) => chunks.push(chunk));
+    request.on("end", () => {
+      observed.push({
+        path: request.url,
+        authorization: request.headers.authorization,
+        body: JSON.parse(Buffer.concat(chunks).toString("utf8")),
+      });
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end('{"output":[]}');
+    });
+  });
+  const upstreamPort = await listen(upstream);
+  t.after(() => close(upstream));
+  const routes = new Map([
+    [
+      "gpt-5.6-sol",
+      { kind: "native-openai", slug: "gpt-5.6-sol", upstreamModel: "gpt-5.6-sol" },
+    ],
+    [
+      "vendor-a/model",
+      {
+        kind: "external",
+        providerId: "vendor-a",
+        providerKind: "openai-responses",
+        credentialKeychain: true,
+        baseUrl: `http://127.0.0.1:${upstreamPort}/external-a/v1`,
+        allowPrivateNetwork: true,
+        upstreamModel: "model-a",
+      },
+    ],
+    [
+      "vendor-b/model",
+      {
+        kind: "external",
+        providerId: "vendor-b",
+        providerKind: "openai-responses",
+        credentialKeychain: true,
+        baseUrl: `http://127.0.0.1:${upstreamPort}/external-b/v1`,
+        allowPrivateNetwork: true,
+        upstreamModel: "model-b",
+      },
+    ],
+  ]);
+  const proxy = await createProxyHarness({
+    registry: { resolve: (model) => routes.get(model) },
+    nativeBaseUrl: `http://127.0.0.1:${upstreamPort}/native`,
+    credentialResolver: async (route) =>
+      route.providerId ? `secret-${route.providerId}` : undefined,
+  });
+  t.after(() => close(proxy.server));
+
+  for (const model of [
+    "gpt-5.6-sol",
+    "vendor-a/model",
+    "vendor-b/model",
+    "gpt-5.6-sol",
+  ]) {
+    const response = await httpRequest({
+      port: proxy.port,
+      headers: { authorization: "Bearer native-secret" },
+      body: Buffer.from(JSON.stringify({ model, input: "switch" })),
+    });
+    assert.equal(response.statusCode, 200);
+  }
+
+  assert.deepEqual(
+    observed.map(({ path, authorization, body }) => ({
+      path,
+      authorization,
+      model: body.model,
+    })),
+    [
+      {
+        path: "/native/responses",
+        authorization: "Bearer native-secret",
+        model: "gpt-5.6-sol",
+      },
+      {
+        path: "/external-a/v1/responses",
+        authorization: "Bearer secret-vendor-a",
+        model: "model-a",
+      },
+      {
+        path: "/external-b/v1/responses",
+        authorization: "Bearer secret-vendor-b",
+        model: "model-b",
+      },
+      {
+        path: "/native/responses",
+        authorization: "Bearer native-secret",
+        model: "gpt-5.6-sol",
+      },
+    ],
+  );
+  assert.doesNotMatch(
+    JSON.stringify(observed.filter((entry) => entry.path.includes("external"))),
+    /native-secret/u,
+  );
+});
+
+test("LM Studio route drops an empty unsupported tool set and maps every Codex effort", async (t) => {
+  const observed = [];
+  const upstream = http.createServer((request, response) => {
+    const chunks = [];
+    request.on("data", (chunk) => chunks.push(chunk));
+    request.on("end", () => {
+      observed.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end('{"ok":true}');
+    });
+  });
+  const upstreamPort = await listen(upstream);
+  t.after(() => close(upstream));
+  const route = {
+    kind: "external",
+    providerKind: "lmstudio-responses",
+    baseUrl: `http://127.0.0.1:${upstreamPort}/v1`,
+    allowPrivateNetwork: true,
+    upstreamModel: "qwen/qwen3.8-27b",
+    reasoningEffort: "xhigh",
+    reasoningEfforts: ["none", "low", "medium", "xhigh"],
+  };
+  const proxy = await createProxyHarness({ registry: { resolve: () => route } });
+  t.after(() => close(proxy.server));
+
+  const expectations = new Map([
+    ["none", "none"],
+    ["minimal", "low"],
+    ["low", "low"],
+    ["medium", "medium"],
+    ["high", "xhigh"],
+    ["xhigh", "xhigh"],
+    ["max", "xhigh"],
+    ["ultra", "xhigh"],
+  ]);
+  for (const effort of expectations.keys()) {
+    const result = await httpRequest({
+      port: proxy.port,
+      body: Buffer.from(JSON.stringify({
+        model: "lmstudio/qwen/qwen3.8-27b",
+        reasoning: { effort },
+        include: ["reasoning.encrypted_content"],
+        tools: [
+          { type: "web_search" },
+          { type: "namespace", name: "functions", tools: [] },
+        ],
+        tool_choice: "auto",
+        parallel_tool_calls: true,
+      })),
+    });
+    assert.equal(result.statusCode, 200);
+  }
+  assert.deepEqual(
+    observed.map((body) => body.reasoning.effort),
+    [...expectations.values()],
+  );
+  for (const body of observed) {
+    assert.equal(body.include, undefined);
+    assert.equal(body.tools, undefined);
+    assert.equal(body.tool_choice, undefined);
+    assert.equal(body.parallel_tool_calls, undefined);
+  }
+});
+
+test("LM Studio route normalizes legacy on/off maps to the Responses enum", async (t) => {
+  const observed = [];
+  const accepted = new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
+  const upstream = http.createServer((request, response) => {
+    const chunks = [];
+    request.on("data", (chunk) => chunks.push(chunk));
+    request.on("end", () => {
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      observed.push(body.reasoning.effort);
+      if (!accepted.has(body.reasoning.effort)) {
+        response.writeHead(400, { "content-type": "application/json" });
+        response.end('{"error":{"message":"invalid reasoning enum"}}');
+        return;
+      }
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end('{"ok":true}');
+    });
+  });
+  const upstreamPort = await listen(upstream);
+  t.after(() => close(upstream));
+  const proxy = await createProxyHarness({
+    registry: {
+      resolve: () => ({
+        kind: "external",
+        providerKind: "lmstudio-responses",
+        baseUrl: `http://127.0.0.1:${upstreamPort}/v1`,
+        allowPrivateNetwork: true,
+        upstreamModel: "microsoft/phi-reasoning",
+        reasoningEffort: "xhigh",
+        reasoningEfforts: ["none", "xhigh"],
+        reasoningEffortMap: { none: "off", xhigh: "on" },
+      }),
+    },
+  });
+  t.after(() => close(proxy.server));
+
+  for (const effort of ["xhigh", "none"]) {
+    const result = await httpRequest({
+      port: proxy.port,
+      body: Buffer.from(JSON.stringify({
+        model: "lmstudio/microsoft/phi-reasoning",
+        reasoning: { effort },
+      })),
+    });
+    assert.equal(result.statusCode, 200);
+  }
+  assert.deepEqual(observed, ["xhigh", "none"]);
+});
+
+test("LM Studio omits only synthetic positive reasoning efforts", async (t) => {
+  const observed = [];
+  const upstream = http.createServer((request, response) => {
+    const chunks = [];
+    request.on("data", (chunk) => chunks.push(chunk));
+    request.on("end", () => {
+      observed.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end('{"ok":true}');
+    });
+  });
+  const upstreamPort = await listen(upstream);
+  t.after(() => close(upstream));
+  const routes = {
+    "lmstudio/microsoft/phi-reasoning": {
+      upstreamModel: "microsoft/phi-reasoning",
+      reasoningEffort: "xhigh",
+      reasoningEfforts: ["xhigh"],
+      reasoningEffortMap: { xhigh: "xhigh" },
+      reasoningOmitEfforts: ["xhigh"],
+    },
+    "lmstudio/gemma/reasoning": {
+      upstreamModel: "gemma/reasoning",
+      reasoningEffort: "xhigh",
+      reasoningEfforts: ["none", "xhigh"],
+      reasoningEffortMap: { none: "none", xhigh: "xhigh" },
+      reasoningOmitEfforts: ["xhigh"],
+    },
+  };
+  const proxy = await createProxyHarness({
+    registry: {
+      resolve(model) {
+        return {
+          kind: "external",
+          providerKind: "lmstudio-responses",
+          baseUrl: `http://127.0.0.1:${upstreamPort}/v1`,
+          allowPrivateNetwork: true,
+          ...routes[model],
+        };
+      },
+    },
+  });
+  t.after(() => close(proxy.server));
+
+  for (const body of [
+    {
+      model: "lmstudio/microsoft/phi-reasoning",
+    },
+    {
+      model: "lmstudio/microsoft/phi-reasoning",
+      reasoning: { effort: "ultra" },
+    },
+    {
+      model: "lmstudio/microsoft/phi-reasoning",
+      reasoning: { effort: "max" },
+    },
+    {
+      model: "lmstudio/microsoft/phi-reasoning",
+      reasoning: { effort: "none" },
+    },
+    {
+      model: "lmstudio/microsoft/phi-reasoning",
+      reasoning: { effort: "xhigh", summary: "auto" },
+    },
+    {
+      model: "lmstudio/gemma/reasoning",
+      reasoning: { effort: "xhigh", summary: "auto" },
+    },
+    {
+      model: "lmstudio/gemma/reasoning",
+      reasoning: { effort: "none" },
+    },
+  ]) {
+    const result = await httpRequest({
+      port: proxy.port,
+      body: Buffer.from(JSON.stringify(body)),
+    });
+    assert.equal(result.statusCode, 200);
+  }
+
+  for (const body of observed.slice(0, -1)) {
+    assert.equal(Object.hasOwn(body, "reasoning"), false);
+  }
+  assert.deepEqual(observed.at(-1).reasoning, { effort: "none" });
+});
+
+test("invalid reasoning omission policies fail closed with a stable code", async (t) => {
+  let route;
+  const proxy = await createProxyHarness({
+    registry: { resolve: () => route },
+  });
+  t.after(() => close(proxy.server));
+  const baseRoute = {
+    kind: "external",
+    providerKind: "lmstudio-responses",
+    baseUrl: "http://127.0.0.1:9/v1",
+    allowPrivateNetwork: true,
+    upstreamModel: "reasoner",
+    reasoningEffort: "xhigh",
+    reasoningEfforts: ["none", "xhigh"],
+  };
+  const invalidRoutes = [
+    { ...baseRoute, reasoningOmitEfforts: "xhigh" },
+    { ...baseRoute, reasoningOmitEfforts: ["xhigh", "xhigh"] },
+    { ...baseRoute, reasoningOmitEfforts: ["medium"] },
+    {
+      ...baseRoute,
+      providerKind: "openai-responses",
+      reasoningOmitEfforts: ["xhigh"],
+    },
+  ];
+
+  for (route of invalidRoutes) {
+    const result = await httpRequest({
+      port: proxy.port,
+      body: Buffer.from(JSON.stringify({
+        model: "lmstudio/invalid",
+        reasoning: { effort: "xhigh" },
+      })),
+    });
+    assert.equal(result.statusCode, 500);
+    assert.equal(
+      JSON.parse(result.body).error.code,
+      "INVALID_REASONING_POLICY",
+    );
+  }
+});
+
+test("LM Studio required choice fails closed when every tool is unsupported", async (t) => {
+  const proxy = await createProxyHarness({
+    registry: {
+      resolve: () => ({
+        kind: "external",
+        providerKind: "lmstudio-responses",
+        baseUrl: "http://127.0.0.1:9/v1",
+        allowPrivateNetwork: true,
+        upstreamModel: "qwen/qwen3.8-27b",
+        reasoningEffort: "xhigh",
+        reasoningEfforts: ["low", "xhigh"],
+      }),
+    },
+  });
+  t.after(() => close(proxy.server));
+  const result = await httpRequest({
+    port: proxy.port,
+    body: Buffer.from(JSON.stringify({
+      model: "lmstudio/qwen/qwen3.8-27b",
+      tools: [{ type: "web_search" }],
+      tool_choice: "required",
+    })),
+  });
+  assert.equal(result.statusCode, 400);
+  assert.equal(JSON.parse(result.body).error.code, "UNSUPPORTED_TOOL_CHOICE");
+});
+
+test("LM Studio specific removed tool choices fail closed", async (t) => {
+  const proxy = await createProxyHarness({
+    registry: {
+      resolve: () => ({
+        kind: "external",
+        providerKind: "lmstudio-responses",
+        baseUrl: "http://127.0.0.1:9/v1",
+        allowPrivateNetwork: true,
+        upstreamModel: "qwen/qwen3.8-27b",
+      }),
+    },
+  });
+  t.after(() => close(proxy.server));
+  for (const [tool_choice, expectedCode] of [
+    [{ type: "web_search" }, "UNSUPPORTED_TOOL_TYPE"],
+    [
+      { type: "namespace", name: "plugins", function: { name: "missing" } },
+      "UNSUPPORTED_TOOL_CHOICE",
+    ],
+  ]) {
+    const result = await httpRequest({
+      port: proxy.port,
+      body: Buffer.from(JSON.stringify({
+        model: "lmstudio/qwen/qwen3.8-27b",
+        tools: [{ type: "web_search" }],
+        tool_choice,
+      })),
+    });
+    assert.equal(result.statusCode, 400);
+    assert.equal(JSON.parse(result.body).error.code, expectedCode);
+  }
+
+  const dangling = await httpRequest({
+    port: proxy.port,
+    body: Buffer.from(JSON.stringify({
+      model: "lmstudio/qwen/qwen3.8-27b",
+      tools: [
+        {
+          type: "namespace",
+          name: "plugins",
+          tools: [{ type: "function", name: "removed_nested", parameters: {} }],
+        },
+        { type: "function", name: "remaining", parameters: {} },
+      ],
+      tool_choice: { type: "function", name: "removed_nested" },
+    })),
+  });
+  assert.equal(dangling.statusCode, 400);
+  assert.equal(JSON.parse(dangling.body).error.code, "UNSUPPORTED_TOOL_CHOICE");
+});
+
+test("unknown models fail closed before any upstream request", async (t) => {
+  const proxy = await createProxyHarness({
+    registry: {
+      resolve() {
+        throw Object.assign(new Error("Unknown model"), {
+          code: "UNKNOWN_MODEL",
+          statusCode: 400,
+        });
+      },
+    },
+  });
+  t.after(() => close(proxy.server));
+  const body = Buffer.from(JSON.stringify({ model: "almost-but-not-exact" }));
+  const result = await httpRequest({ port: proxy.port, body });
+  assert.equal(result.statusCode, 400);
+  assert.equal(JSON.parse(result.body).error.code, "UNKNOWN_MODEL");
+});
+
+test("request size and upstream-header timeouts produce bounded errors", async (t) => {
+  await t.test("size", async (t) => {
+    const proxy = await createProxyHarness({
+      registry: { resolve: () => ({ kind: "native-openai" }) },
+      nativeBaseUrl: "http://127.0.0.1:9/backend-api/codex",
+      limits: { requestBodyBytes: 16 },
+    });
+    t.after(() => close(proxy.server));
+    const result = await httpRequest({
+      port: proxy.port,
+      body: Buffer.from(JSON.stringify({ model: "native", padding: "large" })),
+    });
+    assert.equal(result.statusCode, 413);
+    assert.equal(JSON.parse(result.body).error.code, "BODY_TOO_LARGE");
+  });
+
+  await t.test("headers timeout", async (t) => {
+    const upstream = http.createServer(() => {});
+    const upstreamPort = await listen(upstream);
+    t.after(() => close(upstream));
+    const proxy = await createProxyHarness({
+      registry: { resolve: () => ({ kind: "native-openai" }) },
+      nativeBaseUrl: `http://127.0.0.1:${upstreamPort}/backend-api/codex`,
+      limits: {
+        upstreamHeadersTimeoutMs: 30,
+        streamIdleTimeoutMs: 1_000,
+        upstreamTotalTimeoutMs: 1_000,
+      },
+    });
+    t.after(() => close(proxy.server));
+    const result = await httpRequest({
+      port: proxy.port,
+      body: Buffer.from(JSON.stringify({ model: "native" })),
+    });
+    assert.equal(result.statusCode, 504);
+    assert.equal(JSON.parse(result.body).error.code, "UPSTREAM_HEADERS_TIMEOUT");
+  });
+});
+
+test("redirects are never followed and cannot expose Location or cookies", async (t) => {
+  let requests = 0;
+  const upstream = http.createServer((_request, response) => {
+    requests += 1;
+    response.writeHead(307, {
+      location: "http://127.0.0.1:1/private",
+      "set-cookie": "secret=1",
+    });
+    response.end("redirect not followed");
+  });
+  const upstreamPort = await listen(upstream);
+  t.after(() => close(upstream));
+  const proxy = await createProxyHarness({
+    registry: { resolve: () => ({ kind: "native-openai" }) },
+    nativeBaseUrl: `http://127.0.0.1:${upstreamPort}/backend-api/codex`,
+  });
+  t.after(() => close(proxy.server));
+
+  const result = await httpRequest({
+    port: proxy.port,
+    body: Buffer.from(JSON.stringify({ model: "native" })),
+  });
+  assert.equal(result.statusCode, 307);
+  assert.equal(result.headers.location, undefined);
+  assert.equal(result.headers["set-cookie"], undefined);
+  assert.equal(requests, 1);
+});

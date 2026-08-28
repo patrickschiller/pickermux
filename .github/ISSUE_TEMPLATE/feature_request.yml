@@ -1,0 +1,72 @@
+name: Feature request
+description: Propose a focused improvement to PickerMux.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for proposing an improvement. PickerMux is an unofficial community project, so proposals should avoid depending on undocumented behavior where a safer documented path exists.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: What is difficult today, and who would benefit from solving it?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the desired behavior from a user's perspective.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Primary area
+      options:
+        - Model discovery and picker catalog
+        - Request or response compatibility
+        - Tool certification
+        - Installation and service lifecycle
+        - Diagnostics and recovery
+        - Security and privacy
+        - Documentation and developer experience
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Explain current workarounds or other designs you considered.
+
+  - type: textarea
+    id: safety
+    attributes:
+      label: Security and compatibility considerations
+      description: Note effects on credentials, routing boundaries, local files, model capabilities, or Codex/LM Studio compatibility.
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Add mockups, examples, or links. Remove private data before submitting.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Submission checklist
+      options:
+        - label: I searched existing issues and discussions for a similar request.
+          required: true
+        - label: I have not included credentials, account data, capability paths, private prompts, or other sensitive information.
+          required: true

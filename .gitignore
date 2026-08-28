@@ -1,0 +1,13 @@
+.artifacts/
+node_modules/
+npm-debug.log*
+.DS_Store
+.env
+.env.*
+!.env.example
+coverage/
+*.log
+
+# Private implementation and validation records. Never publish these files.
+/IMPLEMENTIERUNGSVORSCHLAG.md
+/P[0-4]-ERGEBNIS.md

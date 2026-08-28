@@ -1,0 +1,42 @@
+{
+  "name": "pickermux",
+  "version": "0.4.0",
+  "private": true,
+  "description": "Use loaded LM Studio models directly from the Codex Desktop model picker",
+  "license": "MIT",
+  "author": "Patrick Schiller",
+  "homepage": "https://github.com/patrickschiller/pickermux#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/patrickschiller/pickermux.git"
+  },
+  "bugs": {
+    "url": "https://github.com/patrickschiller/pickermux/issues"
+  },
+  "keywords": [
+    "codex",
+    "codex-desktop",
+    "lm-studio",
+    "llm",
+    "local-llm",
+    "model-router",
+    "macos",
+    "openai"
+  ],
+  "type": "module",
+  "bin": {
+    "pickermux": "./bin/pickermux.mjs",
+    "lmstudio-picker": "./bin/lmstudio-picker.mjs"
+  },
+  "scripts": {
+    "test": "node --test",
+    "check": "for file in bin/*.mjs src/*.mjs test/*.mjs; do node --check \"$file\"; done",
+    "verify": "npm run check && npm test"
+  },
+  "engines": {
+    "node": ">=22.15.0"
+  },
+  "os": [
+    "darwin"
+  ]
+}
