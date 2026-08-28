@@ -28,7 +28,6 @@ export async function runLiveResponseCheck({
 }) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  timeout.unref?.();
   try {
     const response = await fetchImpl(`${baseUrl.replace(/\/+$/u, "")}/responses`, {
       method: "POST",
