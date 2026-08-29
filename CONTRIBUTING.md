@@ -9,7 +9,8 @@ endorsed by, or supported by OpenAI, Codex, or LM Studio.
 ## Before opening an issue
 
 1. Search the existing issues for the same behavior or proposal.
-2. Reproduce the problem with the latest version from the default branch.
+2. Reproduce the problem with the latest release or default branch and record
+   `pickermux --version` when using an installed release.
 3. Run `pickermux doctor` and, when appropriate,
    `pickermux doctor --live`.
 4. Remove tokens, account identifiers, cookies, capability paths, local
@@ -29,11 +30,15 @@ git clone https://github.com/patrickschiller/pickermux.git
 cd pickermux
 npm test
 npm run check
+npm run release:build
 ```
 
-The v0.4.0 publication baseline is 203 passing tests. Some end-to-end checks
-also require Codex Desktop, LM Studio, and a locally loaded model; ordinary
-unit tests must remain deterministic without those applications.
+`release:build` intentionally refuses to replace an existing `dist/` directory;
+remove only your prior local build output before rerunning it.
+
+Some end-to-end checks require Codex Desktop, LM Studio, and a locally loaded
+model; ordinary unit and release-packaging tests must remain deterministic
+without those applications.
 
 ## Making a change
 
@@ -46,7 +51,9 @@ unit tests must remain deterministic without those applications.
 5. Preserve conservative defaults for newly discovered external models.
 6. Update user-facing documentation when commands, configuration, or behavior
    change.
-7. Run both required checks before opening a pull request:
+7. Installer changes must preserve the versioned-asset, embedded-checksum,
+   no-`sudo`, no-shell-profile-edit, receipt-ownership, and rollback contracts.
+8. Run both required checks before opening a pull request:
 
 ```bash
 npm test

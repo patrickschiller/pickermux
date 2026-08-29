@@ -8,6 +8,7 @@ Describe the problem and the approach taken to solve it.
 - Node.js version(s):
 - Codex Desktop version (if involved):
 - LM Studio version and model(s) (if involved):
+- Installer/release asset impact (if involved):
 - Commands run:
 
 ```text
@@ -28,6 +29,8 @@ Write `None` if the change does not touch these areas.
 - [ ] `npm test` passes locally.
 - [ ] `npm run check` passes locally.
 - [ ] I updated relevant documentation and the changelog.
+- [ ] Installer changes preserve checksum, archive-validation, ownership, and
+      rollback gates.
 - [ ] I did not include credentials, account data, capability paths, private
       prompts, or unredacted logs.
 - [ ] I called out limitations, unsupported assumptions, and follow-up work.

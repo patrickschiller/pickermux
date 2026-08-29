@@ -39,6 +39,14 @@ test("release metadata and both CLI entry points identify PickerMux", async () =
       assert.match(stdout, /PickerMux/u);
       assert.doesNotMatch(stdout, /Model Bridge P[1-4]\b/u);
     }
+    for (const versionArgument of ["version", "--version", "-v"]) {
+      const { stdout } = await execFileAsync(
+        process.execPath,
+        [path.join(projectDirectory, "bin", entryPoint), versionArgument],
+        { encoding: "utf8" },
+      );
+      assert.equal(stdout, "pickermux 0.4.0\n");
+    }
   }
 });
 

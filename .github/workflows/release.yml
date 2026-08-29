@@ -1,0 +1,121 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify-and-build:
+    name: Verify and build release assets
+    runs-on: macos-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Require the tagged commit to belong to main
+        shell: bash
+        run: |
+          if ! git show-ref --verify --quiet refs/remotes/origin/main; then
+            echo "origin/main is unavailable; refusing to publish a release." >&2
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main; then
+            echo "Tagged commit $GITHUB_SHA is not part of origin/main; refusing to publish a release." >&2
+            exit 1
+          fi
+
+      - name: Set up Node.js 22.15
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.15.0
+
+      - name: Verify source and tests
+        run: npm run verify
+
+      - name: Check installer template syntax
+        run: sh -n scripts/install.sh.in
+
+      - name: Build tagged release twice
+        shell: bash
+        run: |
+          node scripts/build-release.mjs --tag "$GITHUB_REF_NAME" --output "$RUNNER_TEMP/pickermux-release-first"
+          node scripts/build-release.mjs --tag "$GITHUB_REF_NAME" --output "$RUNNER_TEMP/pickermux-release-second"
+
+      - name: Verify metadata, reproducibility, and checksums
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          archive="pickermux-v${version}.tar.gz"
+          test "$(node bin/pickermux.mjs --version)" = "pickermux $version"
+          for asset in "$archive" install.sh release-manifest.json SHA256SUMS; do
+            cmp "$RUNNER_TEMP/pickermux-release-first/$asset" "$RUNNER_TEMP/pickermux-release-second/$asset"
+          done
+          cd "$RUNNER_TEMP/pickermux-release-first"
+          shasum -a 256 --check SHA256SUMS
+          sh -n install.sh
+
+      - name: Extract archive and smoke-test CLI
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          extraction="$RUNNER_TEMP/pickermux-release-smoke"
+          mkdir "$extraction"
+          tar -xzf "$RUNNER_TEMP/pickermux-release-first/pickermux-v${version}.tar.gz" -C "$extraction"
+          test "$(node "$extraction/bin/pickermux.mjs" --version)" = "pickermux $version"
+          node "$extraction/bin/pickermux.mjs" help > /dev/null
+
+      - name: Stage verified assets
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-assets-${{ github.ref_name }}
+          path: ${{ runner.temp }}/pickermux-release-first/*
+          if-no-files-found: error
+          retention-days: 3
+
+  publish:
+    name: Publish GitHub release
+    needs: verify-and-build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download verified assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-assets-${{ github.ref_name }}
+          path: release-assets
+
+      - name: Recheck downloaded assets
+        working-directory: release-assets
+        run: |
+          sha256sum --check SHA256SUMS
+          sh -n install.sh
+
+      - name: Publish release without replacing assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            echo "Release $GITHUB_REF_NAME already exists; refusing to replace assets." >&2
+            exit 1
+          fi
+          gh release create "$GITHUB_REF_NAME" release-assets/* \
+            --verify-tag \
+            --title "PickerMux $GITHUB_REF_NAME" \
+            --generate-notes

@@ -3,8 +3,8 @@
 Start with deterministic diagnostics:
 
 ```bash
-./bin/pickermux.mjs status
-./bin/pickermux.mjs doctor
+pickermux status
+pickermux doctor
 ```
 
 Use `doctor --live` only when the static checks pass and a real model inference
@@ -15,10 +15,10 @@ is needed.
 1. Confirm that the LM Studio local server is running.
 2. Confirm that the model is loaded as an LLM, not only downloaded.
 3. Check that every loaded instance reports an active context length.
-4. Run `./bin/pickermux.mjs discover`.
+4. Run `pickermux discover`.
 5. Fully quit Codex Desktop with `Command-Q`.
 6. Wait a few seconds for synchronization, then run
-   `./bin/pickermux.mjs refresh` if needed.
+   `pickermux refresh` if needed.
 7. Reopen Codex Desktop.
 
 PickerMux excludes embeddings, unloaded models, malformed IDs, and loaded
@@ -45,17 +45,16 @@ configuration.
 ## `update-required`
 
 The installed runtime no longer matches the verified Codex client and bundled
-catalog contract. Update the PickerMux checkout, then run:
+catalog contract. Rerun the latest-release installer, then run:
 
 ```bash
-./bin/pickermux.mjs refresh
-./bin/pickermux.mjs doctor
+pickermux doctor
 ```
 
 If the account cache is missing or belongs to another client version:
 
 ```bash
-./bin/pickermux.mjs uninstall
+pickermux uninstall
 ```
 
 Then open Codex Desktop once while signed in, fully quit it, and install
@@ -82,7 +81,7 @@ That is the default for every newly discovered external model. Run a live
 certification only when LM Studio and the target model are ready:
 
 ```bash
-./bin/pickermux.mjs certify --model lmstudio/OWNER/MODEL
+pickermux certify --model lmstudio/OWNER/MODEL
 ```
 
 Certification removes any previous pass before probing. If a gate fails or the
@@ -107,6 +106,58 @@ before deciding what should win.
 Use `uninstall --force` only when you have reviewed the conflict and explicitly
 want PickerMux to remove its owned block. The command still targets managed
 artifacts; it does not delete provider Keychain items or backup directories.
+
+## The release installer stops before setup
+
+The installer fails before mutation when macOS, the CPU architecture, Node.js,
+the archive digest, or the archive layout is unsupported. It also refuses root
+execution and will not replace an existing unrecognized
+`~/.local/bin/pickermux` entry.
+
+Read the first reported preflight failure and correct that condition. Do not
+work around it with `sudo`, a disabled checksum, a hand-extracted archive, or
+`uninstall --force`. A digest failure can indicate a damaged or incorrectly
+published release asset and should be reported without executing that asset.
+
+If setup says Codex Desktop is running, use `Command-Q` and retry only after the
+application has fully exited. If model discovery is empty, start the LM Studio
+server and load at least one LLM.
+
+## `pickermux` is not found after installation
+
+The managed launcher is `~/.local/bin/pickermux`. PickerMux does not edit shell
+startup files. Run it by absolute path, or add the directory to your own shell
+configuration and start a new terminal:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+Do not create another system-wide launcher with `sudo`; that file would be
+outside the receipt-owned installation and would not be removed safely.
+
+## Upgrade or downgrade is refused
+
+Rerunning the latest-release installer upgrades only a healthy managed
+installation. Modified, orphaned, or partially installed state fails closed;
+run `pickermux status` and `pickermux doctor` before deciding how to recover.
+
+An implicit downgrade is deliberately refused. If an older version is needed
+for diagnosis, do not overwrite the active installation. Capture diagnostics
+and open an issue describing the compatibility problem instead.
+
+## Complete CLI removal is refused
+
+`pickermux uninstall --remove-cli` removes distribution files only when their
+paths and launcher match the private installation receipt. If that ownership
+check fails, integration uninstall can still restore Codex safely, but the
+unrecognized CLI files are left untouched for manual review. Backups and
+Keychain items remain in either case.
+
+If removal reports a private quarantine-cleanup warning, the integration and
+active CLI have still been removed consistently, and a new installation is not
+blocked. Inspect only the exact quarantine path printed by PickerMux before
+removing that residual directory; never delete its parent directory broadly.
 
 ## Safe diagnostic sharing
 

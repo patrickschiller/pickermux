@@ -170,9 +170,9 @@ contain prompts, responses, or credentials.
 
 ## Installation and rollback
 
-The installer owns only marked Codex configuration fields and explicit files
-under `~/.codex/model-bridge`, plus its named LaunchAgent. It creates a verified
-backup before changing Codex configuration.
+The integration installer owns only marked Codex configuration fields and
+explicit files under `~/.codex/model-bridge`, plus its named LaunchAgent. It
+creates a verified backup before changing Codex configuration.
 
 Install and refresh stage the runtime, catalog, compatibility manifest, service
 configuration, and selection update. The previous runtime package remains
@@ -182,6 +182,28 @@ the doctor all pass. A failure restores the previous files and service state.
 Uninstall restores the verified prior Codex values and removes managed runtime
 artifacts. It intentionally leaves backup directories and provider Keychain
 items alone.
+
+The release installer adds a separate, receipt-governed distribution layer.
+Versioned CLI payloads live below
+`~/Library/Application Support/PickerMux/versions`, an atomically replaced
+`current` link selects the active payload, and `~/.local/bin/pickermux` is the
+user-facing launcher. Setup never overwrites an entry or directory that cannot
+be proven to belong to its private receipt.
+
+Release activation reuses the same integration transaction: a fresh setup runs
+install, while a healthy existing setup runs refresh using its installed
+provider configuration. The distribution pointer is restored if activation
+fails, and download, digest, or archive-validation failures occur before any
+persistent mutation. Concurrent setup and removal are serialized by a private
+installation lock.
+
+Integration uninstall and distribution removal are intentionally distinct.
+`uninstall` restores Codex and removes the bridge runtime; the explicit
+`--remove-cli` option additionally removes only receipt-owned launcher and
+version directories. Owned CLI paths are first moved into a private quarantine;
+only then is the integration removed. A partial quarantine-cleanup failure
+cannot recreate or fragment the active installation and does not block a later
+setup. Neither mode purges backups or Keychain credentials.
 
 ## Compatibility contract
 
@@ -209,3 +231,7 @@ overridden.
 
 The LaunchAgent is stored at
 `~/Library/LaunchAgents/com.local.codex-model-bridge.plist`.
+
+Release-distribution metadata is stored separately below
+`~/Library/Application Support/PickerMux` so CLI version management cannot be
+confused with Codex configuration ownership.

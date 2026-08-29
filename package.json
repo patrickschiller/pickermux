@@ -31,6 +31,7 @@
   "scripts": {
     "test": "node --test",
     "check": "for file in bin/*.mjs src/*.mjs test/*.mjs; do node --check \"$file\"; done",
+    "release:build": "node scripts/build-release.mjs --output dist",
     "verify": "npm run check && npm test"
   },
   "engines": {

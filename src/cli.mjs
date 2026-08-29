@@ -36,6 +36,7 @@ import {
   readCodexCatalog,
   writeCatalogAtomic,
 } from "./catalog.mjs";
+import { isCodexDesktopRunning } from "./codex-desktop-state.mjs";
 import {
   createCatalogSynchronizer,
   hasLoadedModelDiscovery,
@@ -61,8 +62,13 @@ import {
   recordPassedCertification,
 } from "./model-certification.mjs";
 import {
+  removeManagedDistribution,
+  setupManagedDistribution,
+} from "./distribution-installer.mjs";
+import {
   projectRoot,
   resolveCodexBinary,
+  resolveDistributionPaths,
   resolveInstallPaths,
   resolveProjectConfig,
 } from "./paths.mjs";
@@ -82,6 +88,7 @@ import {
   cleanupManagedArtifacts,
   finalizeServicePackage,
 } from "./service-package.mjs";
+import { readPickerMuxMetadata } from "./version.mjs";
 
 const COMMANDS = new Set([
   "build",
@@ -95,8 +102,10 @@ const COMMANDS = new Set([
   "install",
   "refresh",
   "serve",
+  "setup",
   "status",
   "uninstall",
+  "version",
 ]);
 
 function usage() {
@@ -109,11 +118,13 @@ Usage:
   pickermux credential-set PROVIDER [--config PATH]
   pickermux credential-status PROVIDER [--config PATH] [--json]
   pickermux credential-delete PROVIDER [--config PATH]
+  pickermux setup [--config PATH]
   pickermux install [--config PATH] [--json]
   pickermux refresh [--config PATH] [--json]
   pickermux doctor [--config PATH] [--live] [--json]
   pickermux status [--config PATH] [--json]
-  pickermux uninstall [--force] [--json]
+  pickermux uninstall [--force] [--remove-cli] [--json]
+  pickermux version | pickermux --version
 
 The bridge binds only to 127.0.0.1. Native ChatGPT authentication is never
 stored and is stripped before every external request.`;
@@ -122,7 +133,9 @@ stored and is stripped before every external request.`;
 function parseArguments(argv) {
   const command = new Set(["--help", "-h"]).has(argv[0])
     ? "help"
-    : (argv[0] ?? "help");
+    : new Set(["--version", "-v"]).has(argv[0])
+      ? "version"
+      : (argv[0] ?? "help");
   if (!COMMANDS.has(command)) {
     throw new Error(`Unknown command: ${command}\n\n${usage()}`);
   }
@@ -131,7 +144,9 @@ function parseArguments(argv) {
     configPath: undefined,
     outputPath: undefined,
     runtimePath: undefined,
+    distributionRoot: undefined,
     force: false,
+    removeCli: false,
     json: false,
     live: false,
     all: false,
@@ -141,14 +156,16 @@ function parseArguments(argv) {
   for (let index = 1; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === "--force") options.force = true;
+    else if (argument === "--remove-cli") options.removeCli = true;
     else if (argument === "--all") options.all = true;
     else if (argument === "--json") options.json = true;
     else if (argument === "--live") options.live = true;
-    else if (["--config", "--output", "--runtime", "--model"].includes(argument)) {
+    else if (["--config", "--distribution-root", "--output", "--runtime", "--model"].includes(argument)) {
       const value = argv[index + 1];
       if (!value || value.startsWith("--")) throw new Error(`${argument} requires a path`);
       index += 1;
       if (argument === "--config") options.configPath = value;
+      else if (argument === "--distribution-root") options.distributionRoot = value;
       else if (argument === "--output") options.outputPath = value;
       else if (argument === "--runtime") options.runtimePath = value;
       else options.model = value;
@@ -161,6 +178,10 @@ function parseArguments(argv) {
     } else throw new Error(`Unknown option: ${argument}`);
   }
   if (options.force && command !== "uninstall") throw new Error("--force is supported only by uninstall");
+  if (options.removeCli && command !== "uninstall") throw new Error("--remove-cli is supported only by uninstall");
+  if (options.distributionRoot && command !== "setup") {
+    throw new Error("--distribution-root is supported only by setup");
+  }
   if (options.live && command !== "doctor") throw new Error("--live is supported only by doctor");
   if (options.outputPath && command !== "build") throw new Error("--output is supported only by build");
   if (options.runtimePath && command !== "serve") throw new Error("--runtime is supported only by serve");
@@ -401,7 +422,13 @@ async function rollbackInstallation({
   throw new Error(`PickerMux installation failed; all managed changes were rolled back: ${cause.message}`, { cause });
 }
 
-async function install({ config, configPath, paths, codexPath }) {
+async function install({
+  config,
+  configPath,
+  paths,
+  codexPath,
+  sourceRoot = projectRoot,
+}) {
   assertRuntimeCompressionSupport();
   assertPersistentCredentialSupport(config);
   const existing = await getConfigStatus({ configPath: paths.configPath, statePath: paths.statePath });
@@ -446,7 +473,7 @@ async function install({ config, configPath, paths, codexPath }) {
       readOptionalPrivateFile(paths.compatibilityPath),
     ]);
     servicePackage = await stageServicePackage({
-      sourceRoot: projectRoot,
+      sourceRoot,
       installDirectory: paths.installDirectory,
       config,
     });
@@ -568,7 +595,7 @@ export async function restoreRefreshState({
   if (failures.length > 0) throw new AggregateError(failures, "PickerMux refresh rollback failed");
 }
 
-async function refresh({ config, paths, codexPath }) {
+async function refresh({ config, paths, codexPath, sourceRoot = projectRoot }) {
   assertRuntimeCompressionSupport();
   assertPersistentCredentialSupport(config);
   const status = await getConfigStatus({ configPath: paths.configPath, statePath: paths.statePath });
@@ -628,7 +655,7 @@ async function refresh({ config, paths, codexPath }) {
     let servicePackage;
     try {
       servicePackage = await stageServicePackage({
-        sourceRoot: projectRoot,
+        sourceRoot,
         installDirectory: paths.installDirectory,
         config,
       });
@@ -942,42 +969,182 @@ async function cleanupLegacyRuntimePackages(paths, activePackage) {
   return cleanupManagedArtifacts({ runtimeDirectories: legacy });
 }
 
+async function uninstallIntegration({ paths, force }) {
+  const removedConfig = await uninstallConfig({
+    configPath: paths.configPath,
+    statePath: paths.statePath,
+    force,
+  });
+  const service = await stopBridgeService({
+    runtimePath: paths.runtimePath,
+    launchAgentPath: paths.launchAgentPath,
+    launchAgentLabel: paths.launchAgentLabel,
+  });
+  const artifacts = await cleanupManagedArtifacts({
+    managedFiles: [
+      paths.runtimePath,
+      paths.catalogPath,
+      paths.serviceConfigPath,
+      paths.compatibilityPath,
+      paths.certificationPath,
+      paths.logPath,
+    ],
+    runtimeDirectories: await managedRuntimeDirectories(paths),
+  });
+  return { removedConfig, service, artifacts };
+}
+
+export async function setupPickerMux({
+  sourceRoot = projectRoot,
+  setupConfigPath,
+  paths = resolveInstallPaths(),
+  distributionPaths = resolveDistributionPaths(),
+  codexPath = resolveCodexBinary(),
+  setupImpl = setupManagedDistribution,
+  loadConfigImpl = loadBridgeConfig,
+  configStatusImpl = getConfigStatus,
+  desktopRunningImpl = isCodexDesktopRunning,
+  discoverImpl = discoverBridgeModels,
+  installImpl = install,
+  refreshImpl = refresh,
+} = {}) {
+  const initialStatus = await configStatusImpl({
+    configPath: paths.configPath,
+    statePath: paths.statePath,
+  });
+  if (initialStatus.healthy !== true) {
+    throw new Error(
+      `PickerMux setup refuses inconsistent integration state (${initialStatus.status ?? "unknown"})`,
+    );
+  }
+  if (await desktopRunningImpl()) {
+    throw new Error(
+      "PickerMux setup requires Codex Desktop to be fully quit with Command-Q",
+    );
+  }
+  const effectiveConfigPath = setupConfigPath
+    ? path.resolve(setupConfigPath)
+    : initialStatus.installed
+      ? paths.serviceConfigPath
+      : path.join(path.resolve(sourceRoot), "lmstudio-picker.config.json");
+  const preflightConfig = await loadConfigImpl(effectiveConfigPath);
+  const discovery = await discoverImpl({ config: preflightConfig });
+  if (!Array.isArray(discovery?.models) || discovery.models.length === 0) {
+    throw new Error(
+      "PickerMux setup requires LM Studio to be running with at least one loaded external LLM",
+    );
+  }
+
+  return setupImpl({
+    sourceRoot,
+    paths: distributionPaths,
+    async activate({ distributionRoot, previousVersion, version }) {
+      const status = await configStatusImpl({
+        configPath: paths.configPath,
+        statePath: paths.statePath,
+      });
+      if (status.healthy !== true) {
+        throw new Error(
+          `PickerMux setup refuses inconsistent integration state (${status.status ?? "unknown"})`,
+        );
+      }
+      if (status.installed !== initialStatus.installed) {
+        throw new Error("PickerMux integration state changed concurrently during setup");
+      }
+      const config = await loadConfigImpl(effectiveConfigPath);
+      if (status.installed) {
+        const result = await refreshImpl({
+          config,
+          paths,
+          codexPath,
+          sourceRoot: distributionRoot,
+        });
+        return {
+          action: previousVersion === version ? "refresh" : "upgrade",
+          integration: result,
+        };
+      }
+      const result = await installImpl({
+        config,
+        configPath: effectiveConfigPath,
+        paths,
+        codexPath,
+        sourceRoot: distributionRoot,
+      });
+      return { action: "install", integration: result };
+    },
+  });
+}
+
 export async function runCli(argv) {
   const options = parseArguments(argv);
   if (options.command === "help") {
     process.stdout.write(`${usage()}\n`);
     return;
   }
+  if (options.command === "version") {
+    const metadata = await readPickerMuxMetadata(projectRoot);
+    const result = { name: metadata.name, version: metadata.version };
+    process.stdout.write(`pickermux ${metadata.version}\n`);
+    return result;
+  }
   const paths = resolveInstallPaths();
-  if (options.command === "uninstall") {
-    const removedConfig = await uninstallConfig({
-      configPath: paths.configPath,
-      statePath: paths.statePath,
-      force: options.force,
+  if (options.command === "setup") {
+    const distributionPaths = resolveDistributionPaths();
+    const result = await setupPickerMux({
+      sourceRoot: options.distributionRoot
+        ? path.resolve(options.distributionRoot)
+        : projectRoot,
+      setupConfigPath:
+        options.configPath || process.env.PICKERMUX_CONFIG_PATH?.trim()
+          ? resolveProjectConfig(options.configPath)
+          : undefined,
+      paths,
+      distributionPaths,
     });
-    const service = await stopBridgeService({
-      runtimePath: paths.runtimePath,
-      launchAgentPath: paths.launchAgentPath,
-      launchAgentLabel: paths.launchAgentLabel,
-    });
-    const artifacts = await cleanupManagedArtifacts({
-      managedFiles: [
-        paths.runtimePath,
-        paths.catalogPath,
-        paths.serviceConfigPath,
-        paths.compatibilityPath,
-        paths.certificationPath,
-        paths.logPath,
-      ],
-      runtimeDirectories: await managedRuntimeDirectories(paths),
-    });
-    const result = { removedConfig, service, artifacts };
     if (options.json) printJson(result);
-    else process.stdout.write(
-      removedConfig.changed
-        ? "Model bridge removed; previous Codex configuration restored and managed runtime cleaned.\n"
-        : "Managed bridge service and runtime artifacts were removed.\n",
-    );
+    else {
+      process.stdout.write(
+        `PickerMux ${result.version} setup completed (${result.activation.action}).\n`,
+      );
+      process.stdout.write(`Launcher installed at ${result.launcherPath}.\n`);
+      process.stdout.write(
+        "Fully quit and reopen Codex Desktop to reload the mixed model picker.\n",
+      );
+      const pathEntries = (process.env.PATH ?? "").split(path.delimiter);
+      if (!pathEntries.includes(distributionPaths.launcherDirectory)) {
+        process.stdout.write(
+          'Add PickerMux to this shell with: export PATH="$HOME/.local/bin:$PATH"\n',
+        );
+      }
+    }
+    return result;
+  }
+  if (options.command === "uninstall") {
+    const result = options.removeCli
+      ? await removeManagedDistribution({
+          paths: resolveDistributionPaths(),
+          beforeRemove: async () => uninstallIntegration({
+            paths,
+            force: options.force,
+          }),
+        })
+      : await uninstallIntegration({ paths, force: options.force });
+    if (options.json) printJson(result);
+    else {
+      process.stdout.write(
+        options.removeCli
+          ? "Model bridge and receipt-validated PickerMux CLI removed; backups and Keychain credentials were preserved.\n"
+          : result.removedConfig.changed
+            ? "Model bridge removed; previous Codex configuration restored and managed runtime cleaned.\n"
+            : "Managed bridge service and runtime artifacts were removed.\n",
+      );
+      if (options.removeCli && result.removed.cleanupPendingPath) {
+        process.stderr.write(
+          `PickerMux warning: private removal quarantine still requires cleanup at ${result.removed.cleanupPendingPath}. A new installation is not blocked.\n`,
+        );
+      }
+    }
     return result;
   }
   const codexPath = resolveCodexBinary();

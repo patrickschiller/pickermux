@@ -54,6 +54,8 @@ Reports involving any of the following are particularly important:
 - requests escaping the intended loopback or provider allowlist boundary;
 - capability-path disclosure or unauthorized local bridge access;
 - unsafe writes to Codex configuration, backups, or the LaunchAgent runtime;
+- release-installer checksum bypass, unsafe archive extraction, distribution
+  receipt forgery, or replacement of an unrelated user launcher;
 - command execution, path traversal, decompression abuse, or resource
   exhaustion through untrusted requests;
 - certification records enabling tools for a different model or configuration;
@@ -61,3 +63,17 @@ Reports involving any of the following are particularly important:
 
 General hardening ideas without a concrete vulnerability can be proposed with
 the public feature-request form.
+
+## Release installer trust
+
+Official end-user installation assets are attached to versioned releases in
+this repository. The generated installer contains the expected SHA-256 digest
+of its exact payload and validates the archive before extraction. Do not run an
+installer copied from an issue, discussion, fork, mutable branch, or third-party
+download mirror.
+
+The one-line bootstrap still trusts HTTPS, GitHub, and the maintainer account;
+the embedded digest does not make a compromised release publisher trustworthy.
+Users with a stricter threat model should download and inspect `install.sh` and
+the release metadata before executing them. A checksum mismatch is a hard
+failure and must never be bypassed.

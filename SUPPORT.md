@@ -8,10 +8,16 @@ or guaranteed response time.
 1. Read the [README](README.md) and
    [troubleshooting guide](docs/TROUBLESHOOTING.md).
 2. Confirm that you are using the latest release.
-3. Run `pickermux status` and `pickermux doctor`.
-4. Reproduce the issue with the smallest possible configuration.
-5. Remove credentials, account identifiers, cookies, private prompts, local
+3. Record `pickermux --version`.
+4. Run `pickermux status` and `pickermux doctor`.
+5. Reproduce the issue with the smallest possible configuration.
+6. Remove credentials, account identifiers, cookies, private prompts, local
    usernames, capability paths, and unrelated file paths from all output.
+
+For installer failures, also state whether the failure occurred during
+preflight, download, checksum verification, archive validation, or setup. Never
+upload the private installation receipt or bypass a failed checksum to obtain
+more diagnostic output.
 
 ## Where to go
 

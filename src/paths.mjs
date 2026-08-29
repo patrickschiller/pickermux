@@ -8,9 +8,20 @@ export const projectRoot = path.resolve(
   "..",
 );
 
+export function resolveUserHome(environment = process.env) {
+  const configured = environment.HOME?.trim();
+  const resolved = path.resolve(configured || homedir());
+  if (resolved === path.parse(resolved).root) {
+    throw new Error("The user home directory must not be a filesystem root");
+  }
+  return resolved;
+}
+
 export function resolveCodexHome(environment = process.env) {
   const configured = environment.CODEX_HOME?.trim();
-  return configured ? path.resolve(configured) : path.join(homedir(), ".codex");
+  return configured
+    ? path.resolve(configured)
+    : path.join(resolveUserHome(environment), ".codex");
 }
 
 export function resolveCodexBinary(environment = process.env) {
@@ -23,16 +34,23 @@ export function resolveCodexBinary(environment = process.env) {
   return existsSync(embedded) ? embedded : "codex";
 }
 
-export function resolveProjectConfig(configPath) {
+export function resolveProjectConfig(configPath, environment = process.env) {
+  const configured = environment.PICKERMUX_CONFIG_PATH?.trim();
   return configPath
     ? path.resolve(configPath)
-    : path.join(projectRoot, "lmstudio-picker.config.json");
+    : configured
+      ? path.resolve(configured)
+      : path.join(projectRoot, "lmstudio-picker.config.json");
 }
 
 export function resolveInstallPaths(environment = process.env) {
   const codexHome = resolveCodexHome(environment);
   const installDirectory = path.join(codexHome, "model-bridge");
-  const launchAgentsDirectory = path.join(homedir(), "Library", "LaunchAgents");
+  const launchAgentsDirectory = path.join(
+    resolveUserHome(environment),
+    "Library",
+    "LaunchAgents",
+  );
   const launchAgentLabel = "com.local.codex-model-bridge";
   return {
     codexHome,
@@ -49,5 +67,31 @@ export function resolveInstallPaths(environment = process.env) {
     logPath: path.join(installDirectory, "bridge.log"),
     launchAgentLabel,
     launchAgentPath: path.join(launchAgentsDirectory, `${launchAgentLabel}.plist`),
+  };
+}
+
+export function resolveDistributionPaths(environment = process.env) {
+  const userHome = resolveUserHome(environment);
+  const codexHome = resolveCodexHome(environment);
+  const applicationDirectory = path.join(
+    userHome,
+    "Library",
+    "Application Support",
+    "PickerMux",
+  );
+  return {
+    userHome,
+    applicationDirectory,
+    versionsDirectory: path.join(applicationDirectory, "versions"),
+    currentPath: path.join(applicationDirectory, "current"),
+    receiptPath: path.join(applicationDirectory, "install-receipt.json"),
+    lockPath: path.join(applicationDirectory, ".setup.lock"),
+    launcherDirectory: path.join(userHome, ".local", "bin"),
+    launcherPath: path.join(userHome, ".local", "bin", "pickermux"),
+    installedConfigPath: path.join(
+      codexHome,
+      "model-bridge",
+      "service-config.json",
+    ),
   };
 }

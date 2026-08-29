@@ -2,11 +2,27 @@
 
 PickerMux reads `lmstudio-picker.config.json` from the project root by default.
 Pass `--config PATH` to use another file for commands that load project
-configuration.
+configuration. The managed release launcher points ordinary operational
+commands at the installed service configuration, so it continues using the
+configuration that was activated rather than silently replacing it during an
+upgrade.
 
 The schema is intentionally narrow. Unknown keys, inline secrets, ambiguous
 credential sources, wildcard model entries, and configurable native Codex
 destinations are rejected.
+
+For a first release installation with a custom configuration, pass the path to
+the shell that executes the installer:
+
+```bash
+/usr/bin/curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://github.com/patrickschiller/pickermux/releases/latest/download/install.sh | PICKERMUX_CONFIG_PATH=/absolute/path/to/pickermux.config.json /bin/sh
+```
+
+The assignment belongs on the `/bin/sh` side of the pipeline. `setup` validates
+the custom file and requires its external provider to expose at least one LLM
+before creating the managed distribution. The activated contents are copied to
+PickerMux's private service configuration; later upgrades reuse that copy and
+do not replace it with a new release default.
 
 ## Default LM Studio configuration
 
@@ -128,7 +144,7 @@ installing:
 
 ```bash
 curl http://100.64.0.10:1234/api/v1/models
-./bin/pickermux.mjs discover
+pickermux discover --config /path/to/pickermux.config.json
 ```
 
 Use a stable `.ts.net` MagicDNS name instead of an IP when appropriate.
@@ -165,8 +181,8 @@ Persistent services should use the macOS Keychain:
 Store and inspect the credential without putting it on the command line:
 
 ```bash
-./bin/pickermux.mjs credential-set vendor
-./bin/pickermux.mjs credential-status vendor
+pickermux credential-set vendor
+pickermux credential-status vendor
 ```
 
 `credential-set` delegates interactive secret capture to `/usr/bin/security`.
@@ -174,18 +190,23 @@ Status output reports only `available` or `missing`.
 
 ## Applying configuration changes
 
-If the provider identity and managed bridge contract remain compatible, run:
+If the provider identity and managed bridge contract remain compatible, apply
+the edited source file explicitly:
 
 ```bash
-./bin/pickermux.mjs refresh
+pickermux refresh --config /absolute/path/to/pickermux.config.json
 ```
+
+Without `--config`, the installed launcher intentionally reuses PickerMux's
+private service-configuration copy rather than rereading the original source
+file.
 
 If PickerMux reports that the installed configuration differs from the project
 configuration, use the explicit lifecycle:
 
 ```bash
-./bin/pickermux.mjs uninstall
-./bin/pickermux.mjs install
+pickermux uninstall
+pickermux setup --config /absolute/path/to/pickermux.config.json
 ```
 
 Fully quit and reopen Codex Desktop after a successful install, refresh, or

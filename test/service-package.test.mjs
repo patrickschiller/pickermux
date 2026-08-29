@@ -26,10 +26,20 @@ test("stages a self-contained private runtime outside the source tree", async (t
   await mkdir(path.join(source, "src"), { recursive: true });
   await writeFile(path.join(source, "bin", "tool.mjs"), "#!/usr/bin/env node\n");
   await writeFile(path.join(source, "src", "main.mjs"), "export const ok = true;\n");
+  await writeFile(path.join(source, "package.json"), '{"name":"pickermux","version":"0.4.0"}\n');
+  await writeFile(path.join(source, "lmstudio-picker.config.json"), '{"schemaVersion":2}\n');
 
   const config = { schemaVersion: 2, bridge: { host: "127.0.0.1" }, providers: [] };
   const first = await stageServicePackage({ sourceRoot: source, installDirectory: install, config });
   assert.equal(await readFile(path.join(first.serviceDirectory, "src", "main.mjs"), "utf8"), "export const ok = true;\n");
+  assert.equal(
+    JSON.parse(await readFile(path.join(first.serviceDirectory, "package.json"), "utf8")).version,
+    "0.4.0",
+  );
+  assert.equal(
+    JSON.parse(await readFile(path.join(first.serviceDirectory, "lmstudio-picker.config.json"), "utf8")).schemaVersion,
+    2,
+  );
   assert.deepEqual(JSON.parse(await readFile(first.serviceConfigPath, "utf8")), config);
   assert.equal((await stat(first.serviceConfigPath)).mode & 0o777, 0o600);
 
@@ -131,6 +141,8 @@ test("private snapshots and staged runtime package can be rolled back exactly", 
   await mkdir(path.join(source, "src"), { recursive: true });
   await writeFile(path.join(source, "bin", "tool.mjs"), "#!/usr/bin/env node\n");
   await writeFile(path.join(source, "src", "main.mjs"), "export const version = 1;\n");
+  await writeFile(path.join(source, "package.json"), '{"name":"pickermux","version":"0.4.0"}\n');
+  await writeFile(path.join(source, "lmstudio-picker.config.json"), '{"schemaVersion":2}\n');
   const firstConfig = { version: 1 };
   await stageServicePackage({ sourceRoot: source, installDirectory: install, config: firstConfig });
 

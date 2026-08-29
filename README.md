@@ -26,6 +26,101 @@ Desktop.*
 PickerMux is an unofficial community project. It is not affiliated with,
 endorsed by, or supported by OpenAI, Codex, or LM Studio.
 
+## Requirements
+
+- macOS on Apple silicon or Intel;
+- Codex Desktop installed, opened once while signed in, and then fully quit;
+- LM Studio with its local server enabled and at least one LLM loaded;
+- Node.js 22.15.0 or newer with native Zstandard support;
+- a current account model cache created by the installed Codex Desktop build.
+
+PickerMux is macOS-specific because it uses LaunchAgents, LaunchServices, and
+the macOS Keychain. The installer runs entirely as the current user: it neither
+uses `sudo` nor edits shell startup files.
+
+## Install
+
+After satisfying the requirements above, install the latest release with one
+command:
+
+```bash
+/usr/bin/curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://github.com/patrickschiller/pickermux/releases/latest/download/install.sh | /bin/sh
+```
+
+The release installer downloads an exact versioned archive, verifies its
+embedded SHA-256 digest, rejects unsafe archive entries, and then hands off to
+PickerMux's transactional setup lifecycle. It stores versioned CLI files below
+`~/Library/Application Support/PickerMux` and exposes the command as
+`~/.local/bin/pickermux`.
+
+If `~/.local/bin` is not already in `PATH`, the installer prints the exact
+one-time shell configuration needed. It does not change `.zprofile`, `.zshrc`,
+or another shell file automatically. Until then, use the absolute command path.
+
+For a reproducible installation, replace `latest` with an exact release:
+
+```bash
+/usr/bin/curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://github.com/patrickschiller/pickermux/releases/download/v0.4.0/install.sh | /bin/sh
+```
+
+Both one-line forms execute code downloaded from GitHub. The archive checksum
+protects against corruption or asset substitution after the installer starts,
+but the bootstrap still trusts HTTPS, GitHub, and the maintainer account. To
+review it first, download `install.sh`, inspect it locally, and execute the saved
+file only after you are satisfied.
+
+Reopen Codex Desktop after setup. The mixed catalog is loaded only at process
+startup, so closing a window is not enough: use **Codex > Quit Codex** or press
+`Command-Q` before reopening it.
+
+The included configuration expects LM Studio at
+`http://127.0.0.1:1234/v1`. To use a trusted remote Mac over Tailscale or add
+another Responses-compatible provider, create the custom configuration first
+and follow the managed setup procedure in
+[Configuration](docs/CONFIGURATION.md).
+
+## Verify the installation
+
+```bash
+pickermux --version
+pickermux status
+pickermux doctor
+```
+
+`doctor` is deterministic and does not submit a model prompt. Use
+`pickermux doctor --live` only when you intentionally want a real LM Studio
+inference check.
+
+## Daily workflow
+
+1. Start the LM Studio server and load the LLMs you want to expose.
+2. Run `pickermux refresh`.
+3. Fully quit and reopen Codex Desktop.
+4. Select the namespaced LM Studio model from the normal Codex model picker.
+
+## Upgrade and uninstall
+
+PickerMux never updates silently. Run the same latest-release installer again
+to stage and activate a newer version. A healthy installation is refreshed
+transactionally; failed activation restores the previous CLI and bridge state.
+The same version is safe to run again, while an implicit downgrade is refused.
+
+Remove only the Codex integration, LaunchAgent, and managed runtime with:
+
+```bash
+pickermux uninstall
+```
+
+To remove the integration and the receipt-owned CLI distribution as well, use:
+
+```bash
+pickermux uninstall --remove-cli
+```
+
+Verified configuration backups and provider credentials in the macOS Keychain
+are deliberately retained in both cases. PickerMux never removes unrecognized
+launcher files or distribution paths.
+
 ## Why PickerMux
 
 Running a model in LM Studio is straightforward. Using it repeatedly inside
@@ -76,43 +171,12 @@ a newly constructed header set.
 See [Architecture](docs/ARCHITECTURE.md) for the complete trust boundary,
 catalog lifecycle, request normalization, and certification design.
 
-## Requirements
-
-- macOS;
-- Codex Desktop installed and signed in;
-- LM Studio with its local server enabled and at least one LLM loaded;
-- Node.js 22.15.0 or newer with native Zstandard support;
-- a current account model cache created by the installed Codex Desktop build.
-
-PickerMux is macOS-specific because it uses LaunchAgents, LaunchServices, and
-the macOS Keychain.
-
-## Quick start
-
-First, open Codex Desktop once while signed in, then fully quit it. In LM Studio,
-start the local server and load the model or models you want to expose.
-
-```bash
-git clone https://github.com/patrickschiller/pickermux.git
-cd pickermux
-
-npm run verify
-./bin/pickermux.mjs discover
-./bin/pickermux.mjs install
-```
-
-Reopen Codex Desktop after the installation. The mixed catalog is loaded only
-at process startup, so a window close is not enough: use **Codex > Quit Codex**
-or press `Command-Q` before reopening it.
-
-The included configuration expects LM Studio at
-`http://127.0.0.1:1234/v1`. To use a trusted remote Mac over Tailscale or to add
-another Responses-compatible provider, see [Configuration](docs/CONFIGURATION.md).
-
 ## Commands
 
 | Command | Purpose |
 | --- | --- |
+| `pickermux --version` | Print the exact PickerMux release version. |
+| `pickermux setup [--config PATH]` | Install a fresh release or transactionally activate it over a healthy installation. |
 | `pickermux discover` | List external models that are safe to publish from the current provider state. |
 | `pickermux build` | Build and validate a mixed catalog without installing it. |
 | `pickermux install` | Install the catalog, managed Codex configuration, and per-user bridge service. |
@@ -126,12 +190,13 @@ another Responses-compatible provider, see [Configuration](docs/CONFIGURATION.md
 | `pickermux credential-status PROVIDER` | Report only whether a provider credential is available. |
 | `pickermux credential-delete PROVIDER` | Delete the named provider's Keychain item. |
 | `pickermux uninstall` | Restore the previous Codex configuration and remove managed runtime files. |
+| `pickermux uninstall --remove-cli` | Also remove only the receipt-owned CLI launcher and versioned distribution. |
 
 Run `pickermux help`, `pickermux --help`, or `pickermux -h` for the compact CLI
 reference. `bin/lmstudio-picker.mjs` remains available as a compatibility alias.
 
-When running directly from a clone, replace `pickermux` with
-`./bin/pickermux.mjs` as shown in the quick start.
+When running directly from a development clone, replace `pickermux` with
+`./bin/pickermux.mjs`.
 
 ## Model discovery
 
@@ -159,7 +224,7 @@ behavior. A pass receipt is bound to the provider, model, context, capability
 metadata, and Codex client version.
 
 ```bash
-./bin/pickermux.mjs certify --model lmstudio/qwen/qwen3.8-27b
+pickermux certify --model lmstudio/qwen/qwen3.8-27b
 ```
 
 If any bound property changes, the receipt becomes stale and the model falls
@@ -183,6 +248,8 @@ proxy.
   closed.
 - Configuration changes, catalogs, compatibility data, service files, and
   rollback state are written privately and transactionally.
+- Release payloads are versioned, checksum-verified, and extracted only after
+  unsafe paths and file types have been rejected.
 
 Read [SECURITY.md](SECURITY.md) before reporting a vulnerability or sharing
 diagnostic output.
@@ -192,14 +259,14 @@ diagnostic output.
 Run:
 
 ```bash
-./bin/pickermux.mjs status
-./bin/pickermux.mjs doctor
+pickermux status
+pickermux doctor
 ```
 
-If compatibility is reported as `update-required`, refresh the project and
-installed runtime before continuing. If the Codex account cache no longer
-matches the installed client, uninstall PickerMux, launch and fully quit Codex
-once without the override, then install PickerMux again. This lets Codex refresh
+If compatibility is reported as `update-required`, rerun the latest-release
+installer before continuing. If the Codex account cache no longer matches the
+installed client, uninstall the PickerMux integration, launch and fully quit
+Codex once without the override, then run setup again. This lets Codex refresh
 its own account-visible catalog first.
 
 See [Troubleshooting](docs/TROUBLESHOOTING.md) for recovery procedures and
@@ -221,16 +288,29 @@ redaction guidance.
 
 ## Development
 
+For an auditable development installation from a clone:
+
+```bash
+git clone https://github.com/patrickschiller/pickermux.git
+cd pickermux
+npm run verify
+./bin/pickermux.mjs discover
+./bin/pickermux.mjs install
+```
+
+The clone remains the source for these direct commands; use the release
+installer for the managed, versioned end-user CLI.
+
 ```bash
 npm test
 npm run check
 npm run verify
 ```
 
-The v0.4.0 publication baseline contains 203 automated tests across catalog
-construction, routing, credential isolation, lifecycle rollback, discovery,
-tool normalization, and compatibility handling. CI runs on macOS with Node.js
-22.15, 24, and 26.
+Automated coverage includes catalog construction, routing, credential
+isolation, lifecycle rollback, release packaging, installer failures,
+discovery, tool normalization, and compatibility handling. CI runs on macOS
+with Node.js 22.15, 24, and 26.
 
 Contributions are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md), follow
 the [Code of Conduct](CODE_OF_CONDUCT.md), and use [SUPPORT.md](SUPPORT.md) to

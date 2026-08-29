@@ -143,6 +143,12 @@ export async function stageServicePackage({ sourceRoot, installDirectory, config
       force: false,
       errorOnExist: true,
     });
+    for (const fileName of ["package.json", "lmstudio-picker.config.json"]) {
+      await cp(path.join(source, fileName), path.join(staging, fileName), {
+        force: false,
+        errorOnExist: true,
+      });
+    }
     if (await exists(destination)) {
       previousPath = `${destination}.previous-${Date.now()}-${randomBytes(4).toString("hex")}`;
       await rename(destination, previousPath);

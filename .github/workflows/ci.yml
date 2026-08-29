@@ -27,15 +27,64 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Node.js ${{ matrix.node }}
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ matrix.node }}
 
-      - name: Run test suite
-        run: npm test
+      - name: Verify source and tests
+        run: npm run verify
 
-      - name: Check JavaScript syntax
-        run: npm run check
+  release-assets:
+    name: Installer and release artifacts
+    runs-on: macos-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js 22.15
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.15.0
+
+      - name: Run installer and release tests
+        run: node --test test/installer.test.mjs test/release-build.test.mjs
+
+      - name: Check installer template syntax
+        run: sh -n scripts/install.sh.in
+
+      - name: Build release assets twice
+        shell: bash
+        run: |
+          node scripts/build-release.mjs --output "$RUNNER_TEMP/pickermux-release-first"
+          node scripts/build-release.mjs --output "$RUNNER_TEMP/pickermux-release-second"
+
+      - name: Verify reproducibility, checksums, and generated shell syntax
+        shell: bash
+        run: |
+          version="$(node -p 'JSON.parse(require("fs").readFileSync("package.json", "utf8")).version')"
+          archive="pickermux-v${version}.tar.gz"
+          for asset in "$archive" install.sh release-manifest.json SHA256SUMS; do
+            cmp "$RUNNER_TEMP/pickermux-release-first/$asset" "$RUNNER_TEMP/pickermux-release-second/$asset"
+          done
+          cd "$RUNNER_TEMP/pickermux-release-first"
+          shasum -a 256 --check SHA256SUMS
+          sh -n install.sh
+
+      - name: Extract archive and smoke-test CLI
+        shell: bash
+        run: |
+          version="$(node -p 'JSON.parse(require("fs").readFileSync("package.json", "utf8")).version')"
+          extraction="$RUNNER_TEMP/pickermux-release-smoke"
+          mkdir "$extraction"
+          tar -xzf "$RUNNER_TEMP/pickermux-release-first/pickermux-v${version}.tar.gz" -C "$extraction"
+          test "$(node "$extraction/bin/pickermux.mjs" --version)" = "pickermux $version"
+          node "$extraction/bin/pickermux.mjs" help > /dev/null

@@ -7,6 +7,7 @@ npm-debug.log*
 !.env.example
 coverage/
 *.log
+/dist/
 
 # Private implementation and validation records. Never publish these files.
 /IMPLEMENTIERUNGSVORSCHLAG.md

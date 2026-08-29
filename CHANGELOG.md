@@ -30,6 +30,11 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
   no longer available.
 - Automated tests and syntax checks across supported Node.js releases on
   macOS.
+- A one-line, versioned GitHub Release installer with a persistent user-local
+  CLI, idempotent setup, explicit upgrades, version reporting, and safe
+  distribution removal.
+- Deterministic release archives, generated checksums, and automated release
+  publication gates.
 
 ### Security
 
@@ -39,6 +44,9 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
   targets are rejected by configuration validation.
 - Certification evidence is bound to model, provider, capability, context, and
   client-version metadata so stale evidence cannot silently enable tools.
+- Release setup verifies an embedded SHA-256 digest, rejects unsafe archive
+  paths and file types, refuses root execution and foreign launchers, and
+  restores the previous distribution state when activation fails.
 
 [Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.4.0...HEAD
 [0.4.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.4.0

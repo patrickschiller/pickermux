@@ -1,0 +1,97 @@
+#!/bin/sh
+
+set -eu
+umask 077
+LC_ALL=C
+export LC_ALL
+
+version='__PICKERMUX_VERSION__'
+archive='__PICKERMUX_ARCHIVE__'
+expected_sha256='__PICKERMUX_SHA256__'
+repository='https://github.com/patrickschiller/pickermux'
+
+fail() {
+  printf '%s\n' "pickermux installer: $*" >&2
+  exit 1
+}
+
+[ "$(/usr/bin/id -u)" -ne 0 ] || fail 'do not run this installer as root or with sudo'
+[ "$(/usr/bin/uname -s)" = 'Darwin' ] || fail 'PickerMux supports macOS only'
+
+machine_architecture=$(/usr/bin/uname -m)
+case "$machine_architecture" in
+  arm64|x86_64) ;;
+  *) fail "unsupported macOS architecture: $machine_architecture" ;;
+esac
+
+command -v node >/dev/null 2>&1 || fail 'Node.js 22.15.0 or newer is required'
+
+node -e '
+  const parts = process.versions.node.split(".").map(Number);
+  const supported =
+    parts[0] > 22 ||
+    (parts[0] === 22 && (parts[1] > 15 || (parts[1] === 15 && parts[2] >= 0)));
+  if (!supported) process.exit(1);
+' || fail "Node.js 22.15.0 or newer is required; found $(node --version)"
+
+[ "$archive" = "pickermux-v$version.tar.gz" ] || fail 'release archive name is inconsistent'
+case "$expected_sha256" in
+  *[!0-9a-f]*|'') fail 'release archive SHA-256 is invalid' ;;
+esac
+[ "${#expected_sha256}" -eq 64 ] || fail 'release archive SHA-256 is invalid'
+
+temporary_directory=$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/pickermux-installer.XXXXXXXX")
+cleanup() {
+  /bin/rm -rf "$temporary_directory"
+}
+trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
+
+archive_path="$temporary_directory/$archive"
+release_url="$repository/releases/download/v$version/$archive"
+/usr/bin/curl --proto '=https' --proto-redir '=https' --tlsv1.2 \
+  --connect-timeout 15 --max-time 300 --retry 3 --retry-delay 1 \
+  --fail --silent --show-error --location \
+  --output "$archive_path" "$release_url"
+
+actual_sha256=$(/usr/bin/shasum -a 256 "$archive_path" | /usr/bin/awk '{ print $1 }')
+[ "$actual_sha256" = "$expected_sha256" ] || fail 'release archive checksum mismatch'
+
+listing_path="$temporary_directory/archive.list"
+verbose_listing_path="$temporary_directory/archive.verbose.list"
+/usr/bin/tar -tzf "$archive_path" >"$listing_path" || fail 'release archive cannot be listed'
+/usr/bin/tar -tvzf "$archive_path" >"$verbose_listing_path" || fail 'release archive types cannot be inspected'
+
+while IFS= read -r entry; do
+  normalized_entry=${entry#./}
+  [ -n "$normalized_entry" ] || continue
+  case "$normalized_entry" in
+    /*|..|../*|*/../*|*/..) fail "unsafe archive path: $entry" ;;
+  esac
+done <"$listing_path"
+
+while IFS=' ' read -r mode remainder; do
+  [ -n "$mode" ] || continue
+  case "$mode" in
+    d*|-*) ;;
+    *) fail 'release archive contains a link or unsupported file type' ;;
+  esac
+done <"$verbose_listing_path"
+
+extract_directory="$temporary_directory/extracted"
+/bin/mkdir "$extract_directory"
+/usr/bin/tar -xzf "$archive_path" -C "$extract_directory" || fail 'release archive extraction failed'
+
+[ -d "$extract_directory/bin" ] || fail 'release archive is missing bin/'
+[ -d "$extract_directory/src" ] || fail 'release archive is missing src/'
+[ -f "$extract_directory/bin/pickermux.mjs" ] || fail 'release archive is missing the CLI entry point'
+[ -f "$extract_directory/package.json" ] || fail 'release archive is missing package.json'
+[ -f "$extract_directory/lmstudio-picker.config.json" ] || fail 'release archive is missing the default configuration'
+[ -f "$extract_directory/LICENSE" ] || fail 'release archive is missing LICENSE'
+[ -f "$extract_directory/release-manifest.json" ] || fail 'release archive is missing release-manifest.json'
+
+symlink_count=$(/usr/bin/find "$extract_directory" -type l -print | /usr/bin/wc -l | /usr/bin/tr -d '[:space:]')
+[ "$symlink_count" -eq 0 ] || fail 'release archive extracted symbolic links'
+
+node "$extract_directory/bin/pickermux.mjs" setup \
+  --distribution-root "$extract_directory"
