@@ -10,6 +10,7 @@ import {
   loadBridgeConfig,
   validateBridgeConfig,
 } from "../src/bridge-config.mjs";
+import { AUTO_MODEL_SLUG } from "../src/smart-routing-constants.mjs";
 
 function validConfig() {
   return {
@@ -64,6 +65,17 @@ function validConfig() {
   };
 }
 
+function enabledSmartRouting(overrides = {}) {
+  return {
+    enabled: true,
+    localModel: "lmstudio/qwen/qwen3.8-27b",
+    fallbackModel: "gpt-5.6-sol",
+    maxLocalInputTokens: 18_000,
+    complexityThreshold: 3,
+    ...overrides,
+  };
+}
+
 test("normalizes a strict schema-v2 bridge config without secrets", () => {
   const normalized = validateBridgeConfig(validConfig());
   assert.equal(normalized.schemaVersion, 2);
@@ -74,7 +86,204 @@ test("normalizes a strict schema-v2 bridge config without secrets", () => {
     mode: "allowlist",
     maxModels: 64,
   });
+  assert.deepEqual(normalized.smartRouting, {
+    enabled: false,
+    fallbackModel: "gpt-5.6-sol",
+    maxLocalInputTokens: 16_384,
+    complexityThreshold: 3,
+  });
   assert.equal(JSON.stringify(normalized).includes("Bearer "), false);
+});
+
+test("normalizes omitted, disabled, and enabled smart routing without mutation", () => {
+  const omitted = validConfig();
+  const omittedBefore = structuredClone(omitted);
+  const normalizedOmitted = validateBridgeConfig(omitted);
+  assert.deepEqual(omitted, omittedBefore);
+  assert.notEqual(normalizedOmitted, omitted);
+  assert.notEqual(normalizedOmitted.bridge, omitted.bridge);
+  assert.notEqual(normalizedOmitted.providers, omitted.providers);
+  assert.deepEqual(normalizedOmitted.smartRouting, {
+    enabled: false,
+    fallbackModel: omitted.bridge.defaultModel,
+    maxLocalInputTokens: 16_384,
+    complexityThreshold: 3,
+  });
+
+  const disabled = validConfig();
+  disabled.smartRouting = { enabled: false };
+  assert.deepEqual(validateBridgeConfig(disabled).smartRouting, {
+    enabled: false,
+    fallbackModel: disabled.bridge.defaultModel,
+    maxLocalInputTokens: 16_384,
+    complexityThreshold: 3,
+  });
+
+  const enabled = validConfig();
+  enabled.smartRouting = enabledSmartRouting({ fallbackModel: undefined });
+  const enabledBefore = structuredClone(enabled);
+  assert.deepEqual(validateBridgeConfig(enabled).smartRouting, {
+    enabled: true,
+    localModel: "lmstudio/qwen/qwen3.8-27b",
+    fallbackModel: enabled.bridge.defaultModel,
+    maxLocalInputTokens: 18_000,
+    complexityThreshold: 3,
+  });
+  assert.deepEqual(enabled, enabledBefore);
+});
+
+test("rejects malformed smart-routing objects and unknown properties", () => {
+  for (const smartRouting of [null, [], "enabled"]) {
+    const config = validConfig();
+    config.smartRouting = smartRouting;
+    assert.throws(() => validateBridgeConfig(config), /must be a JSON object/u);
+  }
+
+  const unknown = validConfig();
+  unknown.smartRouting = { enabled: false, strategy: "local-first-v2" };
+  assert.throws(
+    () => validateBridgeConfig(unknown),
+    /unsupported property strategy/u,
+  );
+
+  const nonBoolean = validConfig();
+  nonBoolean.smartRouting = { enabled: "true" };
+  assert.throws(() => validateBridgeConfig(nonBoolean), /must be a boolean/u);
+});
+
+test("requires an exact configured LM Studio local model when smart routing is enabled", () => {
+  const missing = validConfig();
+  missing.smartRouting = { enabled: true };
+  assert.throws(() => validateBridgeConfig(missing), /localModel is required/u);
+
+  for (const localModel of ["qwen", "lmstudio/", AUTO_MODEL_SLUG]) {
+    const config = validConfig();
+    config.smartRouting = enabledSmartRouting({ localModel });
+    assert.throws(
+      () => validateBridgeConfig(config),
+      /provider-namespaced|must not be pickermux\/auto/u,
+    );
+  }
+
+  for (const localModel of ["missing/model", "vendor/reasoning-v2"]) {
+    const config = validConfig();
+    config.smartRouting = enabledSmartRouting({ localModel });
+    assert.throws(
+      () => validateBridgeConfig(config),
+      /configured lmstudio-responses provider/u,
+    );
+  }
+
+  const absentFromAllowlist = validConfig();
+  absentFromAllowlist.smartRouting = enabledSmartRouting({
+    localModel: "lmstudio/not-allowlisted",
+  });
+  assert.throws(
+    () => validateBridgeConfig(absentFromAllowlist),
+    /not in provider lmstudio's allowlist/u,
+  );
+
+  const loaded = validConfig();
+  loaded.providers[0].discovery = { mode: "loaded", maxModels: 32 };
+  loaded.smartRouting = enabledSmartRouting({
+    localModel: "lmstudio/not-currently-loaded",
+  });
+  assert.equal(
+    validateBridgeConfig(loaded).smartRouting.localModel,
+    "lmstudio/not-currently-loaded",
+  );
+});
+
+test("validates the native smart-routing fallback even while disabled", () => {
+  for (const fallbackModel of ["", "lmstudio/qwen", AUTO_MODEL_SLUG]) {
+    const config = validConfig();
+    config.smartRouting = { enabled: false, fallbackModel };
+    assert.throws(
+      () => validateBridgeConfig(config),
+      /non-empty single line|native model slug|must not be pickermux\/auto/u,
+    );
+  }
+
+  const sameCandidate = validConfig();
+  sameCandidate.smartRouting = enabledSmartRouting({
+    fallbackModel: "lmstudio/qwen/qwen3.8-27b",
+  });
+  assert.throws(
+    () => validateBridgeConfig(sameCandidate),
+    /native model slug|must not equal/u,
+  );
+});
+
+test("validates bounded smart-routing numeric controls even while disabled", () => {
+  for (const maxLocalInputTokens of [1_023, 1_048_577, 1.5]) {
+    const config = validConfig();
+    config.smartRouting = { enabled: false, maxLocalInputTokens };
+    assert.throws(
+      () => validateBridgeConfig(config),
+      /maxLocalInputTokens.*between 1024 and 1048576/u,
+    );
+  }
+
+  for (const complexityThreshold of [0, 11, 1.5]) {
+    const config = validConfig();
+    config.smartRouting = { enabled: false, complexityThreshold };
+    assert.throws(
+      () => validateBridgeConfig(config),
+      /complexityThreshold.*between 1 and 10/u,
+    );
+  }
+});
+
+test("reserves the synthetic Auto slug from configured providers", () => {
+  for (const slug of [AUTO_MODEL_SLUG, "pickermux/Auto", "PICKERMUX/AUTO"]) {
+    const config = validConfig();
+    config.providers = [
+      {
+        id: "pickermux",
+        kind: "lmstudio-responses",
+        baseUrl: "http://127.0.0.1:1234/v1",
+        allowPrivateNetwork: true,
+        models: [
+          {
+            id: "auto",
+            slug,
+            displayName: "Collision",
+          },
+        ],
+      },
+    ];
+    assert.throws(
+      () => validateBridgeConfig(config),
+      /reserved by PickerMux/u,
+      slug,
+    );
+  }
+});
+
+test("loaded smart-routing candidates use discoverable LM Studio model ids", () => {
+  for (const localModel of [
+    "lmstudio/contains space",
+    "lmstudio/*",
+    "lmstudio/line\u2028separator",
+  ]) {
+    const config = validConfig();
+    config.providers = [
+      {
+        ...config.providers[0],
+        discovery: { mode: "loaded", maxModels: 32 },
+        models: [],
+      },
+    ];
+    config.smartRouting = {
+      enabled: false,
+      localModel,
+    };
+    assert.throws(
+      () => validateBridgeConfig(config),
+      /valid loaded LM Studio model id/u,
+      localModel,
+    );
+  }
 });
 
 test("accepts a Keychain reference and rejects ambiguous credential sources", () => {

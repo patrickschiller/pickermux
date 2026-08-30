@@ -45,28 +45,40 @@ configuration.
 ## `update-required`
 
 The installed runtime no longer matches the verified Codex client and bundled
-catalog contract. Rerun the latest-release installer, then run:
+catalog contract. Rerun the latest-release installer. Setup checks the Codex
+account cache before staging the downloaded CLI, checks it again under the
+installation lock before committing CLI controls, and checks it once more
+immediately before integration activation. A missing, malformed, or
+version-mismatched cache stops before active PickerMux state changes.
+
+After a successful setup, run:
 
 ```bash
 pickermux doctor
 ```
 
-If the account cache is missing or belongs to another client version:
+If setup reports that the account cache needs a refresh and PickerMux is still
+installed:
 
 ```bash
 pickermux uninstall
 ```
 
-Then open Codex Desktop once while signed in, fully quit it, and install
-PickerMux again. This refreshes account visibility through Codex before the new
-mixed catalog is created.
+Then open Codex Desktop while signed in, wait for its native model picker to
+load, fully quit it with `Command-Q`, and install PickerMux again. Reuse the
+same `--config PATH` for a custom provider configuration. If PickerMux was
+already uninstalled, skip the uninstall step. Never delete `models_cache.json`
+or `auth.json` as a workaround.
 
 ## LM Studio was stopped and local models disappeared
 
 This is expected in `loaded` mode. A refused connection means the local server
-is deliberately unavailable, so PickerMux publishes a native-only catalog. If
-the selected model was local, the managed selection returns to the configured
-native fallback.
+is deliberately unavailable, so PickerMux removes the loaded external entries.
+Native models remain. When Auto Smart Routing is enabled, `pickermux/auto` also
+remains visible and routes to its configured native fallback. An Auto selection
+is not reconciled away merely because its local candidate disappears. If an
+explicit local model was selected, the managed selection returns to the
+configured native fallback.
 
 Start LM Studio, load the desired models, run `refresh`, and fully restart Codex
 Desktop.
@@ -74,6 +86,10 @@ Desktop.
 Other failures such as timeouts, malformed responses, and temporary network
 errors retain the last known good catalog instead of treating the provider as
 cleanly offline.
+
+Use `pickermux status` and `pickermux doctor` to inspect the configured Auto
+candidate and fallback without sending an inference request. Select the
+explicit `lmstudio/...` model instead of Auto when the task must remain local.
 
 ## A model is text-only
 
@@ -87,6 +103,10 @@ pickermux certify --model lmstudio/OWNER/MODEL
 Certification removes any previous pass before probing. If a gate fails or the
 run is interrupted, the model remains text-only. Context, provider, capability,
 reasoning, or Codex client changes also make an old pass stale.
+
+`pickermux/auto` is a virtual route and cannot be certified. Certify its
+configured `lmstudio/...` candidate directly; `certify --all` automatically
+ignores Auto.
 
 ## Live checks are slow
 
@@ -154,10 +174,32 @@ check fails, integration uninstall can still restore Codex safely, but the
 unrecognized CLI files are left untouched for manual review. Backups and
 Keychain items remain in either case.
 
-If removal reports a private quarantine-cleanup warning, the integration and
-active CLI have still been removed consistently, and a new installation is not
-blocked. Inspect only the exact quarantine path printed by PickerMux before
-removing that residual directory; never delete its parent directory broadly.
+`pickermux uninstall --purge` is the separate full-removal mode. It additionally
+removes only validated backup files and exact provider Keychain items recorded
+in PickerMux's private registry. A modified or foreign LaunchAgent, invalid
+receipt, unsafe permission, symbolic link, or unexpected backup entry stops the
+purge. `--force` does not override those ownership checks.
+
+All uninstall modes also compare `runtime-app` byte-for-byte with the invoking
+PickerMux version before changing Codex configuration. A modified or additional
+runtime entry, special file, symbolic link, or leftover
+`runtime-app.previous-*` package stops removal. Review or repair the exact
+reported state; never remove `~/.codex/model-bridge` recursively.
+
+Fully quit Codex Desktop with `Command-Q` before every uninstall mode. PickerMux
+rechecks that condition under the lifecycle lock before changing managed state.
+
+If a successful `--remove-cli` reports only a distribution
+quarantine-cleanup warning, the integration and active CLI have still been
+removed consistently, and a new installation is not blocked. Inspect only the
+exact quarantine path printed by PickerMux before removing that residual
+directory; never delete its parent directory broadly.
+
+A runtime, backup, or provider-registry cleanup-pending error is different: the
+uninstall or purge failed and the receipt-owned CLI remains available or is
+restored for recovery. Do not assume full removal completed. Review only the
+exact private quarantine path from the error, then rerun the same uninstall
+mode after that state is resolved.
 
 ## Safe diagnostic sharing
 

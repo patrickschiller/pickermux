@@ -1,6 +1,13 @@
 import { readFile } from "node:fs/promises";
 import { isIP } from "node:net";
 
+import {
+  AUTO_MODEL_SLUG,
+  isAutoModelSlugVariant,
+} from "./smart-routing-constants.mjs";
+import { validLoadedModelId } from "./discovery.mjs";
+import { isValidProviderId } from "./provider-id.mjs";
+
 export const BRIDGE_SCHEMA_VERSION = 2;
 
 export const BRIDGE_DEFAULTS = Object.freeze({
@@ -18,7 +25,12 @@ export const BRIDGE_DEFAULTS = Object.freeze({
   }),
 });
 
-const TOP_LEVEL_KEYS = new Set(["schemaVersion", "bridge", "providers"]);
+const TOP_LEVEL_KEYS = new Set([
+  "schemaVersion",
+  "bridge",
+  "smartRouting",
+  "providers",
+]);
 const BRIDGE_KEYS = new Set([
   "host",
   "port",
@@ -28,6 +40,13 @@ const BRIDGE_KEYS = new Set([
   "limits",
 ]);
 const LIMIT_KEYS = new Set(Object.keys(BRIDGE_DEFAULTS.limits));
+const SMART_ROUTING_KEYS = new Set([
+  "enabled",
+  "localModel",
+  "fallbackModel",
+  "maxLocalInputTokens",
+  "complexityThreshold",
+]);
 const PROVIDER_KEYS = new Set([
   "id",
   "kind",
@@ -48,7 +67,6 @@ const MODEL_KEYS = new Set([
   "reasoningEffort",
   "reasoningEfforts",
 ]);
-const PROVIDER_ID_PATTERN = /^[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?$/u;
 const NATIVE_MODEL_ID_PATTERN = /^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$/u;
 const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/u;
 const SUPPORTED_PROVIDER_KINDS = new Set([
@@ -74,6 +92,11 @@ const LM_STUDIO_RESPONSES_REASONING_EFFORTS = new Set([
   "xhigh",
 ]);
 const DEFAULT_DISCOVERY = Object.freeze({ mode: "allowlist", maxModels: 64 });
+const SMART_ROUTING_DEFAULTS = Object.freeze({
+  enabled: false,
+  maxLocalInputTokens: 16_384,
+  complexityThreshold: 3,
+});
 
 const LIMIT_RANGES = Object.freeze({
   requestBodyBytes: [1_024, 64 * 1024 * 1024],
@@ -192,6 +215,107 @@ function normalizeBridge(input) {
   };
 }
 
+function normalizeSmartRouting(input, bridge, providers) {
+  const source = input === undefined ? {} : input;
+  assertPlainObject(source, "smartRouting");
+  assertOnlyKeys(source, SMART_ROUTING_KEYS, "smartRouting");
+
+  const enabled = source.enabled ?? SMART_ROUTING_DEFAULTS.enabled;
+  if (typeof enabled !== "boolean") {
+    throw new Error("smartRouting.enabled must be a boolean");
+  }
+
+  let localModel;
+  if (source.localModel !== undefined) {
+    localModel = requireSingleLine(source.localModel, "smartRouting.localModel");
+    if (isAutoModelSlugVariant(localModel)) {
+      throw new Error(`smartRouting.localModel must not be ${AUTO_MODEL_SLUG}`);
+    }
+    const namespaceSeparator = localModel.indexOf("/");
+    if (
+      namespaceSeparator <= 0 ||
+      namespaceSeparator === localModel.length - 1
+    ) {
+      throw new Error(
+        "smartRouting.localModel must be a provider-namespaced model slug",
+      );
+    }
+    const providerId = localModel.slice(0, namespaceSeparator);
+    const upstreamModelId = localModel.slice(namespaceSeparator + 1);
+    if (!validLoadedModelId(upstreamModelId)) {
+      throw new Error(
+        "smartRouting.localModel must contain a valid loaded LM Studio model id",
+      );
+    }
+    const provider = providers.find((entry) => entry.id === providerId);
+    if (!provider || provider.kind !== "lmstudio-responses") {
+      throw new Error(
+        "smartRouting.localModel namespace must identify a configured lmstudio-responses provider",
+      );
+    }
+    if (
+      provider.discovery.mode === "allowlist" &&
+      !provider.models.some((model) => model.slug === localModel)
+    ) {
+      throw new Error(
+        `smartRouting.localModel ${localModel} is not in provider ${provider.id}'s allowlist`,
+      );
+    }
+  } else if (enabled) {
+    throw new Error("smartRouting.localModel is required when smart routing is enabled");
+  }
+
+  const fallbackModel = requireSingleLine(
+    source.fallbackModel ?? bridge.defaultModel,
+    "smartRouting.fallbackModel",
+  );
+  if (isAutoModelSlugVariant(fallbackModel)) {
+    throw new Error(`smartRouting.fallbackModel must not be ${AUTO_MODEL_SLUG}`);
+  }
+  if (!NATIVE_MODEL_ID_PATTERN.test(fallbackModel)) {
+    throw new Error(
+      "smartRouting.fallbackModel must be a native model slug without a provider namespace",
+    );
+  }
+  if (localModel !== undefined && fallbackModel === localModel) {
+    throw new Error(
+      "smartRouting.fallbackModel must not equal smartRouting.localModel",
+    );
+  }
+
+  const maxLocalInputTokens =
+    source.maxLocalInputTokens ?? SMART_ROUTING_DEFAULTS.maxLocalInputTokens;
+  if (
+    !Number.isSafeInteger(maxLocalInputTokens) ||
+    maxLocalInputTokens < 1_024 ||
+    maxLocalInputTokens > 1_048_576
+  ) {
+    throw new Error(
+      "smartRouting.maxLocalInputTokens must be an integer between 1024 and 1048576",
+    );
+  }
+
+  const complexityThreshold =
+    source.complexityThreshold ?? SMART_ROUTING_DEFAULTS.complexityThreshold;
+  if (
+    !Number.isInteger(complexityThreshold) ||
+    complexityThreshold < 1 ||
+    complexityThreshold > 10
+  ) {
+    throw new Error(
+      "smartRouting.complexityThreshold must be an integer between 1 and 10",
+    );
+  }
+
+  return {
+    enabled,
+    ...(localModel === undefined ? {} : { localModel }),
+    fallbackModel,
+    maxLocalInputTokens,
+    complexityThreshold,
+  };
+}
+
 function parseIpv4(hostname) {
   if (isIP(hostname) !== 4) return null;
   const octets = hostname.split(".").map(Number);
@@ -295,6 +419,9 @@ function normalizeModel(input, providerId, providerKind, index, seenIds, seenSlu
   }
 
   const slug = requireSingleLine(input.slug, `${label}.slug`);
+  if (isAutoModelSlugVariant(slug)) {
+    throw new Error(`${label}.slug ${AUTO_MODEL_SLUG} is reserved by PickerMux`);
+  }
   const prefix = `${providerId}/`;
   if (!slug.startsWith(prefix) || slug.length === prefix.length) {
     throw new Error(`${label}.slug must start with ${prefix}`);
@@ -398,9 +525,9 @@ function normalizeProvider(input, index, seenProviderIds, seenSlugs) {
   assertOnlyKeys(input, PROVIDER_KEYS, label);
 
   const id = requireSingleLine(input.id, `${label}.id`);
-  if (!PROVIDER_ID_PATTERN.test(id)) {
+  if (!isValidProviderId(id)) {
     throw new Error(
-      `${label}.id must contain only lowercase letters, digits, underscores, or hyphens`,
+      `${label}.id must be at most 127 characters and contain only lowercase letters, digits, underscores, or hyphens`,
     );
   }
   if (id === BRIDGE_DEFAULTS.providerId || id === "openai") {
@@ -489,12 +616,15 @@ export function validateBridgeConfig(input) {
 
   const seenProviderIds = new Set();
   const seenSlugs = new Set();
+  const bridge = normalizeBridge(input.bridge);
+  const providers = input.providers.map((provider, index) =>
+    normalizeProvider(provider, index, seenProviderIds, seenSlugs),
+  );
   return {
     schemaVersion: BRIDGE_SCHEMA_VERSION,
-    bridge: normalizeBridge(input.bridge),
-    providers: input.providers.map((provider, index) =>
-      normalizeProvider(provider, index, seenProviderIds, seenSlugs),
-    ),
+    bridge,
+    smartRouting: normalizeSmartRouting(input.smartRouting, bridge, providers),
+    providers,
   };
 }
 

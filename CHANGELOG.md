@@ -7,6 +7,62 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-08-30
+
+### Added
+
+- An explicit `uninstall --purge` lifecycle for removing receipt-owned CLI
+  files, verified configuration backups, and registered provider Keychain
+  credentials in addition to the managed bridge integration.
+- A private, secret-free provider registry shared by credential, install,
+  refresh, certification, and purge operations under one lifecycle lock.
+
+### Fixed
+
+- Setup now validates the account-scoped Codex model cache before activating a
+  new CLI distribution, repeats that check under the installation lock and
+  immediately before integration activation, and reports the safe Codex
+  restart procedure without entering activation rollback when a new Codex
+  version has not refreshed its cache yet.
+- Doctor now reports Codex account-cache health independently of the bridge
+  runtime and mixed catalog, including after an integration-only uninstall.
+
+### Security
+
+- LaunchAgent removal validates the exact PickerMux-owned plist before
+  stopping or deleting it, while full uninstall refuses foreign backup,
+  distribution, and credential ownership state.
+- Runtime removal is bound byte-for-byte to the invoking PickerMux payload,
+  rejects leftover or unexpected runtime entries, and deletes only the exact
+  inventoried files and empty directories without recursive removal.
+- Receipt-owned CLI removal revalidates the complete quarantined distribution
+  after integration removal and cleans only exact inventoried paths, preserving
+  concurrent additions or replacements for review.
+- Provider-registry entries use the same canonical, bounded provider IDs as
+  configuration, and an incomplete runtime, backup, or registry cleanup keeps
+  the receipt-owned CLI available for explicit recovery.
+
+## [0.5.0] - 2026-08-30
+
+### Added
+
+- Opt-in `Auto – Smart Routing` (`pickermux/auto`) with one configured LM Studio
+  candidate and one exact account-visible native Codex fallback.
+- Deterministic local-first selection that falls back for availability,
+  context, modality, certified-tool, reasoning, request-size, and complexity
+  requirements.
+- Bounded, memory-only provider affinity with hashed keys, LRU-style recency,
+  and a 30-minute expiry.
+
+### Security
+
+- Auto resolves to one concrete route before provider credential lookup or
+  network activity while preserving native and external credential and header
+  isolation.
+- Smart routing performs no classifier call or prompt fan-out, dispatches to a
+  single provider, and never automatically retries a failed local request
+  against native Codex.
+
 ## [0.4.0] - 2026-08-29
 
 ### Added
@@ -48,5 +104,7 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
   paths and file types, refuses root execution and foreign launchers, and
   restores the previous distribution state when activation fails.
 
-[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/patrickschiller/pickermux/releases/tag/v0.5.1
+[0.5.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.5.0
 [0.4.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.4.0

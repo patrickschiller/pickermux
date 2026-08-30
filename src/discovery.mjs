@@ -68,7 +68,7 @@ function isConnectionRefused(error) {
   return codes.length > 0 && codes.every((code) => code === "ECONNREFUSED");
 }
 
-function validLoadedModelId(value) {
+export function validLoadedModelId(value) {
   return (
     typeof value === "string" &&
     value === value.trim() &&

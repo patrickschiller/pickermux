@@ -1,5 +1,16 @@
 import { validateBridgeConfig } from "./bridge-config.mjs";
-import { MODEL_DEFAULT_REASONING_DESCRIPTION } from "./catalog.mjs";
+import { isDeepStrictEqual } from "node:util";
+
+import {
+  MODEL_DEFAULT_REASONING_DESCRIPTION,
+  buildAutoCatalogEntry,
+} from "./catalog.mjs";
+import {
+  AUTO_MODEL_DISPLAY_NAME,
+  AUTO_MODEL_SLUG,
+  SMART_ROUTING_STRATEGY,
+  isAutoModelSlugVariant,
+} from "./smart-routing-constants.mjs";
 
 export const NATIVE_CODEX_BASE_URL =
   "https://chatgpt.com/backend-api/codex";
@@ -51,6 +62,11 @@ function nativeRoutes(bundledCatalog) {
     ) {
       throw new Error(`bundledCatalog.models[${index}] has no valid slug`);
     }
+    if (isAutoModelSlugVariant(sourceModel.slug)) {
+      throw new Error(
+        `Native catalog collides with PickerMux Auto slug: ${sourceModel.slug}`,
+      );
+    }
     if (seen.has(sourceModel.slug)) {
       throw new Error(`Duplicate native model slug: ${sourceModel.slug}`);
     }
@@ -83,6 +99,7 @@ function configuredExternalRoutes(config) {
         baseUrl: provider.baseUrl,
         allowPrivateNetwork: provider.allowPrivateNetwork,
         model,
+        certifiedForTools: false,
       };
       if (provider.credentialEnv !== undefined) {
         route.credentialEnv = provider.credentialEnv;
@@ -184,6 +201,10 @@ function mixedExternalRoutes(config, assignments, discoveredModels) {
       model.type = live.type ?? model.type;
       model.contextWindow = live.contextWindow ?? model.contextWindow;
     }
+    model.contextWindow =
+      live?.contextWindow ??
+      catalogModel.context_window ??
+      configuredModel?.contextWindow;
     const reasoningEffort =
       live?.reasoningEffort ?? configuredModel?.reasoningEffort ?? catalogProfile.reasoningEffort;
     const reasoningEfforts =
@@ -209,6 +230,9 @@ function mixedExternalRoutes(config, assignments, discoveredModels) {
       baseUrl: provider.baseUrl,
       allowPrivateNetwork: provider.allowPrivateNetwork,
       model,
+      certifiedForTools:
+        catalogModel.tool_mode === "direct" &&
+        catalogModel.shell_type === "unified_exec",
       ...(reasoningEffort ? { reasoningEffort } : {}),
       ...(reasoningEfforts?.length ? { reasoningEfforts: [...reasoningEfforts] } : {}),
       ...(reasoningEffortMap ? { reasoningEffortMap: { ...reasoningEffortMap } } : {}),
@@ -227,16 +251,24 @@ function mixedExternalRoutes(config, assignments, discoveredModels) {
 }
 
 function descriptor(route) {
+  const virtual = route.kind === "smart-router";
   const item = {
     id: route.slug,
     object: "model",
-    owned_by: route.kind === "native-openai" ? "openai" : route.providerId,
+    owned_by:
+      route.kind === "native-openai"
+        ? "openai"
+        : virtual
+          ? "pickermux"
+          : route.providerId,
     kind: route.kind,
   };
   const displayName =
     route.kind === "native-openai"
       ? route.model.display_name
-      : route.model.displayName;
+      : virtual
+        ? route.model.display_name
+        : route.model.displayName;
   if (typeof displayName === "string" && displayName) {
     item.display_name = displayName;
   }
@@ -261,6 +293,7 @@ export function splitMixedCatalog(mixedCatalog, config) {
   const loadedProviders = config.providers.filter(isLoadedDiscoveryProvider);
   const seen = new Set();
   const nativeModels = [];
+  const virtualModels = [];
   const externalAssignments = [];
   for (const [index, model] of mixedCatalog.models.entries()) {
     if (!isPlainObject(model) || typeof model.slug !== "string" || !model.slug) {
@@ -270,6 +303,15 @@ export function splitMixedCatalog(mixedCatalog, config) {
       throw new Error(`Duplicate mixed catalog model slug: ${model.slug}`);
     }
     seen.add(model.slug);
+    if (isAutoModelSlugVariant(model.slug)) {
+      if (model.slug !== AUTO_MODEL_SLUG) {
+        throw new Error(
+          `Model slug is a reserved PickerMux Auto variant: ${model.slug}`,
+        );
+      }
+      virtualModels.push(model);
+      continue;
+    }
     let assignment = configuredBySlug.get(model.slug);
     if (!assignment) {
       const provider = loadedProviders.find((candidate) =>
@@ -308,7 +350,22 @@ export function splitMixedCatalog(mixedCatalog, config) {
       `Refusing to classify unclaimed namespaced model as native: ${unclaimedNamespaced.slug}`,
     );
   }
-  return { nativeCatalog: { models: nativeModels }, externalAssignments };
+  const classifiedSlugs = [
+    ...nativeModels.map((model) => model.slug),
+    ...virtualModels.map((model) => model.slug),
+    ...externalAssignments.map((assignment) => assignment.catalogModel.slug),
+  ];
+  const catalogSlugs = mixedCatalog.models.map((model) => model.slug);
+  if (JSON.stringify(classifiedSlugs) !== JSON.stringify(catalogSlugs)) {
+    throw new Error(
+      "Mixed catalog order must be native models, PickerMux virtual models, then external models",
+    );
+  }
+  return {
+    nativeCatalog: { models: nativeModels },
+    virtualModels,
+    externalAssignments,
+  };
 }
 
 export function buildProviderRegistry({
@@ -333,9 +390,88 @@ export function buildProviderRegistry({
         discoveredModels,
       )
     : configuredExternalRoutes(normalizedConfig);
+  const autoCatalogModels = split?.virtualModels ?? [];
+  if (autoCatalogModels.length > 1) {
+    throw new Error(`Duplicate virtual model slug: ${AUTO_MODEL_SLUG}`);
+  }
+  if (!normalizedConfig.smartRouting.enabled && autoCatalogModels.length > 0) {
+    throw new Error(
+      `${AUTO_MODEL_SLUG} is present while smart routing is disabled`,
+    );
+  }
+  if (
+    natives.some((route) => route.slug === AUTO_MODEL_SLUG) ||
+    externals.some((route) => route.slug === AUTO_MODEL_SLUG)
+  ) {
+    throw new Error(`Model route collides with PickerMux virtual slug: ${AUTO_MODEL_SLUG}`);
+  }
+
+  const virtuals = [];
+  if (normalizedConfig.smartRouting.enabled) {
+    if (mixedCatalog !== undefined && autoCatalogModels.length !== 1) {
+      throw new Error(`Mixed catalog is missing virtual model ${AUTO_MODEL_SLUG}`);
+    }
+    const fallback = natives.find(
+      (route) => route.slug === normalizedConfig.smartRouting.fallbackModel,
+    );
+    if (!fallback || fallback.kind !== "native-openai") {
+      throw new Error(
+        `Smart-routing fallback is not an available native model: ${normalizedConfig.smartRouting.fallbackModel}`,
+      );
+    }
+    if (autoCatalogModels[0]) {
+      const maximumNativePriority = natives.reduce(
+        (maximum, route) =>
+          Number.isSafeInteger(route.model?.priority)
+            ? Math.max(maximum, route.model.priority)
+            : maximum,
+        0,
+      );
+      const expectedAutoModel = buildAutoCatalogEntry(
+        fallback.model,
+        normalizedConfig.smartRouting,
+        maximumNativePriority + 1,
+      );
+      if (!isDeepStrictEqual(autoCatalogModels[0], expectedAutoModel)) {
+        throw new Error(
+          "PickerMux Auto catalog record does not match the current routing configuration and fallback",
+        );
+      }
+    }
+    const local = externals.find(
+      (route) => route.slug === normalizedConfig.smartRouting.localModel,
+    );
+    if (
+      local &&
+      (local.kind !== "external" || local.providerKind !== "lmstudio-responses")
+    ) {
+      throw new Error(
+        `Smart-routing local candidate is not an LM Studio route: ${normalizedConfig.smartRouting.localModel}`,
+      );
+    }
+    const model = autoCatalogModels[0]
+      ? cloneJson(autoCatalogModels[0])
+      : {
+          slug: AUTO_MODEL_SLUG,
+          display_name: AUTO_MODEL_DISPLAY_NAME,
+        };
+    virtuals.push(
+      freezeRoute({
+        kind: "smart-router",
+        slug: AUTO_MODEL_SLUG,
+        strategy: SMART_ROUTING_STRATEGY,
+        localModel: normalizedConfig.smartRouting.localModel,
+        fallbackModel: normalizedConfig.smartRouting.fallbackModel,
+        maxLocalInputTokens: normalizedConfig.smartRouting.maxLocalInputTokens,
+        complexityThreshold: normalizedConfig.smartRouting.complexityThreshold,
+        model,
+      }),
+    );
+  }
+
   const routeMap = new Map();
 
-  for (const route of [...natives, ...externals]) {
+  for (const route of [...natives, ...virtuals, ...externals]) {
     if (routeMap.has(route.slug)) {
       throw new Error(`Model route collides with existing slug: ${route.slug}`);
     }
@@ -343,11 +479,17 @@ export function buildProviderRegistry({
   }
 
   const nativeModels = Object.freeze(natives.map(descriptor));
+  const virtualModels = Object.freeze(virtuals.map(descriptor));
   const externalModels = Object.freeze(externals.map(descriptor));
-  const allModels = Object.freeze([...nativeModels, ...externalModels]);
+  const allModels = Object.freeze([
+    ...nativeModels,
+    ...virtualModels,
+    ...externalModels,
+  ]);
 
   return Object.freeze({
     nativeModels,
+    virtualModels,
     externalModels,
     resolve(model) {
       if (typeof model !== "string" || !routeMap.has(model)) {
@@ -377,6 +519,9 @@ export function createReloadableProviderRegistry(initialRegistry) {
     },
     get externalModels() {
       return current.externalModels;
+    },
+    get virtualModels() {
+      return current.virtualModels;
     },
     resolve(model) {
       return current.resolve(model);

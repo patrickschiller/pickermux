@@ -59,10 +59,83 @@ Reports involving any of the following are particularly important:
 - command execution, path traversal, decompression abuse, or resource
   exhaustion through untrusted requests;
 - certification records enabling tools for a different model or configuration;
-- secrets or sensitive prompts being persisted unexpectedly.
+- secrets or sensitive prompts being persisted unexpectedly;
+- Auto resolving after credential lookup, dispatching to more than one
+  provider, or replaying a request across provider boundaries.
 
 General hardening ideas without a concrete vulnerability can be proposed with
 the public feature-request form.
+
+## Auto Smart Routing
+
+Auto Smart Routing is opt-in. Selecting `pickermux/auto` is explicit consent
+that PickerMux may send the request to either the configured LM Studio model or
+the configured native Codex fallback. Users who require guaranteed local
+execution must select the explicit namespaced `lmstudio/...` model instead.
+
+The Auto route is virtual: it has no upstream URL, provider identity, or
+credential. PickerMux selects one exact concrete route locally before provider
+credential lookup, DNS resolution, or an upstream connection. It opens at most
+one upstream request. No classifier receives the prompt, the prompt is not sent
+to multiple providers, and a local failure is never automatically replayed
+against native Codex.
+
+The selected concrete route retains the existing trust boundary. Native uses
+only the approved native header allowlist. External requests receive a newly
+constructed provider-scoped header set that excludes native bearer tokens,
+cookies, account identifiers, attestation values, Codex metadata, and unrelated
+routing or session state. Auto introduces no new credential and never weakens
+either header policy.
+
+Provider affinity is process-local and bounded. PickerMux accepts only a
+validated `prompt_cache_key`, hashes it with SHA-256 before lookup, keeps no more
+than 256 entries for at most 30 minutes, and uses LRU-style recency. Raw affinity
+values are never logged or persisted, affinity hashes are not persisted, and no
+routing history survives the bridge process. Routing diagnostics exclude prompt
+text, instructions, request bodies, headers, credentials, account identifiers,
+affinity values and hashes, and private capability URLs.
+
+## Uninstall and purge boundary
+
+The normal `pickermux uninstall` lifecycle restores Codex configuration and
+removes the managed bridge runtime while deliberately retaining verified
+PickerMux backups and provider credentials. Removing the receipt-owned CLI with
+`--remove-cli` does not change that retention policy.
+
+Receipt-owned CLI paths are detached into a private quarantine, revalidated
+against the installation receipt after integration removal, and cleaned only
+as exact inventoried files, the exact `current` symlink, and empty directories.
+No recursive distribution cleanup may consume state added after staging;
+changed or additional bytes remain at the reported quarantine path.
+
+Every uninstall inventories `runtime-app` before changing Codex configuration
+and binds its file tree byte-for-byte to the invoking PickerMux payload. It
+rejects symbolic links, special files, unexpected entries, modified contents,
+unsafe ownership, and leftover `runtime-app.previous-*` packages. Removal then
+unlinks only the inventoried files and empty directories; it never recursively
+deletes an untrusted runtime tree.
+
+`pickermux uninstall --purge` is the explicit full-removal operation. It may
+delete only backups whose PickerMux ownership and integrity can be verified and
+only the exact PickerMux Keychain entries named by the private provider
+registry. The registry contains canonical provider IDs, never credential
+values. Purge does not enumerate unrelated Keychain items or infer deletion
+targets from untrusted configuration. Provider IDs are canonical configuration
+identifiers with a 127-character maximum, and registry changes are serialized
+and revalidated before deletion.
+
+Foreign, modified, ambiguous, publicly accessible, or otherwise unsafe
+ownership state fails closed. `--force` may resolve an acknowledged conflict in
+PickerMux's managed Codex configuration, but it never bypasses distribution,
+backup, provider-registry, or Keychain ownership checks.
+
+Runtime, backup, and registry deletion use private quarantine paths with a
+second identity check. If one of those cleanups cannot finish, full purge fails
+and retains or restores the receipt-owned CLI so the exact reported path can be
+reviewed; the failure is not reported as a successful full removal.
+
+Neither uninstall mode reads, modifies, or deletes native Codex authentication.
+In particular, PickerMux never reads or removes `~/.codex/auth.json`.
 
 ## Release installer trust
 

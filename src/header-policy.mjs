@@ -73,19 +73,26 @@ export function isNativeForwardHeader(name) {
   );
 }
 
-export function buildNativeRequestHeaders(incomingHeaders, bodyLength) {
+export function buildNativeRequestHeaders(
+  incomingHeaders,
+  bodyLength,
+  { reencoded = false } = {},
+) {
   const result = Object.create(null);
 
   for (const [name, value] of Object.entries(incomingHeaders ?? {})) {
     const normalized = lowerName(name);
     if (!isNativeForwardHeader(normalized) || value === undefined) continue;
+    if (reencoded && normalized === "content-encoding") continue;
     if (hasUnsafeHeaderValue(value)) continue;
     result[normalized] = copyHeaderValue(value);
   }
 
   // Never trust a caller-supplied length after buffering the request.
   result["content-length"] = String(bodyLength);
-  if (!result["content-type"]) result["content-type"] = "application/json";
+  if (reencoded || !result["content-type"]) {
+    result["content-type"] = "application/json";
+  }
   return result;
 }
 

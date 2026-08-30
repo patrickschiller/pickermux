@@ -12,12 +12,22 @@ import {
 import path from "node:path";
 import { promisify } from "node:util";
 
+import {
+  AUTO_MODEL_DISPLAY_NAME,
+  AUTO_MODEL_SLUG,
+  SMART_ROUTING_STRATEGY,
+  isAutoModelSlugVariant,
+} from "./smart-routing-constants.mjs";
+
 const execFile = promisify(execFileCallback);
 const DEFAULT_CODEX_PATH = "/Applications/ChatGPT.app/Contents/Resources/codex";
 const MAX_BUNDLED_CATALOG_BYTES = 32 * 1024 * 1024;
 const MAX_ACCOUNT_CACHE_FUTURE_SKEW_MS = 5 * 60 * 1_000;
 const ACCOUNT_CACHE_STALE_AFTER_MS = 15 * 60 * 1_000;
 const PREFERRED_DONORS = ["gpt-5.4-mini", "gpt-5.4"];
+const AUTO_CATALOG_FORMAT = "pickermux-auto-catalog-v1";
+const AUTO_MODEL_DESCRIPTION =
+  "Automatically prefers the configured local LM Studio model for compatible lower-complexity turns and uses the native fallback when context, capabilities, or complexity require it. Routing is decided locally without a classifier request.";
 export const CODEX_CONTEXT_HIGH_RISK_BELOW_TOKENS = 24_576;
 export const CODEX_CONTEXT_RECOMMENDED_TOKENS = 32_768;
 export const MODEL_DEFAULT_REASONING_DESCRIPTION =
@@ -411,6 +421,71 @@ function catalogEntry(donor, model, priority, certifiedForTools = false) {
   return entry;
 }
 
+function normalizedEnabledSmartRouting(value) {
+  if (!isPlainObject(value)) {
+    throw new Error("smartRouting must be a normalized configuration object");
+  }
+  if (value.enabled !== true) {
+    throw new Error("smartRouting.enabled must be true when building Auto");
+  }
+  for (const name of ["localModel", "fallbackModel"]) {
+    if (typeof value[name] !== "string" || !value[name]) {
+      throw new Error(`smartRouting.${name} must be normalized before building Auto`);
+    }
+  }
+  if (
+    !Number.isSafeInteger(value.maxLocalInputTokens) ||
+    !Number.isInteger(value.complexityThreshold)
+  ) {
+    throw new Error("smartRouting numeric limits must be normalized before building Auto");
+  }
+  return value;
+}
+
+export function buildAutoCatalogEntry(donor, smartRouting, priority) {
+  const routing = normalizedEnabledSmartRouting(smartRouting);
+  if (typeof donor?.comp_hash !== "string" || !donor.comp_hash) {
+    throw new Error("Smart-routing fallback catalog record must have a component hash");
+  }
+  const hashInput = JSON.stringify({
+    format: AUTO_CATALOG_FORMAT,
+    smartRouting: {
+      enabled: routing.enabled,
+      localModel: routing.localModel,
+      fallbackModel: routing.fallbackModel,
+      maxLocalInputTokens: routing.maxLocalInputTokens,
+      complexityThreshold: routing.complexityThreshold,
+    },
+    fallbackModel: routing.fallbackModel,
+    fallbackCompHash: donor.comp_hash,
+    strategy: SMART_ROUTING_STRATEGY,
+  });
+  const digest = createHash("sha256").update(hashInput).digest("hex").slice(0, 16);
+  const candidateCompHash = `pickermux-auto-v1-${digest}`;
+  const supportedReasoning = new Set(
+    Array.isArray(donor.supported_reasoning_levels)
+      ? donor.supported_reasoning_levels
+          .map((level) => level?.effort)
+          .filter((effort) => typeof effort === "string" && effort)
+      : [],
+  );
+
+  const entry = cloneJson(donor);
+  entry.slug = AUTO_MODEL_SLUG;
+  entry.display_name = AUTO_MODEL_DISPLAY_NAME;
+  entry.description = AUTO_MODEL_DESCRIPTION;
+  entry.priority = priority;
+  entry.comp_hash = candidateCompHash === donor.comp_hash
+    ? `${candidateCompHash}-virtual`
+    : candidateCompHash;
+  if (supportedReasoning.has("medium")) {
+    entry.default_reasoning_level = "medium";
+  } else if (supportedReasoning.has("low")) {
+    entry.default_reasoning_level = "low";
+  }
+  return entry;
+}
+
 /**
  * Clone a complete bundled Codex model as a schema donor for every LM Studio LLM.
  */
@@ -450,6 +525,7 @@ export function buildMixedCodexCatalog({
   nativeCatalog = bundledCatalog,
   donorSlug,
   certifiedModelSlugs = [],
+  smartRouting,
 } = {}) {
   if (!isPlainObject(nativeCatalog) || !Array.isArray(nativeCatalog.models)) {
     throw new Error("nativeCatalog must contain a models array");
@@ -457,10 +533,55 @@ export function buildMixedCodexCatalog({
 
   const mixedCatalog = cloneJson(nativeCatalog);
   const nativeSlugs = new Set(mixedCatalog.models.map((model) => model?.slug));
+  if (mixedCatalog.models.some((model) => isAutoModelSlugVariant(model?.slug))) {
+    throw new Error(
+      `Native catalog collides with PickerMux Auto slug: ${AUTO_MODEL_SLUG}`,
+    );
+  }
   for (const model of discoveredModels ?? []) {
+    if (isAutoModelSlugVariant(model?.id)) {
+      throw new Error(
+        `External model collides with PickerMux Auto slug: ${AUTO_MODEL_SLUG}`,
+      );
+    }
     if (nativeSlugs.has(model?.id)) {
       throw new Error(`External model collides with native catalog slug: ${model.id}`);
     }
+  }
+
+  const maximumNativePriority = nativeCatalog.models.reduce(
+    (maximum, model) =>
+      Number.isSafeInteger(model?.priority)
+        ? Math.max(maximum, model.priority)
+        : maximum,
+    0,
+  );
+  let nextPriority = maximumNativePriority + 1;
+  if (smartRouting !== undefined && smartRouting !== null) {
+    if (typeof smartRouting.enabled !== "boolean") {
+      throw new Error("smartRouting.enabled must be a boolean");
+    }
+    if (smartRouting.enabled) {
+      const matchingFallbacks = nativeCatalog.models.filter(
+        (model) => model?.slug === smartRouting.fallbackModel,
+      );
+      if (matchingFallbacks.length === 0) {
+        throw new Error(
+          `Native catalog does not contain configured smart-routing fallback ${smartRouting.fallbackModel}`,
+        );
+      }
+      if (matchingFallbacks.length > 1) {
+        throw new Error(
+          `Native catalog contains duplicate smart-routing fallback ${smartRouting.fallbackModel}`,
+        );
+      }
+      mixedCatalog.models.push(
+        buildAutoCatalogEntry(matchingFallbacks[0], smartRouting, nextPriority),
+      );
+      nextPriority += 1;
+    }
+  } else if (smartRouting === null) {
+    throw new Error("smartRouting must be a normalized configuration object");
   }
 
   if (!Array.isArray(discoveredModels) || discoveredModels.length === 0) {
@@ -473,15 +594,8 @@ export function buildMixedCodexCatalog({
     donorSlug,
     certifiedModelSlugs,
   });
-  const maximumPriority = nativeCatalog.models.reduce(
-    (maximum, model) =>
-      Number.isSafeInteger(model?.priority)
-        ? Math.max(maximum, model.priority)
-        : maximum,
-    0,
-  );
   externalCatalog.models.forEach((model, index) => {
-    model.priority = maximumPriority + index + 1;
+    model.priority = nextPriority + index;
   });
   mixedCatalog.models.push(...externalCatalog.models);
   return validateCodexCatalog(mixedCatalog);

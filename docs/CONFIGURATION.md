@@ -38,6 +38,9 @@ The repository ships with a dynamic local configuration:
     "defaultModel": "gpt-5.6-sol",
     "reasoningEffort": "ultra"
   },
+  "smartRouting": {
+    "enabled": false
+  },
   "providers": [
     {
       "id": "lmstudio",
@@ -79,11 +82,119 @@ The explicit Qwen entry acts as a display-name and reasoning override. In
 The configured fallback must exist in the account-visible native catalog and
 support the selected reasoning level at install time.
 
+## Auto Smart Routing
+
+Auto Smart Routing is an optional virtual model with the fixed public slug
+`pickermux/auto`, display name `Auto – Smart Routing`, and strategy
+`local-first-v1`. It is disabled by default. Omitting `smartRouting` is
+equivalent to setting `enabled` to `false`, so existing schema-version-2
+configurations remain valid without migration.
+
+| Field | Default | Rules |
+| --- | --- | --- |
+| `enabled` | `false` | Boolean. When `true`, `localModel` is required. |
+| `localModel` | None | Non-empty, single-line, namespaced slug for an exact model belonging to a configured `lmstudio-responses` provider. It cannot be `pickermux/auto`. |
+| `fallbackModel` | `bridge.defaultModel` | Non-empty, single-line, unnamespaced native model slug. It cannot be `pickermux/auto` or equal `localModel`. |
+| `maxLocalInputTokens` | `16384` | Positive safe integer from `1024` through `1048576`. The actual local limit is also capped at 75 percent of the current local model context window. |
+| `complexityThreshold` | `3` | Integer from `1` through `10`. A score at or above this value selects the native fallback. |
+
+These are the only accepted `smartRouting` properties. Unknown properties and
+invalid supplied values are rejected even when `enabled` is `false`. The Auto
+slug, display name, strategy, affinity lifetime, and affinity capacity are
+fixed internal behavior in the initial implementation and are not configurable.
+
+The namespace before the first `/` in `localModel` must identify a configured
+provider whose `kind` is `lmstudio-responses`. With `discovery.mode` set to
+`allowlist`, the exact slug must also appear in that provider's `models` array.
+With `loaded` discovery, the slug does not need to appear in the static array and
+does not need to be loaded while configuration is validated. An unavailable or
+unloaded local model is a normal runtime fallback condition, not a configuration
+error.
+
+The native fallback must exist in the account-visible native catalog when the
+Auto catalog entry is built. PickerMux does not silently substitute another
+native model. Auto uses that exact native record as its advertised context,
+modality, reasoning, tool, shell, and API capability contract, while the runtime
+selector permits the local route only when the actual request is compatible.
+
+Here is a complete enabled configuration:
+
+```json
+{
+  "schemaVersion": 2,
+  "bridge": {
+    "host": "127.0.0.1",
+    "port": 4210,
+    "providerId": "model_bridge",
+    "defaultModel": "gpt-5.6-sol",
+    "reasoningEffort": "ultra",
+    "limits": {
+      "requestBodyBytes": 16777216,
+      "responseHeaderBytes": 65536,
+      "upstreamHeadersTimeoutMs": 600000,
+      "streamIdleTimeoutMs": 600000,
+      "upstreamTotalTimeoutMs": 1800000
+    }
+  },
+  "smartRouting": {
+    "enabled": true,
+    "localModel": "lmstudio/qwen/qwen3.8-27b",
+    "fallbackModel": "gpt-5.6-sol",
+    "maxLocalInputTokens": 18000,
+    "complexityThreshold": 3
+  },
+  "providers": [
+    {
+      "id": "lmstudio",
+      "kind": "lmstudio-responses",
+      "baseUrl": "http://127.0.0.1:1234/v1",
+      "allowPrivateNetwork": true,
+      "discovery": {
+        "mode": "loaded",
+        "maxModels": 32
+      },
+      "models": []
+    }
+  ]
+}
+```
+
+Selecting `pickermux/auto` explicitly permits PickerMux to use either configured
+destination. Availability, input modality, local context, current tool
+certification, requested reasoning, request size, and deterministic complexity
+can require the native fallback. Explicit native and namespaced external model
+selections bypass Auto. Select the exact `lmstudio/...` model instead when a
+request must remain local.
+
+Auto performs no classifier request, prompt fan-out, or automatic
+cross-provider retry. One inbound request is sent to one selected provider.
+
+The context estimate is deterministic and dependency-free. PickerMux serializes
+only `instructions`, `input`, and `tools`, measures their UTF-8 JSON byte length,
+and conservatively divides by three. The estimate must fit both
+`maxLocalInputTokens` and 75 percent of the exact local route's current context
+window. Image, audio, file, and attachment input; exposed tools without current
+local certification; and requested reasoning efforts `high`, `xhigh`, `max`, or
+`ultra` require the native fallback.
+
+Complexity scoring examines only the latest user-authored text, never system or
+developer instructions, assistant history, function calls, or tool results. A
+request receives one point at 4,000 characters, one additional point at 12,000
+characters, one point at 200 lines, and two points once for a fixed bounded set
+of conservative English and German high-complexity terms. A score greater than
+or equal to `complexityThreshold` uses the fallback.
+
+`pickermux status` and ordinary `pickermux doctor` report whether smart routing
+is enabled, the fixed strategy and Auto slug, both configured candidates and
+their current availability, the local input limit, and the complexity threshold.
+A missing local model is a warning and falls back safely; a missing or
+non-native fallback is an error. These checks do not submit a model prompt.
+
 ## Provider fields
 
 | Field | Purpose |
 | --- | --- |
-| `id` | Lowercase provider namespace used as the external slug prefix. |
+| `id` | Lowercase provider namespace used as the external slug prefix; 1-127 characters using lowercase letters, digits, `_`, or `-`, with an alphanumeric first and last character. |
 | `kind` | `lmstudio-responses` or `openai-responses`. |
 | `baseUrl` | Absolute provider URL without credentials, query, or fragment. |
 | `allowPrivateNetwork` | Required explicit decision for loopback, LAN, or Tailscale targets. |
@@ -186,7 +297,44 @@ pickermux credential-status vendor
 ```
 
 `credential-set` delegates interactive secret capture to `/usr/bin/security`.
-Status output reports only `available` or `missing`.
+After a successful update, PickerMux records only the provider's canonical ID
+in a private provider registry. The registry never contains the credential,
+password, token, or other Keychain value. Status output reports only `available`
+or `missing`.
+
+A successful install or refresh also registers every configured
+`credentialKeychain` provider ID. This safely migrates deletion ownership for
+credentials created by PickerMux before the registry was introduced; it still
+stores no credential value and can target only PickerMux's provider-scoped
+Keychain service namespace.
+
+Normal removal deliberately retains provider credentials and verified PickerMux
+configuration backups, including when the receipt-owned CLI is removed:
+
+```bash
+pickermux uninstall
+pickermux uninstall --remove-cli
+```
+
+Use the explicit full-removal mode only when those retained items should also
+be deleted:
+
+```bash
+pickermux uninstall --purge
+```
+
+Purge uses the private registry to target only the exact PickerMux Keychain
+entries previously registered by `credential-set`. It also removes only
+backups whose PickerMux ownership and integrity can be verified. An unsafe,
+foreign, modified, or ambiguous registry, backup, launcher, or distribution
+state is refused instead of guessed at. `--force` does not bypass these
+ownership checks. Purge never reads or deletes native Codex authentication,
+including `~/.codex/auth.json`.
+
+Uninstall also requires the installed `runtime-app` to match the invoking
+PickerMux distribution byte-for-byte. Unexpected entries, modified files, or a
+leftover `runtime-app.previous-*` package stop removal for explicit review; no
+unrecognized runtime directory is deleted recursively.
 
 ## Applying configuration changes
 

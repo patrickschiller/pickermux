@@ -16,6 +16,7 @@ import {
   bridgeBaseUrl,
   bridgeHealthUrl,
   createRuntimeRecord,
+  assertManagedLaunchAgent,
   getBridgeServiceStatus,
   readRuntime,
   renderLaunchAgent,
@@ -356,6 +357,101 @@ test("stop boots out a loaded service and removes its managed files", async (t) 
   );
   await assertMissing(fixture.runtimePath);
   await assertMissing(fixture.launchAgentPath);
+});
+
+test("managed launch-agent removal validates exact ownership and contents", async (t) => {
+  const fixture = await makeFixture(t, "owned-stop-");
+  const workingDirectory = fixture.directory;
+  const nodePath = "/private/test-node";
+  await mkdir(path.dirname(fixture.launchAgentPath), { recursive: true });
+  await writeFile(
+    fixture.launchAgentPath,
+    renderLaunchAgent({
+      label: fixture.launchAgentLabel,
+      nodePath,
+      binPath: fixture.binPath,
+      configPath: fixture.configPath,
+      runtimePath: fixture.runtimePath,
+      workingDirectory,
+      logPath: fixture.logPath,
+    }),
+    { mode: 0o600 },
+  );
+  const expectedLaunchAgent = {
+    binPath: fixture.binPath,
+    configPath: fixture.configPath,
+    runtimePath: fixture.runtimePath,
+    workingDirectory,
+    logPath: fixture.logPath,
+  };
+  const owned = await assertManagedLaunchAgent({
+    launchAgentPath: fixture.launchAgentPath,
+    launchAgentLabel: fixture.launchAgentLabel,
+    ...expectedLaunchAgent,
+  });
+  assert.equal(owned.present, true);
+  assert.equal(owned.nodePath, nodePath);
+
+  await writeFile(fixture.launchAgentPath, "foreign plist\n", { mode: 0o600 });
+  let launchctlCalled = false;
+  await assert.rejects(
+    stopBridgeService({
+      ...fixture,
+      expectedLaunchAgent,
+      execFileImpl: async () => {
+        launchctlCalled = true;
+        return { stdout: "", stderr: "" };
+      },
+    }),
+    /modified or foreign|unrecognized/iu,
+  );
+  assert.equal(launchctlCalled, false);
+  assert.equal(await readFile(fixture.launchAgentPath, "utf8"), "foreign plist\n");
+});
+
+test("managed launch-agent removal restores a file changed after bootout", async (t) => {
+  const fixture = await makeFixture(t, "owned-stop-race-");
+  const expectedLaunchAgent = {
+    binPath: fixture.binPath,
+    configPath: fixture.configPath,
+    runtimePath: fixture.runtimePath,
+    workingDirectory: fixture.directory,
+    logPath: fixture.logPath,
+  };
+  await mkdir(path.dirname(fixture.launchAgentPath), { recursive: true });
+  await writeFile(
+    fixture.launchAgentPath,
+    renderLaunchAgent({
+      label: fixture.launchAgentLabel,
+      nodePath: "/private/test-node",
+      ...expectedLaunchAgent,
+    }),
+    { mode: 0o600 },
+  );
+  await writeRuntime(fixture.runtimePath, fixture.runtime);
+
+  await assert.rejects(
+    stopBridgeService({
+      ...fixture,
+      expectedLaunchAgent,
+      execFileImpl: async (_file, args) => {
+        if (args[0] === "bootout") {
+          await writeFile(
+            fixture.launchAgentPath,
+            "foreign replacement\n",
+            { mode: 0o600 },
+          );
+        }
+        return { stdout: "", stderr: "" };
+      },
+    }),
+    /modified or foreign|replaced during removal|unrecognized/iu,
+  );
+  assert.equal(
+    await readFile(fixture.launchAgentPath, "utf8"),
+    "foreign replacement\n",
+  );
+  assert.deepEqual(await readRuntime(fixture.runtimePath), fixture.runtime);
 });
 
 test("service status distinguishes installation, process, and health states", async (t) => {

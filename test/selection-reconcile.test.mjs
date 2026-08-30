@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { validateBridgeConfig } from "../src/bridge-config.mjs";
 import { reconcileSelectedCatalogModel } from "../src/selection-reconcile.mjs";
+import { AUTO_MODEL_SLUG } from "../src/smart-routing-constants.mjs";
 
 const config = validateBridgeConfig({
   schemaVersion: 2,
@@ -28,6 +29,27 @@ function model(slug, efforts) {
 
 const native = model("gpt-5.6-sol", ["xhigh", "ultra"]);
 const external = model("lmstudio/qwen/local", ["none", "low", "xhigh"]);
+const auto = model(AUTO_MODEL_SLUG, ["low", "medium", "ultra"]);
+
+const smartConfig = validateBridgeConfig({
+  schemaVersion: 2,
+  bridge: {},
+  smartRouting: {
+    enabled: true,
+    localModel: external.slug,
+    fallbackModel: native.slug,
+  },
+  providers: [
+    {
+      id: "lmstudio",
+      kind: "lmstudio-responses",
+      baseUrl: "http://127.0.0.1:1234/v1",
+      allowPrivateNetwork: true,
+      discovery: { mode: "loaded", maxModels: 8 },
+      models: [],
+    },
+  ],
+});
 
 test("removed selected external model resets to native defaults and exposes a CAS rollback", async () => {
   const calls = [];
@@ -188,4 +210,67 @@ test("a missing native selection fails closed when Sol Ultra is also unavailable
     /missing selected model gpt-5\.6-sol/u,
   );
   assert.equal(restoreCalls, 0);
+});
+
+test("an Auto selection remains stable when its explicit local model disappears", async () => {
+  let restoreCalls = 0;
+  const result = await reconcileSelectedCatalogModel({
+    config: smartConfig,
+    currentCatalog: { models: [native, auto, external] },
+    nextCatalog: { models: [native, auto] },
+    configPath: "/codex/config.toml",
+    statePath: "/codex/model-bridge/state.json",
+    statusImpl: async () => ({
+      installed: true,
+      healthy: true,
+      status: "installed",
+      model: AUTO_MODEL_SLUG,
+      modelReasoningEffort: "medium",
+    }),
+    restoreImpl: async () => {
+      restoreCalls += 1;
+    },
+  });
+
+  assert.deepEqual(result, {
+    changed: false,
+    model: AUTO_MODEL_SLUG,
+    modelReasoningEffort: "medium",
+  });
+  assert.equal(restoreCalls, 0);
+});
+
+test("disabling smart routing reconciles a removed Auto selection to native defaults", async () => {
+  let restored;
+  const result = await reconcileSelectedCatalogModel({
+    config,
+    currentCatalog: { models: [native, auto, external] },
+    nextCatalog: { models: [native, external] },
+    configPath: "/codex/config.toml",
+    statePath: "/codex/model-bridge/state.json",
+    statusImpl: async () => ({
+      installed: true,
+      healthy: true,
+      status: "installed",
+      model: AUTO_MODEL_SLUG,
+      modelReasoningEffort: "medium",
+    }),
+    restoreImpl: async (options) => {
+      restored = options;
+      return {
+        changed: true,
+        model: options.defaultModel,
+        modelReasoningEffort: options.defaultModelReasoningEffort,
+        previousModel: AUTO_MODEL_SLUG,
+        previousModelReasoningEffort: "medium",
+      };
+    },
+  });
+
+  assert.equal(result.changed, true);
+  assert.match(result.reason, /missing selected model pickermux\/auto/u);
+  assert.equal(restored.defaultModel, native.slug);
+  assert.equal(restored.defaultModelReasoningEffort, "ultra");
+  assert.equal(restored.expectedModel, AUTO_MODEL_SLUG);
+  assert.equal(restored.expectedModelReasoningEffort, "medium");
 });

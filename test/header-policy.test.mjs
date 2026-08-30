@@ -55,6 +55,34 @@ test("native policy forwards only Codex's explicit auth, routing, trace and body
   });
 });
 
+test("re-encoded native policy removes request compression and sets exact JSON metadata", () => {
+  const headers = buildNativeRequestHeaders(
+    {
+      accept: "application/json",
+      authorization: "Bearer native-secret",
+      "chatgpt-account-id": "account-id",
+      "content-encoding": "gzip",
+      "content-length": "999",
+      "content-type": "application/cbor",
+      cookie: "must-not-cross",
+      "x-codex-routing-hint": "native",
+      "x-random-secret": "must-not-cross",
+    },
+    73,
+    { reencoded: true },
+  );
+
+  assert.deepEqual({ ...headers }, {
+    accept: "application/json",
+    authorization: "Bearer native-secret",
+    "chatgpt-account-id": "account-id",
+    "content-length": "73",
+    "content-type": "application/json",
+    "x-codex-routing-hint": "native",
+  });
+  assert.equal(headers["content-encoding"], undefined);
+});
+
 test("external policy discards every caller credential and adds only the route credential", () => {
   const headers = buildExternalRequestHeaders(
     {
@@ -81,6 +109,34 @@ test("external policy discards every caller credential and adds only the route c
     "content-type": "application/json",
   });
   assert.doesNotMatch(JSON.stringify(headers), /chatgpt-secret|cookie-secret|attestation-secret/u);
+});
+
+test("invalid allowed header values stay excluded on re-encoded native and external paths", () => {
+  const native = buildNativeRequestHeaders(
+    {
+      accept: "application/json\r\nx-injected: true",
+      authorization: "Bearer native\nsecret",
+      traceparent: ["safe", "unsafe\rvalue"],
+    },
+    17,
+    { reencoded: true },
+  );
+  assert.deepEqual({ ...native }, {
+    "content-length": "17",
+    "content-type": "application/json",
+  });
+
+  const external = buildExternalRequestHeaders(
+    { accept: "text/event-stream\r\nx-injected: true" },
+    23,
+    { credential: "provider-secret" },
+  );
+  assert.deepEqual({ ...external }, {
+    "accept-encoding": "identity",
+    authorization: "Bearer provider-secret",
+    "content-length": "23",
+    "content-type": "application/json",
+  });
 });
 
 test("response policy strips hop-by-hop, cookie and redirect topology headers", () => {

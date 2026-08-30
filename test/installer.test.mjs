@@ -7,10 +7,12 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  readdir,
   readlink,
   rename,
   rm,
   stat,
+  unlink,
   writeFile,
 } from "node:fs/promises";
 import os from "node:os";
@@ -85,6 +87,14 @@ async function pathExists(target) {
   }
 }
 
+async function removalStagingPath(paths) {
+  const parent = path.dirname(paths.applicationDirectory);
+  const matches = (await readdir(parent)).filter((name) =>
+    /^\.PickerMux\.removal\.[1-9]\d*\.[0-9a-f]{16}\.staging$/u.test(name));
+  assert.equal(matches.length, 1);
+  return path.join(parent, matches[0]);
+}
+
 test("distribution paths honor isolated HOME and CODEX_HOME", async (t) => {
   const fixture = await temporaryFixture(t);
   assert.equal(
@@ -102,6 +112,10 @@ test("distribution paths honor isolated HOME and CODEX_HOME", async (t) => {
   assert.equal(
     fixture.installPaths.launchAgentPath,
     path.join(fixture.home, "Library", "LaunchAgents", "com.local.codex-model-bridge.plist"),
+  );
+  assert.equal(
+    fixture.installPaths.keychainRegistryPath,
+    path.join(fixture.codexHome, "model-bridge", "keychain-state.json"),
   );
 });
 
@@ -560,6 +574,51 @@ test("CLI removal restores its distribution when integration removal fails", asy
   );
 });
 
+test("CLI removal never restores quarantine drift after integration failure", async (t) => {
+  const fixture = await temporaryFixture(t);
+  await setupManagedDistribution({
+    sourceRoot: fixture.source,
+    paths: fixture.distributionPaths,
+    activate: async () => ({}),
+  });
+  let staging;
+  let changed;
+
+  await assert.rejects(
+    removeManagedDistribution({
+      paths: fixture.distributionPaths,
+      beforeRemove: async () => {
+        staging = await removalStagingPath(fixture.distributionPaths);
+        changed = path.join(
+          staging,
+          "versions",
+          "0.4.0",
+          "src",
+          "main.mjs",
+        );
+        await writeFile(changed, "export const foreign = true;\n", {
+          mode: 0o600,
+        });
+        throw new Error("simulated integration failure after drift");
+      },
+    }),
+    (error) => {
+      assert.match(error.message, /changed CLI quarantine was not restored/iu);
+      assert.equal(error.cleanupPendingPath, staging);
+      return true;
+    },
+  );
+
+  assert.equal(await pathExists(fixture.distributionPaths.launcherPath), false);
+  assert.equal(await pathExists(fixture.distributionPaths.currentPath), false);
+  assert.equal(await pathExists(fixture.distributionPaths.receiptPath), false);
+  assert.equal(await pathExists(fixture.distributionPaths.versionsDirectory), false);
+  assert.equal(
+    await readFile(changed, "utf8"),
+    "export const foreign = true;\n",
+  );
+});
+
 test("CLI removal rolls staged files back before mutating integration", async (t) => {
   const fixture = await temporaryFixture(t);
   await setupManagedDistribution({
@@ -606,8 +665,8 @@ test("partial CLI quarantine cleanup never fragments active state or blocks setu
     beforeRemove: async () => {
       beforeRemoveCalled = true;
     },
-    rmImpl: async (staging) => {
-      await rm(path.join(staging, "launcher"), { force: false });
+    unlinkImpl: async (target) => {
+      await unlink(target);
       throw new Error("simulated partial quarantine cleanup failure");
     },
   });
@@ -629,6 +688,125 @@ test("partial CLI quarantine cleanup never fragments active state or blocks setu
   });
   assert.equal(reinstalled.version, "0.4.0");
   assert.equal(reinstalled.activation.action, "reinstall");
+});
+
+test("CLI removal preserves foreign state added after staging", async (t) => {
+  const fixture = await temporaryFixture(t);
+  await setupManagedDistribution({
+    sourceRoot: fixture.source,
+    paths: fixture.distributionPaths,
+    activate: async () => ({}),
+  });
+  let staging;
+  let foreign;
+
+  const result = await removeManagedDistribution({
+    paths: fixture.distributionPaths,
+    beforeRemove: async () => {
+      staging = await removalStagingPath(fixture.distributionPaths);
+      foreign = path.join(staging, "foreign.txt");
+      await writeFile(foreign, "preserve\n", { mode: 0o600 });
+    },
+  });
+
+  assert.equal(result.removed.cleanupPendingPath, staging);
+  assert.equal(await readFile(foreign, "utf8"), "preserve\n");
+  assert.equal(await pathExists(fixture.distributionPaths.launcherPath), false);
+  assert.equal(await pathExists(fixture.distributionPaths.receiptPath), false);
+});
+
+test("CLI removal preserves a receipt-bound file replaced after staging", async (t) => {
+  const fixture = await temporaryFixture(t);
+  await setupManagedDistribution({
+    sourceRoot: fixture.source,
+    paths: fixture.distributionPaths,
+    activate: async () => ({}),
+  });
+  let staging;
+  let replacement;
+
+  const result = await removeManagedDistribution({
+    paths: fixture.distributionPaths,
+    beforeRemove: async () => {
+      staging = await removalStagingPath(fixture.distributionPaths);
+      replacement = path.join(staging, "replacement.mjs");
+      const managed = path.join(
+        staging,
+        "versions",
+        "0.4.0",
+        "src",
+        "main.mjs",
+      );
+      await writeFile(replacement, "export const replacement = true;\n", {
+        mode: 0o600,
+      });
+      await rename(replacement, managed);
+      replacement = managed;
+    },
+  });
+
+  assert.equal(result.removed.cleanupPendingPath, staging);
+  assert.equal(
+    await readFile(replacement, "utf8"),
+    "export const replacement = true;\n",
+  );
+});
+
+test("CLI removal preserves additions made during exact cleanup", async (t) => {
+  const fixture = await temporaryFixture(t);
+  await setupManagedDistribution({
+    sourceRoot: fixture.source,
+    paths: fixture.distributionPaths,
+    activate: async () => ({}),
+  });
+  let staging;
+  let foreign;
+  let unlinkCalls = 0;
+
+  const result = await removeManagedDistribution({
+    paths: fixture.distributionPaths,
+    beforeRemove: async () => {
+      staging = await removalStagingPath(fixture.distributionPaths);
+    },
+    unlinkImpl: async (target) => {
+      await unlink(target);
+      unlinkCalls += 1;
+      if (unlinkCalls === 1) {
+        foreign = path.join(staging, "concurrent.txt");
+        await writeFile(foreign, "preserve\n", { mode: 0o600 });
+      }
+    },
+  });
+
+  assert.ok(unlinkCalls > 1);
+  assert.equal(result.removed.cleanupPendingPath, staging);
+  assert.equal(await readFile(foreign, "utf8"), "preserve\n");
+});
+
+test("CLI removal fails hard when cleanup quarantine disappears", async (t) => {
+  const fixture = await temporaryFixture(t);
+  await setupManagedDistribution({
+    sourceRoot: fixture.source,
+    paths: fixture.distributionPaths,
+    activate: async () => ({}),
+  });
+  let staging;
+
+  await assert.rejects(
+    removeManagedDistribution({
+      paths: fixture.distributionPaths,
+      beforeRemove: async () => {
+        staging = await removalStagingPath(fixture.distributionPaths);
+      },
+      unlinkImpl: async () => {
+        await rm(staging, { recursive: true, force: false });
+        throw new Error("simulated external quarantine removal");
+      },
+    }),
+    /cleanup failed after its private quarantine disappeared/iu,
+  );
+  assert.equal(await pathExists(staging), false);
+  assert.equal(await pathExists(fixture.distributionPaths.launcherPath), false);
 });
 
 test("CLI removal refuses modified ownership state before integration mutation", async (t) => {
@@ -661,6 +839,11 @@ test("setup orchestration preflights desktop, loaded LLM, config, and lifecycle 
     distributionPaths: fixture.distributionPaths,
     codexPath: "/Applications/Test Codex.app/codex",
     desktopRunningImpl: async () => false,
+    accountCacheImpl: async () => ({
+      ready: true,
+      codexClientVersion: "0.151.0",
+      cacheClientVersion: "0.151.0",
+    }),
     discoverImpl: async () => ({ models: [{ id: "lmstudio/test" }] }),
   };
 
@@ -767,6 +950,109 @@ test("setup orchestration preflights desktop, loaded LLM, config, and lifecycle 
       /at least one loaded external LLM/iu,
     );
     assert.equal(setupCalled, false);
+  });
+
+  await t.test("stale account cache blocks setup before distribution mutation", async () => {
+    let setupCalled = false;
+    let discoveryCalled = false;
+    await assert.rejects(
+      setupPickerMux({
+        ...baseOptions,
+        configStatusImpl: async () => ({
+          installed: false,
+          healthy: true,
+          status: "not-installed",
+        }),
+        accountCacheImpl: async () => {
+          const error = new Error("cache mismatch details must remain internal");
+          error.code = "CODEX_ACCOUNT_CACHE_REFRESH_REQUIRED";
+          error.codexClientVersion = "0.151.0";
+          throw error;
+        },
+        discoverImpl: async () => {
+          discoveryCalled = true;
+          return { models: [{ id: "lmstudio/test" }] };
+        },
+        setupImpl: async () => {
+          setupCalled = true;
+        },
+      }),
+      (error) => {
+        assert.match(error.message, /stopped before activation/iu);
+        assert.match(error.message, /No active PickerMux state was changed/iu);
+        assert.match(error.message, /Codex 0\.151\.0/iu);
+        assert.doesNotMatch(error.message, /internal/u);
+        return true;
+      },
+    );
+    assert.equal(discoveryCalled, false);
+    assert.equal(setupCalled, false);
+  });
+
+  await t.test("cache is rechecked under the setup lock before control activation", async () => {
+    let cacheChecks = 0;
+    let activateCalled = false;
+    await assert.rejects(
+      setupPickerMux({
+        ...baseOptions,
+        configStatusImpl: async () => ({
+          installed: false,
+          healthy: true,
+          status: "not-installed",
+        }),
+        accountCacheImpl: async () => {
+          cacheChecks += 1;
+          if (cacheChecks === 1) return { ready: true };
+          const error = new Error("changed concurrently");
+          error.code = "CODEX_ACCOUNT_CACHE_REFRESH_REQUIRED";
+          error.codexClientVersion = "0.151.0";
+          throw error;
+        },
+        loadConfigImpl: async () => ({}),
+        setupImpl: async ({ beforeControlCommit, activate }) => {
+          await beforeControlCommit();
+          activateCalled = true;
+          return activate({
+            distributionRoot: "/managed/versions/0.5.1",
+            previousVersion: null,
+            version: "0.5.1",
+          });
+        },
+      }),
+      /stopped before activation/iu,
+    );
+    assert.equal(cacheChecks, 2);
+    assert.equal(activateCalled, false);
+  });
+
+  await t.test("Codex starting after preflight blocks lifecycle activation", async () => {
+    let desktopChecks = 0;
+    let installCalled = false;
+    await assert.rejects(
+      setupPickerMux({
+        ...baseOptions,
+        configStatusImpl: async () => ({
+          installed: false,
+          healthy: true,
+          status: "not-installed",
+        }),
+        desktopRunningImpl: async () => {
+          desktopChecks += 1;
+          return desktopChecks > 1;
+        },
+        loadConfigImpl: async () => ({}),
+        setupImpl: async ({ activate }) => activate({
+          distributionRoot: "/managed/versions/0.5.1",
+          previousVersion: null,
+          version: "0.5.1",
+        }),
+        installImpl: async () => {
+          installCalled = true;
+        },
+      }),
+      /remain fully quit/iu,
+    );
+    assert.equal(installCalled, false);
   });
 
   await t.test("inconsistent integration blocks setup before other preflights", async () => {

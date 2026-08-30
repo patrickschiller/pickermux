@@ -14,6 +14,9 @@
       "upstreamTotalTimeoutMs": 1800000
     }
   },
+  "smartRouting": {
+    "enabled": false
+  },
   "providers": [
     {
       "id": "lmstudio",

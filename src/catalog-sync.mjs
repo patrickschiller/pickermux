@@ -55,6 +55,7 @@ export async function syncBridgeCatalog({
     bundledCatalog: nativeCatalog,
     nativeCatalog,
     certifiedModelSlugs,
+    smartRouting: config.smartRouting,
   });
   const nextRegistry = buildProviderRegistry({
     mixedCatalog: nextCatalog,

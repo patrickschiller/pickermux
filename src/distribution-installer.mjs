@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
+import { constants as fsConstants } from "node:fs";
 import {
   chmod,
   cp,
@@ -36,6 +37,8 @@ const ALL_DISTRIBUTION_ENTRIES = new Set([
   ...OPTIONAL_DISTRIBUTION_ENTRIES,
 ]);
 const VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?$/u;
+const DISTRIBUTION_READ_FLAGS =
+  fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0);
 
 async function lstatOptional(target) {
   try {
@@ -408,23 +411,6 @@ async function assertFreshDestination(paths, permittedVersion) {
       `PickerMux application directory contains unmanaged state: ${path.join(paths.applicationDirectory, entry)}`,
     );
   }
-}
-
-async function captureManagedPath(target) {
-  const stats = await lstatOptional(target);
-  if (stats === null) return { type: "missing" };
-  assertOwned(stats, target);
-  if (stats.isSymbolicLink()) {
-    return { type: "symlink", target: await readlink(target) };
-  }
-  if (stats.isFile()) {
-    return {
-      type: "file",
-      mode: stats.mode & 0o777,
-      contents: await readFile(target),
-    };
-  }
-  return { type: "unsupported" };
 }
 
 async function recoverStaleInstallationLock(paths, processKillImpl) {
@@ -830,54 +816,520 @@ async function rollbackStagedRemoval(staging, moves, renameImpl) {
   }
 }
 
-async function validateStagedRemoval(staging, installation) {
-  const expectedEntries = ["current", "launcher", "receipt", "versions"];
-  const actualEntries = (await readdir(staging)).sort();
+function managedNodeSnapshot(stats) {
+  return Object.freeze({
+    dev: stats.dev,
+    ino: stats.ino,
+    uid: stats.uid,
+    mode: stats.mode,
+    size: stats.size,
+    mtimeMs: stats.mtimeMs,
+    ctimeMs: stats.ctimeMs,
+  });
+}
+
+function sameManagedNodeSnapshot(left, right) {
+  return (
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.uid === right.uid &&
+    left.mode === right.mode &&
+    left.size === right.size &&
+    left.mtimeMs === right.mtimeMs &&
+    left.ctimeMs === right.ctimeMs
+  );
+}
+
+function sameManagedDirectoryIdentity(left, right) {
+  return (
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.uid === right.uid &&
+    left.mode === right.mode
+  );
+}
+
+function assertPrivateManagedNode(stats, target, type) {
+  assertOwned(stats, target);
+  if ((stats.mode & 0o077) !== 0) {
+    throw new Error(`Staged PickerMux ${type} permissions are not private: ${target}`);
+  }
+}
+
+function sameNames(left, right) {
+  return (
+    left.length === right.length &&
+    left.every((name, index) => name === right[index])
+  );
+}
+
+async function captureStagedRegularFile(target, relative) {
+  let handle;
+  try {
+    handle = await open(target, DISTRIBUTION_READ_FLAGS);
+    const stats = await handle.stat();
+    const pathStats = await lstat(target);
+    if (
+      !stats.isFile() ||
+      pathStats.isSymbolicLink() ||
+      !pathStats.isFile() ||
+      !sameManagedNodeSnapshot(
+        managedNodeSnapshot(stats),
+        managedNodeSnapshot(pathStats),
+      )
+    ) {
+      throw new Error(`Staged PickerMux file is not regular: ${relative}`);
+    }
+    assertPrivateManagedNode(stats, target, "file");
+    const contents = await handle.readFile();
+    const confirmed = await handle.stat();
+    const confirmedPath = await lstat(target);
+    if (
+      !sameManagedNodeSnapshot(
+        managedNodeSnapshot(stats),
+        managedNodeSnapshot(confirmed),
+      ) ||
+      !sameManagedNodeSnapshot(
+        managedNodeSnapshot(stats),
+        managedNodeSnapshot(confirmedPath),
+      )
+    ) {
+      throw new Error(`Staged PickerMux file changed during inventory: ${relative}`);
+    }
+    return {
+      type: "file",
+      path: target,
+      relative,
+      snapshot: managedNodeSnapshot(stats),
+      sha256: sha256(contents),
+      contents,
+    };
+  } finally {
+    await handle?.close().catch(() => {});
+  }
+}
+
+async function captureStagedSymlink(target, relative) {
+  const stats = await lstat(target);
+  if (!stats.isSymbolicLink()) {
+    throw new Error(`Staged PickerMux pointer is not a symbolic link: ${relative}`);
+  }
+  assertOwned(stats, target);
+  const linkTarget = await readlink(target);
+  const confirmed = await lstat(target);
   if (
-    actualEntries.length !== expectedEntries.length ||
-    actualEntries.some((entry, index) => entry !== expectedEntries[index])
+    !confirmed.isSymbolicLink() ||
+    !sameManagedNodeSnapshot(
+      managedNodeSnapshot(stats),
+      managedNodeSnapshot(confirmed),
+    )
   ) {
+    throw new Error(`Staged PickerMux pointer changed during inventory: ${relative}`);
+  }
+  return Object.freeze({
+    type: "symlink",
+    path: target,
+    relative,
+    snapshot: managedNodeSnapshot(stats),
+    target: linkTarget,
+  });
+}
+
+async function captureExactStagedDirectory(target, relative, expectedChildren) {
+  const stats = await lstat(target);
+  if (!stats.isDirectory() || stats.isSymbolicLink()) {
+    throw new Error(`Staged PickerMux directory is not real: ${relative || "."}`);
+  }
+  assertPrivateManagedNode(stats, target, "directory");
+  const children = (await readdir(target)).sort();
+  if (!sameNames(children, expectedChildren)) {
+    throw new Error(
+      `Staged PickerMux directory contains unexpected state: ${relative || "."}`,
+    );
+  }
+  const confirmed = await lstat(target);
+  if (
+    !confirmed.isDirectory() ||
+    confirmed.isSymbolicLink() ||
+    !sameManagedNodeSnapshot(
+      managedNodeSnapshot(stats),
+      managedNodeSnapshot(confirmed),
+    )
+  ) {
+    throw new Error(
+      `Staged PickerMux directory changed during inventory: ${relative || "."}`,
+    );
+  }
+  return Object.freeze({
+    type: "directory",
+    path: target,
+    relative,
+    snapshot: managedNodeSnapshot(stats),
+    children: Object.freeze([...children]),
+  });
+}
+
+async function captureStagedVersion(staging, receiptEntry) {
+  const versionPath = path.join(staging, receiptEntry.path);
+  const files = [];
+  const directories = [];
+
+  async function visit(directory, distributionRelative = "") {
+    const stats = await lstat(directory);
+    if (!stats.isDirectory() || stats.isSymbolicLink()) {
+      throw new Error(
+        `Staged PickerMux distribution directory is not real: ${receiptEntry.version}`,
+      );
+    }
+    assertPrivateManagedNode(stats, directory, "distribution directory");
+    const names = (await readdir(directory)).sort();
+    if (distributionRelative === "") {
+      for (const required of REQUIRED_DISTRIBUTION_ENTRIES) {
+        if (!names.includes(required)) {
+          throw new Error(`Distribution is missing required entry: ${required}`);
+        }
+      }
+      const unexpected = names.filter(
+        (name) => !ALL_DISTRIBUTION_ENTRIES.has(name),
+      );
+      if (unexpected.length > 0) {
+        throw new Error(
+          `Managed distribution contains unexpected entries: ${unexpected.join(", ")}`,
+        );
+      }
+    }
+
+    for (const name of names) {
+      const absolute = path.join(directory, name);
+      const relative = distributionRelative
+        ? path.posix.join(distributionRelative, name)
+        : name;
+      const childStats = await lstat(absolute);
+      assertOwned(childStats, absolute);
+      if (childStats.isSymbolicLink()) {
+        throw new Error(`Distribution must not contain symbolic links: ${relative}`);
+      }
+      if (childStats.isDirectory()) {
+        await visit(absolute, relative);
+      } else if (childStats.isFile()) {
+        const captured = await captureStagedRegularFile(
+          absolute,
+          path.posix.join(receiptEntry.path, relative),
+        );
+        files.push({ ...captured, distributionRelative: relative });
+      } else {
+        throw new Error(`Distribution contains an unsupported file type: ${relative}`);
+      }
+    }
+
+    const confirmedNames = (await readdir(directory)).sort();
+    const confirmed = await lstat(directory);
+    if (
+      !confirmed.isDirectory() ||
+      confirmed.isSymbolicLink() ||
+      !sameNames(names, confirmedNames) ||
+      !sameManagedNodeSnapshot(
+        managedNodeSnapshot(stats),
+        managedNodeSnapshot(confirmed),
+      )
+    ) {
+      throw new Error(
+        `Staged PickerMux distribution changed during inventory: ${receiptEntry.version}`,
+      );
+    }
+    directories.push(Object.freeze({
+      type: "directory",
+      path: directory,
+      relative: path.posix.join(receiptEntry.path, distributionRelative),
+      snapshot: managedNodeSnapshot(stats),
+      children: Object.freeze([...names]),
+    }));
+  }
+
+  await visit(versionPath);
+  const digest = createHash("sha256");
+  for (const file of [...files].sort((left, right) =>
+    left.distributionRelative.localeCompare(right.distributionRelative))) {
+    digest.update(`${Buffer.byteLength(file.distributionRelative, "utf8")}:`);
+    digest.update(file.distributionRelative, "utf8");
+    digest.update(`${file.contents.length}:`);
+    digest.update(file.contents);
+  }
+  if (digest.digest("hex") !== receiptEntry.sha256) {
+    throw new Error(
+      `PickerMux ${receiptEntry.version} changed while removal was staged`,
+    );
+  }
+
+  return {
+    files: files.map((file) => Object.freeze({
+      type: file.type,
+      path: file.path,
+      relative: file.relative,
+      snapshot: file.snapshot,
+      sha256: file.sha256,
+    })),
+    directories,
+  };
+}
+
+async function inventoryStagedRemoval(staging, installation) {
+  const expectedEntries = ["current", "launcher", "receipt", "versions"];
+  const rootStats = await lstat(staging);
+  if (!rootStats.isDirectory() || rootStats.isSymbolicLink()) {
+    throw new Error("PickerMux staged removal root is not a real directory");
+  }
+  assertPrivateManagedNode(rootStats, staging, "removal root");
+  if (!sameNames((await readdir(staging)).sort(), expectedEntries)) {
     throw new Error("PickerMux staged removal contains unexpected state");
   }
 
-  const launcher = await captureManagedPath(path.join(staging, "launcher"));
+  const launcher = await captureStagedRegularFile(
+    path.join(staging, "launcher"),
+    "launcher",
+  );
   if (
-    launcher.type !== "file" ||
-    launcher.mode !== installation.launcher.mode ||
+    (launcher.snapshot.mode & 0o777) !== installation.launcher.mode ||
     !launcher.contents.equals(installation.launcher.contents)
   ) {
     throw new Error("PickerMux launcher changed while removal was staged");
   }
-  const current = await captureManagedPath(path.join(staging, "current"));
-  if (current.type !== "symlink" || current.target !== installation.currentTarget) {
+  const current = await captureStagedSymlink(
+    path.join(staging, "current"),
+    "current",
+  );
+  if (current.target !== installation.currentTarget) {
     throw new Error("PickerMux current pointer changed while removal was staged");
   }
-  const receipt = await captureManagedPath(path.join(staging, "receipt"));
-  if (
-    receipt.type !== "file" ||
-    (receipt.mode & 0o077) !== 0 ||
-    !receipt.contents.equals(installation.raw)
-  ) {
+  const receipt = await captureStagedRegularFile(
+    path.join(staging, "receipt"),
+    "receipt",
+  );
+  if (!receipt.contents.equals(installation.raw)) {
     throw new Error("PickerMux receipt changed while removal was staged");
   }
 
+  const expectedVersions = installation.receipt.versions
+    .map((entry) => entry.version)
+    .sort();
   const stagedVersions = path.join(staging, "versions");
-  await assertDirectory(stagedVersions, "Staged PickerMux versions directory");
-  const expectedVersions = new Set(
-    installation.receipt.versions.map((entry) => entry.version),
+  const versionsStats = await lstat(stagedVersions);
+  if (!versionsStats.isDirectory() || versionsStats.isSymbolicLink()) {
+    throw new Error("Staged PickerMux versions directory is not real");
+  }
+  assertPrivateManagedNode(
+    versionsStats,
+    stagedVersions,
+    "versions directory",
   );
-  const actualVersions = await readdir(stagedVersions);
-  if (
-    actualVersions.length !== expectedVersions.size ||
-    actualVersions.some((entry) => !expectedVersions.has(entry))
-  ) {
+  if (!sameNames((await readdir(stagedVersions)).sort(), expectedVersions)) {
     throw new Error("PickerMux versions changed while removal was staged");
   }
+
+  const versionFiles = [];
+  const versionDirectories = [];
   for (const entry of installation.receipt.versions) {
-    const versionPath = path.join(staging, entry.path);
-    await assertDirectory(versionPath, `Staged PickerMux ${entry.version} distribution`);
-    if ((await distributionDigest(versionPath)) !== entry.sha256) {
-      throw new Error(`PickerMux ${entry.version} changed while removal was staged`);
+    const version = await captureStagedVersion(staging, entry);
+    versionFiles.push(...version.files);
+    versionDirectories.push(...version.directories);
+  }
+  const versions = await captureExactStagedDirectory(
+    stagedVersions,
+    "versions",
+    expectedVersions,
+  );
+  const root = await captureExactStagedDirectory(
+    staging,
+    "",
+    expectedEntries,
+  );
+
+  const inventory = Object.freeze({
+    staging,
+    root,
+    files: Object.freeze([
+      Object.freeze({
+        type: launcher.type,
+        path: launcher.path,
+        relative: launcher.relative,
+        snapshot: launcher.snapshot,
+        sha256: launcher.sha256,
+      }),
+      Object.freeze({
+        type: receipt.type,
+        path: receipt.path,
+        relative: receipt.relative,
+        snapshot: receipt.snapshot,
+        sha256: receipt.sha256,
+      }),
+      ...versionFiles,
+    ]),
+    symlinks: Object.freeze([current]),
+    directories: Object.freeze([
+      ...versionDirectories,
+      versions,
+      root,
+    ]),
+  });
+  await revalidateStagedRemovalInventory(inventory);
+  return inventory;
+}
+
+async function openValidatedInventoriedFile(node, openImpl = open) {
+  let handle;
+  try {
+    handle = await openImpl(node.path, DISTRIBUTION_READ_FLAGS);
+    const stats = await handle.stat();
+    const pathStats = await lstat(node.path);
+    if (
+      !stats.isFile() ||
+      pathStats.isSymbolicLink() ||
+      !pathStats.isFile() ||
+      !sameManagedNodeSnapshot(node.snapshot, managedNodeSnapshot(stats)) ||
+      !sameManagedNodeSnapshot(node.snapshot, managedNodeSnapshot(pathStats))
+    ) {
+      throw new Error(`Staged PickerMux file changed: ${node.relative}`);
+    }
+    assertPrivateManagedNode(stats, node.path, "file");
+    const contents = await handle.readFile();
+    const confirmed = await handle.stat();
+    const confirmedPath = await lstat(node.path);
+    if (
+      !sameManagedNodeSnapshot(node.snapshot, managedNodeSnapshot(confirmed)) ||
+      !sameManagedNodeSnapshot(
+        node.snapshot,
+        managedNodeSnapshot(confirmedPath),
+      ) ||
+      sha256(contents) !== node.sha256
+    ) {
+      throw new Error(`Staged PickerMux file changed: ${node.relative}`);
+    }
+    return handle;
+  } catch (error) {
+    if (handle) await handle.close().catch(() => {});
+    throw error;
+  }
+}
+
+async function assertInventoriedSymlink(node, readlinkImpl = readlink) {
+  const stats = await lstat(node.path);
+  if (
+    !stats.isSymbolicLink() ||
+    !sameManagedNodeSnapshot(node.snapshot, managedNodeSnapshot(stats))
+  ) {
+    throw new Error(`Staged PickerMux pointer changed: ${node.relative}`);
+  }
+  assertOwned(stats, node.path);
+  const target = await readlinkImpl(node.path);
+  const confirmed = await lstat(node.path);
+  if (
+    target !== node.target ||
+    !confirmed.isSymbolicLink() ||
+    !sameManagedNodeSnapshot(node.snapshot, managedNodeSnapshot(confirmed))
+  ) {
+    throw new Error(`Staged PickerMux pointer changed: ${node.relative}`);
+  }
+}
+
+async function assertInventoriedDirectory(
+  node,
+  { exactSnapshot, empty = false } = {},
+) {
+  const stats = await lstat(node.path);
+  if (!stats.isDirectory() || stats.isSymbolicLink()) {
+    throw new Error(`Staged PickerMux directory changed: ${node.relative || "."}`);
+  }
+  assertPrivateManagedNode(stats, node.path, "directory");
+  const actualSnapshot = managedNodeSnapshot(stats);
+  if (
+    exactSnapshot
+      ? !sameManagedNodeSnapshot(node.snapshot, actualSnapshot)
+      : !sameManagedDirectoryIdentity(node.snapshot, actualSnapshot)
+  ) {
+    throw new Error(`Staged PickerMux directory changed: ${node.relative || "."}`);
+  }
+  const names = (await readdir(node.path)).sort();
+  if (empty ? names.length !== 0 : !sameNames(names, node.children)) {
+    throw new Error(
+      `Staged PickerMux directory contains unexpected state: ${node.relative || "."}`,
+    );
+  }
+  const confirmed = await lstat(node.path);
+  if (
+    !confirmed.isDirectory() ||
+    confirmed.isSymbolicLink() ||
+    !sameManagedDirectoryIdentity(
+      node.snapshot,
+      managedNodeSnapshot(confirmed),
+    )
+  ) {
+    throw new Error(`Staged PickerMux directory changed: ${node.relative || "."}`);
+  }
+}
+
+async function revalidateStagedRemovalInventory(
+  inventory,
+  { openImpl = open, readlinkImpl = readlink } = {},
+) {
+  for (const directory of inventory.directories) {
+    await assertInventoriedDirectory(directory, { exactSnapshot: true });
+  }
+  for (const file of inventory.files) {
+    const handle = await openValidatedInventoriedFile(file, openImpl);
+    await handle.close();
+  }
+  for (const symlink of inventory.symlinks) {
+    await assertInventoriedSymlink(symlink, readlinkImpl);
+  }
+  await assertInventoriedDirectory(inventory.root, { exactSnapshot: true });
+}
+
+async function cleanupStagedRemovalInventory(
+  inventory,
+  {
+    openImpl = open,
+    readlinkImpl = readlink,
+    unlinkImpl = unlink,
+    rmdirImpl = rmdir,
+  } = {},
+) {
+  await revalidateStagedRemovalInventory(inventory, {
+    openImpl,
+    readlinkImpl,
+  });
+  for (const file of inventory.files) {
+    const handle = await openValidatedInventoriedFile(file, openImpl);
+    try {
+      await unlinkImpl(file.path);
+    } finally {
+      await handle.close().catch(() => {});
+    }
+    if (await lstatOptional(file.path)) {
+      throw new Error(`Staged PickerMux file cleanup was incomplete: ${file.relative}`);
+    }
+  }
+  for (const symlink of inventory.symlinks) {
+    await assertInventoriedSymlink(symlink, readlinkImpl);
+    await unlinkImpl(symlink.path);
+    if (await lstatOptional(symlink.path)) {
+      throw new Error(
+        `Staged PickerMux pointer cleanup was incomplete: ${symlink.relative}`,
+      );
+    }
+  }
+
+  const directories = [...inventory.directories].sort((left, right) => {
+    const depthDifference = right.relative.split("/").length -
+      left.relative.split("/").length;
+    return depthDifference || right.relative.localeCompare(left.relative);
+  });
+  for (const directory of directories) {
+    await assertInventoriedDirectory(directory, { empty: true });
+    await rmdirImpl(directory.path);
+    if (await lstatOptional(directory.path)) {
+      throw new Error(
+        `Staged PickerMux directory cleanup was incomplete: ${directory.relative || "."}`,
+      );
     }
   }
 }
@@ -902,8 +1354,8 @@ async function stageDistributionRemoval(paths, installation, renameImpl) {
       await renameImpl(move.source, move.staged);
       completed.push(move);
     }
-    await validateStagedRemoval(staging, installation);
-    return { staging, moves: completed };
+    const inventory = await inventoryStagedRemoval(staging, installation);
+    return { staging, moves: completed, inventory };
   } catch (error) {
     try {
       await rollbackStagedRemoval(staging, completed, renameImpl);
@@ -922,8 +1374,21 @@ export async function removeManagedDistribution({
   beforeRemove = async () => undefined,
   processKillImpl,
   renameImpl = rename,
-  rmImpl = rm,
+  openImpl = open,
+  readlinkImpl = readlink,
+  unlinkImpl = unlink,
+  rmdirImpl = rmdir,
 }) {
+  if (
+    typeof beforeRemove !== "function" ||
+    typeof renameImpl !== "function" ||
+    typeof openImpl !== "function" ||
+    typeof readlinkImpl !== "function" ||
+    typeof unlinkImpl !== "function" ||
+    typeof rmdirImpl !== "function"
+  ) {
+    throw new TypeError("PickerMux CLI removal dependencies must be functions");
+  }
   let result;
   result = await withInstallationLock(paths, async () => {
     const installation = await validateDistributionInstallation({ paths });
@@ -943,7 +1408,32 @@ export async function removeManagedDistribution({
       beforeResult = await beforeRemove(confirmed);
     } catch (error) {
       try {
+        await revalidateStagedRemovalInventory(staged.inventory, {
+          openImpl,
+          readlinkImpl,
+        });
+      } catch (validationError) {
+        const combined = new Error(
+          "PickerMux integration removal failed and the changed CLI quarantine was not restored",
+          { cause: new AggregateError([error, validationError]) },
+        );
+        combined.cleanupPendingPath = staged.staging;
+        throw combined;
+      }
+      try {
         await rollbackStagedRemoval(staged.staging, staged.moves, renameImpl);
+        const restored = await validateDistributionInstallation({ paths });
+        if (
+          !restored.installed ||
+          !restored.raw.equals(confirmed.raw) ||
+          restored.currentTarget !== confirmed.currentTarget ||
+          restored.launcher.mode !== confirmed.launcher.mode ||
+          !restored.launcher.contents.equals(confirmed.launcher.contents)
+        ) {
+          throw new Error(
+            "Restored PickerMux CLI ownership differs from the staged receipt",
+          );
+        }
       } catch (rollbackError) {
         throw new Error(
           `PickerMux integration removal failed and CLI rollback was incomplete. Original: ${error.message}; rollback: ${rollbackError.errors?.map((entry) => entry.message).join("; ") ?? rollbackError.message}`,
@@ -957,11 +1447,20 @@ export async function removeManagedDistribution({
     }
     let cleanupPendingPath = null;
     try {
-      await rmImpl(staged.staging, { recursive: true, force: false });
-    } catch {
-      if (await lstatOptional(staged.staging)) {
-        cleanupPendingPath = staged.staging;
+      await cleanupStagedRemovalInventory(staged.inventory, {
+        openImpl,
+        readlinkImpl,
+        unlinkImpl,
+        rmdirImpl,
+      });
+    } catch (error) {
+      if (!(await lstatOptional(staged.staging))) {
+        throw new Error(
+          "PickerMux CLI cleanup failed after its private quarantine disappeared",
+          { cause: error },
+        );
       }
+      cleanupPendingPath = staged.staging;
     }
     const removed = {
       launcherPath: paths.launcherPath,

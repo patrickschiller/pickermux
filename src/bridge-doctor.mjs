@@ -1,9 +1,9 @@
 import { stat } from "node:fs/promises";
 import path from "node:path";
 
+import { inspectCodexAccountCache } from "./account-cache.mjs";
 import { runtimeSupportsZstd } from "./body-codec.mjs";
 import {
-  loadCachedNativeCatalog,
   loadBundledCatalog,
   loadCodexClientVersion,
   readCodexCatalog,
@@ -18,22 +18,89 @@ import {
   getBridgeServiceStatus,
   readRuntime,
 } from "./bridge-runtime.mjs";
-import { splitMixedCatalog } from "./provider-registry.mjs";
+import {
+  buildProviderRegistry,
+  splitMixedCatalog,
+} from "./provider-registry.mjs";
+import {
+  AUTO_MODEL_SLUG,
+  SMART_ROUTING_STRATEGY,
+} from "./smart-routing-constants.mjs";
 
 function check(name, ok, detail) {
   return { name, status: ok ? "pass" : "fail", detail };
+}
+
+function warning(name, detail) {
+  return { name, status: "warn", detail };
+}
+
+export function smartRoutingStatus({ config, catalog, discovery } = {}) {
+  const routing = config?.smartRouting;
+  const enabled = routing?.enabled === true;
+  const report = {
+    enabled,
+    strategy: SMART_ROUTING_STRATEGY,
+    autoModel: AUTO_MODEL_SLUG,
+    autoAvailable: false,
+    localModel: routing?.localModel ?? null,
+    localAvailable: false,
+    fallbackModel: routing?.fallbackModel ?? config?.bridge?.defaultModel ?? null,
+    fallbackAvailable: false,
+    maxLocalInputTokens: routing?.maxLocalInputTokens ?? 16_384,
+    complexityThreshold: routing?.complexityThreshold ?? 3,
+  };
+  if (!enabled || !Array.isArray(catalog?.models)) return report;
+
+  const split = splitMixedCatalog(catalog, config);
+  report.autoAvailable = split.virtualModels.some(
+    (model) => model.slug === AUTO_MODEL_SLUG,
+  );
+  const localAvailableInCatalog = split.externalAssignments.some(
+    ({ provider, catalogModel }) =>
+      catalogModel.slug === report.localModel &&
+      provider.kind === "lmstudio-responses",
+  );
+  report.localAvailable = Array.isArray(discovery?.models)
+    ? localAvailableInCatalog && discovery.models.some(
+        (model) => model?.id === report.localModel,
+      )
+    : localAvailableInCatalog;
+  report.fallbackAvailable = split.nativeCatalog.models.some(
+    (model) => model.slug === report.fallbackModel,
+  );
+  return report;
+}
+
+export function formatSmartRoutingStatus(report) {
+  const lines = [
+    `Smart routing: ${report.enabled ? "enabled" : "disabled"}`,
+  ];
+  if (!report.enabled) return lines;
+  lines.push(
+    `Strategy: ${report.strategy}`,
+    `Auto model: ${report.autoModel}`,
+    `Configured local model: ${report.localModel}`,
+    `Local model currently available: ${report.localAvailable ? "yes" : "no"}`,
+    `Configured native fallback: ${report.fallbackModel}`,
+    `Native fallback available: ${report.fallbackAvailable ? "yes" : "no"}`,
+    `Max local input tokens: ${report.maxLocalInputTokens}`,
+    `Complexity threshold: ${report.complexityThreshold}`,
+  );
+  return lines;
 }
 
 export function assertNativeCatalogSnapshot({
   mixedCatalog,
   nativeCatalog,
   externalSlugs = [],
+  virtualSlugs = [],
 }) {
   if (!Array.isArray(mixedCatalog?.models) || !Array.isArray(nativeCatalog?.models)) {
     throw new Error("native catalog comparison requires model arrays");
   }
-  const external = new Set(externalSlugs);
-  const actual = mixedCatalog.models.filter((model) => !external.has(model?.slug));
+  const nonNative = new Set([...externalSlugs, ...virtualSlugs]);
+  const actual = mixedCatalog.models.filter((model) => !nonNative.has(model?.slug));
   if (actual.length !== nativeCatalog.models.length) {
     throw new Error(
       `native catalog model count differs: expected ${nativeCatalog.models.length}, received ${actual.length}`,
@@ -52,11 +119,6 @@ export function assertNativeCatalogSnapshot({
     }
   }
   return actual.length;
-}
-
-async function loadCurrentNativeCatalog({ codexHome, codexPath }) {
-  const expectedClientVersion = await loadCodexClientVersion({ codexPath });
-  return loadCachedNativeCatalog({ codexHome, expectedClientVersion });
 }
 
 function visibleText(response) {
@@ -133,7 +195,7 @@ export async function runBridgeDoctor({
   serviceStatusImpl = getBridgeServiceStatus,
   discoveryImpl = discoverBridgeModels,
   debugModelsImpl = debugModels,
-  nativeCatalogImpl = loadCurrentNativeCatalog,
+  accountCacheImpl = inspectCodexAccountCache,
   runtimeSupportsZstdImpl = runtimeSupportsZstd,
   bundledCatalogImpl = loadBundledCatalog,
   clientVersionImpl = loadCodexClientVersion,
@@ -179,6 +241,31 @@ export async function runBridgeDoctor({
   } catch (error) {
     checks.push(check("desktop-compatibility", false, error.message));
   }
+
+  let accountCache;
+  try {
+    accountCache = await accountCacheImpl({
+      codexHome: paths.codexHome,
+      codexPath,
+      codexClientVersion,
+      clientVersionImpl,
+    });
+    codexClientVersion ??= accountCache.codexClientVersion;
+    const modelCount = accountCache.catalog.models.length;
+    const staleWarning = accountCache.warning
+      ? `; WARNING: ${accountCache.warning}`
+      : "";
+    checks.push(
+      check(
+        "codex-account-cache",
+        true,
+        `${accountCache.cacheClientVersion}, ${modelCount} account model(s), fetched ${accountCache.fetchedAt}${staleWarning}`,
+      ),
+    );
+  } catch (error) {
+    checks.push(check("codex-account-cache", false, error.message));
+  }
+
   let runtime;
   try {
     runtime = await readRuntime(paths.runtimePath);
@@ -249,6 +336,7 @@ export async function runBridgeDoctor({
 
   let catalog;
   let externalSlugs = new Set();
+  let virtualSlugs = new Set();
   try {
     catalog = await readCodexCatalog(paths.catalogPath);
     const metadata = await stat(paths.catalogPath);
@@ -258,15 +346,41 @@ export async function runBridgeDoctor({
     externalSlugs = new Set(
       split.externalAssignments.map((assignment) => assignment.catalogModel.slug),
     );
+    virtualSlugs = new Set(split.virtualModels.map((model) => model.slug));
+    buildProviderRegistry({
+      mixedCatalog: catalog,
+      config,
+      discoveredModels: discovery?.models,
+    });
     const discoveredSlugs = new Set(discovery?.models.map((model) => model.id) ?? []);
     for (const slug of discoveredSlugs) {
       if (!catalog.models.some((model) => model.slug === slug)) {
         throw new Error(`catalog is missing external model ${slug}`);
       }
     }
+    const comparableExternalSlugs = new Set(externalSlugs);
+    const configuredLocal = config.smartRouting.enabled
+      ? config.smartRouting.localModel
+      : undefined;
+    const localProviderId = configuredLocal?.slice(
+      0,
+      configuredLocal.indexOf("/"),
+    );
+    const localProvider = config.providers.find(
+      (provider) => provider.id === localProviderId,
+    );
+    const expectedLoadedLocalAbsence =
+      discovery &&
+      localProvider?.kind === "lmstudio-responses" &&
+      localProvider.discovery?.mode === "loaded" &&
+      externalSlugs.has(configuredLocal) &&
+      !discoveredSlugs.has(configuredLocal);
+    if (expectedLoadedLocalAbsence) {
+      comparableExternalSlugs.delete(configuredLocal);
+    }
     if (discovery && (
-      discoveredSlugs.size !== externalSlugs.size ||
-      [...externalSlugs].some((slug) => !discoveredSlugs.has(slug))
+      discoveredSlugs.size !== comparableExternalSlugs.size ||
+      [...comparableExternalSlugs].some((slug) => !discoveredSlugs.has(slug))
     )) {
       throw new Error(
         `catalog/discovery drift: catalog=${[...externalSlugs].join(", ")}; loaded=${[...discoveredSlugs].join(", ")}`,
@@ -298,28 +412,50 @@ export async function runBridgeDoctor({
     checks.push(check("mixed-catalog-file", false, error.message));
   }
 
-  if (catalog) {
+  let routingReport;
+  try {
+    routingReport = smartRoutingStatus({ config, catalog, discovery });
+    const detail = formatSmartRoutingStatus(routingReport).join("; ");
+    if (
+      !routingReport.enabled ||
+      (routingReport.autoAvailable && routingReport.fallbackAvailable)
+    ) {
+      checks.push(
+        routingReport.enabled && !routingReport.localAvailable
+          ? warning("smart-routing", detail)
+          : check("smart-routing", true, detail),
+      );
+    } else {
+      const problem = !routingReport.autoAvailable
+        ? `${detail}; Auto catalog entry is missing`
+        : detail;
+      checks.push(check("smart-routing", false, problem));
+    }
+  } catch (error) {
+    checks.push(check("smart-routing", false, error.message));
+  }
+
+  if (catalog && accountCache) {
     try {
-      const account = await nativeCatalogImpl({
-        codexHome: paths.codexHome,
-        codexPath,
-      });
       const nativeCount = assertNativeCatalogSnapshot({
         mixedCatalog: catalog,
-        nativeCatalog: account.catalog,
+        nativeCatalog: accountCache.catalog,
         externalSlugs,
+        virtualSlugs,
       });
-      const warning = account.warning ? `; WARNING: ${account.warning}` : "";
       checks.push(
         check(
           "native-account-catalog",
           true,
-          `${nativeCount} exact account model(s), fetched ${account.fetchedAt}${warning}`,
+          `${nativeCount} exact account model(s) in the mixed catalog`,
         ),
       );
     } catch (error) {
       checks.push(check("native-account-catalog", false, error.message));
     }
+  }
+
+  if (catalog) {
     if (runtime && serviceStatus?.healthy) {
       try {
         const runningIds = await readBridgeModelIds({
@@ -403,9 +539,10 @@ export async function runBridgeDoctor({
   }
 
   return {
-    ok: checks.every((entry) => entry.status === "pass"),
+    ok: checks.every((entry) => entry.status !== "fail"),
     checks,
     configStatus,
     serviceStatus,
+    smartRouting: routingReport,
   };
 }

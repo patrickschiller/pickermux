@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import http from "node:http";
 import { promisify } from "node:util";
 import * as zlib from "node:zlib";
@@ -62,6 +63,9 @@ async function createProxyHarness({
   env,
   limits,
   credentialResolver,
+  smartRouter,
+  now,
+  onRoutingDecision,
 }) {
   const handle = createResponsesProxy({
     registry,
@@ -69,6 +73,9 @@ async function createProxyHarness({
     env,
     limits,
     credentialResolver,
+    smartRouter,
+    now,
+    onRoutingDecision,
   });
   const server = http.createServer((request, response) => {
     void handle(request, response, new URL(request.url, "http://proxy.local").pathname);
@@ -102,7 +109,7 @@ test("runtime compression gate reflects native zstd availability", () => {
   if (runtimeSupportsZstd()) assert.doesNotThrow(() => assertRuntimeCompressionSupport());
 });
 
-test("native route relays compressed request bytes, approved headers and SSE bytes unchanged", async (t) => {
+test("native route supports async resolution while relaying compressed bytes and SSE unchanged", async (t) => {
   let observed;
   const upstream = http.createServer((request, response) => {
     const chunks = [];
@@ -122,7 +129,7 @@ test("native route relays compressed request bytes, approved headers and SSE byt
   t.after(() => close(upstream));
 
   const registry = {
-    resolve(model) {
+    async resolve(model) {
       assert.equal(model, "gpt-5.6-sol");
       return { kind: "native-openai", slug: model, upstreamModel: model };
     },
@@ -261,6 +268,290 @@ test("external route rewrites model and effort while replacing all caller creden
   assert.equal(observed.headers["x-codex-routing-hint"], undefined);
   assert.equal(observed.headers["x-oai-attestation"], undefined);
   assert.doesNotMatch(JSON.stringify(observed), /chatgpt-token|chatgpt-cookie|attestation/u);
+});
+
+test("Auto selects native before credentials and safely re-encodes compressed JSON", async (t) => {
+  const observed = [];
+  const upstream = http.createServer((request, response) => {
+    const chunks = [];
+    request.on("data", (chunk) => chunks.push(chunk));
+    request.once("end", () => {
+      const body = Buffer.concat(chunks);
+      observed.push({
+        path: request.url,
+        headers: request.headers,
+        body,
+        json: JSON.parse(body.toString("utf8")),
+      });
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end('{"output":[]}');
+    });
+  });
+  const upstreamPort = await listen(upstream);
+  t.after(() => close(upstream));
+
+  const routes = new Map([
+    [
+      "pickermux/auto",
+      {
+        kind: "smart-router",
+        slug: "pickermux/auto",
+        strategy: "local-first-v1",
+        localModel: "lmstudio/qwen/local",
+        fallbackModel: "gpt-5.6-sol",
+        maxLocalInputTokens: 16_384,
+        complexityThreshold: 3,
+      },
+    ],
+    [
+      "gpt-5.6-sol",
+      {
+        kind: "native-openai",
+        slug: "gpt-5.6-sol",
+        upstreamModel: "gpt-5.6-sol",
+      },
+    ],
+    [
+      "lmstudio/qwen/local",
+      {
+        kind: "external",
+        slug: "lmstudio/qwen/local",
+        providerId: "lmstudio",
+        providerKind: "lmstudio-responses",
+        baseUrl: `http://127.0.0.1:${upstreamPort}/local/v1`,
+        allowPrivateNetwork: true,
+        upstreamModel: "qwen/local",
+        model: { contextWindow: 32_768 },
+        certifiedForTools: false,
+      },
+    ],
+  ]);
+  let credentialLookups = 0;
+  const decisions = [];
+  const proxy = await createProxyHarness({
+    registry: { resolve: (model) => routes.get(model) },
+    nativeBaseUrl: `http://127.0.0.1:${upstreamPort}/native`,
+    credentialResolver: async () => {
+      credentialLookups += 1;
+      return "external-secret";
+    },
+    onRoutingDecision: (decision) => decisions.push(decision),
+  });
+  t.after(() => close(proxy.server));
+
+  const plain = Buffer.from(JSON.stringify({
+    model: "pickermux/auto",
+    input: "route this once",
+    reasoning: { effort: "high" },
+    prompt_cache_key: "private-affinity-value",
+  }));
+  const compressed = await promisify(zlib.gzip)(plain);
+  const result = await httpRequest({
+    port: proxy.port,
+    headers: {
+      authorization: "Bearer native-secret",
+      "chatgpt-account-id": "account-id",
+      "content-encoding": "gzip",
+      "content-type": "application/json",
+      cookie: "must-not-cross",
+      "x-codex-routing-hint": "native",
+    },
+    body: compressed,
+  });
+
+  assert.equal(result.statusCode, 200);
+  assert.equal(observed.length, 1);
+  assert.equal(observed[0].path, "/native/responses");
+  assert.equal(observed[0].json.model, "gpt-5.6-sol");
+  assert.equal(observed[0].headers["content-encoding"], undefined);
+  assert.equal(observed[0].headers["content-type"], "application/json");
+  assert.equal(
+    observed[0].headers["content-length"],
+    String(observed[0].body.length),
+  );
+  assert.equal(observed[0].headers.authorization, "Bearer native-secret");
+  assert.equal(observed[0].headers.cookie, undefined);
+  assert.equal(credentialLookups, 0);
+  assert.deepEqual(decisions.map((decision) => decision.reason), [
+    "high_reasoning_requested",
+  ]);
+  assert.doesNotMatch(JSON.stringify(decisions), /private-affinity-value/u);
+});
+
+test("Auto selects one LM Studio route with isolated credentials and never replays failures", async (t) => {
+  const observed = [];
+  let failLocal = false;
+  const upstream = http.createServer((request, response) => {
+    const chunks = [];
+    request.on("data", (chunk) => chunks.push(chunk));
+    request.once("end", () => {
+      observed.push({
+        path: request.url,
+        headers: request.headers,
+        json: JSON.parse(Buffer.concat(chunks).toString("utf8")),
+      });
+      response.writeHead(failLocal ? 503 : 200, {
+        "content-type": "application/json",
+      });
+      response.end(failLocal ? '{"error":"local failed"}' : '{"output":[]}');
+    });
+  });
+  const upstreamPort = await listen(upstream);
+  t.after(() => close(upstream));
+
+  const routes = new Map([
+    [
+      "pickermux/auto",
+      {
+        kind: "smart-router",
+        slug: "pickermux/auto",
+        strategy: "local-first-v1",
+        localModel: "lmstudio/qwen/local",
+        fallbackModel: "gpt-5.6-sol",
+        maxLocalInputTokens: 16_384,
+        complexityThreshold: 3,
+      },
+    ],
+    [
+      "gpt-5.6-sol",
+      {
+        kind: "native-openai",
+        slug: "gpt-5.6-sol",
+        upstreamModel: "gpt-5.6-sol",
+      },
+    ],
+    [
+      "lmstudio/qwen/local",
+      {
+        kind: "external",
+        slug: "lmstudio/qwen/local",
+        providerId: "lmstudio",
+        providerKind: "lmstudio-responses",
+        baseUrl: `http://127.0.0.1:${upstreamPort}/local/v1`,
+        allowPrivateNetwork: true,
+        upstreamModel: "qwen/local",
+        reasoningEffort: "low",
+        reasoningEfforts: ["none", "low", "medium", "xhigh"],
+        model: { contextWindow: 32_768 },
+        certifiedForTools: false,
+        credentialKeychain: true,
+      },
+    ],
+  ]);
+  const credentialRoutes = [];
+  const proxy = await createProxyHarness({
+    registry: { resolve: (model) => routes.get(model) },
+    nativeBaseUrl: `http://127.0.0.1:${upstreamPort}/native`,
+    credentialResolver: async (route) => {
+      credentialRoutes.push(route.slug);
+      return "local-provider-secret";
+    },
+  });
+  t.after(() => close(proxy.server));
+
+  const request = () => httpRequest({
+    port: proxy.port,
+    headers: {
+      authorization: "Bearer native-secret",
+      "chatgpt-account-id": "account-id",
+      cookie: "native-cookie",
+      "x-oai-attestation": "native-attestation",
+    },
+    body: Buffer.from(JSON.stringify({
+      model: "pickermux/auto",
+      input: "simple local turn",
+      reasoning: { effort: "medium" },
+    })),
+  });
+
+  const success = await request();
+  assert.equal(success.statusCode, 200);
+  assert.equal(observed.length, 1);
+  assert.equal(observed[0].path, "/local/v1/responses");
+  assert.equal(observed[0].json.model, "qwen/local");
+  assert.equal(observed[0].json.reasoning.effort, "medium");
+  assert.equal(observed[0].headers.authorization, "Bearer local-provider-secret");
+  assert.equal(observed[0].headers["chatgpt-account-id"], undefined);
+  assert.equal(observed[0].headers.cookie, undefined);
+  assert.equal(observed[0].headers["x-oai-attestation"], undefined);
+  assert.deepEqual(credentialRoutes, ["lmstudio/qwen/local"]);
+
+  failLocal = true;
+  const failure = await request();
+  assert.equal(failure.statusCode, 503);
+  assert.equal(observed.length, 2);
+  assert.deepEqual(observed.map((entry) => entry.path), [
+    "/local/v1/responses",
+    "/local/v1/responses",
+  ]);
+  assert.deepEqual(credentialRoutes, [
+    "lmstudio/qwen/local",
+    "lmstudio/qwen/local",
+  ]);
+});
+
+test("Auto routing errors are generic and expose no request or route secrets", async (t) => {
+  const prompt = "private prompt text must not appear";
+  const affinity = "private-affinity-value-must-not-appear";
+  const affinityDigest = createHash("sha256").update(affinity).digest("hex");
+  const privateUrl = "https://private-route.example/capability-secret";
+  const credential = "private-provider-credential";
+  let credentialLookups = 0;
+  const routes = new Map([
+    [
+      "pickermux/auto",
+      {
+        kind: "smart-router",
+        slug: "pickermux/auto",
+        strategy: "local-first-v1",
+        localModel: "lmstudio/qwen/local",
+        fallbackModel: "gpt-5.6-sol",
+        maxLocalInputTokens: 16_384,
+        complexityThreshold: 3,
+      },
+    ],
+    [
+      "gpt-5.6-sol",
+      {
+        kind: "native-openai",
+        slug: "gpt-5.6-sol",
+        upstreamModel: "gpt-wrong-upstream",
+        baseUrl: privateUrl,
+        credential,
+      },
+    ],
+  ]);
+  const proxy = await createProxyHarness({
+    registry: {
+      resolve(model) {
+        if (!routes.has(model)) {
+          throw Object.assign(new Error("unknown"), { code: "UNKNOWN_MODEL" });
+        }
+        return routes.get(model);
+      },
+    },
+    credentialResolver: async () => {
+      credentialLookups += 1;
+      return credential;
+    },
+  });
+  t.after(() => close(proxy.server));
+
+  const result = await httpRequest({
+    port: proxy.port,
+    body: Buffer.from(JSON.stringify({
+      model: "pickermux/auto",
+      input: prompt,
+      prompt_cache_key: affinity,
+    })),
+  });
+
+  assert.equal(result.statusCode, 500);
+  assert.equal(JSON.parse(result.body).error.code, "INVALID_ROUTE");
+  assert.equal(credentialLookups, 0);
+  for (const secret of [prompt, affinity, affinityDigest, privateUrl, credential]) {
+    assert.equal(result.body.includes(secret), false);
+  }
 });
 
 test("external route preserves caller reasoning when no route override is configured", async (t) => {

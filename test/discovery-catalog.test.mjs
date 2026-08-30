@@ -16,6 +16,7 @@ import {
   loadCachedNativeCatalog,
   loadCodexClientVersion,
   loadNativeCatalog,
+  validateCodexCatalog,
   writeCatalogAtomic,
 } from "../src/catalog.mjs";
 import {
@@ -23,6 +24,10 @@ import {
   discoverLmStudio,
   normalizeLmStudioBaseUrl,
 } from "../src/discovery.mjs";
+import {
+  AUTO_MODEL_DISPLAY_NAME,
+  AUTO_MODEL_SLUG,
+} from "../src/smart-routing-constants.mjs";
 
 async function startJsonServer(t, handler) {
   const server = http.createServer(handler);
@@ -65,6 +70,17 @@ const donor = {
   input_modalities: ["text", "image"],
   supports_search_tool: true,
 };
+
+function smartRouting(overrides = {}) {
+  return {
+    enabled: true,
+    localModel: "lmstudio/qwen/example",
+    fallbackModel: "gpt-5.6-sol",
+    maxLocalInputTokens: 16_384,
+    complexityThreshold: 3,
+    ...overrides,
+  };
+}
 
 test("normalizes /v1 without nesting the native metadata endpoint", () => {
   assert.deepEqual(
@@ -878,6 +894,26 @@ test("mixed catalog preserves native models and appends namespaced externals", (
   assert.equal(mixed.models[2].priority, 9);
   assert.equal(native.models.length, 2);
 
+  const explicitlyDisabled = buildMixedCodexCatalog({
+    bundledCatalog: native,
+    donorSlug: "gpt-5.4-mini",
+    discoveredModels: [
+      {
+        id: "lmstudio/qwen/example",
+        displayName: "Qwen Example – LM Studio",
+        type: "llm",
+        contextWindow: 32_768,
+      },
+    ],
+    smartRouting: {
+      enabled: false,
+      fallbackModel: "gpt-5.6-sol",
+      maxLocalInputTokens: 16_384,
+      complexityThreshold: 3,
+    },
+  });
+  assert.deepEqual(explicitlyDisabled, mixed);
+
   assert.throws(
     () =>
       buildMixedCodexCatalog({
@@ -892,6 +928,251 @@ test("mixed catalog preserves native models and appends namespaced externals", (
         ],
       }),
     /collides/u,
+  );
+});
+
+test("inserts one Auto record between native and external models using the exact fallback donor", () => {
+  const fallback = {
+    ...donor,
+    slug: "gpt-5.6-sol",
+    display_name: "GPT-5.6 Sol",
+    description: "Native fallback",
+    priority: 9,
+    comp_hash: "native-fallback-hash",
+    default_reasoning_level: "high",
+    supported_reasoning_levels: [
+      { effort: "low", description: "Low" },
+      { effort: "medium", description: "Medium" },
+      { effort: "high", description: "High" },
+    ],
+    context_window: 400_000,
+    max_context_window: 500_000,
+    input_modalities: ["text", "image"],
+    shell_type: "unified_exec",
+    tool_mode: "direct",
+    supported_in_api: true,
+    custom_capability: { nested: ["preserved"] },
+  };
+  const native = {
+    models: [
+      { ...donor, slug: "gpt-5.5", priority: 2 },
+      fallback,
+      { ...donor, slug: "gpt-5.4-mini", priority: 4 },
+    ],
+  };
+  const routing = smartRouting();
+  const discoveredModels = [
+    {
+      id: "lmstudio/qwen/example",
+      displayName: "Qwen Example – LM Studio",
+      type: "llm",
+      contextWindow: 32_768,
+    },
+  ];
+  const before = JSON.stringify({ native, routing, discoveredModels });
+  const mixed = buildMixedCodexCatalog({
+    nativeCatalog: native,
+    bundledCatalog: native,
+    donorSlug: "gpt-5.4-mini",
+    discoveredModels,
+    smartRouting: routing,
+  });
+
+  assert.equal(JSON.stringify({ native, routing, discoveredModels }), before);
+  assert.deepEqual(mixed.models.map((model) => model.slug), [
+    "gpt-5.5",
+    "gpt-5.6-sol",
+    "gpt-5.4-mini",
+    AUTO_MODEL_SLUG,
+    "lmstudio/qwen/example",
+  ]);
+  assert.equal(
+    mixed.models.filter((model) => model.slug === AUTO_MODEL_SLUG).length,
+    1,
+  );
+  const auto = mixed.models[3];
+  assert.equal(auto.display_name, AUTO_MODEL_DISPLAY_NAME);
+  assert.match(auto.description, /without a classifier request/u);
+  assert.equal(auto.priority, 10);
+  assert.equal(mixed.models[4].priority, 11);
+  assert.equal(auto.context_window, fallback.context_window);
+  assert.equal(auto.max_context_window, fallback.max_context_window);
+  assert.deepEqual(auto.input_modalities, fallback.input_modalities);
+  assert.equal(auto.shell_type, fallback.shell_type);
+  assert.equal(auto.tool_mode, fallback.tool_mode);
+  assert.equal(auto.supported_in_api, fallback.supported_in_api);
+  assert.deepEqual(auto.custom_capability, fallback.custom_capability);
+  assert.notEqual(auto.custom_capability, fallback.custom_capability);
+  assert.equal(auto.default_reasoning_level, "medium");
+  assert.notEqual(auto.comp_hash, fallback.comp_hash);
+});
+
+test("chooses only an advertised preferred Auto reasoning default", () => {
+  const cases = [
+    {
+      levels: ["low", "medium", "high"],
+      donorDefault: "high",
+      expected: "medium",
+    },
+    {
+      levels: ["low", "high"],
+      donorDefault: "high",
+      expected: "low",
+    },
+    {
+      levels: ["high", "xhigh"],
+      donorDefault: "xhigh",
+      expected: "xhigh",
+    },
+  ];
+  for (const { levels, donorDefault, expected } of cases) {
+    const fallback = {
+      ...donor,
+      slug: "gpt-5.6-sol",
+      comp_hash: `fallback-${donorDefault}`,
+      default_reasoning_level: donorDefault,
+      supported_reasoning_levels: levels.map((effort) => ({ effort })),
+    };
+    const mixed = buildMixedCodexCatalog({
+      nativeCatalog: { models: [fallback] },
+      bundledCatalog: { models: [fallback] },
+      discoveredModels: [],
+      smartRouting: smartRouting(),
+    });
+    assert.equal(
+      mixed.models.find((model) => model.slug === AUTO_MODEL_SLUG)
+        .default_reasoning_level,
+      expected,
+    );
+  }
+});
+
+test("generates a deterministic Auto component hash bound to routing and fallback state", () => {
+  const fallback = {
+    ...donor,
+    slug: "gpt-5.6-sol",
+    comp_hash: "fallback-component-a",
+  };
+  const build = (routing, model = fallback) =>
+    buildMixedCodexCatalog({
+      nativeCatalog: { models: [model] },
+      bundledCatalog: { models: [model] },
+      discoveredModels: [],
+      smartRouting: routing,
+    }).models.find((entry) => entry.slug === AUTO_MODEL_SLUG);
+
+  const first = build(smartRouting());
+  const repeated = build(smartRouting());
+  const thresholdChanged = build(smartRouting({ complexityThreshold: 4 }));
+  const limitChanged = build(smartRouting({ maxLocalInputTokens: 20_000 }));
+  const localChanged = build(
+    smartRouting({ localModel: "lmstudio/another/local" }),
+  );
+  const fallbackHashChanged = build(smartRouting(), {
+    ...fallback,
+    comp_hash: "fallback-component-b",
+  });
+
+  assert.equal(first.comp_hash, repeated.comp_hash);
+  assert.notEqual(first.comp_hash, fallback.comp_hash);
+  assert.notEqual(first.comp_hash, thresholdChanged.comp_hash);
+  assert.notEqual(first.comp_hash, limitChanged.comp_hash);
+  assert.notEqual(first.comp_hash, localChanged.comp_hash);
+  assert.notEqual(first.comp_hash, fallbackHashChanged.comp_hash);
+});
+
+test("keeps Auto visible without local models and fails closed on donors or slug collisions", () => {
+  const fallback = {
+    ...donor,
+    slug: "gpt-5.6-sol",
+    comp_hash: "native-fallback",
+  };
+  const native = { models: [fallback] };
+  const noLocal = buildMixedCodexCatalog({
+    nativeCatalog: native,
+    bundledCatalog: native,
+    discoveredModels: [],
+    smartRouting: smartRouting(),
+  });
+  assert.deepEqual(noLocal.models.map((model) => model.slug), [
+    "gpt-5.6-sol",
+    AUTO_MODEL_SLUG,
+  ]);
+  assert.equal(
+    buildMixedCodexCatalog({
+      nativeCatalog: native,
+      bundledCatalog: native,
+      discoveredModels: [],
+      smartRouting: smartRouting(),
+    }).models.filter((model) => model.slug === AUTO_MODEL_SLUG).length,
+    1,
+  );
+
+  assert.throws(
+    () =>
+      buildMixedCodexCatalog({
+        nativeCatalog: native,
+        bundledCatalog: native,
+        discoveredModels: [],
+        smartRouting: smartRouting({ fallbackModel: "gpt-missing" }),
+      }),
+    /does not contain configured smart-routing fallback gpt-missing/u,
+  );
+
+  const fallbackWithoutComponentHash = structuredClone(native);
+  delete fallbackWithoutComponentHash.models[0].comp_hash;
+  assert.throws(
+    () =>
+      buildMixedCodexCatalog({
+        nativeCatalog: fallbackWithoutComponentHash,
+        bundledCatalog: fallbackWithoutComponentHash,
+        discoveredModels: [],
+        smartRouting: smartRouting(),
+      }),
+    /fallback catalog record must have a component hash/u,
+  );
+
+  for (const slug of [AUTO_MODEL_SLUG, "pickermux/Auto", "PICKERMUX/AUTO"]) {
+    const nativeCollision = {
+      models: [{ ...fallback, slug }],
+    };
+    assert.throws(
+      () =>
+        buildMixedCodexCatalog({
+          nativeCatalog: nativeCollision,
+          bundledCatalog: nativeCollision,
+          discoveredModels: [],
+        }),
+      /Native catalog collides with PickerMux Auto slug/u,
+      slug,
+    );
+
+    assert.throws(
+      () =>
+        buildMixedCodexCatalog({
+          nativeCatalog: native,
+          bundledCatalog: native,
+          discoveredModels: [
+            {
+              id: slug,
+              displayName: "Collision",
+              type: "llm",
+              contextWindow: 32_768,
+            },
+          ],
+          smartRouting: smartRouting(),
+        }),
+      /External model collides with PickerMux Auto slug/u,
+      slug,
+    );
+  }
+
+  assert.throws(
+    () =>
+      validateCodexCatalog({
+        models: [fallback, { ...fallback }],
+      }),
+    /Duplicate catalog model slug/u,
   );
 });
 

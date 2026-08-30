@@ -9,9 +9,11 @@ import { promisify } from "node:util";
 
 import { validateBridgeConfig } from "../src/bridge-config.mjs";
 import {
+  assertCertifiableModel,
   assertBridgeStartupCompatibility,
   assertPersistentCredentialSupport,
   assertSelectedCatalogModel,
+  selectCertificationCandidates,
   restoreRefreshState,
 } from "../src/cli.mjs";
 
@@ -26,7 +28,7 @@ test("release metadata and both CLI entry points identify PickerMux", async () =
     await readFile(path.join(projectDirectory, "package.json"), "utf8"),
   );
   assert.equal(packageMetadata.name, "pickermux");
-  assert.equal(packageMetadata.version, "0.4.0");
+  assert.equal(packageMetadata.version, "0.5.1");
   assert.equal(packageMetadata.license, "MIT");
 
   for (const entryPoint of ["pickermux.mjs", "lmstudio-picker.mjs"]) {
@@ -37,6 +39,8 @@ test("release metadata and both CLI entry points identify PickerMux", async () =
         { encoding: "utf8" },
       );
       assert.match(stdout, /PickerMux/u);
+      assert.match(stdout, /Auto Smart\s+Routing/u);
+      assert.match(stdout, /pickermux\/auto/u);
       assert.doesNotMatch(stdout, /Model Bridge P[1-4]\b/u);
     }
     for (const versionArgument of ["version", "--version", "-v"]) {
@@ -45,9 +49,65 @@ test("release metadata and both CLI entry points identify PickerMux", async () =
         [path.join(projectDirectory, "bin", entryPoint), versionArgument],
         { encoding: "utf8" },
       );
-      assert.equal(stdout, "pickermux 0.4.0\n");
+      assert.equal(stdout, "pickermux 0.5.1\n");
     }
   }
+});
+
+test("certification rejects Auto actionably without exposing secrets", () => {
+  const secret = "do-not-print-certification-secret";
+  const config = validateBridgeConfig({
+    schemaVersion: 2,
+    bridge: {},
+    smartRouting: {
+      enabled: true,
+      localModel: "lmstudio/qwen/local",
+      fallbackModel: "gpt-5.6-sol",
+    },
+    providers: [
+      {
+        id: "lmstudio",
+        kind: "lmstudio-responses",
+        baseUrl: "http://127.0.0.1:1234/v1",
+        allowPrivateNetwork: true,
+        models: [
+          {
+            id: "qwen/local",
+            slug: "lmstudio/qwen/local",
+            displayName: "Qwen Local",
+          },
+        ],
+      },
+    ],
+  });
+  config.providers[0].diagnosticSecret = secret;
+
+  assert.throws(
+    () => assertCertifiableModel(config, "pickermux/auto"),
+    (error) => {
+      assert.match(error.message, /virtual route and cannot be certified/iu);
+      assert.match(error.message, /certify the configured local model instead/iu);
+      assert.match(error.message, /lmstudio\/qwen\/local/u);
+      assert.equal(error.message.includes(secret), false);
+      return true;
+    },
+  );
+  assert.equal(assertCertifiableModel(config, "lmstudio/qwen/local"), true);
+  const localCandidate = { id: "lmstudio/qwen/local" };
+  assert.deepEqual(
+    selectCertificationCandidates(
+      [{ id: "pickermux/auto" }, localCandidate],
+      { all: true },
+    ),
+    [localCandidate],
+  );
+  assert.deepEqual(
+    selectCertificationCandidates(
+      [{ id: "pickermux/auto" }, localCandidate],
+      { model: "pickermux/auto", all: false },
+    ),
+    [],
+  );
 });
 
 test("selected picker model and effort must survive a refreshed catalog", () => {

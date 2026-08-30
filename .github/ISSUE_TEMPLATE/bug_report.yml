@@ -16,7 +16,7 @@ body:
     attributes:
       label: PickerMux version
       description: Provide a release version or commit SHA.
-      placeholder: v0.4.0 or abc1234
+      placeholder: v0.5.1 or abc1234
     validations:
       required: true
 

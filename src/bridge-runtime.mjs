@@ -3,6 +3,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
 import {
   chmod,
+  lstat,
   mkdir,
   open,
   readFile,
@@ -59,6 +60,15 @@ function xml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&apos;");
+}
+
+function unescapeXml(value) {
+  return value
+    .replaceAll("&quot;", '"')
+    .replaceAll("&apos;", "'")
+    .replaceAll("&gt;", ">")
+    .replaceAll("&lt;", "<")
+    .replaceAll("&amp;", "&");
 }
 
 async function writePrivateAtomic(destination, contents, mode = 0o600) {
@@ -192,6 +202,63 @@ ${argumentsXml}
 `;
 }
 
+export async function assertManagedLaunchAgent({
+  launchAgentPath,
+  launchAgentLabel,
+  binPath,
+  configPath,
+  runtimePath,
+  workingDirectory,
+  logPath,
+} = {}) {
+  let metadata;
+  try {
+    metadata = await lstat(launchAgentPath);
+  } catch (error) {
+    if (error?.code === "ENOENT") return { present: false };
+    throw error;
+  }
+  if (!metadata.isFile() || metadata.isSymbolicLink()) {
+    throw new Error("Refusing to remove a launch agent that is not a regular file");
+  }
+  if (typeof process.getuid === "function" && metadata.uid !== process.getuid()) {
+    throw new Error("Refusing to remove a launch agent not owned by the current user");
+  }
+  if ((metadata.mode & 0o077) !== 0) {
+    throw new Error("Refusing to remove a launch agent with non-private permissions");
+  }
+  const contents = await readFile(launchAgentPath, "utf8");
+  const argumentsBlock = contents.match(
+    /<key>ProgramArguments<\/key>\s*<array>([\s\S]*?)<\/array>/u,
+  )?.[1];
+  const encodedNodePath = argumentsBlock?.match(/<string>(.*?)<\/string>/u)?.[1];
+  if (!encodedNodePath) {
+    throw new Error("Refusing to remove an unrecognized launch agent");
+  }
+  const nodePath = unescapeXml(encodedNodePath);
+  if (!path.isAbsolute(nodePath) || /[\u0000\r\n]/u.test(nodePath)) {
+    throw new Error("Refusing to remove a launch agent with an invalid Node path");
+  }
+  const expected = renderLaunchAgent({
+    label: launchAgentLabel,
+    nodePath,
+    binPath,
+    configPath,
+    runtimePath,
+    workingDirectory,
+    logPath,
+  });
+  if (contents !== expected) {
+    throw new Error("Refusing to remove a modified or foreign launch agent");
+  }
+  return {
+    present: true,
+    nodePath,
+    device: metadata.dev,
+    inode: metadata.ino,
+  };
+}
+
 async function serviceLoaded({ label, uid = process.getuid(), execFileImpl = execFile }) {
   try {
     await execFileImpl("/bin/launchctl", ["print", `gui/${uid}/${label}`], {
@@ -296,8 +363,33 @@ export async function stopBridgeService({
   launchAgentLabel,
   execFileImpl = execFile,
   removeRuntime = true,
+  expectedLaunchAgent,
 }) {
+  const launchAgent = expectedLaunchAgent
+    ? await assertManagedLaunchAgent({
+        ...expectedLaunchAgent,
+        launchAgentPath,
+        launchAgentLabel,
+      })
+    : undefined;
   const loaded = await serviceLoaded({ label: launchAgentLabel, execFileImpl });
+  if (loaded && launchAgent?.present === false) {
+    throw new Error("Refusing to stop a loaded launch agent whose managed plist is missing");
+  }
+  if (launchAgent?.present) {
+    const confirmed = await assertManagedLaunchAgent({
+      ...expectedLaunchAgent,
+      launchAgentPath,
+      launchAgentLabel,
+    });
+    if (
+      !confirmed.present ||
+      confirmed.device !== launchAgent.device ||
+      confirmed.inode !== launchAgent.inode
+    ) {
+      throw new Error("Refusing to stop a launch agent that changed during removal");
+    }
+  }
   if (loaded) {
     await execFileImpl(
       "/bin/launchctl",
@@ -305,9 +397,61 @@ export async function stopBridgeService({
       { encoding: "utf8", timeout: 15_000 },
     );
   }
-  await unlink(launchAgentPath).catch((error) => {
-    if (error?.code !== "ENOENT") throw error;
-  });
+  if (launchAgent?.present) {
+    const quarantinePath = path.join(
+      path.dirname(launchAgentPath),
+      `.${path.basename(launchAgentPath)}.remove.${process.pid}.${randomBytes(8).toString("hex")}.staging`,
+    );
+    const quarantine = await lstat(quarantinePath).catch((error) => {
+      if (error?.code === "ENOENT") return null;
+      throw error;
+    });
+    if (quarantine !== null) {
+      throw new Error("Refusing to reuse an existing launch-agent quarantine");
+    }
+    await rename(launchAgentPath, quarantinePath);
+    try {
+      const staged = await assertManagedLaunchAgent({
+        ...expectedLaunchAgent,
+        launchAgentPath: quarantinePath,
+        launchAgentLabel,
+      });
+      if (
+        !staged.present ||
+        staged.device !== launchAgent.device ||
+        staged.inode !== launchAgent.inode
+      ) {
+        throw new Error("Refusing to remove a launch agent replaced during removal");
+      }
+      await unlink(quarantinePath);
+    } catch (error) {
+      const replacement = await lstat(launchAgentPath).catch((readError) => {
+        if (readError?.code === "ENOENT") return null;
+        throw readError;
+      });
+      const staged = await lstat(quarantinePath).catch((readError) => {
+        if (readError?.code === "ENOENT") return null;
+        throw readError;
+      });
+      if (replacement === null && staged !== null) {
+        await rename(quarantinePath, launchAgentPath);
+      }
+      throw error;
+    }
+    const replacement = await lstat(launchAgentPath).catch((error) => {
+      if (error?.code === "ENOENT") return null;
+      throw error;
+    });
+    if (replacement !== null) {
+      throw new Error(
+        "A new launch agent appeared during removal and was preserved for review",
+      );
+    }
+  } else {
+    await unlink(launchAgentPath).catch((error) => {
+      if (error?.code !== "ENOENT") throw error;
+    });
+  }
   if (removeRuntime) {
     await unlink(runtimePath).catch((error) => {
       if (error?.code !== "ENOENT") throw error;

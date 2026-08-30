@@ -18,6 +18,12 @@ a fast local-model workflow with accurate context information, model-specific
 reasoning levels, and a strict routing boundary between native and external
 providers.
 
+PickerMux can also expose an opt-in virtual model named **Auto – Smart
+Routing**. When selected, it deterministically chooses one configured LM Studio
+model for compatible lower-complexity turns or one configured native Codex
+fallback. Explicit native and external model selections continue to route
+directly.
+
 ![PickerMux model picker showing local LM Studio models alongside existing Codex models](assets/screenshots/pickermux-model-picker.png)
 
 *Load models in LM Studio, refresh PickerMux, and select them directly in Codex
@@ -60,7 +66,7 @@ or another shell file automatically. Until then, use the absolute command path.
 For a reproducible installation, replace `latest` with an exact release:
 
 ```bash
-/usr/bin/curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://github.com/patrickschiller/pickermux/releases/download/v0.4.0/install.sh | /bin/sh
+/usr/bin/curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://github.com/patrickschiller/pickermux/releases/download/v0.5.1/install.sh | /bin/sh
 ```
 
 Both one-line forms execute code downloaded from GitHub. The archive checksum
@@ -98,12 +104,17 @@ inference check.
 3. Fully quit and reopen Codex Desktop.
 4. Select the namespaced LM Studio model from the normal Codex model picker.
 
+If Auto Smart Routing is enabled, `pickermux/auto` is available as an additional
+choice. Select the explicit `lmstudio/...` entry instead whenever execution must
+be guaranteed local.
+
 ## Upgrade and uninstall
 
 PickerMux never updates silently. Run the same latest-release installer again
 to stage and activate a newer version. A healthy installation is refreshed
 transactionally; failed activation restores the previous CLI and bridge state.
 The same version is safe to run again, while an implicit downgrade is refused.
+Fully quit Codex Desktop with `Command-Q` before running any uninstall mode.
 
 Remove only the Codex integration, LaunchAgent, and managed runtime with:
 
@@ -121,6 +132,21 @@ Verified configuration backups and provider credentials in the macOS Keychain
 are deliberately retained in both cases. PickerMux never removes unrecognized
 launcher files or distribution paths.
 
+For an explicit full removal, including verified PickerMux backups and every
+provider credential recorded in PickerMux's private Keychain registry, use:
+
+```bash
+pickermux uninstall --purge
+```
+
+`--purge` implies `--remove-cli` and fails closed on modified receipts,
+unrecognized LaunchAgents, symbolic links, unsafe permissions, or unexpected
+backup files. The installed `runtime-app` must also match the active,
+receipt-validated PickerMux distribution exactly; leftover previous runtime
+packages or unexpected runtime entries are preserved for review instead of
+being deleted recursively. It never reads or removes native Codex
+authentication.
+
 ## Why PickerMux
 
 Running a model in LM Studio is straightforward. Using it repeatedly inside
@@ -134,6 +160,9 @@ deliberately conservative:
   and added to the normal Codex Desktop picker.
 - **One familiar interface.** Move between local models without maintaining a
   collection of Codex profiles or editing configuration for every switch.
+- **Optional smart routing.** Select `pickermux/auto` to prefer one configured
+  local model for compatible lower-complexity turns and use one native fallback
+  when the request requires it.
 - **No fake capabilities.** Context size and reasoning options come from the
   loaded LM Studio instance. PickerMux never inflates a model's context window.
 - **Safe model defaults.** Newly discovered external models start in text-only
@@ -158,6 +187,9 @@ flowchart LR
     C[Codex Desktop] -->|one loopback provider| B[PickerMux bridge]
     B -->|native model slug<br/>approved native headers| O[Native Codex backend]
     B -->|namespaced model slug<br/>clean provider headers| L[LM Studio Responses API]
+    B -->|pickermux/auto| R[Deterministic local selector]
+    R -->|compatible lower-complexity turn| L
+    R -->|fallback required| O
     D[Loaded-model discovery] --> B
     B --> K[Generated mixed catalog]
     K -. loaded at startup .-> C
@@ -191,6 +223,7 @@ catalog lifecycle, request normalization, and certification design.
 | `pickermux credential-delete PROVIDER` | Delete the named provider's Keychain item. |
 | `pickermux uninstall` | Restore the previous Codex configuration and remove managed runtime files. |
 | `pickermux uninstall --remove-cli` | Also remove only the receipt-owned CLI launcher and versioned distribution. |
+| `pickermux uninstall --purge` | Fully remove the integration, receipt-owned CLI, verified backups, and registered provider Keychain credentials. |
 
 Run `pickermux help`, `pickermux --help`, or `pickermux -h` for the compact CLI
 reference. `bin/lmstudio-picker.mjs` remains available as a compatibility alias.
@@ -209,11 +242,51 @@ For multiple loaded instances of the same model, PickerMux uses the smallest
 reported context window. Models below 32,768 tokens receive a visible warning
 marker in the picker, but their real context value remains unchanged.
 
-If LM Studio is intentionally stopped, PickerMux publishes a native-only
-catalog the next time synchronization is allowed. If the selected local model
-disappears, the managed selection returns to the configured native fallback.
-Transient discovery failures keep the last known good catalog instead of
-silently erasing models.
+If LM Studio is intentionally stopped, PickerMux removes loaded external models
+from the catalog the next time synchronization is allowed. Native models remain,
+and the Auto entry also remains when smart routing is enabled. If an explicit
+local model was selected and disappears, the managed selection returns to the
+configured native fallback. An Auto selection remains selected and routes to
+its native fallback while its local candidate is unavailable. Transient
+discovery failures keep the last known good catalog instead of silently erasing
+models.
+
+## Auto – Smart Routing
+
+Auto Smart Routing is disabled by default and must be enabled explicitly. The
+initial policy is deliberately narrow: one exact LM Studio candidate and one
+exact native Codex fallback.
+
+```json
+{
+  "smartRouting": {
+    "enabled": true,
+    "localModel": "lmstudio/qwen/qwen3.8-27b",
+    "fallbackModel": "gpt-5.6-sol",
+    "maxLocalInputTokens": 18000,
+    "complexityThreshold": 3
+  }
+}
+```
+
+When `pickermux/auto` is selected, PickerMux evaluates local-model availability,
+context, input modality, current tool certification, requested reasoning,
+request size, and a deterministic complexity score. A compatible
+lower-complexity text request prefers the local route; an unavailable or
+ineligible local route uses the configured native fallback. Short-lived,
+memory-only affinity keeps a thread or tool loop on a stable provider while the
+chosen route remains eligible.
+
+The decision is made locally before provider credential lookup or an upstream
+connection. PickerMux does not call a classifier model, send the prompt to both
+providers, or automatically replay a failed local request against native Codex.
+Each request is dispatched to one provider only.
+
+Selecting Auto is explicit consent that either configured destination may be
+used. Explicit native and namespaced external selections bypass Auto entirely;
+select the explicit `lmstudio/...` model when guaranteed local execution is
+required. See [Configuration](docs/CONFIGURATION.md) for validation rules and a
+complete example.
 
 ## Tool certification
 
@@ -240,6 +313,8 @@ proxy.
 - ChatGPT tokens, cookies, account identifiers, attestation data, and Codex
   metadata are stripped before every external request.
 - Native credentials are forwarded only for exact native model routes.
+- Auto selects one exact concrete route before any provider credential is
+  resolved; the virtual route has no credential of its own.
 - External requests receive a fresh allowlisted header set.
 - Provider secrets can be stored under provider-specific macOS Keychain items;
   they are never written to project configuration or status output.
@@ -264,10 +339,15 @@ pickermux doctor
 ```
 
 If compatibility is reported as `update-required`, rerun the latest-release
-installer before continuing. If the Codex account cache no longer matches the
-installed client, uninstall the PickerMux integration, launch and fully quit
-Codex once without the override, then run setup again. This lets Codex refresh
-its own account-visible catalog first.
+installer. Setup now checks the account-scoped model cache before staging a new
+CLI version, repeats that read-only check under the installation lock before
+committing CLI controls, and checks it once more immediately before integration
+activation. If the cache still belongs to the previous Codex client, no active
+PickerMux state is changed. Follow the printed recovery steps: when the
+integration is installed, run `pickermux uninstall` first; then launch Codex
+while signed in, wait for its native picker to load, fully quit with
+`Command-Q`, and rerun setup with the same custom configuration, if one was
+used.
 
 See [Troubleshooting](docs/TROUBLESHOOTING.md) for recovery procedures and
 redaction guidance.
@@ -277,6 +357,10 @@ redaction guidance.
 - PickerMux currently supports macOS only.
 - Picker catalog changes require a full Codex Desktop restart; there is no
   supported live catalog reload.
+- Auto Smart Routing supports one local candidate and one native fallback. Its
+  policy is a deterministic heuristic, not semantic classification.
+- PickerMux does not automatically fail over to another provider after an
+  upstream request has started.
 - Access-controlled native models appear only when the authenticated account
   is entitled to them.
 - Local quality, tool reliability, and latency depend on the selected model,

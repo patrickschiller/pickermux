@@ -10,6 +10,7 @@ import {
 } from "./header-policy.mjs";
 import { BodyCodecError, decodeJsonBody, readLimitedBody } from "./body-codec.mjs";
 import { createCredentialResolver } from "./keychain-credentials.mjs";
+import { createSmartRouter } from "./smart-router.mjs";
 import {
   normalizeLmStudioToolRequest,
 } from "./tool-normalization.mjs";
@@ -466,6 +467,30 @@ function externalBody(body, route, maxBytes) {
   return { encoded, toolCodec };
 }
 
+function reencodedNativeBody(body, route, maxBytes) {
+  if (
+    typeof route.slug !== "string" ||
+    !route.slug ||
+    route.upstreamModel !== route.slug
+  ) {
+    throw new ResponsesProxyError("The selected model route is invalid", {
+      statusCode: 500,
+      code: "INVALID_UPSTREAM_MODEL",
+    });
+  }
+  const encoded = Buffer.from(
+    JSON.stringify({ ...body, model: route.slug }),
+    "utf8",
+  );
+  if (encoded.length > maxBytes) {
+    throw new BodyCodecError("Request body is too large", {
+      statusCode: 413,
+      code: "BODY_TOO_LARGE",
+    });
+  }
+  return encoded;
+}
+
 function statusForError(error) {
   const value = Number(error?.statusCode);
   return Number.isInteger(value) && value >= 400 && value <= 599 ? value : 500;
@@ -724,6 +749,9 @@ export function createResponsesProxy({
   httpTransport = http,
   httpsTransport = https,
   dnsLookup = dns.lookup,
+  smartRouter,
+  now,
+  onRoutingDecision,
 } = {}) {
   if (!registry || typeof registry.resolve !== "function") {
     throw new TypeError("A model registry with resolve(model) is required");
@@ -733,6 +761,8 @@ export function createResponsesProxy({
   const transports = { http: httpTransport, https: httpsTransport };
   const resolveCredential =
     credentialResolver ?? createCredentialResolver({ environment: env });
+  const selectSmartRoute =
+    smartRouter ?? createSmartRouter({ registry, now, onDecision: onRoutingDecision });
 
   return async function handleResponses(request, response, path) {
     if (!RESPONSE_PATHS.has(path)) {
@@ -759,7 +789,18 @@ export function createResponsesProxy({
         });
       }
 
-      const route = await registry.resolve(decoded.model);
+      const routeResolution = registry.resolve(decoded.model);
+      const requestedRoute = typeof routeResolution?.then === "function"
+        ? await routeResolution
+        : routeResolution;
+      const smartDecision = requestedRoute?.kind === "smart-router"
+        ? selectSmartRoute.select({
+            requestBody: decoded,
+            path,
+            autoRoute: requestedRoute,
+          })
+        : undefined;
+      const route = smartDecision?.route ?? requestedRoute;
       const kind = routeKind(route);
       let target;
       let outboundBody;
@@ -769,8 +810,13 @@ export function createResponsesProxy({
 
       if (kind === "native") {
         target = upstreamUrl(nativeBase, path);
-        outboundBody = rawBody;
-        headers = buildNativeRequestHeaders(request.headers, outboundBody.length);
+        const reencoded = requestedRoute?.kind === "smart-router";
+        outboundBody = reencoded
+          ? reencodedNativeBody(decoded, route, limits.requestBodyBytes)
+          : rawBody;
+        headers = buildNativeRequestHeaders(request.headers, outboundBody.length, {
+          reencoded,
+        });
       } else {
         let credential;
         try {

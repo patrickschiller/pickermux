@@ -16,6 +16,7 @@ import {
   buildProviderRegistry,
   createReloadableProviderRegistry,
 } from "../src/provider-registry.mjs";
+import { AUTO_MODEL_SLUG } from "../src/smart-routing-constants.mjs";
 
 const donor = {
   slug: "gpt-5.4-mini",
@@ -72,6 +73,44 @@ function discovered(slug, upstreamId, displayName, contextWindow, extra = {}) {
     capabilities: {},
     ...extra,
   };
+}
+
+function smartConfig(overrides = {}) {
+  const input = config();
+  input.smartRouting = {
+    ...input.smartRouting,
+    enabled: true,
+    localModel: "lmstudio/qwen/local",
+    fallbackModel: "gpt-5.6-sol",
+    maxLocalInputTokens: 18_000,
+    complexityThreshold: 3,
+    ...overrides,
+  };
+  return validateBridgeConfig(input);
+}
+
+function smartNativeCatalog() {
+  return {
+    models: [
+      {
+        ...donor,
+        slug: "gpt-5.6-sol",
+        display_name: "GPT-5.6 Sol",
+        comp_hash: "native-sol-test-hash",
+      },
+      donor,
+    ],
+  };
+}
+
+function smartCatalog(inputConfig, discoveredModels) {
+  const nativeCatalog = smartNativeCatalog();
+  return buildMixedCodexCatalog({
+    bundledCatalog: nativeCatalog,
+    nativeCatalog,
+    discoveredModels,
+    smartRouting: inputConfig.smartRouting,
+  });
 }
 
 test("state-aware polling uses cheap two-second state checks and ten-second discovery", () => {
@@ -489,4 +528,202 @@ test("catalog publication failure rolls back the picker and preserves the regist
     /simulated catalog failure/u,
   );
   assert.deepEqual(events, ["catalog", "rollback"]);
+});
+
+test("Auto survives an empty loaded set and repeated synchronization never duplicates it", async () => {
+  const inputConfig = smartConfig();
+  const currentCatalog = smartCatalog(inputConfig, [
+    discovered("lmstudio/qwen/local", "qwen/local", "Qwen Override", 32_768),
+  ]);
+  const controller = createReloadableProviderRegistry(
+    buildProviderRegistry({ mixedCatalog: currentCatalog, config: inputConfig }),
+  );
+  let writeCalls = 0;
+  const first = await syncBridgeCatalog({
+    config: inputConfig,
+    currentCatalog,
+    catalogPath: "/private/test/models.json",
+    registryController: controller,
+    discoverImpl: async () => ({ models: [], providers: [] }),
+    writeImpl: async () => {
+      writeCalls += 1;
+    },
+  });
+
+  assert.equal(first.changed, true);
+  assert.deepEqual(
+    first.catalog.models.map((model) => model.slug),
+    ["gpt-5.6-sol", "gpt-5.4-mini", AUTO_MODEL_SLUG],
+  );
+  assert.equal(
+    first.catalog.models.filter((model) => model.slug === AUTO_MODEL_SLUG).length,
+    1,
+  );
+  assert.equal(controller.resolve(AUTO_MODEL_SLUG).kind, "smart-router");
+  assert.throws(
+    () => controller.resolve("lmstudio/qwen/local"),
+    /No route is configured/u,
+  );
+  assert.deepEqual(
+    controller.listModels().map((model) => model.id),
+    first.catalog.models.map((model) => model.slug),
+  );
+
+  const second = await syncBridgeCatalog({
+    config: inputConfig,
+    currentCatalog: first.catalog,
+    catalogPath: "/private/test/models.json",
+    registryController: controller,
+    discoverImpl: async () => ({ models: [], providers: [] }),
+    writeImpl: async () => {
+      writeCalls += 1;
+    },
+  });
+  assert.equal(second.changed, false);
+  assert.equal(
+    second.catalog.models.filter((model) => model.slug === AUTO_MODEL_SLUG).length,
+    1,
+  );
+  assert.equal(writeCalls, 1);
+});
+
+test("Auto registry construction failure publishes neither catalog nor registry", async () => {
+  const inputConfig = smartConfig();
+  const currentCatalog = smartCatalog(inputConfig, [
+    discovered("lmstudio/qwen/local", "qwen/local", "Qwen Override", 32_768),
+  ]);
+  const controller = createReloadableProviderRegistry(
+    buildProviderRegistry({ mixedCatalog: currentCatalog, config: inputConfig }),
+  );
+  const previousAuto = controller.resolve(AUTO_MODEL_SLUG);
+  let writeCalls = 0;
+
+  await assert.rejects(
+    syncBridgeCatalog({
+      config: inputConfig,
+      currentCatalog,
+      catalogPath: "/private/test/models.json",
+      registryController: controller,
+      discoverImpl: async () => ({
+        models: [
+          discovered("foreign/unsafe", "unsafe", "Unsafe", 32_768),
+        ],
+        providers: [],
+      }),
+      writeImpl: async () => {
+        writeCalls += 1;
+      },
+    }),
+    /unclaimed namespaced model/u,
+  );
+  assert.equal(writeCalls, 0);
+  assert.strictEqual(controller.resolve(AUTO_MODEL_SLUG), previousAuto);
+  assert.equal(
+    controller.resolve("lmstudio/qwen/local").upstreamModel,
+    "qwen/local",
+  );
+  assert.throws(() => controller.resolve("foreign/unsafe"), /No route is configured/u);
+});
+
+test("missing Auto fallback and selection failures retain the matching last-known-good pair", async () => {
+  const inputConfig = smartConfig();
+  const currentCatalog = smartCatalog(inputConfig, [
+    discovered("lmstudio/qwen/local", "qwen/local", "Qwen Override", 32_768),
+  ]);
+  const controller = createReloadableProviderRegistry(
+    buildProviderRegistry({ mixedCatalog: currentCatalog, config: inputConfig }),
+  );
+  const previousModels = controller.listModels();
+  const previousAuto = controller.resolve(AUTO_MODEL_SLUG);
+  let writeCalls = 0;
+
+  await assert.rejects(
+    syncBridgeCatalog({
+      config: smartConfig({ fallbackModel: "gpt-missing" }),
+      currentCatalog,
+      catalogPath: "/private/test/models.json",
+      registryController: controller,
+      discoverImpl: async () => ({ models: [], providers: [] }),
+      writeImpl: async () => {
+        writeCalls += 1;
+      },
+    }),
+    /does not contain configured smart-routing fallback gpt-missing/u,
+  );
+  assert.equal(writeCalls, 0);
+  assert.strictEqual(controller.resolve(AUTO_MODEL_SLUG), previousAuto);
+  assert.deepEqual(controller.listModels(), previousModels);
+
+  await assert.rejects(
+    syncBridgeCatalog({
+      config: inputConfig,
+      currentCatalog,
+      catalogPath: "/private/test/models.json",
+      registryController: controller,
+      discoverImpl: async () => ({ models: [], providers: [] }),
+      reconcileSelectionImpl: async () => {
+        throw new Error("simulated selection failure");
+      },
+      writeImpl: async () => {
+        writeCalls += 1;
+      },
+    }),
+    /simulated selection failure/u,
+  );
+  assert.equal(writeCalls, 0);
+  assert.strictEqual(controller.resolve(AUTO_MODEL_SLUG), previousAuto);
+  assert.deepEqual(controller.listModels(), previousModels);
+});
+
+test("disabling smart routing removes Auto only after catalog publication succeeds", async () => {
+  const enabledConfig = smartConfig();
+  const disabledConfig = config();
+  const localModels = [
+    discovered("lmstudio/qwen/local", "qwen/local", "Qwen Override", 32_768),
+  ];
+  const currentCatalog = smartCatalog(enabledConfig, localModels);
+  const controller = createReloadableProviderRegistry(
+    buildProviderRegistry({ mixedCatalog: currentCatalog, config: enabledConfig }),
+  );
+  const previousAuto = controller.resolve(AUTO_MODEL_SLUG);
+
+  await assert.rejects(
+    syncBridgeCatalog({
+      config: disabledConfig,
+      currentCatalog,
+      catalogPath: "/private/test/models.json",
+      registryController: controller,
+      discoverImpl: async () => ({ models: localModels, providers: [] }),
+      writeImpl: async () => {
+        throw new Error("simulated disable write failure");
+      },
+    }),
+    /simulated disable write failure/u,
+  );
+  assert.strictEqual(controller.resolve(AUTO_MODEL_SLUG), previousAuto);
+
+  const events = [];
+  const result = await syncBridgeCatalog({
+    config: disabledConfig,
+    currentCatalog,
+    catalogPath: "/private/test/models.json",
+    registryController: {
+      replace(registry) {
+        events.push("registry");
+        controller.replace(registry);
+      },
+    },
+    discoverImpl: async () => ({ models: localModels, providers: [] }),
+    writeImpl: async () => events.push("catalog"),
+  });
+  assert.deepEqual(events, ["catalog", "registry"]);
+  assert.equal(
+    result.catalog.models.some((model) => model.slug === AUTO_MODEL_SLUG),
+    false,
+  );
+  assert.deepEqual(
+    controller.listModels().map((model) => model.id),
+    ["gpt-5.6-sol", "gpt-5.4-mini", "lmstudio/qwen/local"],
+  );
+  assert.throws(() => controller.resolve(AUTO_MODEL_SLUG), /No route is configured/u);
 });
