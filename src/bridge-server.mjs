@@ -122,6 +122,7 @@ export function createBridgeServer({
     httpTransport,
     httpsTransport,
     dnsLookup,
+    certificationToken: instanceId,
   });
 
   const server = http.createServer({ maxHeaderSize: requestHeaderBytes }, async (request, response) => {

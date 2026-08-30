@@ -10,6 +10,19 @@ pickermux doctor
 Use `doctor --live` only when the static checks pass and a real model inference
 is needed.
 
+## LM Studio reports `Channel Error` or a context-length failure
+
+Read the nested LM Studio error first. If it says that the initial prompt tokens
+to keep exceed the context length, compare the active value reported by
+`pickermux discover` with the model's load settings in LM Studio. Unload and
+reload the model with a larger supported context, then fully quit Codex, run
+`pickermux refresh`, and reopen Codex so it loads the updated catalog.
+
+PickerMux 0.4.1 also removes optional function-tool catalogs from uncertified
+text-only requests. Version 0.4.0 could forward those schemas even though the
+catalog disabled tool use, making a small active context fail before ordinary
+chat text was processed. Upgrade before diagnosing the remaining prompt size.
+
 ## A loaded LM Studio model is missing
 
 1. Confirm that the LM Studio local server is running.

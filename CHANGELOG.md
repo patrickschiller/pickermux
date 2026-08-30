@@ -7,6 +7,24 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-08-30
+
+### Fixed
+
+- Enforce conservative `text-only` model status at the bridge boundary by
+  removing optional function-tool catalogs before external requests are sent.
+- Reject forced tool choices and tool-call history for models without a valid
+  model-bound certification receipt.
+- Preserve live certification through a private per-runtime marker that is
+  accepted only by the local bridge and is never forwarded to providers.
+
+### Security
+
+- Tool certification is now a transport-enforced capability instead of relying
+  only on Codex catalog metadata. This prevents uncertified models from
+  receiving large or executable function schemas when a client still submits
+  them.
+
 ## [0.4.0] - 2026-08-29
 
 ### Added
@@ -48,5 +66,6 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
   paths and file types, refuses root execution and foreign launchers, and
   restores the previous distribution state when activation fails.
 
-[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/patrickschiller/pickermux/releases/tag/v0.4.1
 [0.4.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.4.0

@@ -82,6 +82,7 @@ function configuredExternalRoutes(config) {
         providerKind: provider.kind,
         baseUrl: provider.baseUrl,
         allowPrivateNetwork: provider.allowPrivateNetwork,
+        toolsEnabled: false,
         model,
       };
       if (provider.credentialEnv !== undefined) {
@@ -208,6 +209,9 @@ function mixedExternalRoutes(config, assignments, discoveredModels) {
       providerKind: provider.kind,
       baseUrl: provider.baseUrl,
       allowPrivateNetwork: provider.allowPrivateNetwork,
+      toolsEnabled:
+        catalogModel.tool_mode === "direct" &&
+        catalogModel.shell_type === "unified_exec",
       model,
       ...(reasoningEffort ? { reasoningEffort } : {}),
       ...(reasoningEfforts?.length ? { reasoningEfforts: [...reasoningEfforts] } : {}),
