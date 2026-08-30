@@ -90,6 +90,13 @@ Watch the release workflow. Do not publish announcements until the generated
 release exists and both the latest and version-pinned README installer URLs
 work from a logged-out environment.
 
+## Patch releases
+
+For every patch, require the release commit to be merged into and synchronized
+with `main`, confirm that neither the tag nor release already exists, and then
+create an annotated tag from that exact `main` commit. Never tag an unmerged PR
+head or replace already published release assets.
+
 ## Manual acceptance matrix
 
 At minimum, record:

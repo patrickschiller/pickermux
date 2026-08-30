@@ -36,7 +36,7 @@ function localRoute(overrides = {}) {
     upstreamModel: "qwen/local",
     providerKind: "lmstudio-responses",
     contextWindow: 32_768,
-    certifiedForTools: false,
+    toolsEnabled: false,
     ...overrides,
   };
 }
@@ -133,6 +133,7 @@ test("hard eligibility failures use the required precedence", async (t) => {
         content: [{ type: "input_image", image_url: "data:image/png;base64,AA==" }],
       }],
       tools: [{ type: "function", name: "inspect" }],
+      tool_choice: "required",
       reasoning: { effort: "ultra" },
     });
     assert.equal(decision.reason, "unsupported_local_input");
@@ -143,6 +144,7 @@ test("hard eligibility failures use the required precedence", async (t) => {
     const decision = select(router, {
       input: "Use a tool",
       tools: [{ type: "function", name: "inspect" }],
+      tool_choice: "required",
       reasoning: { effort: "high" },
     });
     assert.equal(decision.reason, "local_tools_uncertified");
@@ -209,25 +211,74 @@ test("non-text content selects fallback only for user input", () => {
     ],
   };
   assert.equal(hasUnsupportedLocalInput(compatibleHistory), false);
-  assert.equal(select(fixture().router, compatibleHistory).reason, "local_eligible");
+  assert.equal(
+    select(
+      fixture({ local: localRoute({ toolsEnabled: true }) }).router,
+      compatibleHistory,
+    ).reason,
+    "local_eligible",
+  );
 });
 
-test("tool exposure requires current exact route certification metadata", () => {
-  const requestBody = {
+test("only required tool turns need current exact route certification", () => {
+  const optionalCatalog = {
     input: "Inspect the workspace",
     tools: [{ type: "function", name: "inspect", parameters: {} }],
   };
+  for (const toolChoice of [undefined, "auto", "none"]) {
+    const requestBody = {
+      ...optionalCatalog,
+      ...(toolChoice === undefined ? {} : { tool_choice: toolChoice }),
+    };
+    assert.equal(select(fixture().router, requestBody).reason, "local_eligible");
+  }
+
+  const requiredTool = { ...optionalCatalog, tool_choice: "required" };
+  assert.equal(select(fixture().router, requiredTool).reason, "local_tools_uncertified");
   assert.equal(
-    select(fixture().router, requestBody).reason,
+    select(fixture().router, {
+      input: [{ type: "function_call_output", call_id: "call-1", output: "done" }],
+      tool_choice: "none",
+    }).reason,
     "local_tools_uncertified",
   );
   assert.equal(
     select(
-      fixture({ local: localRoute({ certifiedForTools: true }) }).router,
-      requestBody,
+      fixture({ local: localRoute({ toolsEnabled: true }) }).router,
+      requiredTool,
     ).reason,
     "local_eligible",
   );
+});
+
+test("text-only Auto ignores optional schemas that the proxy will strip", () => {
+  const requestBody = {
+    input: "Reply with a short greeting.",
+    tools: Array.from({ length: 226 }, (_unused, index) => ({
+      type: "function",
+      name: `tool_${index}`,
+      description: "x".repeat(256),
+      parameters: { type: "object", properties: {} },
+    })),
+    tool_choice: "auto",
+    parallel_tool_calls: true,
+  };
+  const constrainedAutoRoute = autoRoute({ maxLocalInputTokens: 1_024 });
+  const textOnly = select(
+    fixture().router,
+    requestBody,
+    constrainedAutoRoute,
+  );
+  assert.equal(textOnly.reason, "local_eligible");
+  assert.ok(textOnly.estimatedInputTokens < 1_024);
+
+  const certified = select(
+    fixture({ local: localRoute({ toolsEnabled: true }) }).router,
+    requestBody,
+    constrainedAutoRoute,
+  );
+  assert.equal(certified.reason, "local_context_exceeded");
+  assert.ok(certified.estimatedInputTokens > 1_024);
 });
 
 test("context estimation is deterministic and respects both configured and measured limits", () => {
@@ -422,6 +473,7 @@ test("a local affinity also moves to fallback when request eligibility changes",
   const moved = select(router, {
     input: "use tools",
     tools: [{ type: "function", name: "inspect" }],
+    tool_choice: "required",
     prompt_cache_key: "thread-capability",
   });
   assert.equal(moved.reason, "affinity_local_became_ineligible");

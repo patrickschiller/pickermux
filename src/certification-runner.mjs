@@ -4,6 +4,10 @@ import {
   evaluateModelCertification,
   readCertificationStore,
 } from "./model-certification.mjs";
+import {
+  CERTIFICATION_HEADER,
+  requireCertificationToken,
+} from "./certification-transport.mjs";
 
 function providerForModel(config, model) {
   const provider = config.providers.find((entry) => entry.id === model.providerId);
@@ -79,13 +83,21 @@ function functionCall(response) {
   );
 }
 
-async function postJson({ baseUrl, body, fetchImpl, timeoutMs, label }) {
+async function postJson({
+  baseUrl,
+  body,
+  fetchImpl,
+  timeoutMs,
+  label,
+  certificationToken,
+}) {
   const response = await fetchImpl(`${baseUrl.replace(/\/+$/u, "")}/responses`, {
     method: "POST",
     redirect: "error",
     headers: {
       accept: "application/json",
       "content-type": "application/json",
+      [CERTIFICATION_HEADER]: certificationToken,
     },
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(timeoutMs),
@@ -122,13 +134,21 @@ function parseSse(source) {
   return events;
 }
 
-async function postSse({ baseUrl, body, fetchImpl, timeoutMs, label }) {
+async function postSse({
+  baseUrl,
+  body,
+  fetchImpl,
+  timeoutMs,
+  label,
+  certificationToken,
+}) {
   const response = await fetchImpl(`${baseUrl.replace(/\/+$/u, "")}/responses`, {
     method: "POST",
     redirect: "error",
     headers: {
       accept: "text/event-stream",
       "content-type": "application/json",
+      [CERTIFICATION_HEADER]: certificationToken,
     },
     body: JSON.stringify({ ...body, stream: true }),
     signal: AbortSignal.timeout(timeoutMs),
@@ -251,12 +271,14 @@ function assertNamespaceCall(call, label) {
 export async function runModelCertification({
   baseUrl,
   model,
+  certificationToken,
   fetchImpl = globalThis.fetch,
   timeoutMs = 10 * 60_000,
 } = {}) {
   if (typeof model?.id !== "string" || !Number.isSafeInteger(model.contextWindow)) {
     throw new Error("Certification requires a discovered model with context metadata");
   }
+  const privateCertificationToken = requireCertificationToken(certificationToken);
   const common = {
     model: model.id,
     max_output_tokens: 256,
@@ -272,6 +294,7 @@ export async function runModelCertification({
       ...common,
       input: "Reply with exactly P3_TEXT_OK and nothing else.",
     },
+    certificationToken: privateCertificationToken,
   });
   assertMarker(text, "P3_TEXT_OK", "Text probe");
 
@@ -284,6 +307,7 @@ export async function runModelCertification({
       ...common,
       input: "Reply with exactly P3_STREAM_OK and nothing else.",
     },
+    certificationToken: privateCertificationToken,
   });
   const streamTypes = new Set(streamEvents.map((event) => event.type));
   const deltas = streamEvents
@@ -313,6 +337,7 @@ export async function runModelCertification({
       tool_choice: forcedDirectFunctionChoice(),
       parallel_tool_calls: false,
     },
+    certificationToken: privateCertificationToken,
   });
   const directCall = functionCall(directResponse);
   assertDirectFunctionCall(directCall, "Direct function probe");
@@ -341,6 +366,7 @@ export async function runModelCertification({
       tool_choice: "none",
       parallel_tool_calls: false,
     },
+    certificationToken: privateCertificationToken,
   });
   assertMarker(toolResult, "P3_TOOL_RESULT_OK", "Tool-result probe");
 
@@ -358,6 +384,7 @@ export async function runModelCertification({
       tool_choice: forcedNamespaceChoice(),
       parallel_tool_calls: false,
     },
+    certificationToken: privateCertificationToken,
   });
   const namespaceCall = functionCall(namespaceResponse);
   assertNamespaceCall(namespaceCall, "Parameterless namespace JSON probe");
@@ -375,6 +402,7 @@ export async function runModelCertification({
       tool_choice: forcedNamespaceChoice(),
       parallel_tool_calls: false,
     },
+    certificationToken: privateCertificationToken,
   });
   const doneCall = namespaceEvents
     .filter((event) => event.type === "response.output_item.done")
@@ -395,6 +423,7 @@ export async function runModelCertification({
     timeoutMs,
     label: "Long-context probe",
     body: { ...common, input: longPrompt },
+    certificationToken: privateCertificationToken,
   });
   assertMarker(longContext, "P3_LONG_OK", "Long-context probe");
   if (!Number.isSafeInteger(longContext?.usage?.input_tokens)) {

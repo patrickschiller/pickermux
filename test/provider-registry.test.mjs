@@ -91,7 +91,7 @@ function smartConfig(overrides = {}) {
   return input;
 }
 
-function smartMixedCatalog({ certifiedForTools = false, includeLocal = true } = {}) {
+function smartMixedCatalog({ toolsEnabled = false, includeLocal = true } = {}) {
   const source = bundledCatalog();
   source.models[0].comp_hash = "native-sol-component";
   source.models.push(
@@ -109,8 +109,8 @@ function smartMixedCatalog({ certifiedForTools = false, includeLocal = true } = 
         { effort: "medium" },
         { effort: "xhigh" },
       ],
-      tool_mode: certifiedForTools ? "direct" : null,
-      shell_type: certifiedForTools ? "unified_exec" : "disabled",
+      tool_mode: toolsEnabled ? "direct" : null,
+      shell_type: toolsEnabled ? "unified_exec" : "disabled",
     });
   }
   return source;
@@ -146,7 +146,7 @@ test("keeps the external picker slug separate from the upstream model id", () =>
     providerKind: "lmstudio-responses",
     baseUrl: "http://127.0.0.1:1234/v1",
     allowPrivateNetwork: true,
-    certifiedForTools: false,
+    toolsEnabled: false,
     reasoningEffort: "xhigh",
     reasoningEfforts: ["none", "low", "medium", "xhigh"],
     model: {
@@ -166,7 +166,7 @@ test("keeps the external picker slug separate from the upstream model id", () =>
 });
 
 test("Auto is an exact-match immutable virtual route with isolated collections", () => {
-  const source = smartMixedCatalog({ certifiedForTools: true });
+  const source = smartMixedCatalog({ toolsEnabled: true });
   const registry = buildProviderRegistry({
     mixedCatalog: source,
     config: smartConfig(),
@@ -339,21 +339,21 @@ test("smart routing trusts measured catalog context over an inflated static over
 
 test("external route tool certification is bound to the current catalog snapshot", () => {
   const certifiedRegistry = buildProviderRegistry({
-    mixedCatalog: smartMixedCatalog({ certifiedForTools: true }),
+    mixedCatalog: smartMixedCatalog({ toolsEnabled: true }),
     config: smartConfig(),
   });
   const certified = certifiedRegistry.resolve("lmstudio/qwen/qwen3.8-27b");
-  assert.equal(certified.certifiedForTools, true);
+  assert.equal(certified.toolsEnabled, true);
   assert.equal(Object.isFrozen(certified), true);
 
   const textOnlyRegistry = buildProviderRegistry({
-    mixedCatalog: smartMixedCatalog({ certifiedForTools: false }),
+    mixedCatalog: smartMixedCatalog({ toolsEnabled: false }),
     config: smartConfig(),
   });
   const textOnly = textOnlyRegistry.resolve("lmstudio/qwen/qwen3.8-27b");
-  assert.equal(textOnly.certifiedForTools, false);
+  assert.equal(textOnly.toolsEnabled, false);
   assert.notStrictEqual(textOnly, certified);
-  assert.equal(certified.certifiedForTools, true);
+  assert.equal(certified.toolsEnabled, true);
 });
 
 test("routes carry only a Keychain credential reference", () => {
@@ -462,6 +462,8 @@ test("loaded discovery claims only its provider namespace and reconstructs exact
         { effort: "none" },
         { effort: "xhigh" },
       ],
+      tool_mode: "direct",
+      shell_type: "unified_exec",
     },
     {
       slug: "lmstudio/untrusted/exact-xhigh",
@@ -508,6 +510,8 @@ test("loaded discovery claims only its provider namespace and reconstructs exact
     xhigh: "xhigh",
   });
   assert.deepEqual(fallbackQwen.reasoningOmitEfforts, []);
+  assert.equal(phi.toolsEnabled, false);
+  assert.equal(fallbackQwen.toolsEnabled, true);
 
   const catalogOnlyRegistry = buildProviderRegistry({
     mixedCatalog: source,

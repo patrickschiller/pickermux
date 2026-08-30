@@ -161,7 +161,7 @@ Here is a complete enabled configuration:
 
 Selecting `pickermux/auto` explicitly permits PickerMux to use either configured
 destination. Availability, input modality, local context, current tool
-certification, requested reasoning, request size, and deterministic complexity
+requirements, requested reasoning, request size, and deterministic complexity
 can require the native fallback. Explicit native and namespaced external model
 selections bypass Auto. Select the exact `lmstudio/...` model instead when a
 request must remain local.
@@ -170,12 +170,14 @@ Auto performs no classifier request, prompt fan-out, or automatic
 cross-provider retry. One inbound request is sent to one selected provider.
 
 The context estimate is deterministic and dependency-free. PickerMux serializes
-only `instructions`, `input`, and `tools`, measures their UTF-8 JSON byte length,
-and conservatively divides by three. The estimate must fit both
+only `instructions`, `input`, and, for a certified local route, `tools`, measures
+their UTF-8 JSON byte length, and conservatively divides by three. Optional tool
+catalogs are excluded for an uncertified local route because the text-only
+transport removes them before dispatch. The estimate must fit both
 `maxLocalInputTokens` and 75 percent of the exact local route's current context
-window. Image, audio, file, and attachment input; exposed tools without current
-local certification; and requested reasoning efforts `high`, `xhigh`, `max`, or
-`ultra` require the native fallback.
+window. Image, audio, file, and attachment input; forced tool choices or
+tool-call history without current local certification; and requested reasoning
+efforts `high`, `xhigh`, `max`, or `ultra` require the native fallback.
 
 Complexity scoring examines only the latest user-authored text, never system or
 developer instructions, assistant history, function calls, or tool results. A

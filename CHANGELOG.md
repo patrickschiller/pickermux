@@ -26,6 +26,10 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
   version has not refreshed its cache yet.
 - Doctor now reports Codex account-cache health independently of the bridge
   runtime and mixed catalog, including after an integration-only uninstall.
+- Auto now keeps optional client-supplied tool catalogs on an uncertified local
+  text route, excludes the schemas that the bridge will remove from its local
+  context estimate, and still sends forced tool turns or tool-call history to
+  the native fallback.
 
 ### Security
 
@@ -62,6 +66,24 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - Smart routing performs no classifier call or prompt fan-out, dispatches to a
   single provider, and never automatically retries a failed local request
   against native Codex.
+
+## [0.4.1] - 2026-08-30
+
+### Fixed
+
+- Enforce conservative `text-only` model status at the bridge boundary by
+  removing optional function-tool catalogs before external requests are sent.
+- Reject forced tool choices and tool-call history for models without a valid
+  model-bound certification receipt.
+- Preserve live certification through a private per-runtime marker that is
+  accepted only by the local bridge and is never forwarded to providers.
+
+### Security
+
+- Tool certification is now a transport-enforced capability instead of relying
+  only on Codex catalog metadata. This prevents uncertified models from
+  receiving large or executable function schemas when a client still submits
+  them.
 
 ## [0.4.0] - 2026-08-29
 
@@ -107,4 +129,5 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 [Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.5.1...HEAD
 [0.5.1]: https://github.com/patrickschiller/pickermux/releases/tag/v0.5.1
 [0.5.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.5.0
+[0.4.1]: https://github.com/patrickschiller/pickermux/releases/tag/v0.4.1
 [0.4.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.4.0

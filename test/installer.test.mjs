@@ -894,9 +894,9 @@ test("setup orchestration preflights desktop, loaded LLM, config, and lifecycle 
         return { source: configPath };
       },
       setupImpl: async ({ activate }) => activate({
-        distributionRoot: "/managed/versions/0.5.0",
-        previousVersion: "0.4.0",
-        version: "0.5.0",
+        distributionRoot: "/managed/versions/0.5.1",
+        previousVersion: "0.4.1",
+        version: "0.5.1",
       }),
       refreshImpl: async (input) => {
         refreshInput = input;
@@ -908,7 +908,7 @@ test("setup orchestration preflights desktop, loaded LLM, config, and lifecycle 
       fixture.installPaths.serviceConfigPath,
       fixture.installPaths.serviceConfigPath,
     ]);
-    assert.equal(refreshInput.sourceRoot, "/managed/versions/0.5.0");
+    assert.equal(refreshInput.sourceRoot, "/managed/versions/0.5.1");
   });
 
   await t.test("running Codex blocks setup before distribution mutation", async () => {

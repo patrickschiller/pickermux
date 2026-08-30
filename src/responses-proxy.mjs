@@ -11,9 +11,11 @@ import {
 import { BodyCodecError, decodeJsonBody, readLimitedBody } from "./body-codec.mjs";
 import { createCredentialResolver } from "./keychain-credentials.mjs";
 import { createSmartRouter } from "./smart-router.mjs";
+import { requiresToolCapability } from "./tool-policy.mjs";
 import {
   normalizeLmStudioToolRequest,
 } from "./tool-normalization.mjs";
+import { isCertificationRequest } from "./certification-transport.mjs";
 import {
   RESPONSE_TRANSFORM_MAX_BYTES,
   createSseResponseTransformer,
@@ -332,7 +334,19 @@ function lmStudioReasoningSelection(requested, route) {
   return { selected, upstream: upstreamFor(selected) };
 }
 
-function externalBody(body, route, maxBytes) {
+function enforceTextOnlyRequest(rewritten, source) {
+  if (requiresToolCapability(source)) {
+    throw new ResponsesProxyError(
+      "The selected model is not certified for tool use",
+      { statusCode: 400, code: "UNSUPPORTED_TOOL_CHOICE" },
+    );
+  }
+  delete rewritten.tools;
+  delete rewritten.tool_choice;
+  delete rewritten.parallel_tool_calls;
+}
+
+function externalBody(body, route, maxBytes, { certificationRequest = false } = {}) {
   if (typeof route.upstreamModel !== "string" || !route.upstreamModel) {
     throw new ResponsesProxyError("The selected model route is invalid", {
       statusCode: 500,
@@ -415,6 +429,8 @@ function externalBody(body, route, maxBytes) {
   }
 
   let toolCodec;
+  const toolsEnabled = route.toolsEnabled === true || certificationRequest;
+  if (!toolsEnabled) enforceTextOnlyRequest(rewritten, body);
   if (route.providerKind === "lmstudio-responses") {
     delete rewritten.prompt_cache_key;
     if (Array.isArray(body.include)) {
@@ -424,7 +440,9 @@ function externalBody(body, route, maxBytes) {
       if (include.length === 0) delete rewritten.include;
       else rewritten.include = include;
     }
-    toolCodec = normalizeLmStudioToolRequest(rewritten, body);
+    if (toolsEnabled) {
+      toolCodec = normalizeLmStudioToolRequest(rewritten, body);
+    }
   }
 
   if (
@@ -749,6 +767,7 @@ export function createResponsesProxy({
   httpTransport = http,
   httpsTransport = https,
   dnsLookup = dns.lookup,
+  certificationToken,
   smartRouter,
   now,
   onRoutingDecision,
@@ -838,7 +857,12 @@ export function createResponsesProxy({
           lookup = createPublicOnlyLookup(dnsLookup);
         }
         target = upstreamUrl(base, path);
-        const external = externalBody(decoded, route, limits.requestBodyBytes);
+        const external = externalBody(decoded, route, limits.requestBodyBytes, {
+          certificationRequest: isCertificationRequest(
+            request.headers,
+            certificationToken,
+          ),
+        });
         outboundBody = external.encoded;
         responseCodec = external.toolCodec;
         headers = buildExternalRequestHeaders(request.headers, outboundBody.length, {

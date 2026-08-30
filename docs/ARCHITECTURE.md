@@ -158,11 +158,13 @@ Explicit native and namespaced external selections bypass the selector.
 For Auto, PickerMux first validates the exact native fallback, then applies
 optional in-memory affinity and checks the exact local route. Local eligibility
 requires a currently available `lmstudio-responses` route, text-compatible
-input, current certification when tools are exposed, no high-or-higher
-reasoning request, and a conservative input estimate within both the configured
-limit and 75 percent of the local context window. A bounded score over only the
-latest user-authored text then keeps lower-complexity requests local or selects
-the native fallback at the configured threshold.
+input, current certification for a forced tool choice or tool-call history, no
+high-or-higher reasoning request, and a conservative input estimate within both
+the configured limit and 75 percent of the local context window. Optional tool
+catalogs that the text-only transport will remove are excluded from that local
+estimate; a certified route retains and counts them. A bounded score over only
+the latest user-authored text then keeps lower-complexity requests local or
+selects the native fallback at the configured threshold.
 
 The selector is dependency-free and performs no provider call. It selects one
 concrete route before credentials, DNS, or an upstream connection. There is no
@@ -190,6 +192,8 @@ The LM Studio adapter therefore performs bounded, explicit normalization:
 - combines system and developer messages into one leading system block while
   preserving chronological content;
 - removes unsupported optional built-in tools;
+- removes every optional function schema for an uncertified model and rejects
+  forced choices or tool-call history on that text-only route;
 - rejects a required tool choice when normalization would make it impossible;
 - maps arbitrary Codex tool namespaces to collision-resistant function names;
 - restores public namespace names in JSON and streaming responses;
@@ -245,9 +249,12 @@ required gates:
 
 Before probing, PickerMux invalidates the previous receipt and publishes a
 text-only catalog. An interrupted or failed run therefore cannot preserve an
-old tool grant. A successful receipt is bound to the provider kind and ID, base
-URL, public and upstream model IDs, active context size, reasoning metadata,
-capability metadata, and Codex client version.
+old tool grant. Certification requests carry a private per-runtime marker so
+the bridge can exercise its tool adapter without reopening tools to ordinary
+Codex traffic; the marker is removed by the external header allowlist. A
+successful receipt is bound to the provider kind and ID, base URL, public and
+upstream model IDs, active context size, reasoning metadata, capability
+metadata, and Codex client version.
 
 Receipts contain only the fingerprint, timestamp, and gate outcome. They do not
 contain prompts, responses, or credentials.

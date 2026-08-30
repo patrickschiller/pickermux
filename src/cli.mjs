@@ -1080,6 +1080,7 @@ async function certify({ config, paths, codexPath, model, all }) {
       const gates = await runModelCertification({
         baseUrl: bridgeBaseUrl(config, runtime),
         model: candidate,
+        certificationToken: runtime.instanceId,
       });
       const receipt = await recordPassedCertification(
         paths.certificationPath,

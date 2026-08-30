@@ -727,11 +727,13 @@ test("the repository itself produces a smoke-testable release archive", async (t
   );
   const archivePaths = new Set(archiveEntries.map((entry) => entry.path));
   assert.equal(archivePaths.has("src/account-cache.mjs"), true);
+  assert.equal(archivePaths.has("src/certification-transport.mjs"), true);
   assert.equal(archivePaths.has("src/provider-id.mjs"), true);
   assert.equal(archivePaths.has("src/purge-data.mjs"), true);
   assert.equal(archivePaths.has("src/runtime-purge.mjs"), true);
   assert.equal(archivePaths.has("src/smart-router.mjs"), true);
   assert.equal(archivePaths.has("src/smart-routing-constants.mjs"), true);
+  assert.equal(archivePaths.has("src/tool-policy.mjs"), true);
   const extractionDirectory = path.join(parentDirectory, "extracted");
   await mkdir(extractionDirectory);
   await execFileAsync("tar", [

@@ -166,8 +166,8 @@ deliberately conservative:
 - **No fake capabilities.** Context size and reasoning options come from the
   loaded LM Studio instance. PickerMux never inflates a model's context window.
 - **Safe model defaults.** Newly discovered external models start in text-only
-  mode. Tool access is enabled only after that exact model and configuration
-  pass a live certification matrix.
+  mode. The bridge removes optional tool schemas and rejects forced tool turns
+  until that exact model and configuration pass a live certification matrix.
 - **Credential isolation.** Native Codex authentication and metadata are never
   forwarded to LM Studio or another external provider.
 - **Transactional lifecycle.** Install, refresh, rollback, diagnostics, and
@@ -270,12 +270,15 @@ exact native Codex fallback.
 ```
 
 When `pickermux/auto` is selected, PickerMux evaluates local-model availability,
-context, input modality, current tool certification, requested reasoning,
-request size, and a deterministic complexity score. A compatible
-lower-complexity text request prefers the local route; an unavailable or
-ineligible local route uses the configured native fallback. Short-lived,
-memory-only affinity keeps a thread or tool loop on a stable provider while the
-chosen route remains eligible.
+context, input modality, required tool capability, requested reasoning, request
+size, and a deterministic complexity score. Optional client-supplied tool
+catalogs do not disqualify an uncertified text-only local route: the bridge
+removes them and excludes them from the local context estimate. Forced tool
+choices and tool-call history require current certification or use the native
+fallback. A compatible lower-complexity text request prefers the local route;
+an unavailable or ineligible local route uses the configured native fallback.
+Short-lived, memory-only affinity keeps a thread or tool loop on a stable
+provider while the chosen route remains eligible.
 
 The decision is made locally before provider credential lookup or an upstream
 connection. PickerMux does not call a classifier model, send the prompt to both
@@ -316,6 +319,9 @@ proxy.
 - Auto selects one exact concrete route before any provider credential is
   resolved; the virtual route has no credential of its own.
 - External requests receive a fresh allowlisted header set.
+- Uncertified external routes are transport-enforced as text-only even if the
+  client submits function schemas; the private certification marker is never
+  forwarded upstream.
 - Provider secrets can be stored under provider-specific macOS Keychain items;
   they are never written to project configuration or status output.
 - Inline secrets, URL credentials, wildcard model lists, unapproved private

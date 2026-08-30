@@ -8,6 +8,7 @@ import {
   SMART_ROUTING_STRATEGY,
   isAutoModelSlugVariant,
 } from "./smart-routing-constants.mjs";
+import { requiresToolCapability } from "./tool-policy.mjs";
 
 export {
   AFFINITY_MAX_ENTRIES,
@@ -176,11 +177,6 @@ export function hasUnsupportedLocalInput(requestBody) {
   });
 }
 
-function exposesTools(requestBody) {
-  if (Array.isArray(requestBody?.tools)) return requestBody.tools.length > 0;
-  return requestBody?.tools !== undefined && requestBody.tools !== null;
-}
-
 function contextWindowOf(route) {
   for (const value of [
     route?.contextWindow,
@@ -208,14 +204,24 @@ function evaluateLocalEligibility(requestBody, localRoute, autoRoute) {
   if (hasUnsupportedLocalInput(requestBody)) {
     return result(false, "unsupported_local_input");
   }
-  if (exposesTools(requestBody) && localRoute.certifiedForTools !== true) {
+  if (
+    requiresToolCapability(requestBody) &&
+    localRoute.toolsEnabled !== true
+  ) {
     return result(false, "local_tools_uncertified");
   }
   if (HIGH_REASONING_EFFORTS.has(requestBody?.reasoning?.effort)) {
     return result(false, "high_reasoning_requested");
   }
 
-  const estimatedInputTokens = estimateInputTokens(requestBody);
+  const estimatedInputTokens = estimateInputTokens(
+    localRoute.toolsEnabled === true
+      ? requestBody
+      : {
+          instructions: requestBody?.instructions,
+          input: requestBody?.input,
+        },
+  );
   const localInputLimit = Math.min(
     autoRoute.maxLocalInputTokens,
     Math.floor(contextWindowOf(localRoute) * 0.75),

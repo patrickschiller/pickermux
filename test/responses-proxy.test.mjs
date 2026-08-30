@@ -63,6 +63,7 @@ async function createProxyHarness({
   env,
   limits,
   credentialResolver,
+  certificationToken,
   smartRouter,
   now,
   onRoutingDecision,
@@ -73,6 +74,7 @@ async function createProxyHarness({
     env,
     limits,
     credentialResolver,
+    certificationToken,
     smartRouter,
     now,
     onRoutingDecision,
@@ -222,6 +224,7 @@ test("external route rewrites model and effort while replacing all caller creden
         baseUrl: `http://127.0.0.1:${upstreamPort}/v1`,
         allowPrivateNetwork: true,
         upstreamModel: "qwen/qwen3.8-27b",
+        toolsEnabled: true,
         reasoningEffort: "low",
         credentialEnv: "TEST_PROVIDER_TOKEN",
       };
@@ -322,7 +325,7 @@ test("Auto selects native before credentials and safely re-encodes compressed JS
         allowPrivateNetwork: true,
         upstreamModel: "qwen/local",
         model: { contextWindow: 32_768 },
-        certifiedForTools: false,
+        toolsEnabled: false,
       },
     ],
   ]);
@@ -433,7 +436,7 @@ test("Auto selects one LM Studio route with isolated credentials and never repla
         reasoningEffort: "low",
         reasoningEfforts: ["none", "low", "medium", "xhigh"],
         model: { contextWindow: 32_768 },
-        certifiedForTools: false,
+        toolsEnabled: false,
         credentialKeychain: true,
       },
     ],
@@ -460,6 +463,14 @@ test("Auto selects one LM Studio route with isolated credentials and never repla
     body: Buffer.from(JSON.stringify({
       model: "pickermux/auto",
       input: "simple local turn",
+      tools: Array.from({ length: 226 }, (_unused, index) => ({
+        type: "function",
+        name: `tool_${index}`,
+        description: "x".repeat(256),
+        parameters: { type: "object", properties: {} },
+      })),
+      tool_choice: "auto",
+      parallel_tool_calls: true,
       reasoning: { effort: "medium" },
     })),
   });
@@ -470,6 +481,9 @@ test("Auto selects one LM Studio route with isolated credentials and never repla
   assert.equal(observed[0].path, "/local/v1/responses");
   assert.equal(observed[0].json.model, "qwen/local");
   assert.equal(observed[0].json.reasoning.effort, "medium");
+  assert.equal(observed[0].json.tools, undefined);
+  assert.equal(observed[0].json.tool_choice, undefined);
+  assert.equal(observed[0].json.parallel_tool_calls, undefined);
   assert.equal(observed[0].headers.authorization, "Bearer local-provider-secret");
   assert.equal(observed[0].headers["chatgpt-account-id"], undefined);
   assert.equal(observed[0].headers.cookie, undefined);
@@ -606,6 +620,7 @@ test("external route strips internal metadata canaries without changing other in
         baseUrl: `http://127.0.0.1:${upstreamPort}/v1`,
         allowPrivateNetwork: true,
         upstreamModel: "qwen/qwen3.8-27b",
+        toolsEnabled: true,
       }),
     },
   });
@@ -703,6 +718,7 @@ test("LM Studio route removes unsupported Codex fields without touching supporte
         upstreamModel: "qwen/qwen3.8-27b",
         reasoningEffort: "xhigh",
         reasoningEfforts: ["none", "low", "medium", "xhigh"],
+        toolsEnabled: true,
       }),
     },
   });
@@ -816,6 +832,7 @@ test("LM Studio namespace calls are mapped on request and restored in JSON respo
         baseUrl: `http://127.0.0.1:${upstreamPort}/v1`,
         allowPrivateNetwork: true,
         upstreamModel: "qwen/local",
+        toolsEnabled: true,
       }),
     },
   });
@@ -1030,6 +1047,169 @@ test("LM Studio route drops an empty unsupported tool set and maps every Codex e
   }
 });
 
+test("text-only routes strip large optional tool catalogs before forwarding", async (t) => {
+  let observed;
+  const upstream = http.createServer((request, response) => {
+    const chunks = [];
+    request.on("data", (chunk) => chunks.push(chunk));
+    request.on("end", () => {
+      observed = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end('{"ok":true}');
+    });
+  });
+  const upstreamPort = await listen(upstream);
+  t.after(() => close(upstream));
+  const proxy = await createProxyHarness({
+    registry: {
+      resolve: () => ({
+        kind: "external",
+        providerKind: "lmstudio-responses",
+        baseUrl: `http://127.0.0.1:${upstreamPort}/v1`,
+        allowPrivateNetwork: true,
+        upstreamModel: "microsoft/phi-4-mini-reasoning",
+        toolsEnabled: false,
+      }),
+    },
+  });
+  t.after(() => close(proxy.server));
+
+  const tools = Array.from({ length: 226 }, (_unused, index) => ({
+    type: "function",
+    name: `tool_${index}`,
+    description: "A deliberately verbose tool schema that must not reach a text-only model",
+    parameters: { type: "object", properties: {} },
+  }));
+  const result = await httpRequest({
+    port: proxy.port,
+    body: Buffer.from(JSON.stringify({
+      model: "lmstudio/microsoft/phi-4-mini-reasoning",
+      input: "Reply with a short greeting.",
+      tools,
+      tool_choice: "auto",
+      parallel_tool_calls: true,
+    })),
+  });
+
+  assert.equal(result.statusCode, 200);
+  assert.equal(observed.tools, undefined);
+  assert.equal(observed.tool_choice, undefined);
+  assert.equal(observed.parallel_tool_calls, undefined);
+  assert.equal(observed.input, "Reply with a short greeting.");
+});
+
+test("text-only routes reject forced tool choices and tool-call history", async (t) => {
+  let upstreamRequests = 0;
+  const upstream = http.createServer((_request, response) => {
+    upstreamRequests += 1;
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end('{"ok":true}');
+  });
+  const upstreamPort = await listen(upstream);
+  t.after(() => close(upstream));
+  const proxy = await createProxyHarness({
+    registry: {
+      resolve: () => ({
+        kind: "external",
+        providerKind: "lmstudio-responses",
+        baseUrl: `http://127.0.0.1:${upstreamPort}/v1`,
+        allowPrivateNetwork: true,
+        upstreamModel: "microsoft/phi-4-mini-reasoning",
+        toolsEnabled: false,
+      }),
+    },
+  });
+  t.after(() => close(proxy.server));
+
+  for (const body of [
+    {
+      model: "lmstudio/microsoft/phi-4-mini-reasoning",
+      input: "Use the tool",
+      tools: [{ type: "function", name: "inspect", parameters: {} }],
+      tool_choice: "required",
+    },
+    {
+      model: "lmstudio/microsoft/phi-4-mini-reasoning",
+      input: [{
+        type: "function_call",
+        call_id: "call-1",
+        name: "inspect",
+        arguments: "{}",
+      }],
+      tool_choice: "none",
+    },
+    {
+      model: "lmstudio/microsoft/phi-4-mini-reasoning",
+      input: [{ type: "function_call_output", call_id: "call-1", output: "done" }],
+      tool_choice: "none",
+    },
+  ]) {
+    const result = await httpRequest({
+      port: proxy.port,
+      body: Buffer.from(JSON.stringify(body)),
+    });
+    assert.equal(result.statusCode, 400);
+    assert.equal(JSON.parse(result.body).error.code, "UNSUPPORTED_TOOL_CHOICE");
+  }
+  assert.equal(upstreamRequests, 0);
+});
+
+test("only the private certification marker bypasses text-only tool stripping", async (t) => {
+  const certificationToken = "runtime-instance-certification-0123456789";
+  let observed;
+  const upstream = http.createServer((request, response) => {
+    const chunks = [];
+    request.on("data", (chunk) => chunks.push(chunk));
+    request.on("end", () => {
+      observed = {
+        headers: request.headers,
+        body: JSON.parse(Buffer.concat(chunks).toString("utf8")),
+      };
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end('{"ok":true}');
+    });
+  });
+  const upstreamPort = await listen(upstream);
+  t.after(() => close(upstream));
+  const proxy = await createProxyHarness({
+    certificationToken,
+    registry: {
+      resolve: () => ({
+        kind: "external",
+        providerKind: "lmstudio-responses",
+        baseUrl: `http://127.0.0.1:${upstreamPort}/v1`,
+        allowPrivateNetwork: true,
+        upstreamModel: "microsoft/phi-4-mini-reasoning",
+        toolsEnabled: false,
+      }),
+    },
+  });
+  t.after(() => close(proxy.server));
+  const requestBody = Buffer.from(JSON.stringify({
+    model: "lmstudio/microsoft/phi-4-mini-reasoning",
+    input: "Use the probe",
+    tools: [{ type: "function", name: "probe", parameters: {} }],
+    tool_choice: { type: "function", name: "probe" },
+  }));
+
+  const rejected = await httpRequest({
+    port: proxy.port,
+    headers: { "x-pickermux-certification": `${certificationToken}-wrong` },
+    body: requestBody,
+  });
+  assert.equal(rejected.statusCode, 400);
+
+  const accepted = await httpRequest({
+    port: proxy.port,
+    headers: { "x-pickermux-certification": certificationToken },
+    body: requestBody,
+  });
+  assert.equal(accepted.statusCode, 200);
+  assert.equal(observed.body.tools[0].name, "probe");
+  assert.equal(observed.body.tool_choice, "required");
+  assert.equal(observed.headers["x-pickermux-certification"], undefined);
+});
+
 test("LM Studio route normalizes legacy on/off maps to the Responses enum", async (t) => {
   const observed = [];
   const accepted = new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
@@ -1218,6 +1398,7 @@ test("LM Studio required choice fails closed when every tool is unsupported", as
         upstreamModel: "qwen/qwen3.8-27b",
         reasoningEffort: "xhigh",
         reasoningEfforts: ["low", "xhigh"],
+        toolsEnabled: true,
       }),
     },
   });
@@ -1243,6 +1424,7 @@ test("LM Studio specific removed tool choices fail closed", async (t) => {
         baseUrl: "http://127.0.0.1:9/v1",
         allowPrivateNetwork: true,
         upstreamModel: "qwen/qwen3.8-27b",
+        toolsEnabled: true,
       }),
     },
   });
