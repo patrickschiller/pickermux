@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { runModelCertification } from "../src/certification-runner.mjs";
+import { CERTIFICATION_HEADER } from "../src/certification-transport.mjs";
 import { REQUIRED_CERTIFICATION_GATES } from "../src/model-certification.mjs";
+
+const CERTIFICATION_TOKEN = "certification-runtime-instance-0123456789";
 
 function jsonResponse(payload, status = 200) {
   return new Response(JSON.stringify(payload), {
@@ -101,7 +104,11 @@ test("runs the complete P3 matrix serially and returns only exact passed gates",
     active += 1;
     maximumActive = Math.max(maximumActive, active);
     try {
-      requests.push({ url, body: JSON.parse(options.body) });
+      requests.push({
+        url,
+        body: JSON.parse(options.body),
+        certificationToken: options.headers[CERTIFICATION_HEADER],
+      });
       return responses.shift();
     } finally {
       active -= 1;
@@ -111,6 +118,7 @@ test("runs the complete P3 matrix serially and returns only exact passed gates",
   const gates = await runModelCertification({
     baseUrl: "http://127.0.0.1:4210/c/test-capability/v1",
     model: { id: "lmstudio/example/model", contextWindow: 32_768 },
+    certificationToken: CERTIFICATION_TOKEN,
     fetchImpl,
     timeoutMs: 5_000,
   });
@@ -118,6 +126,11 @@ test("runs the complete P3 matrix serially and returns only exact passed gates",
   assert.equal(maximumActive, 1);
   assert.equal(requests.length, 7);
   assert.ok(requests.every((entry) => entry.url.endsWith("/responses")));
+  assert.ok(
+    requests.every(
+      (entry) => entry.certificationToken === CERTIFICATION_TOKEN,
+    ),
+  );
   assert.equal(requests[1].body.stream, true);
   assert.equal(requests[2].body.tools[0].type, "function");
   assert.equal(requests[2].body.max_output_tokens, 2_048);
@@ -145,6 +158,7 @@ test("fails certification without publishing gates when a mandatory probe fails"
     runModelCertification({
       baseUrl: "http://127.0.0.1:4210/c/test-capability/v1",
       model: { id: "lmstudio/example/model", contextWindow: 32_768 },
+      certificationToken: CERTIFICATION_TOKEN,
       fetchImpl: async () => jsonResponse({ output: [] }),
       timeoutMs: 5_000,
     }),
@@ -200,9 +214,27 @@ test("rejects non-empty arguments from the parameterless namespace JSON probe", 
     runModelCertification({
       baseUrl: "http://127.0.0.1:4210/c/test-capability/v1",
       model: { id: "lmstudio/example/model", contextWindow: 32_768 },
+      certificationToken: CERTIFICATION_TOKEN,
       fetchImpl: async () => responses.shift(),
       timeoutMs: 5_000,
     }),
     /Parameterless namespace JSON probe returned non-empty parameterless arguments/u,
   );
+});
+
+test("requires a private runtime marker before certification sends a request", async () => {
+  let requested = false;
+  await assert.rejects(
+    runModelCertification({
+      baseUrl: "http://127.0.0.1:4210/c/test-capability/v1",
+      model: { id: "lmstudio/example/model", contextWindow: 32_768 },
+      fetchImpl: async () => {
+        requested = true;
+        return jsonResponse({});
+      },
+      timeoutMs: 5_000,
+    }),
+    /Certification token/u,
+  );
+  assert.equal(requested, false);
 });

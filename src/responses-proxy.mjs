@@ -13,6 +13,7 @@ import { createCredentialResolver } from "./keychain-credentials.mjs";
 import {
   normalizeLmStudioToolRequest,
 } from "./tool-normalization.mjs";
+import { isCertificationRequest } from "./certification-transport.mjs";
 import {
   RESPONSE_TRANSFORM_MAX_BYTES,
   createSseResponseTransformer,
@@ -331,7 +332,36 @@ function lmStudioReasoningSelection(requested, route) {
   return { selected, upstream: upstreamFor(selected) };
 }
 
-function externalBody(body, route, maxBytes) {
+function hasFunctionHistory(input) {
+  return (
+    Array.isArray(input) &&
+    input.some(
+      (item) =>
+        item !== null &&
+        !Array.isArray(item) &&
+        typeof item === "object" &&
+        (item.type === "function_call" || item.type === "function_call_output"),
+    )
+  );
+}
+
+function enforceTextOnlyRequest(rewritten, source) {
+  const choice = source.tool_choice;
+  if (
+    (choice !== undefined && choice !== "auto" && choice !== "none") ||
+    hasFunctionHistory(source.input)
+  ) {
+    throw new ResponsesProxyError(
+      "The selected model is not certified for tool use",
+      { statusCode: 400, code: "UNSUPPORTED_TOOL_CHOICE" },
+    );
+  }
+  delete rewritten.tools;
+  delete rewritten.tool_choice;
+  delete rewritten.parallel_tool_calls;
+}
+
+function externalBody(body, route, maxBytes, { certificationRequest = false } = {}) {
   if (typeof route.upstreamModel !== "string" || !route.upstreamModel) {
     throw new ResponsesProxyError("The selected model route is invalid", {
       statusCode: 500,
@@ -414,6 +444,8 @@ function externalBody(body, route, maxBytes) {
   }
 
   let toolCodec;
+  const toolsEnabled = route.toolsEnabled === true || certificationRequest;
+  if (!toolsEnabled) enforceTextOnlyRequest(rewritten, body);
   if (route.providerKind === "lmstudio-responses") {
     delete rewritten.prompt_cache_key;
     if (Array.isArray(body.include)) {
@@ -423,7 +455,9 @@ function externalBody(body, route, maxBytes) {
       if (include.length === 0) delete rewritten.include;
       else rewritten.include = include;
     }
-    toolCodec = normalizeLmStudioToolRequest(rewritten, body);
+    if (toolsEnabled) {
+      toolCodec = normalizeLmStudioToolRequest(rewritten, body);
+    }
   }
 
   if (
@@ -724,6 +758,7 @@ export function createResponsesProxy({
   httpTransport = http,
   httpsTransport = https,
   dnsLookup = dns.lookup,
+  certificationToken,
 } = {}) {
   if (!registry || typeof registry.resolve !== "function") {
     throw new TypeError("A model registry with resolve(model) is required");
@@ -792,7 +827,12 @@ export function createResponsesProxy({
           lookup = createPublicOnlyLookup(dnsLookup);
         }
         target = upstreamUrl(base, path);
-        const external = externalBody(decoded, route, limits.requestBodyBytes);
+        const external = externalBody(decoded, route, limits.requestBodyBytes, {
+          certificationRequest: isCertificationRequest(
+            request.headers,
+            certificationToken,
+          ),
+        });
         outboundBody = external.encoded;
         responseCodec = external.toolCodec;
         headers = buildExternalRequestHeaders(request.headers, outboundBody.length, {

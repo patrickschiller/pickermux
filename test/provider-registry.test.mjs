@@ -93,6 +93,7 @@ test("keeps the external picker slug separate from the upstream model id", () =>
     providerKind: "lmstudio-responses",
     baseUrl: "http://127.0.0.1:1234/v1",
     allowPrivateNetwork: true,
+    toolsEnabled: false,
     reasoningEffort: "xhigh",
     reasoningEfforts: ["none", "low", "medium", "xhigh"],
     model: {
@@ -217,6 +218,8 @@ test("loaded discovery claims only its provider namespace and reconstructs exact
         { effort: "none" },
         { effort: "xhigh" },
       ],
+      tool_mode: "direct",
+      shell_type: "unified_exec",
     },
     {
       slug: "lmstudio/untrusted/exact-xhigh",
@@ -263,6 +266,8 @@ test("loaded discovery claims only its provider namespace and reconstructs exact
     xhigh: "xhigh",
   });
   assert.deepEqual(fallbackQwen.reasoningOmitEfforts, []);
+  assert.equal(phi.toolsEnabled, false);
+  assert.equal(fallbackQwen.toolsEnabled, true);
 
   const catalogOnlyRegistry = buildProviderRegistry({
     mixedCatalog: source,

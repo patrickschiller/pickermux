@@ -59,6 +59,8 @@ Reports involving any of the following are particularly important:
 - command execution, path traversal, decompression abuse, or resource
   exhaustion through untrusted requests;
 - certification records enabling tools for a different model or configuration;
+- uncertified or stale external routes receiving function schemas, forced tool
+  choices, or tool-call history;
 - secrets or sensitive prompts being persisted unexpectedly.
 
 General hardening ideas without a concrete vulnerability can be proposed with

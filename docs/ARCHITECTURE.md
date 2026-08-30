@@ -115,6 +115,8 @@ The LM Studio adapter therefore performs bounded, explicit normalization:
 - combines system and developer messages into one leading system block while
   preserving chronological content;
 - removes unsupported optional built-in tools;
+- removes every optional function schema for an uncertified model and rejects
+  forced choices or tool-call history on that text-only route;
 - rejects a required tool choice when normalization would make it impossible;
 - maps arbitrary Codex tool namespaces to collision-resistant function names;
 - restores public namespace names in JSON and streaming responses;
@@ -161,9 +163,12 @@ required gates:
 
 Before probing, PickerMux invalidates the previous receipt and publishes a
 text-only catalog. An interrupted or failed run therefore cannot preserve an
-old tool grant. A successful receipt is bound to the provider kind and ID, base
-URL, public and upstream model IDs, active context size, reasoning metadata,
-capability metadata, and Codex client version.
+old tool grant. Certification requests carry a private per-runtime marker so
+the bridge can exercise its tool adapter without reopening tools to ordinary
+Codex traffic; the marker is removed by the external header allowlist. A
+successful receipt is bound to the provider kind and ID, base URL, public and
+upstream model IDs, active context size, reasoning metadata, capability
+metadata, and Codex client version.
 
 Receipts contain only the fingerprint, timestamp, and gate outcome. They do not
 contain prompts, responses, or credentials.
