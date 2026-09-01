@@ -71,7 +71,7 @@ The explicit Qwen entry acts as a display-name and reasoning override. In
 | --- | --- |
 | `host` | Must be `127.0.0.1`. The bridge cannot bind to a LAN address. |
 | `port` | Local bridge port. The default is `4210`. |
-| `providerId` | Generated Codex provider ID. The default is `model_bridge`. |
+| `providerId` | Generated Codex provider ID. The default is `model_bridge`; it uses the same bounded ID grammar as provider namespaces. |
 | `defaultModel` | Native fallback selected when a local choice disappears. |
 | `reasoningEffort` | Reasoning level for the native fallback. |
 | `limits` | Optional bounded request, header, idle, and total-duration limits. |
@@ -83,7 +83,7 @@ support the selected reasoning level at install time.
 
 | Field | Purpose |
 | --- | --- |
-| `id` | Lowercase provider namespace used as the external slug prefix. |
+| `id` | Lowercase provider namespace used as the external slug prefix; 1-127 characters using lowercase letters, digits, `_`, or `-`, with an alphanumeric first and last character. |
 | `kind` | `lmstudio-responses` or `openai-responses`. |
 | `baseUrl` | Absolute provider URL without credentials, query, or fragment. |
 | `allowPrivateNetwork` | Required explicit decision for loopback, LAN, or Tailscale targets. |
@@ -185,8 +185,55 @@ pickermux credential-set vendor
 pickermux credential-status vendor
 ```
 
-`credential-set` delegates interactive secret capture to `/usr/bin/security`.
-Status output reports only `available` or `missing`.
+`credential-set` records only the provider's canonical ID in a private provider
+registry before delegating interactive secret capture to `/usr/bin/security`.
+Recording first keeps the deletion boundary recoverable if the Keychain
+operation is interrupted. The registry never contains the credential, password,
+token, or other Keychain value. Status output reports only `available` or
+`missing`.
+
+`credential-delete` removes the exact provider-scoped Keychain item before it
+updates that registry; Keychain and filesystem writes cannot share one atomic
+transaction. If the registry update then fails, the credential remains absent
+while its provider ID remains safely registered. Resolve the reported registry
+problem and rerun the same command: an already-absent Keychain item is treated
+as deleted and the retry completes the registry update without reading a secret.
+
+A successful install or refresh also registers every configured
+`credentialKeychain` provider ID. This safely establishes deletion ownership
+for credentials created by PickerMux before the registry was introduced; it
+still stores no credential value and can target only PickerMux's
+provider-scoped Keychain service namespace.
+
+Normal removal deliberately retains provider credentials and verified
+PickerMux configuration backups, including when the receipt-owned CLI is
+removed:
+
+```bash
+pickermux uninstall
+pickermux uninstall --remove-cli
+```
+
+Use the explicit full-removal mode only when those retained items should also
+be deleted:
+
+```bash
+pickermux uninstall --purge
+```
+
+Purge uses the private registry to target only the exact PickerMux Keychain
+entries previously registered by credential or lifecycle operations. It also
+removes only backups whose PickerMux ownership, content hash, and device/inode
+identity can be verified. An unsafe, foreign, modified, or ambiguous registry,
+backup, launcher, runtime, or distribution state is refused instead of guessed
+at. `--force` does not bypass these ownership checks. Purge never reads or
+deletes native Codex authentication, including `~/.codex/auth.json`.
+
+Every uninstall also requires the installed `runtime-app` to match the invoking
+PickerMux distribution byte-for-byte. Unexpected entries, modified files,
+symbolic links, special files, or a leftover `runtime-app.previous-*` package
+stop removal for explicit review; no unrecognized runtime directory is deleted
+recursively.
 
 ## Applying configuration changes
 

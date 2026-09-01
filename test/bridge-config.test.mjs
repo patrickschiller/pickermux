@@ -101,6 +101,24 @@ test("accepts a Keychain reference and rejects ambiguous credential sources", ()
   );
 });
 
+test("provider ids are canonical and bounded to 127 characters", () => {
+  const acceptedId = `a${"b".repeat(126)}`;
+  const accepted = validConfig();
+  accepted.providers[1].id = acceptedId;
+  accepted.providers[1].models[0].slug = `${acceptedId}/reasoning-v2`;
+  assert.equal(validateBridgeConfig(accepted).providers[1].id, acceptedId);
+
+  for (const providerId of [`a${"b".repeat(127)}`, "_leading", "trailing_"]) {
+    const rejected = validConfig();
+    rejected.providers[1].id = providerId;
+    rejected.providers[1].models[0].slug = `${providerId}/reasoning-v2`;
+    assert.throws(
+      () => validateBridgeConfig(rejected),
+      /at most 127 characters/iu,
+    );
+  }
+});
+
 test("allows bounded loaded-model discovery only for LM Studio", () => {
   const loaded = validConfig();
   loaded.providers = [

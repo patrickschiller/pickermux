@@ -58,21 +58,32 @@ configuration.
 ## `update-required`
 
 The installed runtime no longer matches the verified Codex client and bundled
-catalog contract. Rerun the latest-release installer, then run:
+catalog contract. Rerun the latest-release installer. Setup checks the Codex
+account cache before staging the downloaded CLI, checks it again under the
+lifecycle lock before committing CLI controls, and checks it once more
+immediately before integration activation. A missing, malformed, or
+version-mismatched cache stops without changing active PickerMux state.
+
+After a successful setup, run:
 
 ```bash
 pickermux doctor
 ```
 
-If the account cache is missing or belongs to another client version:
+`doctor` reports `codex-account-cache` independently from the bridge runtime and
+mixed catalog, so this check remains useful after an integration-only
+uninstall. If setup or doctor reports that the account cache needs a refresh
+and PickerMux is still installed:
 
 ```bash
 pickermux uninstall
 ```
 
-Then open Codex Desktop once while signed in, fully quit it, and install
-PickerMux again. This refreshes account visibility through Codex before the new
-mixed catalog is created.
+Then open Codex Desktop while signed in, wait for its native model picker to
+load, fully quit it with `Command-Q`, and install PickerMux again. Reuse the
+same custom configuration path if one was used. If PickerMux was already
+uninstalled, skip the uninstall step. Never delete `models_cache.json` or
+`~/.codex/auth.json` as a workaround.
 
 ## LM Studio was stopped and local models disappeared
 
@@ -171,6 +182,38 @@ If removal reports a private quarantine-cleanup warning, the integration and
 active CLI have still been removed consistently, and a new installation is not
 blocked. Inspect only the exact quarantine path printed by PickerMux before
 removing that residual directory; never delete its parent directory broadly.
+
+`pickermux uninstall --purge` is the separate full-removal mode. It additionally
+removes only validated backup files and exact provider Keychain items recorded
+in PickerMux's private, secret-free registry. A modified or foreign LaunchAgent,
+invalid receipt, unsafe permission, symbolic link, unexpected backup entry, or
+provider-registry change stops the purge. `--force` does not override those
+ownership checks.
+
+All uninstall modes compare `runtime-app` byte-for-byte with the invoking
+PickerMux version before changing Codex configuration. A modified or additional
+runtime entry, special file, symbolic link, or leftover
+`runtime-app.previous-*` package stops removal. Review or repair only the exact
+reported state; never remove `~/.codex/model-bridge` recursively.
+
+Fully quit Codex Desktop with `Command-Q` before every uninstall mode. PickerMux
+rechecks that condition under the lifecycle lock before changing managed state.
+
+A runtime, backup, or provider-registry cleanup-pending error means the
+uninstall or purge failed and the receipt-owned CLI remains available or is
+restored for recovery. Do not assume full removal completed. Review only the
+exact private quarantine path from the error, then rerun the same uninstall
+mode after that state is resolved.
+
+If full purge reports `PICKERMUX_CREDENTIAL_PURGE_INCOMPLETE`, one or more exact
+PickerMux provider credentials may already be absent, but the integration,
+receipt-owned CLI, provider registry, and backups remain available. Resolve the
+reported Keychain error and rerun `pickermux uninstall --purge`; already-absent
+registered items count as complete. If it reports
+`PICKERMUX_PURGE_COMMIT_INCOMPLETE`, the Keychain phase completed before
+integration removal failed. Do not recreate registry files or delete native
+Codex state manually; fix the reported integration problem and retry the same
+command. PickerMux never reads credential values to manufacture a rollback.
 
 ## Safe diagnostic sharing
 

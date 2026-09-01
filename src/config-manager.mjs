@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { constants as fsConstants } from "node:fs";
 import {
   chmod,
   lstat,
@@ -9,9 +10,14 @@ import {
   stat,
   unlink,
 } from "node:fs/promises";
-import { basename, dirname, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
+
+import { readInventoriedPickerMuxBackup } from "./purge-data.mjs";
 
 const STATE_VERSION = 1;
+const PRIVATE_READ_FLAGS =
+  fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0);
+const ownershipReceiptDetails = new WeakMap();
 const MANAGED_KEYS = [
   "model",
   "model_provider",
@@ -339,6 +345,101 @@ export async function restoreManagedPickerDefaults(options = {}) {
 }
 
 /**
+ * Capture the exact managed state file that authorizes a later uninstall.
+ * The opaque receipt is bound to the state inode/hash and, when supplied, to
+ * the backup inventory already issued by purge-data.mjs.
+ */
+export async function inventoryManagedConfigOwnership(options = {}) {
+  const settings = normalizeOwnershipOptions(options);
+  const stateFile = await readOwnedRegularFile(settings.statePath, {
+    allowMissing: true,
+    requirePrivate: true,
+    label: "PickerMux configuration state",
+  });
+  let state = null;
+  if (stateFile) {
+    state = parseState(stateFile.contents, settings.statePath);
+    assertStateMatchesConfig(state, settings.configPath);
+    assertManagedBackupPath(state.backupPath, settings);
+  }
+
+  const receipt = Object.freeze({
+    configPath: settings.configPath,
+    statePath: settings.statePath,
+    backupDirectory: settings.backupDirectory,
+    exists: stateFile !== null,
+  });
+  ownershipReceiptDetails.set(receipt, {
+    settings,
+    state,
+    stateFile,
+    backupFile: null,
+    backupDirectoryInventory: options.backupDirectoryInventory,
+    readBackupImpl: options.readBackupImpl,
+  });
+  if (stateFile && options.backupDirectoryInventory) {
+    await readOwnershipBackup(receipt);
+  }
+  return receipt;
+}
+
+export async function revalidateManagedConfigOwnership(
+  receipt,
+  { readBackupImpl = undefined } = {},
+) {
+  const details = ownershipDetails(receipt);
+  if (readBackupImpl !== undefined) {
+    if (typeof readBackupImpl !== "function") {
+      throw new TypeError("readBackupImpl must be a function");
+    }
+    details.readBackupImpl = readBackupImpl;
+  }
+  if (details.stateFile === null) {
+    if (await lstatOptional(details.settings.statePath)) {
+      throw failure(
+        "STATE_CHANGED_CONCURRENTLY",
+        "Managed configuration state appeared after ownership inventory.",
+      );
+    }
+    return receipt;
+  }
+  const currentState = await readOwnedRegularFile(details.settings.statePath, {
+    allowMissing: true,
+    requirePrivate: true,
+    label: "PickerMux configuration state",
+    expectedSnapshot: details.stateFile.snapshot,
+  });
+  if (
+    currentState === null ||
+    !sameFileSnapshot(details.stateFile.snapshot, currentState.snapshot) ||
+    details.stateFile.sha256 !== currentState.sha256
+  ) {
+    throw failure(
+      "STATE_CHANGED_CONCURRENTLY",
+      "Managed configuration state changed after ownership inventory.",
+    );
+  }
+  if (details.backupFile) {
+    const currentBackup = await readOwnershipBackup(receipt, {
+      cache: false,
+    });
+    if (
+      !sameFileSnapshot(
+        details.backupFile.snapshot,
+        currentBackup.snapshot,
+      ) ||
+      details.backupFile.sha256 !== currentBackup.sha256
+    ) {
+      throw failure(
+        "BACKUP_CHANGED_CONCURRENTLY",
+        "Managed configuration backup changed after ownership inventory.",
+      );
+    }
+  }
+  return receipt;
+}
+
+/**
  * Remove only the blocks owned by this manager and restore prior root
  * assignments. A second uninstall is a safe no-op when no managed markers are
  * left. Pass force=true only to remove blocks whose contents were edited while
@@ -348,10 +449,27 @@ export async function uninstallConfig(options) {
   const {
     configPath,
     statePath,
+    backupDirectory,
     force = false,
     beforeConfigCommit,
-  } = normalizePathOptions(options);
-  const stateResult = await readState(statePath, { allowMissing: true });
+  } = normalizeOwnershipOptions(options);
+  const ownershipReceipt = options.ownershipReceipt ??
+    await inventoryManagedConfigOwnership({
+      configPath,
+      statePath,
+      backupDirectory,
+      backupDirectoryInventory: options.backupDirectoryInventory,
+      readBackupImpl: options.readBackupImpl,
+    });
+  const ownership = ownershipDetails(ownershipReceipt, {
+    configPath,
+    statePath,
+    backupDirectory,
+  });
+  await revalidateManagedConfigOwnership(ownershipReceipt, {
+    readBackupImpl: options.readBackupImpl,
+  });
+  const stateResult = ownership.state;
 
   if (!stateResult) {
     const current = await readConfigFile(configPath);
@@ -397,7 +515,9 @@ export async function uninstallConfig(options) {
 
   if (pristineInstall && state.configExisted !== false) {
     try {
-      restoredContents = await readFile(state.backupPath);
+      restoredContents = Buffer.from(
+        (await readOwnershipBackup(ownershipReceipt)).contents,
+      );
     } catch (error) {
       if (!force) {
         throw failure(
@@ -443,7 +563,10 @@ export async function uninstallConfig(options) {
   if (pristineInstall && state.configExisted === false) {
     await atomicRemove(configPath, {
       expectedSource: snapshotOf(current),
-      beforeCommit: beforeConfigCommit,
+      beforeCommit: ownershipCommitGuard(
+        ownershipReceipt,
+        beforeConfigCommit,
+      ),
     });
   } else {
     await atomicWrite(
@@ -452,17 +575,34 @@ export async function uninstallConfig(options) {
       pristineInstall ? (state.configMode ?? current.mode) : current.mode,
       {
       expectedSource: snapshotOf(current),
-      beforeCommit: beforeConfigCommit,
+      beforeCommit: ownershipCommitGuard(
+        ownershipReceipt,
+        beforeConfigCommit,
+      ),
       },
     );
   }
   try {
-    await unlink(statePath);
+    await removeOwnedStateFile(ownershipReceipt);
   } catch (error) {
+    let rollbackError;
+    try {
+      await rollbackConfigAfterStateRemovalFailure({
+        configPath,
+        installedConfig: current,
+        restoredContents,
+        configWasRemoved:
+          pristineInstall && state.configExisted === false,
+      });
+    } catch (caught) {
+      rollbackError = caught;
+    }
     throw failure(
       "STATE_REMOVE_FAILED",
-      `Configuration was restored, but the state file could not be removed: ${statePath}`,
-      { cause: error },
+      rollbackError
+        ? `Configuration state removal and config rollback both failed: ${statePath}`
+        : `Configuration state could not be removed; the installed config was restored: ${statePath}`,
+      { cause: error, rollbackCause: rollbackError },
     );
   }
 
@@ -648,6 +788,26 @@ function normalizePathOptions(options = {}) {
   };
 }
 
+function normalizeOwnershipOptions(options = {}) {
+  const paths = normalizePathOptions(options);
+  const backupDirectory = resolve(
+    options.backupDirectory ?? join(dirname(paths.statePath), "backups"),
+  );
+  if (
+    backupDirectory === resolve(backupDirectory, "..") ||
+    backupDirectory === dirname(backupDirectory)
+  ) {
+    throw failure(
+      "INVALID_BACKUP_DIRECTORY",
+      "backupDirectory must identify a non-root directory.",
+    );
+  }
+  return {
+    ...paths,
+    backupDirectory,
+  };
+}
+
 function requireNonEmptyString(value, label) {
   if (typeof value !== "string" || value.trim() === "") {
     throw failure("INVALID_ARGUMENT", `${label} must be a non-empty string.`);
@@ -655,44 +815,100 @@ function requireNonEmptyString(value, label) {
 }
 
 async function readConfigFile(path, { mustExist = false } = {}) {
+  let handle;
+  let pathObserved = false;
   try {
-    const metadata = await lstat(path);
-    if (metadata.isSymbolicLink()) {
+    const initialPathStats = await lstat(path);
+    pathObserved = true;
+    if (initialPathStats.isSymbolicLink()) {
       throw failure("CONFIG_SYMLINK", `Refusing symbolic-link Codex config: ${path}`);
     }
-    if (!metadata.isFile()) {
-      throw failure("CONFIG_NOT_REGULAR", `Codex config is not a regular file: ${path}`);
+    if (!initialPathStats.isFile() || initialPathStats.nlink !== 1) {
+      throw failure(
+        "CONFIG_NOT_REGULAR",
+        `Codex config is not a single-link regular file: ${path}`,
+      );
     }
-    const bytes = await readFile(path);
+    assertCurrentUserOwner(initialPathStats, path, "Codex config");
+    const initialSnapshot = fileSnapshot(initialPathStats);
+
+    handle = await open(path, PRIVATE_READ_FLAGS);
+    const [stats, pathStats] = await Promise.all([
+      handle.stat(),
+      lstat(path),
+    ]);
+    if (
+      !stats.isFile() ||
+      pathStats.isSymbolicLink() ||
+      !pathStats.isFile() ||
+      stats.dev !== pathStats.dev ||
+      stats.ino !== pathStats.ino ||
+      stats.nlink !== 1 ||
+      pathStats.nlink !== 1 ||
+      !sameFileSnapshot(initialSnapshot, fileSnapshot(stats)) ||
+      !sameFileSnapshot(initialSnapshot, fileSnapshot(pathStats))
+    ) {
+      throw failure(
+        "CONFIG_CHANGED_CONCURRENTLY",
+        `Codex config changed after ownership validation: ${path}`,
+      );
+    }
+    assertCurrentUserOwner(stats, path, "Codex config");
+    assertCurrentUserOwner(pathStats, path, "Codex config");
+
+    const bytes = await handle.readFile();
+    const [confirmed, confirmedPath] = await Promise.all([
+      handle.stat(),
+      lstat(path),
+    ]);
+    if (
+      !sameFileSnapshot(initialSnapshot, fileSnapshot(confirmed)) ||
+      !sameFileSnapshot(initialSnapshot, fileSnapshot(confirmedPath)) ||
+      bytes.length !== confirmed.size
+    ) {
+      throw failure(
+        "CONFIG_CHANGED_CONCURRENTLY",
+        `Codex config changed while it was read: ${path}`,
+      );
+    }
     return {
       exists: true,
       bytes,
       text: bytes.toString("utf8"),
-      mode: metadata.mode & 0o777,
+      mode: confirmed.mode & 0o777,
     };
   } catch (error) {
-    if (error?.code === "ENOENT" && !mustExist) {
+    if (
+      error?.code === "ENOENT" &&
+      !mustExist &&
+      !pathObserved &&
+      !handle
+    ) {
       return { exists: false, bytes: Buffer.alloc(0), text: "", mode: 0o600 };
     }
     if (error?.code === "ENOENT") {
       throw failure("CONFIG_MISSING", `Codex config does not exist: ${path}`);
     }
     throw error;
+  } finally {
+    await handle?.close().catch(() => {});
   }
 }
 
 async function readState(path, { allowMissing = false } = {}) {
-  let source;
-  try {
-    source = await readFile(path, "utf8");
-  } catch (error) {
-    if (allowMissing && error?.code === "ENOENT") return null;
-    throw error;
-  }
+  const captured = await readOwnedRegularFile(path, {
+    allowMissing,
+    requirePrivate: true,
+    label: "PickerMux configuration state",
+  });
+  if (!captured) return null;
+  return parseState(captured.contents, path);
+}
 
+function parseState(contents, path) {
   let state;
   try {
-    state = JSON.parse(source);
+    state = JSON.parse(contents.toString("utf8"));
   } catch (error) {
     throw failure("INVALID_STATE", `State file is not valid JSON: ${path}`, {
       cause: error,
@@ -1024,6 +1240,352 @@ function assertStateMatchesConfig(state, configPath) {
   }
 }
 
+function assertManagedBackupPath(backupPath, settings) {
+  if (typeof backupPath !== "string" || !backupPath.trim()) {
+    throw failure(
+      "INVALID_STATE",
+      "Managed configuration state does not contain a backup path.",
+    );
+  }
+  const resolvedBackupPath = resolve(backupPath);
+  const stamp = String.raw`\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z`;
+  const backupNamePattern = new RegExp(
+    `^${escapeRegex(basename(settings.configPath))}\\.lm-studio-model-router\\.${stamp}\\.bak(?:\\.[1-9]\\d{0,3})?$`,
+    "u",
+  );
+  if (
+    backupPath !== resolvedBackupPath ||
+    dirname(resolvedBackupPath) !== settings.backupDirectory ||
+    !backupNamePattern.test(basename(resolvedBackupPath))
+  ) {
+    throw failure(
+      "UNSAFE_BACKUP_PATH",
+      "Managed configuration state references a path outside the exact PickerMux backup directory.",
+    );
+  }
+  return resolvedBackupPath;
+}
+
+function ownershipDetails(receipt, expected = undefined) {
+  const details = ownershipReceiptDetails.get(receipt);
+  if (!details) {
+    throw new TypeError(
+      "A managed configuration ownership receipt issued by this module is required",
+    );
+  }
+  if (
+    expected &&
+    (receipt.configPath !== expected.configPath ||
+      receipt.statePath !== expected.statePath ||
+      receipt.backupDirectory !== expected.backupDirectory)
+  ) {
+    throw failure(
+      "OWNERSHIP_RECEIPT_MISMATCH",
+      "Managed configuration ownership receipt does not match uninstall paths.",
+    );
+  }
+  return details;
+}
+
+async function readOwnershipBackup(receipt, { cache = true } = {}) {
+  const details = ownershipDetails(receipt);
+  if (!details.state) {
+    throw failure(
+      "STATE_MISSING",
+      "Managed configuration state does not exist.",
+    );
+  }
+  const backupPath = assertManagedBackupPath(
+    details.state.backupPath,
+    details.settings,
+  );
+  let captured;
+  if (details.backupDirectoryInventory) {
+    captured = details.readBackupImpl
+      ? await details.readBackupImpl(backupPath)
+      : await readInventoriedPickerMuxBackup({
+          inventory: details.backupDirectoryInventory,
+          backupPath,
+        });
+  } else if (details.readBackupImpl) {
+    captured = await details.readBackupImpl(backupPath);
+  } else {
+    captured = await readOwnedRegularFile(backupPath, {
+      requirePrivate: false,
+      label: "PickerMux configuration backup",
+      expectedSnapshot: cache
+        ? undefined
+        : details.backupFile?.snapshot,
+    });
+    if (!captured) {
+      throw failure(
+        "BACKUP_UNREADABLE",
+        "Exact managed configuration backup is missing.",
+      );
+    }
+  }
+  if (captured.sha256 !== details.state.sourceSha256) {
+    throw failure(
+      "BACKUP_MISMATCH",
+      "Exact managed configuration backup checksum does not match installation state.",
+    );
+  }
+  const result = Object.freeze({
+    path: backupPath,
+    contents: Buffer.from(captured.contents),
+    sha256: captured.sha256,
+    snapshot: captured.snapshot,
+  });
+  if (cache) details.backupFile = result;
+  return result;
+}
+
+function ownershipCommitGuard(receipt, beforeConfigCommit) {
+  return async () => {
+    if (beforeConfigCommit) await beforeConfigCommit();
+    await revalidateManagedConfigOwnership(receipt);
+  };
+}
+
+async function removeOwnedStateFile(receipt) {
+  const details = ownershipDetails(receipt);
+  if (!details.stateFile) return;
+  await revalidateManagedConfigOwnership(receipt);
+  const statePath = details.settings.statePath;
+  const quarantinePath = `${dirname(statePath)}/.${basename(statePath)}.uninstall-${process.pid}-${randomUUID()}`;
+  if (await lstatOptional(quarantinePath)) {
+    throw failure(
+      "STATE_REMOVE_FAILED",
+      "Managed configuration state quarantine already exists.",
+    );
+  }
+  await rename(statePath, quarantinePath);
+  try {
+    const staged = await readOwnedRegularFile(quarantinePath, {
+      requirePrivate: true,
+      label: "PickerMux configuration state quarantine",
+    });
+    if (
+      !staged ||
+      !sameStableFileIdentity(
+        details.stateFile.snapshot,
+        staged.snapshot,
+      ) ||
+      details.stateFile.sha256 !== staged.sha256
+    ) {
+      throw failure(
+        "STATE_CHANGED_CONCURRENTLY",
+        "Managed configuration state changed during removal.",
+      );
+    }
+    await unlink(quarantinePath);
+    if (await lstatOptional(quarantinePath)) {
+      throw failure(
+        "STATE_REMOVE_FAILED",
+        "Managed configuration state quarantine could not be removed.",
+      );
+    }
+  } catch (error) {
+    if (
+      !(await lstatOptional(statePath)) &&
+      (await lstatOptional(quarantinePath))
+    ) {
+      await rename(quarantinePath, statePath).catch(() => {});
+    }
+    throw error;
+  }
+}
+
+async function rollbackConfigAfterStateRemovalFailure({
+  configPath,
+  installedConfig,
+  restoredContents,
+  configWasRemoved,
+}) {
+  const expectedSource = configWasRemoved
+    ? { exists: false, sha256: sha256(Buffer.alloc(0)) }
+    : {
+        exists: true,
+        sha256: sha256(restoredContents),
+      };
+  await atomicWrite(
+    configPath,
+    installedConfig.bytes,
+    installedConfig.mode,
+    { expectedSource },
+  );
+}
+
+function fileSnapshot(stats) {
+  return Object.freeze({
+    dev: stats.dev,
+    ino: stats.ino,
+    uid: stats.uid,
+    mode: stats.mode & 0o777,
+    nlink: stats.nlink,
+    size: stats.size,
+    mtimeMs: stats.mtimeMs,
+    ctimeMs: stats.ctimeMs,
+  });
+}
+
+function sameFileSnapshot(left, right) {
+  return (
+    sameStableFileIdentity(left, right) &&
+    left.ctimeMs === right.ctimeMs
+  );
+}
+
+function sameStableFileIdentity(left, right) {
+  return (
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.uid === right.uid &&
+    left.mode === right.mode &&
+    left.nlink === right.nlink &&
+    left.size === right.size &&
+    left.mtimeMs === right.mtimeMs
+  );
+}
+
+function assertCurrentUserOwner(stats, target, label) {
+  const uid = typeof process.getuid === "function"
+    ? process.getuid()
+    : undefined;
+  if (uid !== undefined && stats.uid !== uid) {
+    throw failure(
+      "UNSAFE_MANAGED_FILE",
+      `${label} is not owned by the current user: ${target}`,
+    );
+  }
+}
+
+async function readOwnedRegularFile(
+  target,
+  {
+    allowMissing = false,
+    requirePrivate,
+    label,
+    expectedSnapshot = undefined,
+  },
+) {
+  let handle;
+  let pathObserved = false;
+  try {
+    const [initialPathStats, parentStats] = await Promise.all([
+      lstat(target),
+      lstat(dirname(target)),
+    ]);
+    pathObserved = true;
+    if (
+      initialPathStats.isSymbolicLink() ||
+      !initialPathStats.isFile() ||
+      initialPathStats.nlink !== 1
+    ) {
+      throw failure(
+        "UNSAFE_MANAGED_FILE",
+        `${label} is not an exact regular file: ${target}`,
+      );
+    }
+    if (!parentStats.isDirectory() || parentStats.isSymbolicLink()) {
+      throw failure(
+        "UNSAFE_MANAGED_FILE",
+        `${label} parent is not a real directory: ${dirname(target)}`,
+      );
+    }
+    assertCurrentUserOwner(initialPathStats, target, label);
+    assertCurrentUserOwner(parentStats, dirname(target), `${label} parent`);
+    if (
+      ((parentStats.mode & 0o077) !== 0 ||
+        (requirePrivate && (initialPathStats.mode & 0o077) !== 0))
+    ) {
+      throw failure(
+        "UNSAFE_MANAGED_FILE",
+        `${label} permissions are not private: ${target}`,
+      );
+    }
+    const initialSnapshot = fileSnapshot(initialPathStats);
+    if (
+      expectedSnapshot &&
+      !sameFileSnapshot(expectedSnapshot, initialSnapshot)
+    ) {
+      throw failure(
+        "MANAGED_FILE_CHANGED",
+        `${label} changed after ownership inventory.`,
+      );
+    }
+    handle = await open(target, PRIVATE_READ_FLAGS);
+    const [stats, pathStats] = await Promise.all([
+      handle.stat(),
+      lstat(target),
+    ]);
+    if (
+      !stats.isFile() ||
+      pathStats.isSymbolicLink() ||
+      !pathStats.isFile() ||
+      stats.dev !== pathStats.dev ||
+      stats.ino !== pathStats.ino ||
+      stats.nlink !== 1 ||
+      pathStats.nlink !== 1 ||
+      !sameFileSnapshot(initialSnapshot, fileSnapshot(stats)) ||
+      !sameFileSnapshot(initialSnapshot, fileSnapshot(pathStats))
+    ) {
+      throw failure(
+        "MANAGED_FILE_CHANGED",
+        `${label} changed after ownership validation.`,
+      );
+    }
+    assertCurrentUserOwner(stats, target, label);
+    assertCurrentUserOwner(pathStats, target, label);
+    const contents = await handle.readFile();
+    const [confirmed, confirmedPath] = await Promise.all([
+      handle.stat(),
+      lstat(target),
+    ]);
+    if (
+      !sameFileSnapshot(initialSnapshot, fileSnapshot(confirmed)) ||
+      !sameFileSnapshot(initialSnapshot, fileSnapshot(confirmedPath)) ||
+      contents.length !== confirmed.size
+    ) {
+      throw failure(
+        "MANAGED_FILE_CHANGED",
+        `${label} changed while it was read: ${target}`,
+      );
+    }
+    return Object.freeze({
+      contents: Buffer.from(contents),
+      sha256: sha256(contents),
+      snapshot: fileSnapshot(confirmed),
+    });
+  } catch (error) {
+    if (
+      allowMissing &&
+      error?.code === "ENOENT" &&
+      !pathObserved &&
+      !handle
+    ) return null;
+    if (error?.code === "ELOOP" || error?.code === "ENOENT") {
+      throw failure(
+        "UNSAFE_MANAGED_FILE",
+        `${label} is missing or changed: ${target}`,
+        { cause: error },
+      );
+    }
+    throw error;
+  } finally {
+    await handle?.close().catch(() => {});
+  }
+}
+
+async function lstatOptional(target) {
+  try {
+    return await lstat(target);
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
 async function allocateBackupPath(configPath, backupDirectory, date) {
   const stamp = date.toISOString().replace(/[:.]/g, "-");
   const base = `${resolve(backupDirectory)}/${basename(configPath)}.lm-studio-model-router.${stamp}.bak`;
@@ -1086,14 +1648,20 @@ async function atomicRemove(
 }
 
 async function assertSourceUnchanged(path, expected) {
-  let actual;
+  let current;
   try {
-    const bytes = await readFile(path);
-    actual = { exists: true, sha256: sha256(bytes) };
+    current = await readConfigFile(path);
   } catch (error) {
-    if (error?.code !== "ENOENT") throw error;
-    actual = { exists: false, sha256: sha256(Buffer.alloc(0)) };
+    throw failure(
+      "CONFIG_CHANGED_CONCURRENTLY",
+      `Refusing to replace concurrently changed config: ${path}`,
+      { expected, cause: error },
+    );
   }
+  const actual = {
+    exists: current.exists,
+    sha256: sha256(current.bytes),
+  };
   if (
     actual.exists !== expected.exists ||
     actual.sha256 !== expected.sha256
