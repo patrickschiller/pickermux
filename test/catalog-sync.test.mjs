@@ -446,9 +446,17 @@ test("selection reconciliation completes before catalog and registry publication
       events.push("selection");
       return { changed: true, rollback: async () => events.push("rollback") };
     },
+    assertPublishAllowed: async () => events.push("guard"),
     writeImpl: async () => events.push("catalog"),
   });
-  assert.deepEqual(events, ["selection", "catalog", "registry"]);
+  assert.deepEqual(events, [
+    "guard",
+    "selection",
+    "guard",
+    "catalog",
+    "guard",
+    "registry",
+  ]);
   assert.deepEqual(publishedRegistry.listModels().map((entry) => entry.id), [
     "gpt-5.4-mini",
   ]);
@@ -489,4 +497,136 @@ test("catalog publication failure rolls back the picker and preserves the regist
     /simulated catalog failure/u,
   );
   assert.deepEqual(events, ["catalog", "rollback"]);
+});
+
+test("compatibility guard blocks publication before picker mutation", async () => {
+  const inputConfig = config();
+  const nativeCatalog = { models: [donor] };
+  const currentCatalog = buildMixedCodexCatalog({
+    bundledCatalog: nativeCatalog,
+    nativeCatalog,
+    discoveredModels: [
+      discovered("lmstudio/qwen/local", "qwen/local", "Qwen Override", 32_768),
+    ],
+  });
+  const events = [];
+  await assert.rejects(
+    syncBridgeCatalog({
+      config: inputConfig,
+      currentCatalog,
+      catalogPath: "/private/test/models.json",
+      registryController: {
+        replace() {
+          events.push("registry");
+        },
+      },
+      discoverImpl: async () => ({ models: [], providers: [] }),
+      assertPublishAllowed: async () => {
+        events.push("guard");
+        throw new Error("compatibility changed");
+      },
+      reconcileSelectionImpl: async () => {
+        events.push("selection");
+        return { changed: true };
+      },
+      writeImpl: async () => events.push("catalog"),
+    }),
+    /compatibility changed/u,
+  );
+  assert.deepEqual(events, ["guard"]);
+});
+
+test("compatibility guard rolls back a picker change before catalog write", async () => {
+  const inputConfig = config();
+  const nativeCatalog = { models: [donor] };
+  const currentCatalog = buildMixedCodexCatalog({
+    bundledCatalog: nativeCatalog,
+    nativeCatalog,
+    discoveredModels: [
+      discovered("lmstudio/qwen/local", "qwen/local", "Qwen Override", 32_768),
+    ],
+  });
+  const events = [];
+  let guardCalls = 0;
+  await assert.rejects(
+    syncBridgeCatalog({
+      config: inputConfig,
+      currentCatalog,
+      catalogPath: "/private/test/models.json",
+      registryController: {
+        replace() {
+          events.push("registry");
+        },
+      },
+      discoverImpl: async () => ({ models: [], providers: [] }),
+      assertPublishAllowed: async () => {
+        guardCalls += 1;
+        events.push(`guard-${guardCalls}`);
+        if (guardCalls === 2) throw new Error("compatibility changed");
+      },
+      reconcileSelectionImpl: async () => {
+        events.push("selection");
+        return { changed: true, rollback: async () => events.push("rollback") };
+      },
+      writeImpl: async () => events.push("catalog"),
+    }),
+    /compatibility changed/u,
+  );
+  assert.deepEqual(events, ["guard-1", "selection", "guard-2", "rollback"]);
+});
+
+test("compatibility guard restores a published catalog before preserving the registry", async () => {
+  const inputConfig = config();
+  const nativeCatalog = { models: [donor] };
+  const currentCatalog = buildMixedCodexCatalog({
+    bundledCatalog: nativeCatalog,
+    nativeCatalog,
+    discoveredModels: [
+      discovered("lmstudio/qwen/local", "qwen/local", "Qwen Override", 32_768),
+    ],
+  });
+  const events = [];
+  let guardCalls = 0;
+  await assert.rejects(
+    syncBridgeCatalog({
+      config: inputConfig,
+      currentCatalog,
+      catalogPath: "/private/test/models.json",
+      registryController: {
+        replace() {
+          events.push("registry");
+        },
+      },
+      discoverImpl: async () => ({ models: [], providers: [] }),
+      assertPublishAllowed: async () => {
+        guardCalls += 1;
+        events.push(`guard-${guardCalls}`);
+        if (guardCalls === 3) throw new Error("compatibility changed");
+      },
+      reconcileSelectionImpl: async () => {
+        events.push("selection");
+        return { changed: true, rollback: async () => events.push("selection-rollback") };
+      },
+      writeImpl: async () => {
+        events.push("catalog-next");
+        return { snapshot: { ino: 42 } };
+      },
+      rollbackWriteImpl: async (_target, catalog, expected) => {
+        assert.equal(catalog, currentCatalog);
+        assert.notEqual(expected.expectedCatalog, currentCatalog);
+        assert.deepEqual(expected.expectedSnapshot, { ino: 42 });
+        events.push("catalog-rollback");
+      },
+    }),
+    /compatibility changed/u,
+  );
+  assert.deepEqual(events, [
+    "guard-1",
+    "selection",
+    "guard-2",
+    "catalog-next",
+    "guard-3",
+    "catalog-rollback",
+    "selection-rollback",
+  ]);
 });

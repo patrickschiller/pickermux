@@ -86,6 +86,7 @@ import {
   buildProviderRegistry,
   createReloadableProviderRegistry,
 } from "./provider-registry.mjs";
+import { createRuntimeCompatibilityGate } from "./runtime-compatibility.mjs";
 import {
   inventoryPickerMuxBackups,
   inventoryPickerMuxInstallDirectory,
@@ -819,7 +820,12 @@ async function refresh({ config, paths, codexPath, sourceRoot = projectRoot }) {
   }
 }
 
-async function serve({ config, configPath, runtimePath }) {
+async function serve({
+  config,
+  configPath,
+  runtimePath,
+  codexPath = resolveCodexBinary(),
+}) {
   assertRuntimeCompressionSupport();
   const runtime = await readRuntime(runtimePath);
   if (path.resolve(runtime.configPath) !== path.resolve(configPath)) {
@@ -828,9 +834,37 @@ async function serve({ config, configPath, runtimePath }) {
   const catalogPath = path.join(path.dirname(runtimePath), "models.json");
   const installDirectory = path.dirname(runtimePath);
   const certificationPath = path.join(installDirectory, "certifications.json");
-  const startupCompatibility = await assertBridgeStartupCompatibility({
+  let synchronizer;
+  let lastCompatibilityStatus;
+  const compatibilityGate = createRuntimeCompatibilityGate({
     manifestPath: path.join(installDirectory, "compatibility.json"),
+    codexPath,
+    onBlocked(state) {
+      if (state?.status === "update-required") synchronizer?.stop();
+      const safeStatus = state?.status === "update-required"
+        ? "update-required"
+        : "check-failed";
+      if (safeStatus !== lastCompatibilityStatus) {
+        process.stderr.write(
+          `desktop compatibility blocked; bridge requests are disabled (${safeStatus})\n`,
+        );
+        lastCompatibilityStatus = safeStatus;
+      }
+    },
   });
+  let startupCompatibility;
+  try {
+    startupCompatibility = await compatibilityGate.initialize();
+  } catch (error) {
+    const status = error?.status ?? "check-failed";
+    const reasons = Array.isArray(error?.reasons) && error.reasons.length > 0
+      ? error.reasons.join(", ")
+      : "compatibility check did not pass";
+    throw new Error(
+      `Bridge startup blocked: desktop compatibility is ${status} (${reasons})`,
+      { cause: error },
+    );
+  }
   const codexClientVersion = startupCompatibility.codexClientVersion;
   const credentialResolver = createCredentialResolver();
   const managedPickerPaths = {
@@ -842,7 +876,7 @@ async function serve({ config, configPath, runtimePath }) {
     buildProviderRegistry({ mixedCatalog, config }),
   );
   let lastSyncError;
-  const synchronizer = hasLoadedModelDiscovery(config)
+  synchronizer = hasLoadedModelDiscovery(config)
     ? createCatalogSynchronizer({
         config,
         initialCatalog: mixedCatalog,
@@ -858,6 +892,9 @@ async function serve({ config, configPath, runtimePath }) {
             models,
             codexClientVersion,
           });
+        },
+        assertPublishAllowed() {
+          return compatibilityGate.assertReady();
         },
         reconcileSelectionImpl(args) {
           return reconcileSelectedCatalogModel({
@@ -900,20 +937,31 @@ async function serve({ config, configPath, runtimePath }) {
     limits: config.bridge.limits,
     credentialResolver,
     port: config.bridge.port,
+    compatibilityGate,
   });
   process.stdout.write(
     `model bridge ready on 127.0.0.1:${config.bridge.port}; ${registry.nativeModels.length} native and ${registry.externalModels.length} external route(s)\n`,
   );
   synchronizer?.start();
-  await new Promise((resolve, reject) => {
-    const shutdown = () => {
-      synchronizer?.stop();
-      server.close((error) => (error ? reject(error) : resolve()));
-    };
-    process.once("SIGTERM", shutdown);
-    process.once("SIGINT", shutdown);
-    server.once("error", reject);
-  });
+  compatibilityGate.start();
+  try {
+    await new Promise((resolve, reject) => {
+      let shuttingDown = false;
+      const shutdown = () => {
+        if (shuttingDown) return;
+        shuttingDown = true;
+        synchronizer?.stop();
+        compatibilityGate.stop();
+        server.close((error) => (error ? reject(error) : resolve()));
+      };
+      process.once("SIGTERM", shutdown);
+      process.once("SIGINT", shutdown);
+      server.once("error", reject);
+    });
+  } finally {
+    synchronizer?.stop();
+    compatibilityGate.stop();
+  }
 }
 
 function configuredProvider(config, providerId) {
@@ -1801,7 +1849,12 @@ export async function runCli(argv, {
   }
 
   if (options.command === "serve") {
-    return serve({ config, configPath, runtimePath: path.resolve(options.runtimePath) });
+    return serve({
+      config,
+      configPath,
+      runtimePath: path.resolve(options.runtimePath),
+      codexPath,
+    });
   }
   if (options.command === "discover") {
     const result = await discoverBridgeModels({ config });

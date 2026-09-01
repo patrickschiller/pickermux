@@ -642,7 +642,18 @@ export async function getBridgeServiceStatus({
     });
     const health = response.ok ? await response.json() : null;
     const healthy = health?.ok === true && health.instanceId === runtime.instanceId;
-    return { loaded, healthy, status: healthy ? "running" : "unhealthy", runtime, health };
+    const compatibilityStatus =
+      health?.instanceId === runtime.instanceId &&
+      health?.compatibility?.status === "update-required"
+        ? "update-required"
+        : undefined;
+    return {
+      loaded,
+      healthy,
+      status: healthy ? "running" : (compatibilityStatus ?? "unhealthy"),
+      runtime,
+      health,
+    };
   } catch (error) {
     return { loaded, healthy: false, status: "unreachable", runtime, error };
   }

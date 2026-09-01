@@ -105,6 +105,15 @@ At minimum, record:
 - Node.js 22.15.0 and the current supported Node.js line;
 - Codex Desktop and LM Studio versions;
 - clean setup, `--version`, `status`, and `doctor`;
+- running-service Codex executable replacement, confirming that model and
+  in-flight catalog publication paths fail closed while private health reports
+  only safe `update-required` enums and recovers only after refresh/restart;
+- a text-only request with unique prompt, path, model, and turn canaries,
+  confirming that health/doctor telemetry contains only byte/part counters and
+  fixed enums;
+- provider-end-marker loss before a user TOML table and at end of file,
+  confirming receipt-bound `installed-marker-recovered`, no status-time write,
+  safe picker selection, uninstall, and refusal after any provider-byte change;
 - independent `codex-account-cache` doctor output with the runtime and mixed
   catalog absent;
 - local model visibility after a full Codex restart;

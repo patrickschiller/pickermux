@@ -175,6 +175,241 @@ test("status reports installed, modified, and not-installed states", async (t) =
   );
 });
 
+test("an exact missing provider end marker is recovered without rewriting config", async (t) => {
+  const fixture = await makeFixture(t);
+  const original = [
+    'model = "gpt-5.6-sol"',
+    'model_reasoning_effort = "ultra"',
+    "[features]",
+    "web_search = true",
+    "",
+  ].join("\n");
+  await writeFile(fixture.configPath, original, { mode: 0o640 });
+  await chmod(fixture.configPath, 0o640);
+  await installConfig(fixture.options());
+
+  const installed = await readFile(fixture.configPath, "utf8");
+  const missingEnd = removeProviderEndMarker(installed, "\n");
+  await writeFile(fixture.configPath, missingEnd);
+
+  const status = await getConfigStatus(fixture.paths());
+  assert.deepEqual(pickStatus(status), {
+    installed: true,
+    healthy: true,
+    status: "installed-marker-recovered",
+  });
+  assert.deepEqual(status.recoveredMarkers, ["provider-end"]);
+  assert.deepEqual(status.modifiedBlocks, []);
+  assert.equal(await readFile(fixture.configPath, "utf8"), missingEnd);
+  assert.equal((await stat(fixture.configPath)).mode & 0o777, 0o640);
+
+  await setManagedPickerSelection({
+    ...fixture.paths(),
+    model: "gpt-5.5",
+    modelReasoningEffort: "max",
+    expectedModel: "lmstudio/qwen3.8-27b",
+    expectedModelReasoningEffort: "low",
+  });
+  const selected = await readFile(fixture.configPath, "utf8");
+  assert.equal(selected.includes(CONFIG_MARKERS.providerEnd), false);
+  assert.match(selected, /model = "gpt-5\.5"/u);
+  assert.equal((await getConfigStatus(fixture.paths())).status, "installed-marker-recovered");
+
+  const userEdit = `${selected}user_setting = true\n`;
+  await writeFile(fixture.configPath, userEdit);
+  await uninstallConfig(fixture.paths());
+  assert.equal(
+    await readFile(fixture.configPath, "utf8"),
+    `${original}user_setting = true\n`,
+  );
+});
+
+test("missing provider end recovery supports CRLF at end of file", async (t) => {
+  const fixture = await makeFixture(t);
+  const original =
+    'model = "gpt-5.6-sol"\r\nmodel_reasoning_effort = "ultra"\r\n';
+  await writeFile(fixture.configPath, original);
+  await installConfig(fixture.options());
+
+  const installed = await readFile(fixture.configPath, "utf8");
+  const missingEnd = removeProviderEndMarker(installed, "\r\n");
+  await writeFile(fixture.configPath, missingEnd);
+  const status = await getConfigStatus(fixture.paths());
+
+  assert.equal(status.healthy, true);
+  assert.equal(status.status, "installed-marker-recovered");
+  assert.deepEqual(status.recoveredMarkers, ["provider-end"]);
+  assert.equal(await readFile(fixture.configPath, "utf8"), missingEnd);
+  await uninstallConfig(fixture.paths());
+  assert.equal(await readFile(fixture.configPath, "utf8"), original);
+});
+
+test("marker recovery restores an otherwise pristine existing config byte-for-byte", async (t) => {
+  const fixture = await makeFixture(t);
+  const original = [
+    'model_reasoning_effort = "ultra"',
+    "# retain assignment position and spacing",
+    "",
+    'model = "gpt-5.6-sol"',
+    "project_doc_max_bytes = 12345",
+    "[features]",
+    "web_search = true",
+    "",
+  ].join("\n");
+  await writeFile(fixture.configPath, original, { mode: 0o640 });
+  await chmod(fixture.configPath, 0o640);
+  await installConfig(fixture.options());
+
+  const installed = await readFile(fixture.configPath, "utf8");
+  await writeFile(
+    fixture.configPath,
+    removeProviderEndMarker(installed, "\n"),
+  );
+  assert.equal(
+    (await getConfigStatus(fixture.paths())).status,
+    "installed-marker-recovered",
+  );
+
+  await uninstallConfig(fixture.paths());
+  assert.equal(await readFile(fixture.configPath, "utf8"), original);
+  assert.equal((await stat(fixture.configPath)).mode & 0o777, 0o640);
+});
+
+test("marker recovery removes a config that did not exist before install", async (t) => {
+  const fixture = await makeFixture(t);
+  await installConfig(fixture.options());
+  const installed = await readFile(fixture.configPath, "utf8");
+  await writeFile(
+    fixture.configPath,
+    removeProviderEndMarker(installed, "\n"),
+  );
+  assert.equal(
+    (await getConfigStatus(fixture.paths())).status,
+    "installed-marker-recovered",
+  );
+
+  const result = await uninstallConfig(fixture.paths());
+  assert.equal(result.changed, true);
+  await assert.rejects(stat(fixture.configPath), (error) => error.code === "ENOENT");
+});
+
+test("missing provider end recovery rejects every unreceipted boundary", async (t) => {
+  const cases = [
+    {
+      name: "edited provider value",
+      mutate(source) {
+        return removeProviderEndMarker(source, "\n").replace(
+          "http://127.0.0.1:1234/v1",
+          "http://127.0.0.1:9999/v1",
+        );
+      },
+    },
+    {
+      name: "additional provider-scoped field",
+      mutate(source) {
+        return removeProviderEndMarker(source, "\n").replace(
+          "[features]",
+          "request_max_retries = 99\n[features]",
+        );
+      },
+    },
+    {
+      name: "changed end-marker comment",
+      mutate(source) {
+        return source.replace(
+          CONFIG_MARKERS.providerEnd,
+          `${CONFIG_MARKERS.providerEnd} changed`,
+        );
+      },
+    },
+    {
+      name: "duplicate begin marker",
+      mutate(source) {
+        return removeProviderEndMarker(source, "\n").replace(
+          CONFIG_MARKERS.providerBegin,
+          `${CONFIG_MARKERS.providerBegin}\n${CONFIG_MARKERS.providerBegin}`,
+        );
+      },
+    },
+    {
+      name: "missing root end marker",
+      mutate(source) {
+        return removeProviderEndMarker(source, "\n").replace(
+          `${CONFIG_MARKERS.rootEnd}\n`,
+          "",
+        );
+      },
+    },
+    {
+      name: "unmatched state hash",
+      mutate(source) {
+        return removeProviderEndMarker(source, "\n");
+      },
+      async mutateState(fixture) {
+        const state = JSON.parse(await readFile(fixture.statePath, "utf8"));
+        state.blocks.provider.sha256 = "0".repeat(64);
+        await writeFile(
+          fixture.statePath,
+          `${JSON.stringify(state, null, 2)}\n`,
+        );
+      },
+    },
+  ];
+
+  for (const entry of cases) {
+    await t.test(entry.name, async (t) => {
+      const fixture = await makeFixture(t);
+      const original = [
+        'model = "gpt-5.6-sol"',
+        "[features]",
+        "web_search = true",
+        "",
+      ].join("\n");
+      await writeFile(fixture.configPath, original);
+      await installConfig(fixture.options());
+      const installed = await readFile(fixture.configPath, "utf8");
+      const drifted = entry.mutate(installed);
+      await writeFile(fixture.configPath, drifted);
+      await entry.mutateState?.(fixture);
+
+      const status = await getConfigStatus(fixture.paths());
+      assert.equal(status.installed, true);
+      assert.equal(status.healthy, false);
+      assert.equal(status.status, "inconsistent");
+      assert.equal(await readFile(fixture.configPath, "utf8"), drifted);
+      await assert.rejects(
+        uninstallConfig(fixture.paths()),
+        (error) => error.code === "MANAGED_BLOCK_BOUNDARY_INVALID",
+      );
+      assert.equal(await readFile(fixture.configPath, "utf8"), drifted);
+    });
+  }
+});
+
+test("recovered provider boundary retains picker compare-and-swap protection", async (t) => {
+  const fixture = await makeFixture(t);
+  await writeFile(
+    fixture.configPath,
+    'model = "gpt-5.6-sol"\n[features]\nweb_search = true\n',
+  );
+  await installConfig(fixture.options());
+  const installed = await readFile(fixture.configPath, "utf8");
+  const missingEnd = removeProviderEndMarker(installed, "\n");
+  await writeFile(fixture.configPath, missingEnd);
+  const concurrent = `${missingEnd}[user_after_install]\nvalue = true\n`;
+
+  await assert.rejects(
+    setManagedPickerSelection({
+      ...fixture.paths(),
+      model: "gpt-5.5",
+      modelReasoningEffort: "max",
+      beforeConfigCommit: () => writeFile(fixture.configPath, concurrent),
+    }),
+    (error) => error.code === "CONFIG_CHANGED_CONCURRENTLY",
+  );
+  assert.equal(await readFile(fixture.configPath, "utf8"), concurrent);
+});
+
 test("picker model and reasoning changes stay healthy while bridge identity remains protected", async (t) => {
   const fixture = await makeFixture(t);
   const original = 'model = "gpt-5.6-sol"\nmodel_reasoning_effort = "ultra"\n';
@@ -750,6 +985,16 @@ test("uninstall defaults to model-bridge/backups beside state.json", async (t) =
   await uninstallConfig({ configPath: fixture.configPath, statePath });
   assert.equal(await readFile(fixture.configPath, "utf8"), original);
 });
+
+function removeProviderEndMarker(source, eol) {
+  const markerLine = `${CONFIG_MARKERS.providerEnd}${eol}`;
+  assert.equal(
+    source.split(markerLine).length - 1,
+    1,
+    "fixture must contain exactly one provider end marker line",
+  );
+  return source.replace(markerLine, "");
+}
 
 async function makeFixture(t) {
   const directory = await mkdtemp(join(tmpdir(), "lmstudio-config-manager-"));

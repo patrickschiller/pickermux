@@ -17,7 +17,9 @@ import {
   loadCachedNativeCatalog,
   loadCodexClientVersion,
   loadNativeCatalog,
+  replaceCatalogAtomicIfCurrent,
   writeCatalogAtomic,
+  writeCatalogAtomicWithReceipt,
 } from "../src/catalog.mjs";
 import {
   DiscoveryUnavailableError,
@@ -1114,4 +1116,66 @@ test("writes an atomic private catalog with no temporary file left behind", asyn
   assert.deepEqual(JSON.parse(await readFile(target, "utf8")), catalog);
   assert.equal((await stat(target)).mode & 0o777, 0o600);
   assert.deepEqual(await readdir(path.dirname(target)), ["models.json"]);
+});
+
+test("guarded catalog rollback preserves a concurrent catalog edit", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "lmstudio-catalog-cas-"));
+  t.after(async () => {
+    const { rm } = await import("node:fs/promises");
+    await rm(directory, { recursive: true, force: true });
+  });
+  const target = path.join(directory, "models.json");
+  const published = buildCodexCatalog({
+    bundledCatalog: { models: [donor] },
+    discoveredModels: [
+      {
+        id: "qwen/published",
+        displayName: "Published",
+        type: "llm",
+        contextWindow: 32_768,
+      },
+    ],
+  });
+  const replacement = buildCodexCatalog({
+    bundledCatalog: { models: [donor] },
+    discoveredModels: [
+      {
+        id: "qwen/previous",
+        displayName: "Previous",
+        type: "llm",
+        contextWindow: 32_768,
+      },
+    ],
+  });
+  const concurrent = buildCodexCatalog({
+    bundledCatalog: { models: [donor] },
+    discoveredModels: [
+      {
+        id: "qwen/concurrent",
+        displayName: "Concurrent",
+        type: "llm",
+        contextWindow: 32_768,
+      },
+    ],
+  });
+
+  const firstReceipt = await writeCatalogAtomicWithReceipt(target, published);
+  await replaceCatalogAtomicIfCurrent(target, replacement, {
+    expectedCatalog: published,
+    expectedSnapshot: firstReceipt.snapshot,
+  });
+  assert.deepEqual(JSON.parse(await readFile(target, "utf8")), replacement);
+
+  const secondReceipt = await writeCatalogAtomicWithReceipt(target, published);
+  await writeFile(target, `${JSON.stringify(concurrent, null, 2)}\n`, { mode: 0o600 });
+  await chmod(target, 0o600);
+  await assert.rejects(
+    replaceCatalogAtomicIfCurrent(target, replacement, {
+      expectedCatalog: published,
+      expectedSnapshot: secondReceipt.snapshot,
+    }),
+    (error) => error.code === "CATALOG_CHANGED_CONCURRENTLY",
+  );
+  assert.deepEqual(JSON.parse(await readFile(target, "utf8")), concurrent);
+  assert.deepEqual(await readdir(directory), ["models.json"]);
 });

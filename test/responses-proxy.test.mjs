@@ -68,6 +68,7 @@ async function createProxyHarness({
   limits,
   credentialResolver,
   certificationToken,
+  onTextOnlyCompaction,
 }) {
   const handle = createResponsesProxy({
     registry,
@@ -76,6 +77,7 @@ async function createProxyHarness({
     limits,
     credentialResolver,
     certificationToken,
+    onTextOnlyCompaction,
   });
   const server = http.createServer((request, response) => {
     void handle(request, response, new URL(request.url, "http://proxy.local").pathname);
@@ -842,6 +844,7 @@ test("text-only routes strip large optional tool catalogs before forwarding", as
 test("LM Studio text-only routes compact only annotated bootstrap context", async (t) => {
   let observed;
   let observedBytes;
+  const compactionEvents = [];
   const upstream = http.createServer((request, response) => {
     const chunks = [];
     request.on("data", (chunk) => chunks.push(chunk));
@@ -867,6 +870,7 @@ test("LM Studio text-only routes compact only annotated bootstrap context", asyn
         reasoningEfforts: ["none", "low", "medium", "xhigh"],
       }),
     },
+    onTextOnlyCompaction: (event) => compactionEvents.push(event),
   });
   t.after(() => close(proxy.server));
 
@@ -1111,7 +1115,15 @@ test("LM Studio text-only routes compact only annotated bootstrap context", asyn
   assert.equal(observed.input[0].role, "system");
   assert.deepEqual(
     observed.input[0].content.map((part) => part.text),
-    ["managed-config-instructions-stay", "\n\n", "late-permissions-stay"],
+    [
+      appContext,
+      threadCoordination,
+      "managed-config-instructions-stay",
+      "\n\n",
+      appContextWithoutSidebar,
+      "\n\n",
+      "late-permissions-stay",
+    ],
   );
   assert.equal(observed.input[1].role, "user");
   assert.match(observed.input[1].content[0].text, /<environment_context>/u);
@@ -1130,16 +1142,140 @@ test("LM Studio text-only routes compact only annotated bootstrap context", asyn
     observed.input.some((item) => item.internal_chat_message_metadata_passthrough),
     false,
   );
+  assert.match(observedBytes.toString("utf8"), /Codex desktop context/u);
+  assert.match(observedBytes.toString("utf8"), /Thread coordination:/u);
   assert.doesNotMatch(
     observedBytes.toString("utf8"),
-    /bootstrap-overhead|Codex desktop context|Thread coordination:|MEMORY_SUMMARY|primary agent in a team|collaborating to complete a task|installation-id-must-not-reach|thread-id-must-not-reach|turn-id-must-not-reach|tool_225/u,
+    /bootstrap-overhead|MEMORY_SUMMARY|primary agent in a team|collaborating to complete a task|installation-id-must-not-reach|thread-id-must-not-reach|turn-id-must-not-reach|tool_225/u,
   );
   const sourceInputBytes = Buffer.byteLength(JSON.stringify(source.input));
   const observedInputBytes = Buffer.byteLength(JSON.stringify(observed.input));
+  assert.equal(compactionEvents.length, 1);
+  const [compactionEvent] = compactionEvents;
+  assert.equal(Object.isFrozen(compactionEvent), true);
+  assert.deepEqual(Object.keys(compactionEvent).sort(), [
+    "changed",
+    "event",
+    "forwardedBytes",
+    "forwardedItems",
+    "forwardedRequestBytes",
+    "omittedBytes",
+    "omittedParts",
+    "outcome",
+    "retainedBootstrapBytes",
+    "retainedBootstrapParts",
+    "retainedParts",
+    "schemaVersion",
+    "sourceBytes",
+    "sourceItems",
+    "sourceParts",
+    "sourceRequestBytes",
+    "stopReason",
+    "stopped",
+  ]);
+  assert.equal(compactionEvent.event, "lmstudio_text_only_compaction");
+  assert.equal(compactionEvent.schemaVersion, 1);
+  assert.equal(compactionEvent.outcome, "compacted");
+  assert.equal(compactionEvent.stopReason, "conversation");
+  assert.equal(compactionEvent.changed, true);
+  assert.equal(compactionEvent.stopped, true);
+  assert.equal(compactionEvent.sourceItems, source.input.length);
+  assert.equal(compactionEvent.forwardedItems, observed.input.length);
+  assert.equal(compactionEvent.sourceBytes, sourceInputBytes);
+  assert.equal(compactionEvent.forwardedBytes, observedInputBytes);
+  assert.equal(compactionEvent.sourceRequestBytes, sourceBytes.length);
+  assert.equal(compactionEvent.forwardedRequestBytes, observedBytes.length);
+  assert.ok(compactionEvent.omittedParts > 0);
+  assert.ok(compactionEvent.omittedBytes > 0);
+  assert.ok(compactionEvent.retainedBootstrapParts > 0);
+  assert.ok(compactionEvent.retainedBootstrapBytes > 0);
+  assert.ok(
+    compactionEvent.retainedBootstrapParts <= compactionEvent.retainedParts,
+  );
+  assert.equal(
+    compactionEvent.retainedParts + compactionEvent.omittedParts,
+    compactionEvent.sourceParts,
+  );
+  assert.doesNotMatch(
+    JSON.stringify(compactionEvent),
+    /qwen|workspace|installation-id|thread-id|turn-id|MEMORY_SUMMARY/u,
+  );
   assert.ok(observedInputBytes < sourceInputBytes / 20);
 });
 
-test("LM Studio text-only compaction retains verifier drift and fails closed on malformed context", async (t) => {
+test("LM Studio text-only compaction ignores synchronous and asynchronous telemetry sink failures", async (t) => {
+  let upstreamRequests = 0;
+  const upstream = http.createServer((request, response) => {
+    request.resume();
+    request.once("end", () => {
+      upstreamRequests += 1;
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end('{"ok":true}');
+    });
+  });
+  const upstreamPort = await listen(upstream);
+  t.after(() => close(upstream));
+
+  let sinkCalls = 0;
+  const proxy = await createProxyHarness({
+    registry: {
+      resolve: () => ({
+        kind: "external",
+        providerKind: "lmstudio-responses",
+        baseUrl: `http://127.0.0.1:${upstreamPort}/v1`,
+        allowPrivateNetwork: true,
+        upstreamModel: "qwen/qwen3.8-27b",
+        toolsEnabled: false,
+      }),
+    },
+    onTextOnlyCompaction: () => {
+      sinkCalls += 1;
+      if (sinkCalls === 1) throw new Error("synchronous sink failure");
+      return Promise.reject(new Error("asynchronous sink failure"));
+    },
+  });
+  t.after(() => close(proxy.server));
+
+  const memory = [
+    "## Memory",
+    "========= MEMORY_SUMMARY BEGINS =========",
+    "generated summary",
+    "========= MEMORY_SUMMARY ENDS =========",
+    "Generated memory footer.",
+  ].join("\n");
+  const body = Buffer.from(JSON.stringify({
+    model: "lmstudio/qwen/qwen3.8-27b",
+    input: [
+      {
+        type: "message",
+        role: "developer",
+        content: [{ type: "input_text", text: memory }],
+        internal_chat_message_metadata_passthrough: {
+          content_item_kinds: ["memories.instructions"],
+        },
+      },
+      {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "Hello" }],
+        internal_chat_message_metadata_passthrough: {
+          content_item_kinds: ["user.text"],
+        },
+      },
+    ],
+  }));
+
+  const first = await httpRequest({ port: proxy.port, body });
+  const second = await httpRequest({ port: proxy.port, body });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(first.statusCode, 200);
+  assert.equal(second.statusCode, 200);
+  assert.equal(upstreamRequests, 2);
+  assert.equal(sinkCalls, 2);
+});
+
+test("LM Studio text-only compaction tolerates generated wording drift and fails closed on malformed context", async (t) => {
   const observed = [];
   const upstream = http.createServer((request, response) => {
     const chunks = [];
@@ -1197,6 +1333,37 @@ test("LM Studio text-only compaction retains verifier drift and fails closed on 
     "Thread ownership drift stays:",
   );
   const cases = [
+    {
+      path: "/v1/responses",
+      input: [
+        {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "wrong-role-memory-stays" }],
+          internal_chat_message_metadata_passthrough: {
+            content_item_kinds: ["memories.instructions"],
+          },
+        },
+        {
+          type: "message",
+          role: "developer",
+          content: [
+            {
+              type: "input_text",
+              text: "<tools>after-wrong-role-memory-stays</tools>",
+            },
+          ],
+          internal_chat_message_metadata_passthrough: {
+            content_item_kinds: ["tools.deferred_namespaces"],
+          },
+        },
+      ],
+      canaries: [
+        "wrong-role-memory-stays",
+        "after-wrong-role-memory-stays",
+      ],
+      absentCanaries: [],
+    },
     {
       path: "/v1/responses",
       input: [
@@ -1458,11 +1625,20 @@ test("LM Studio text-only compaction retains verifier drift and fails closed on 
             content_item_kinds: ["tools.deferred_namespaces"],
           },
         },
+        {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "custom-usage-user-stays" }],
+          internal_chat_message_metadata_passthrough: {
+            content_item_kinds: ["user.text"],
+          },
+        },
       ],
-      canaries: [
+      canaries: ["custom-usage-user-stays"],
+      absentCanaries: [
         "custom-primary-agent-stays",
+        "after-custom-usage-hint-stays",
       ],
-      absentCanaries: ["after-custom-usage-hint-stays"],
     },
     {
       path: "/v1/responses",
@@ -1636,9 +1812,8 @@ test("LM Studio text-only compaction retains verifier drift and fails closed on 
       ],
       canaries: [
         "Thread ownership drift stays",
-        "after-mutated-thread-coordination-stays",
       ],
-      absentCanaries: [],
+      absentCanaries: ["after-mutated-thread-coordination-stays"],
     },
     {
       path: "/v1/responses",
@@ -1673,12 +1848,20 @@ test("LM Studio text-only compaction retains verifier drift and fails closed on 
             content_item_kinds: ["tools.deferred_namespaces"],
           },
         },
+        {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "duplicate-memory-user-stays" }],
+          internal_chat_message_metadata_passthrough: {
+            content_item_kinds: ["user.text"],
+          },
+        },
       ],
-      canaries: [
+      canaries: ["duplicate-memory-user-stays"],
+      absentCanaries: [
         "duplicate-memory-marker-stays",
         "after-duplicate-memory-marker-stays",
       ],
-      absentCanaries: [],
     },
     {
       path: "/v1/responses",
@@ -1709,11 +1892,20 @@ test("LM Studio text-only compaction retains verifier drift and fails closed on 
             content_item_kinds: ["tools.deferred_namespaces"],
           },
         },
+        {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "memory-drift-user-stays" }],
+          internal_chat_message_metadata_passthrough: {
+            content_item_kinds: ["user.text"],
+          },
+        },
       ],
-      canaries: [
+      canaries: ["memory-drift-user-stays"],
+      absentCanaries: [
         "modified-memory-scaffold-stays",
+        "after-modified-memory-scaffold-stays",
       ],
-      absentCanaries: ["after-modified-memory-scaffold-stays"],
     },
     {
       path: "/v1/responses",
@@ -1748,9 +1940,8 @@ test("LM Studio text-only compaction retains verifier drift and fails closed on 
       canaries: [
         "outside-app-context-stays",
         "app-context-stays",
-        "after-malformed-app-context-stays",
       ],
-      absentCanaries: [],
+      absentCanaries: ["after-malformed-app-context-stays"],
     },
     {
       path: "/v1/responses",
@@ -1781,13 +1972,21 @@ test("LM Studio text-only compaction retains verifier drift and fails closed on 
             content_item_kinds: ["apps.instructions"],
           },
         },
+        {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "malformed-memory-user-stays" }],
+          internal_chat_message_metadata_passthrough: {
+            content_item_kinds: ["user.text"],
+          },
+        },
       ],
-      canaries: [
+      canaries: ["malformed-memory-user-stays"],
+      absentCanaries: [
         "malformed-memory-stays",
         "summary-without-closing-marker",
         "after-malformed-memory-stays",
       ],
-      absentCanaries: [],
     },
     {
       path: "/v1/responses",
@@ -1944,6 +2143,7 @@ test("LM Studio text-only routes reject bootstrap-only input", async (t) => {
 
 test("tool-enabled LM Studio routes preserve annotated bootstrap context", async (t) => {
   let observed;
+  const compactionEvents = [];
   const upstream = http.createServer((request, response) => {
     const chunks = [];
     request.on("data", (chunk) => chunks.push(chunk));
@@ -1966,6 +2166,7 @@ test("tool-enabled LM Studio routes preserve annotated bootstrap context", async
         toolsEnabled: true,
       }),
     },
+    onTextOnlyCompaction: (event) => compactionEvents.push(event),
   });
   t.after(() => close(proxy.server));
 
@@ -2042,6 +2243,7 @@ test("tool-enabled LM Studio routes preserve annotated bootstrap context", async
     assert.match(serialized, new RegExp(canary, "u"));
   }
   assert.doesNotMatch(serialized, /internal_chat_message_metadata_passthrough/u);
+  assert.deepEqual(compactionEvents, []);
 });
 
 test("text-only routes reject forced tool choices and tool-call history", async (t) => {

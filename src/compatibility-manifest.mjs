@@ -5,7 +5,7 @@ import path from "node:path";
 import { writeServiceConfig } from "./service-package.mjs";
 
 export const COMPATIBILITY_MANIFEST_SCHEMA_VERSION = 1;
-export const CURRENT_BRIDGE_CONTRACT = "codex-responses-bridge/p5-v1";
+export const CURRENT_BRIDGE_CONTRACT = "codex-responses-bridge/p5-v2";
 
 const SHA256_PATTERN = /^[0-9a-f]{64}$/u;
 

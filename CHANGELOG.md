@@ -7,6 +7,42 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-09-01
+
+### Added
+
+- Privacy-safe, in-memory text-only context telemetry reports byte and part
+  counts without retaining prompt text, model or provider identifiers,
+  filesystem paths, hashes, or request and conversation identifiers.
+- The running bridge now watches the installed Codex executable identity and
+  revalidates the client version and bundled catalog when it changes. A
+  confirmed compatibility drift is quarantined with a stable `update-required`
+  response; an unverifiable check fails closed as `check-failed` and remains
+  retryable instead of continuing on stale startup state.
+
+### Fixed
+
+- Text-only prompt compaction no longer depends on full-payload hashes from one
+  Codex Desktop release. Generic developer context is retained, while later
+  memory, multi-agent, and exactly wrapped generated bootstrap remains
+  independently removable through private semantic annotations, expected
+  roles, exact shapes, and fail-closed envelope checks.
+- A receipt-verified missing managed provider end marker is recovered
+  virtually when reinserting that one exact marker recreates the recorded
+  block digest at the next TOML table or end of file. Status, refresh,
+  selection changes, and uninstall remain recoverable without silently editing
+  the user's configuration; every ambiguous or modified case still fails
+  closed.
+- Catalog synchronization now checks the live compatibility gate at each
+  publication boundary and rolls back selection or catalog changes if a Codex
+  update races an in-flight discovery cycle.
+
+### Security
+
+- Unknown generic bootstrap is never guessed away, user and project context is
+  still retained, and compatibility and telemetry endpoints expose only fixed
+  status enums and aggregate numeric counters.
+
 ## [0.5.0] - 2026-09-01
 
 ### Added
@@ -105,7 +141,8 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
   paths and file types, refuses root execution and foreign launchers, and
   restores the previous distribution state when activation fails.
 
-[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/patrickschiller/pickermux/releases/tag/v0.5.1
 [0.5.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.5.0
 [0.4.1]: https://github.com/patrickschiller/pickermux/releases/tag/v0.4.1
 [0.4.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.4.0

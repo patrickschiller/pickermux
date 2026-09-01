@@ -781,6 +781,28 @@ test("service status distinguishes installation, process, and health states", as
     assert.deepEqual(status.health, health);
   });
 
+  await t.test("update-required", async (t) => {
+    const fixture = await makeFixture(t, "status-update-required-");
+    await writeRuntime(fixture.runtimePath, fixture.runtime);
+    const health = {
+      ok: false,
+      instanceId: INSTANCE_ID,
+      compatibility: {
+        status: "update-required",
+        reasons: ["codex-client-version"],
+      },
+    };
+    const status = await getBridgeServiceStatus({
+      ...fixture,
+      execFileImpl: async () => ({ stdout: "", stderr: "" }),
+      fetchImpl: async () => response(health),
+    });
+    assert.equal(status.loaded, true);
+    assert.equal(status.healthy, false);
+    assert.equal(status.status, "update-required");
+    assert.deepEqual(status.health, health);
+  });
+
   await t.test("unreachable", async (t) => {
     const fixture = await makeFixture(t, "status-unreachable-");
     await writeRuntime(fixture.runtimePath, fixture.runtime);

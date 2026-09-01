@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import dns from "node:dns";
 import http from "node:http";
 import https from "node:https";
@@ -38,47 +37,15 @@ const LEGACY_LM_STUDIO_REASONING_ALIASES = Object.freeze({
   max: "xhigh",
   ultra: "xhigh",
 });
-// These hashes are compatibility contracts, not fuzzy classifiers. The memory
-// template is from official Codex tag rust-v0.151.0-alpha.7.2 at
-// f70e26c29ccb731e22d1104de550b1b9594d7070; app, thread-coordination, and
-// multi-agent payloads are isolated 0.151 Desktop observations. Matching
-// fixtures live under test/fixtures so a future update can add exact hashes.
-const CODEX_0_151_PINNED_CONTEXT_HASHES = Object.freeze({
-  appContextWithSidebar:
-    "e45c36298b394ab28f8a6f697a59da8e04348584653565fbf49fa4ff4a4a56ae",
-  appContextWithoutSidebar:
-    "3d6d915dd2a63eea14584c23ef53bc44b24784c03eb661a7d462423fa3191827",
-  threadCoordination:
-    "b77b4dd2707147d804500a67f49a1dc3168fb6c0e6e4949c0a38173980cd7e2f",
-  memoryTemplate:
-    "62f16ea70e43a4c48ff1543e5bcb86dbf37eb400cf364db5f1507f1b6d45ec43",
-  rootMultiAgentUsageHint:
-    "af60719c7b64906bd05733aec72a96726712fe25d382a7bc9e05a6733cfd67dc",
-  subagentMultiAgentUsageHint:
-    "af4940bc6da67fab366fdbdb98c9979b37d10d05e703aaf3784a0a3f2cf6264f",
-});
-const CODEX_0_151_GENERIC_DEVELOPER_BOOTSTRAP_HASHES = new Set([
-  CODEX_0_151_PINNED_CONTEXT_HASHES.appContextWithSidebar,
-  CODEX_0_151_PINNED_CONTEXT_HASHES.appContextWithoutSidebar,
-  CODEX_0_151_PINNED_CONTEXT_HASHES.threadCoordination,
-]);
-const CODEX_0_151_MULTI_AGENT_USAGE_HINT_HASHES = new Set([
-  CODEX_0_151_PINNED_CONTEXT_HASHES.rootMultiAgentUsageHint,
-  CODEX_0_151_PINNED_CONTEXT_HASHES.subagentMultiAgentUsageHint,
-]);
+// Private semantic kinds are the stable omission contract. Broad generic
+// developer instructions are deliberately absent: their bytes are retained,
+// while later independently classified bootstrap remains eligible for removal.
 const LM_STUDIO_TEXT_ONLY_OMITTED_CONTEXT = new Map([
-  [
-    "generic.developer_instructions",
-    {
-      roles: new Set(["developer"]),
-      verify: verifyGenericDeveloperBootstrap,
-    },
-  ],
   [
     "memories.instructions",
     {
       roles: new Set(["developer"]),
-      verify: verifyMemoryBootstrap,
+      annotatedText: true,
     },
   ],
   [
@@ -156,8 +123,7 @@ const LM_STUDIO_TEXT_ONLY_OMITTED_CONTEXT = new Map([
     {
       roles: new Set(["developer"]),
       standalone: true,
-      verify: (part) =>
-        verifyPinnedContextHash(part, CODEX_0_151_MULTI_AGENT_USAGE_HINT_HASHES),
+      annotatedText: true,
     },
   ],
   [
@@ -165,8 +131,7 @@ const LM_STUDIO_TEXT_ONLY_OMITTED_CONTEXT = new Map([
     {
       roles: new Set(["developer"]),
       standalone: true,
-      verify: (part) =>
-        verifyPinnedContextHash(part, CODEX_0_151_MULTI_AGENT_USAGE_HINT_HASHES),
+      annotatedText: true,
     },
   ],
   [
@@ -507,26 +472,6 @@ function hasExactInputTextShape(part) {
   );
 }
 
-function contextHash(text) {
-  return createHash("sha256").update(text).digest("hex");
-}
-
-function expectedContextHash(expectedHashOrHashes, actualHash) {
-  return expectedHashOrHashes instanceof Set
-    ? expectedHashOrHashes.has(actualHash)
-    : actualHash === expectedHashOrHashes;
-}
-
-function verifyPinnedContextHash(part, expectedHashOrHashes) {
-  if (!hasExactInputTextShape(part)) return "malformed";
-  return expectedContextHash(
-    expectedHashOrHashes,
-    contextHash(part.text.trim()),
-  )
-    ? "match"
-    : "mismatch";
-}
-
 function hasExactContextEnvelope(part, markers) {
   if (!hasExactInputTextShape(part) || !Array.isArray(markers)) {
     return false;
@@ -539,68 +484,6 @@ function hasExactContextEnvelope(part, markers) {
     firstClosing === text.length - closing.length &&
     text.indexOf(opening, opening.length) === -1
   );
-}
-
-function hasExactAppContextEnvelope(part) {
-  return hasExactContextEnvelope(part, [
-    "<app-context>",
-    "</app-context>",
-  ]);
-}
-
-function verifyGenericDeveloperBootstrap(part) {
-  const pinned = verifyPinnedContextHash(
-    part,
-    CODEX_0_151_GENERIC_DEVELOPER_BOOTSTRAP_HASHES,
-  );
-  if (pinned !== "mismatch") return pinned;
-  return hasExactAppContextEnvelope(part) ? "mismatch" : "malformed";
-}
-
-function verifyMemoryBootstrap(part) {
-  if (!hasExactInputTextShape(part)) return "malformed";
-  const text = part.text.trim();
-  const summaryOpening = "========= MEMORY_SUMMARY BEGINS =========\n";
-  const summaryClosing = "\n========= MEMORY_SUMMARY ENDS =========";
-  const openingIndex = text.indexOf(summaryOpening);
-  const summaryStart = openingIndex + summaryOpening.length;
-  const closingIndex = text.indexOf(summaryClosing, summaryStart);
-  if (
-    openingIndex === -1 ||
-    closingIndex <= summaryStart ||
-    text.indexOf(summaryOpening, summaryStart) !== -1 ||
-    text.indexOf(summaryClosing, closingIndex + summaryClosing.length) !== -1 ||
-    text.slice(summaryStart, closingIndex).trim().length === 0
-  ) {
-    return "malformed";
-  }
-
-  const basePathOpening = "Memory layout (general -> specific):\n\n- ";
-  const basePathClosing =
-    "/memory_summary.md (already provided below; do NOT open again)";
-  const basePathStart = text.indexOf(basePathOpening) + basePathOpening.length;
-  const basePathEnd = text.indexOf(basePathClosing, basePathStart);
-  if (
-    basePathStart < basePathOpening.length ||
-    basePathEnd <= basePathStart ||
-    basePathEnd >= openingIndex
-  ) {
-    return "malformed";
-  }
-  const basePath = text.slice(basePathStart, basePathEnd);
-  if (!basePath.startsWith("/") || basePath.includes("\n")) return "malformed";
-
-  const canonical = (
-    text.slice(0, summaryStart) +
-    "{{ memory_summary }}" +
-    text.slice(closingIndex)
-  ).replaceAll(basePath, "{{ base_path }}");
-  return expectedContextHash(
-    CODEX_0_151_PINNED_CONTEXT_HASHES.memoryTemplate,
-    contextHash(canonical),
-  )
-    ? "match"
-    : "mismatch";
 }
 
 function lmStudioTextOnlyContextDisposition(kind, role, part, contentLength) {
@@ -616,11 +499,9 @@ function lmStudioTextOnlyContextDisposition(kind, role, part, contentLength) {
     if (typeof omittedContext.verify === "function") {
       const verification = omittedContext.verify(part);
       if (verification === "match") return "omit";
-      // A recognized hash/template payload can change independently of the
-      // surrounding Codex bootstrap. Preserve those bytes, but keep removing
-      // later context that still proves its own omission contract.
       return verification === "mismatch" ? "retain" : "unknown";
     }
+    if (omittedContext.annotatedText === true) return "omit";
     return hasExactContextEnvelope(part, omittedContext.markers)
       ? "omit"
       : "unknown";
@@ -645,7 +526,27 @@ function lmStudioTextOnlyContextDisposition(kind, role, part, contentLength) {
  */
 function compactLmStudioTextOnlyInput(input) {
   const compacted = [];
+  const stats = {
+    sourceItems: input.length,
+    sourceParts: input.reduce((total, item) => {
+      if (Array.isArray(item?.content)) return total + item.content.length;
+      return total + 1;
+    }, 0),
+    omittedParts: 0,
+    omittedBytes: 0,
+    retainedBootstrapParts: 0,
+    retainedBootstrapBytes: 0,
+    stopped: false,
+    stopReason: "none",
+  };
   let compactingBootstrap = true;
+  const stopCompacting = (reason) => {
+    compactingBootstrap = false;
+    if (!stats.stopped) {
+      stats.stopped = true;
+      stats.stopReason = reason;
+    }
+  };
   for (const item of input) {
     if (
       !compactingBootstrap ||
@@ -655,7 +556,14 @@ function compactLmStudioTextOnlyInput(input) {
       item.type !== "message" ||
       !LM_STUDIO_TEXT_ONLY_BOOTSTRAP_ROLES.has(item.role)
     ) {
-      compactingBootstrap = false;
+      if (compactingBootstrap) {
+        const validConversationItem =
+          item !== null &&
+          !Array.isArray(item) &&
+          typeof item === "object" &&
+          typeof item.type === "string";
+        stopCompacting(validConversationItem ? "conversation" : "ambiguous");
+      }
       compacted.push(item);
       continue;
     }
@@ -691,7 +599,7 @@ function compactLmStudioTextOnlyInput(input) {
       kinds.length === 0 ||
       kinds.some((kind) => typeof kind !== "string" || !kind)
     ) {
-      compactingBootstrap = false;
+      stopCompacting("ambiguous");
       compacted.push(item);
       continue;
     }
@@ -725,14 +633,23 @@ function compactLmStudioTextOnlyInput(input) {
       dispositions.includes("conversation") ||
       dispositions.includes("unknown")
     ) {
-      compactingBootstrap = false;
+      stopCompacting(
+        dispositions.includes("unknown") ? "ambiguous" : "conversation",
+      );
       compacted.push(item);
       continue;
     }
 
-    const content = item.content.filter(
-      (_part, index) => dispositions[index] !== "omit",
-    );
+    const content = item.content.filter((part, index) => {
+      if (dispositions[index] !== "omit") {
+        stats.retainedBootstrapParts += 1;
+        stats.retainedBootstrapBytes += jsonByteLength(part);
+        return true;
+      }
+      stats.omittedParts += 1;
+      stats.omittedBytes += jsonByteLength(part);
+      return false;
+    });
     if (content.length > 0) {
       compacted.push(
         content.length === item.content.length ? item : { ...item, content },
@@ -745,7 +662,48 @@ function compactLmStudioTextOnlyInput(input) {
       code: "INVALID_BODY",
     });
   }
-  return compacted;
+  return { input: compacted, stats };
+}
+
+function jsonByteLength(value) {
+  return Buffer.byteLength(JSON.stringify(value), "utf8");
+}
+
+function emitTextOnlyCompaction(
+  callback,
+  stats,
+  sourceInput,
+  forwardedInput,
+  sourceRequest,
+  forwardedRequestBytes,
+) {
+  if (typeof callback !== "function") return;
+  const changed = stats.omittedParts > 0;
+  const event = Object.freeze({
+    event: "lmstudio_text_only_compaction",
+    schemaVersion: 1,
+    outcome: changed ? "compacted" : "unchanged",
+    stopReason: stats.stopReason,
+    changed,
+    stopped: stats.stopped,
+    sourceItems: stats.sourceItems,
+    forwardedItems: forwardedInput.length,
+    sourceParts: stats.sourceParts,
+    retainedParts: stats.sourceParts - stats.omittedParts,
+    retainedBootstrapParts: stats.retainedBootstrapParts,
+    retainedBootstrapBytes: stats.retainedBootstrapBytes,
+    omittedParts: stats.omittedParts,
+    sourceBytes: jsonByteLength(sourceInput),
+    forwardedBytes: jsonByteLength(forwardedInput),
+    sourceRequestBytes: jsonByteLength(sourceRequest),
+    forwardedRequestBytes,
+    omittedBytes: stats.omittedBytes,
+  });
+  try {
+    Promise.resolve(callback(event)).catch(() => {});
+  } catch {
+    // Diagnostics must never affect request routing or response delivery.
+  }
 }
 
 function lmStudioReasoningSelection(requested, route) {
@@ -816,7 +774,10 @@ function enforceTextOnlyRequest(rewritten, source) {
   delete rewritten.parallel_tool_calls;
 }
 
-function externalBody(body, route, maxBytes, { certificationRequest = false } = {}) {
+function externalBody(body, route, maxBytes, {
+  certificationRequest = false,
+  onTextOnlyCompaction,
+} = {}) {
   if (typeof route.upstreamModel !== "string" || !route.upstreamModel) {
     throw new ResponsesProxyError("The selected model route is invalid", {
       statusCode: 500,
@@ -879,11 +840,12 @@ function externalBody(body, route, maxBytes, { certificationRequest = false } = 
   const toolsEnabled = route.toolsEnabled === true || certificationRequest;
   const rewritten = { ...body, model: route.upstreamModel };
   delete rewritten.client_metadata;
+  let textOnlyCompaction;
   if (Array.isArray(body.input)) {
-    const sourceInput =
-      route.providerKind === "lmstudio-responses" && !toolsEnabled
-        ? compactLmStudioTextOnlyInput(body.input)
-        : body.input;
+    if (route.providerKind === "lmstudio-responses" && !toolsEnabled) {
+      textOnlyCompaction = compactLmStudioTextOnlyInput(body.input);
+    }
+    const sourceInput = textOnlyCompaction?.input ?? body.input;
     const sanitizedInput = sourceInput.map((item) => {
       if (item === null || Array.isArray(item) || typeof item !== "object") return item;
       const sanitized = { ...item };
@@ -956,6 +918,16 @@ function externalBody(body, route, maxBytes, { certificationRequest = false } = 
       statusCode: 413,
       code: "BODY_TOO_LARGE",
     });
+  }
+  if (textOnlyCompaction) {
+    emitTextOnlyCompaction(
+      onTextOnlyCompaction,
+      textOnlyCompaction.stats,
+      body.input,
+      rewritten.input,
+      body,
+      encoded.length,
+    );
   }
   return { encoded, toolCodec };
 }
@@ -1219,9 +1191,16 @@ export function createResponsesProxy({
   httpsTransport = https,
   dnsLookup = dns.lookup,
   certificationToken,
+  onTextOnlyCompaction,
 } = {}) {
   if (!registry || typeof registry.resolve !== "function") {
     throw new TypeError("A model registry with resolve(model) is required");
+  }
+  if (
+    onTextOnlyCompaction !== undefined &&
+    typeof onTextOnlyCompaction !== "function"
+  ) {
+    throw new TypeError("onTextOnlyCompaction must be a function");
   }
   const limits = normalizeLimits(configuredLimits);
   const nativeBase = assertApiBaseUrl(nativeBaseUrl);
@@ -1292,6 +1271,7 @@ export function createResponsesProxy({
             request.headers,
             certificationToken,
           ),
+          onTextOnlyCompaction,
         });
         outboundBody = external.encoded;
         responseCodec = external.toolCodec;

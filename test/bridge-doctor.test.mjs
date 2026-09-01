@@ -97,7 +97,29 @@ test("mixed doctor verifies service, config, discovery, file and Codex catalog",
       baseUrl,
       modelReasoningEffort: "ultra",
     }),
-    serviceStatusImpl: async () => ({ loaded: true, healthy: true, status: "running" }),
+    serviceStatusImpl: async () => ({
+      loaded: true,
+      healthy: true,
+      status: "running",
+      health: {
+        textOnlyContext: {
+          schemaVersion: 1,
+          requests: 2,
+          last: {
+            outcome: "compacted",
+            stopReason: "conversation",
+            sourceBytes: 12_000,
+            forwardedBytes: 4_000,
+            sourceRequestBytes: 12_500,
+            forwardedRequestBytes: 4_250,
+            omittedParts: 8,
+            omittedBytes: 7_500,
+            retainedBootstrapParts: 2,
+            retainedBootstrapBytes: 1_000,
+          },
+        },
+      },
+    }),
     discoveryImpl: async () => ({
       models: [{ id: "lmstudio/qwen/upstream" }],
       providers: [],
@@ -140,6 +162,7 @@ test("mixed doctor verifies service, config, discovery, file and Codex catalog",
     "desktop-compatibility",
     "codex-account-cache",
     "bridge-service",
+    "text-only-context",
     "managed-config",
     "external-discovery",
     "mixed-catalog-file",
@@ -148,6 +171,15 @@ test("mixed doctor verifies service, config, discovery, file and Codex catalog",
     "codex-model-catalog",
     "tool-certifications",
   ]);
+  assert.deepEqual(
+    result.checks.find((entry) => entry.name === "text-only-context"),
+    {
+      name: "text-only-context",
+      status: "pass",
+      detail:
+        "2 request(s); input 12000 -> 4000 bytes; request 12500 -> 4250 bytes; omitted 8 part(s)/7500 bytes; retained bootstrap 2 part(s)/1000 bytes; stop=conversation",
+    },
+  );
 });
 
 test("doctor inspects the Codex account cache without an installed bridge", async (t) => {
