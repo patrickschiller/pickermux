@@ -296,10 +296,10 @@ test("first cache preflight leaves a real 0.4.1 installation byte-for-byte uncha
   const previousVersions = (await readdir(
     fixture.distributionPaths.versionsDirectory,
   )).sort();
-  const upgrade = await temporaryFixture(t, "0.4.2", "upgrade");
+  const upgrade = await temporaryFixture(t, "0.5.0", "upgrade");
   const upgradePath = path.join(
     fixture.distributionPaths.versionsDirectory,
-    "0.4.2",
+    "0.5.0",
   );
   let cacheChecks = 0;
   let setupCalled = false;
@@ -382,7 +382,7 @@ test("first cache preflight leaves a real 0.4.1 installation byte-for-byte uncha
   );
 });
 
-test("second cache preflight removes staged 0.4.2 and preserves 0.4.1 byte-for-byte", async (t) => {
+test("second cache preflight removes staged 0.5.0 and preserves 0.4.1 byte-for-byte", async (t) => {
   const fixture = await temporaryFixture(t, "0.4.1", "installed");
   await setupManagedDistribution({
     sourceRoot: fixture.source,
@@ -395,10 +395,10 @@ test("second cache preflight removes staged 0.4.2 and preserves 0.4.1 byte-for-b
   const previousVersions = (await readdir(
     fixture.distributionPaths.versionsDirectory,
   )).sort();
-  const upgrade = await temporaryFixture(t, "0.4.2", "upgrade");
+  const upgrade = await temporaryFixture(t, "0.5.0", "upgrade");
   const upgradePath = path.join(
     fixture.distributionPaths.versionsDirectory,
-    "0.4.2",
+    "0.5.0",
   );
   let cacheChecks = 0;
   let setupCalled = false;
@@ -482,7 +482,7 @@ test("second cache preflight removes staged 0.4.2 and preserves 0.4.1 byte-for-b
   );
 });
 
-test("third cache preflight rolls a real 0.4.1 to 0.4.2 upgrade back byte-for-byte", async (t) => {
+test("third cache preflight rolls a real 0.4.1 to 0.5.0 upgrade back byte-for-byte", async (t) => {
   const fixture = await temporaryFixture(t, "0.4.1", "installed");
   await setupManagedDistribution({
     sourceRoot: fixture.source,
@@ -495,7 +495,7 @@ test("third cache preflight rolls a real 0.4.1 to 0.4.2 upgrade back byte-for-by
   const previousVersions = (await readdir(
     fixture.distributionPaths.versionsDirectory,
   )).sort();
-  const upgrade = await temporaryFixture(t, "0.4.2", "upgrade");
+  const upgrade = await temporaryFixture(t, "0.5.0", "upgrade");
   let cacheChecks = 0;
   let refreshCalled = false;
 
@@ -543,7 +543,7 @@ test("third cache preflight rolls a real 0.4.1 to 0.4.2 upgrade back byte-for-by
     previousVersions,
   );
   assert.equal(
-    await pathExists(path.join(fixture.distributionPaths.versionsDirectory, "0.4.2")),
+    await pathExists(path.join(fixture.distributionPaths.versionsDirectory, "0.5.0")),
     false,
   );
   assert.equal(

@@ -1,6 +1,6 @@
 # PickerMux Architecture
 
-This document describes the public v0.4.2 bridge contract. It is intended for
+This document describes the public v0.5.0 bridge contract. It is intended for
 contributors, security reviewers, and users who want to understand what runs on
 their Mac.
 
@@ -97,7 +97,10 @@ preserving on this route.
 For an exact namespaced external slug, PickerMux discards the caller's header
 set and constructs a new provider request. ChatGPT bearer tokens, cookies,
 account identifiers, attestation values, and Codex metadata are not eligible for
-the external header set.
+the external header set. The external JSON body also excludes Codex
+`client_metadata` and internal content annotations. Ordinary provider API
+`metadata` remains part of the caller's request contract. Native request bodies
+remain byte preserving.
 
 Provider credentials are resolved only for the selected route. Persistent
 providers can use a provider-scoped macOS Keychain item. Successful lookups are
@@ -110,8 +113,35 @@ Codex and local models do not always expose identical Responses API behavior.
 The LM Studio adapter therefore performs bounded, explicit normalization:
 
 - rewrites the public namespaced slug to the upstream LM Studio model ID;
+- gives uncertified text-only models a compact assistant prompt instead of the
+  donor Codex coding-agent prompt;
+- builds that text-only model-message profile from an allowlist, so optional
+  agent fields added to a future donor cannot silently re-enable bootstrap
+  context;
 - maps supported reasoning levels and omits only known synthetic defaults;
 - removes unsupported cache and encrypted-reasoning fields;
+- for an uncertified LM Studio route, removes verified generated desktop-app,
+  cross-thread-memory, skill-catalog, permission, app/plugin/environment usage,
+  collaboration/multi-agent, deferred-tool, and plugin-recommendation bootstrap
+  before the first conversation item. Each removal requires its private Codex
+  annotation, expected incoming role, exact message/content shape, and a
+  per-kind verifier. Wrapped fragments require one complete exact envelope;
+  the desktop-app payload, unwrapped thread-coordination payload, and unwrapped
+  multi-agent policy payloads additionally require a pinned full-payload hash.
+  Memory path and summary values are
+  canonicalized, and the remaining complete Codex 0.151 template must match
+  its pinned hash. A recognized hash/template payload whose expected role,
+  exact input-text shape, and standalone placement still match is retained when
+  only the verifier differs; later fragments remain independently eligible for
+  removal. Unknown kinds, wrong roles, malformed envelopes or template
+  structure, and mixed annotations retain the item and stop further
+  compaction. Unknown structural fields are rejected before forwarding instead
+  of being guessed or silently discarded;
+- preserves user messages, images and audio, current environment facts,
+  AGENTS/project and managed instructions, selected skill instructions, and
+  conversation history. The latency-first text-only route deliberately omits
+  Codex cross-thread memory and agent-mode policy; certified LM Studio routes
+  retain the full context;
 - combines system and developer messages into one leading system block while
   preserving chronological content;
 - removes unsupported optional built-in tools;
@@ -121,6 +151,10 @@ The LM Studio adapter therefore performs bounded, explicit normalization:
 - maps arbitrary Codex tool namespaces to collision-resistant function names;
 - restores public namespace names in JSON and streaming responses;
 - normalizes empty function parameter schemas.
+
+Successful tool certification restores the full donor coding-agent prompt and
+preserves its annotated context because those models can use the corresponding
+Codex tool surface. Certification traffic itself receives the same treatment.
 
 Request decompression supports gzip, deflate, Brotli, and Zstandard. Decoded
 body size, response header size, header wait, stream idle time, and total

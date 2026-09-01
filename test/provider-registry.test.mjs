@@ -200,7 +200,7 @@ test("loaded discovery claims only its provider namespace and reconstructs exact
       slug: "lmstudio/microsoft/phi-reasoning",
       display_name: "Phi Reasoning – LM Studio",
       context_window: 8_192,
-      comp_hash: "model-bridge-p2-0123456789abcdef",
+      comp_hash: "model-bridge-p5-0123456789abcdef",
       default_reasoning_level: "xhigh",
       supported_reasoning_levels: [
         {

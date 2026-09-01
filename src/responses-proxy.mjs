@@ -1,6 +1,7 @@
+import { createHash } from "node:crypto";
+import dns from "node:dns";
 import http from "node:http";
 import https from "node:https";
-import dns from "node:dns";
 import { BlockList, isIP } from "node:net";
 
 import {
@@ -37,6 +38,200 @@ const LEGACY_LM_STUDIO_REASONING_ALIASES = Object.freeze({
   max: "xhigh",
   ultra: "xhigh",
 });
+// These hashes are compatibility contracts, not fuzzy classifiers. The memory
+// template is from official Codex tag rust-v0.151.0-alpha.7.2 at
+// f70e26c29ccb731e22d1104de550b1b9594d7070; app, thread-coordination, and
+// multi-agent payloads are isolated 0.151 Desktop observations. Matching
+// fixtures live under test/fixtures so a future update can add exact hashes.
+const CODEX_0_151_PINNED_CONTEXT_HASHES = Object.freeze({
+  appContextWithSidebar:
+    "e45c36298b394ab28f8a6f697a59da8e04348584653565fbf49fa4ff4a4a56ae",
+  appContextWithoutSidebar:
+    "3d6d915dd2a63eea14584c23ef53bc44b24784c03eb661a7d462423fa3191827",
+  threadCoordination:
+    "b77b4dd2707147d804500a67f49a1dc3168fb6c0e6e4949c0a38173980cd7e2f",
+  memoryTemplate:
+    "62f16ea70e43a4c48ff1543e5bcb86dbf37eb400cf364db5f1507f1b6d45ec43",
+  rootMultiAgentUsageHint:
+    "af60719c7b64906bd05733aec72a96726712fe25d382a7bc9e05a6733cfd67dc",
+  subagentMultiAgentUsageHint:
+    "af4940bc6da67fab366fdbdb98c9979b37d10d05e703aaf3784a0a3f2cf6264f",
+});
+const CODEX_0_151_GENERIC_DEVELOPER_BOOTSTRAP_HASHES = new Set([
+  CODEX_0_151_PINNED_CONTEXT_HASHES.appContextWithSidebar,
+  CODEX_0_151_PINNED_CONTEXT_HASHES.appContextWithoutSidebar,
+  CODEX_0_151_PINNED_CONTEXT_HASHES.threadCoordination,
+]);
+const CODEX_0_151_MULTI_AGENT_USAGE_HINT_HASHES = new Set([
+  CODEX_0_151_PINNED_CONTEXT_HASHES.rootMultiAgentUsageHint,
+  CODEX_0_151_PINNED_CONTEXT_HASHES.subagentMultiAgentUsageHint,
+]);
+const LM_STUDIO_TEXT_ONLY_OMITTED_CONTEXT = new Map([
+  [
+    "generic.developer_instructions",
+    {
+      roles: new Set(["developer"]),
+      verify: verifyGenericDeveloperBootstrap,
+    },
+  ],
+  [
+    "memories.instructions",
+    {
+      roles: new Set(["developer"]),
+      verify: verifyMemoryBootstrap,
+    },
+  ],
+  [
+    "host_skills.instructions",
+    {
+      roles: new Set(["developer"]),
+      markers: ["<skills_instructions>", "</skills_instructions>"],
+    },
+  ],
+  [
+    "skills.catalog",
+    {
+      roles: new Set(["developer"]),
+      markers: ["<skills_instructions>", "</skills_instructions>"],
+    },
+  ],
+  [
+    "skills.instructions",
+    {
+      roles: new Set(["developer"]),
+      markers: ["<skills_instructions>", "</skills_instructions>"],
+    },
+  ],
+  [
+    "orchestrator_skills.instructions",
+    {
+      roles: new Set(["developer"]),
+      markers: ["<skills_instructions>", "</skills_instructions>"],
+    },
+  ],
+  [
+    "permissions.instructions",
+    {
+      roles: new Set(["developer"]),
+      markers: ["<permissions instructions>", "</permissions instructions>"],
+    },
+  ],
+  [
+    "apps.instructions",
+    {
+      roles: new Set(["developer"]),
+      markers: ["<apps_instructions>", "</apps_instructions>"],
+    },
+  ],
+  [
+    "plugins.usage_instructions",
+    {
+      roles: new Set(["developer"]),
+      markers: ["<plugins_instructions>", "</plugins_instructions>"],
+    },
+  ],
+  [
+    "environments.instructions",
+    {
+      roles: new Set(["developer"]),
+      markers: ["<environments_instructions>", "</environments_instructions>"],
+    },
+  ],
+  [
+    "collaboration_mode.instructions",
+    {
+      roles: new Set(["developer"]),
+      markers: ["<collaboration_mode>", "</collaboration_mode>"],
+    },
+  ],
+  [
+    "multi_agent.mode_instructions",
+    {
+      roles: new Set(["developer"]),
+      markers: ["<multi_agent_mode>", "</multi_agent_mode>"],
+    },
+  ],
+  [
+    "multi_agent.usage_hint",
+    {
+      roles: new Set(["developer"]),
+      standalone: true,
+      verify: (part) =>
+        verifyPinnedContextHash(part, CODEX_0_151_MULTI_AGENT_USAGE_HINT_HASHES),
+    },
+  ],
+  [
+    "multi_agent.role_instructions",
+    {
+      roles: new Set(["developer"]),
+      standalone: true,
+      verify: (part) =>
+        verifyPinnedContextHash(part, CODEX_0_151_MULTI_AGENT_USAGE_HINT_HASHES),
+    },
+  ],
+  [
+    "tools.deferred_namespaces",
+    {
+      roles: new Set(["developer"]),
+      markers: ["<tools>", "</tools>"],
+    },
+  ],
+  [
+    "plugins.recommendations",
+    {
+      roles: new Set(["user"]),
+      markers: ["<recommended_plugins>", "</recommended_plugins>"],
+    },
+  ],
+]);
+const LM_STUDIO_TEXT_ONLY_RETAINED_CONTEXT_PREFIXES = Object.freeze([
+  "additional_content.",
+  "agents_md.",
+  "app.",
+  "app_context.",
+  "codex_app.",
+  "collaboration_mode.",
+  "compaction.",
+  "current_time.",
+  "environments.",
+  "extension.",
+  "generic.",
+  "goals.",
+  "guardian.",
+  "hooks.",
+  "managed_config.",
+  "memory.",
+  "memories.",
+  "model.",
+  "model_switch.",
+  "multi_agent.",
+  "network_proxy.",
+  "notes.",
+  "personality.",
+  "persistent_mode.",
+  "realtime_conversation.",
+  "rollout_budget.",
+  "skills.selected_skill_instructions",
+  "token_budget.",
+]);
+const LM_STUDIO_TEXT_ONLY_BOOTSTRAP_ROLES = new Set([
+  "system",
+  "developer",
+  "user",
+]);
+const LM_STUDIO_TEXT_ONLY_MESSAGE_KEYS = new Set([
+  "content",
+  "id",
+  "internal_chat_message_metadata_passthrough",
+  "role",
+  "type",
+]);
+const LM_STUDIO_TEXT_ONLY_METADATA_KEYS = new Set([
+  "content_item_kinds",
+  "create_time",
+  "turn_id",
+]);
+const LM_STUDIO_TEXT_ONLY_INPUT_TEXT_KEYS = new Set(["text", "type"]);
 
 const DEFAULT_LIMITS = Object.freeze({
   requestBodyBytes: 8 * 1024 * 1024,
@@ -293,6 +488,266 @@ function mergeLmStudioSystemMessages(input) {
   ];
 }
 
+function hasContextKindPrefix(kind, prefixes) {
+  return prefixes.some((prefix) => kind.startsWith(prefix));
+}
+
+function hasOnlyKeys(value, allowedKeys) {
+  return Object.keys(value).every((key) => allowedKeys.has(key));
+}
+
+function hasExactInputTextShape(part) {
+  return (
+    part !== null &&
+    !Array.isArray(part) &&
+    typeof part === "object" &&
+    part.type === "input_text" &&
+    typeof part.text === "string" &&
+    hasOnlyKeys(part, LM_STUDIO_TEXT_ONLY_INPUT_TEXT_KEYS)
+  );
+}
+
+function contextHash(text) {
+  return createHash("sha256").update(text).digest("hex");
+}
+
+function expectedContextHash(expectedHashOrHashes, actualHash) {
+  return expectedHashOrHashes instanceof Set
+    ? expectedHashOrHashes.has(actualHash)
+    : actualHash === expectedHashOrHashes;
+}
+
+function verifyPinnedContextHash(part, expectedHashOrHashes) {
+  if (!hasExactInputTextShape(part)) return "malformed";
+  return expectedContextHash(
+    expectedHashOrHashes,
+    contextHash(part.text.trim()),
+  )
+    ? "match"
+    : "mismatch";
+}
+
+function hasExactContextEnvelope(part, markers) {
+  if (!hasExactInputTextShape(part) || !Array.isArray(markers)) {
+    return false;
+  }
+  const text = part.text.trim();
+  const [opening, closing] = markers;
+  if (!text.startsWith(opening)) return false;
+  const firstClosing = text.indexOf(closing, opening.length);
+  return (
+    firstClosing === text.length - closing.length &&
+    text.indexOf(opening, opening.length) === -1
+  );
+}
+
+function hasExactAppContextEnvelope(part) {
+  return hasExactContextEnvelope(part, [
+    "<app-context>",
+    "</app-context>",
+  ]);
+}
+
+function verifyGenericDeveloperBootstrap(part) {
+  const pinned = verifyPinnedContextHash(
+    part,
+    CODEX_0_151_GENERIC_DEVELOPER_BOOTSTRAP_HASHES,
+  );
+  if (pinned !== "mismatch") return pinned;
+  return hasExactAppContextEnvelope(part) ? "mismatch" : "malformed";
+}
+
+function verifyMemoryBootstrap(part) {
+  if (!hasExactInputTextShape(part)) return "malformed";
+  const text = part.text.trim();
+  const summaryOpening = "========= MEMORY_SUMMARY BEGINS =========\n";
+  const summaryClosing = "\n========= MEMORY_SUMMARY ENDS =========";
+  const openingIndex = text.indexOf(summaryOpening);
+  const summaryStart = openingIndex + summaryOpening.length;
+  const closingIndex = text.indexOf(summaryClosing, summaryStart);
+  if (
+    openingIndex === -1 ||
+    closingIndex <= summaryStart ||
+    text.indexOf(summaryOpening, summaryStart) !== -1 ||
+    text.indexOf(summaryClosing, closingIndex + summaryClosing.length) !== -1 ||
+    text.slice(summaryStart, closingIndex).trim().length === 0
+  ) {
+    return "malformed";
+  }
+
+  const basePathOpening = "Memory layout (general -> specific):\n\n- ";
+  const basePathClosing =
+    "/memory_summary.md (already provided below; do NOT open again)";
+  const basePathStart = text.indexOf(basePathOpening) + basePathOpening.length;
+  const basePathEnd = text.indexOf(basePathClosing, basePathStart);
+  if (
+    basePathStart < basePathOpening.length ||
+    basePathEnd <= basePathStart ||
+    basePathEnd >= openingIndex
+  ) {
+    return "malformed";
+  }
+  const basePath = text.slice(basePathStart, basePathEnd);
+  if (!basePath.startsWith("/") || basePath.includes("\n")) return "malformed";
+
+  const canonical = (
+    text.slice(0, summaryStart) +
+    "{{ memory_summary }}" +
+    text.slice(closingIndex)
+  ).replaceAll(basePath, "{{ base_path }}");
+  return expectedContextHash(
+    CODEX_0_151_PINNED_CONTEXT_HASHES.memoryTemplate,
+    contextHash(canonical),
+  )
+    ? "match"
+    : "mismatch";
+}
+
+function lmStudioTextOnlyContextDisposition(kind, role, part, contentLength) {
+  const omittedContext = LM_STUDIO_TEXT_ONLY_OMITTED_CONTEXT.get(kind);
+  if (omittedContext) {
+    if (
+      !omittedContext.roles.has(role) ||
+      (omittedContext.standalone && contentLength !== 1) ||
+      !hasExactInputTextShape(part)
+    ) {
+      return "unknown";
+    }
+    if (typeof omittedContext.verify === "function") {
+      const verification = omittedContext.verify(part);
+      if (verification === "match") return "omit";
+      // A recognized hash/template payload can change independently of the
+      // surrounding Codex bootstrap. Preserve those bytes, but keep removing
+      // later context that still proves its own omission contract.
+      return verification === "mismatch" ? "retain" : "unknown";
+    }
+    return hasExactContextEnvelope(part, omittedContext.markers)
+      ? "omit"
+      : "unknown";
+  }
+  if (hasContextKindPrefix(kind, LM_STUDIO_TEXT_ONLY_RETAINED_CONTEXT_PREFIXES)) {
+    return "retain";
+  }
+  if (
+    kind.startsWith("user.") ||
+    kind.startsWith("images.") ||
+    kind.startsWith("shell.")
+  ) {
+    return "conversation";
+  }
+  return "unknown";
+}
+
+/**
+ * Remove only annotated, text-only-irrelevant bootstrap fragments before the
+ * first real conversation item. Missing, malformed, mixed-user, and future
+ * annotations retain the original item and end compaction conservatively.
+ */
+function compactLmStudioTextOnlyInput(input) {
+  const compacted = [];
+  let compactingBootstrap = true;
+  for (const item of input) {
+    if (
+      !compactingBootstrap ||
+      item === null ||
+      Array.isArray(item) ||
+      typeof item !== "object" ||
+      item.type !== "message" ||
+      !LM_STUDIO_TEXT_ONLY_BOOTSTRAP_ROLES.has(item.role)
+    ) {
+      compactingBootstrap = false;
+      compacted.push(item);
+      continue;
+    }
+
+    const kinds = item.internal_chat_message_metadata_passthrough
+      ?.content_item_kinds;
+    const internalMetadata = item.internal_chat_message_metadata_passthrough;
+    const internalMetadataIsObject =
+      internalMetadata !== null &&
+      !Array.isArray(internalMetadata) &&
+      typeof internalMetadata === "object";
+    if (
+      !hasOnlyKeys(item, LM_STUDIO_TEXT_ONLY_MESSAGE_KEYS) ||
+      (item.id !== undefined && typeof item.id !== "string") ||
+      (internalMetadataIsObject &&
+        (!hasOnlyKeys(internalMetadata, LM_STUDIO_TEXT_ONLY_METADATA_KEYS) ||
+          (internalMetadata.create_time !== undefined &&
+            (typeof internalMetadata.create_time !== "number" ||
+              !Number.isFinite(internalMetadata.create_time))) ||
+          (internalMetadata.turn_id !== undefined &&
+            typeof internalMetadata.turn_id !== "string")))
+    ) {
+      throw new ResponsesProxyError("The request context schema is unsupported", {
+        statusCode: 400,
+        code: "INVALID_BODY",
+      });
+    }
+    if (
+      !internalMetadataIsObject ||
+      !Array.isArray(item.content) ||
+      !Array.isArray(kinds) ||
+      kinds.length !== item.content.length ||
+      kinds.length === 0 ||
+      kinds.some((kind) => typeof kind !== "string" || !kind)
+    ) {
+      compactingBootstrap = false;
+      compacted.push(item);
+      continue;
+    }
+    if (
+      kinds.some((kind, index) => {
+        const part = item.content[index];
+        return (
+          LM_STUDIO_TEXT_ONLY_OMITTED_CONTEXT.has(kind) &&
+          part !== null &&
+          !Array.isArray(part) &&
+          typeof part === "object" &&
+          !hasOnlyKeys(part, LM_STUDIO_TEXT_ONLY_INPUT_TEXT_KEYS)
+        );
+      })
+    ) {
+      throw new ResponsesProxyError("The request context schema is unsupported", {
+        statusCode: 400,
+        code: "INVALID_BODY",
+      });
+    }
+
+    const dispositions = kinds.map((kind, index) =>
+      lmStudioTextOnlyContextDisposition(
+        kind,
+        item.role,
+        item.content[index],
+        item.content.length,
+      ),
+    );
+    if (
+      dispositions.includes("conversation") ||
+      dispositions.includes("unknown")
+    ) {
+      compactingBootstrap = false;
+      compacted.push(item);
+      continue;
+    }
+
+    const content = item.content.filter(
+      (_part, index) => dispositions[index] !== "omit",
+    );
+    if (content.length > 0) {
+      compacted.push(
+        content.length === item.content.length ? item : { ...item, content },
+      );
+    }
+  }
+  if (compacted.length === 0 && input.length > 0) {
+    throw new ResponsesProxyError("The request has no conversation content", {
+      statusCode: 400,
+      code: "INVALID_BODY",
+    });
+  }
+  return compacted;
+}
+
 function lmStudioReasoningSelection(requested, route) {
   const supported = new Set(
     Array.isArray(route.reasoningEfforts) && route.reasoningEfforts.length > 0
@@ -421,9 +876,15 @@ function externalBody(body, route, maxBytes, { certificationRequest = false } = 
     });
   }
 
+  const toolsEnabled = route.toolsEnabled === true || certificationRequest;
   const rewritten = { ...body, model: route.upstreamModel };
+  delete rewritten.client_metadata;
   if (Array.isArray(body.input)) {
-    const sanitizedInput = body.input.map((item) => {
+    const sourceInput =
+      route.providerKind === "lmstudio-responses" && !toolsEnabled
+        ? compactLmStudioTextOnlyInput(body.input)
+        : body.input;
+    const sanitizedInput = sourceInput.map((item) => {
       if (item === null || Array.isArray(item) || typeof item !== "object") return item;
       const sanitized = { ...item };
       delete sanitized.internal_chat_message_metadata_passthrough;
@@ -444,7 +905,6 @@ function externalBody(body, route, maxBytes, { certificationRequest = false } = 
   }
 
   let toolCodec;
-  const toolsEnabled = route.toolsEnabled === true || certificationRequest;
   if (!toolsEnabled) enforceTextOnlyRequest(rewritten, body);
   if (route.providerKind === "lmstudio-responses") {
     delete rewritten.prompt_cache_key;

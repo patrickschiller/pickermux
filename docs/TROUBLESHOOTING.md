@@ -18,10 +18,50 @@ to keep exceed the context length, compare the active value reported by
 reload the model with a larger supported context, then fully quit Codex, run
 `pickermux refresh`, and reopen Codex so it loads the updated catalog.
 
-PickerMux 0.4.1 also removes optional function-tool catalogs from uncertified
-text-only requests. Version 0.4.0 could forward those schemas even though the
-catalog disabled tool use, making a small active context fail before ordinary
-chat text was processed. Upgrade before diagnosing the remaining prompt size.
+PickerMux 0.4.1 and later remove optional function-tool catalogs from
+uncertified text-only requests. Version 0.4.0 could forward those schemas even
+though the catalog disabled tool use, making a small active context fail before
+ordinary chat text was processed. PickerMux 0.5.0 also replaces the donor
+coding-agent profile with a latency-first text-only profile for uncertified LM
+Studio models. It excludes verified app, cross-thread-memory, tool, and
+agent-mode bootstrap only when the annotation, role, exact shape, and per-kind
+envelope or pinned-template verifier match the Codex contract. Upgrade before
+diagnosing the remaining prompt size. If a structurally recognized pinned or
+template payload differs from the verified bytes, PickerMux keeps that payload
+but continues removing later bootstrap that independently passes its own
+contract; an envelope or structural mismatch still stops compaction.
+
+## LM Studio takes minutes before the first token
+
+LM Studio's chat timing and a Codex turn are not directly comparable. The chat
+UI can send only the visible question, while Codex also supplies its model
+instructions and relevant conversation context. In the LM Studio server log,
+long gaps during `Prompt processing progress` are model prefill time, not
+PickerMux network latency.
+
+After upgrading to PickerMux 0.5.0, fully quit Codex Desktop, run
+`pickermux refresh`, and reopen Codex so the generated catalog is reloaded. An
+uncertified LM Studio model should then report substantially fewer uncached
+prompt tokens for a new short conversation. PickerMux preserves user messages,
+attachments, conversation history, current environment facts, AGENTS/project
+and managed instructions, and explicitly selected skill instructions. Those
+can legitimately make a later or project-scoped turn larger.
+
+The latency-first text-only route does not forward Codex's generated
+cross-thread memory bootstrap or collaboration/multi-agent policy. Paste any
+prior context needed for the answer into the conversation. A certified
+tool-capable model deliberately receives the full coding-agent prompt and
+context instead.
+
+These signatures are deliberately version-bound. If a later Codex Desktop
+changes a generated bootstrap payload, PickerMux retains it rather than using a
+fuzzy match; a renewed prompt-size increase then requires a PickerMux
+compatibility update.
+
+Select an uncertified text-only model when low first-token latency matters more
+than workspace tools and cross-thread memory. Do not post an unredacted request
+log: Codex client metadata from older PickerMux versions can contain
+installation, session, thread, window, and turn identifiers.
 
 ## A loaded LM Studio model is missing
 

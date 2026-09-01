@@ -122,7 +122,7 @@ function catalogReasoning(model) {
     : [];
   const bridgeGenerated =
     typeof model?.comp_hash === "string" &&
-    /^model-bridge-p[234]-[0-9a-f]{16}$/u.test(model.comp_hash);
+    /^model-bridge-p[2345]-[0-9a-f]{16}$/u.test(model.comp_hash);
   const reasoningOmitEfforts = bridgeGenerated
     ? reasoningLevels
         .filter(

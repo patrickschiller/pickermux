@@ -7,7 +7,7 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
-## [0.4.2] - 2026-09-01
+## [0.5.0] - 2026-09-01
 
 ### Added
 
@@ -23,6 +23,15 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
   repeats that read-only preflight under the lifecycle lock, and checks it once
   more immediately before activation. A missing or version-mismatched cache
   leaves the active PickerMux installation unchanged.
+- Reduced LM Studio prompt-prefill overhead for uncertified text-only models by
+  replacing the donor coding-agent profile with a latency-first allowlisted
+  prompt and excluding verified desktop-app, cross-thread-memory, tool, and
+  agent-mode bootstrap whose private annotation, incoming role, and exact
+  message/content shape plus per-kind envelope or pinned-template verifier match
+  the Codex contract. User content, attachments, current environment facts,
+  project and managed instructions, selected skill instructions, and history
+  remain intact. A recognized pinned/template mismatch is retained without
+  re-enabling later independently verified bootstrap context.
 
 ### Security
 
@@ -33,6 +42,9 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - Full purge deletes only exact provider-scoped Keychain entries recorded in
   PickerMux's private, secret-free registry. Native Codex authentication,
   including `~/.codex/auth.json`, is never read, modified, or removed.
+- External Responses requests now remove Codex `client_metadata`, including
+  installation, session, thread, window, and turn identifiers. Native request
+  bodies remain byte preserving and ordinary provider `metadata` is retained.
 
 ## [0.4.1] - 2026-08-30
 
@@ -93,7 +105,7 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
   paths and file types, refuses root execution and foreign launchers, and
   restores the previous distribution state when activation fails.
 
-[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.4.2...HEAD
-[0.4.2]: https://github.com/patrickschiller/pickermux/releases/tag/v0.4.2
+[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.5.0
 [0.4.1]: https://github.com/patrickschiller/pickermux/releases/tag/v0.4.1
 [0.4.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.4.0
