@@ -23,7 +23,7 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
   repeats that read-only preflight under the lifecycle lock, and checks it once
   more immediately before activation. A missing or version-mismatched cache
   leaves the active PickerMux installation unchanged.
-- Reduce LM Studio time to first token for uncertified text-only models by
+- Reduced LM Studio prompt-prefill overhead for uncertified text-only models by
   replacing the donor coding-agent profile with a latency-first allowlisted
   prompt and excluding verified desktop-app, cross-thread-memory, tool, and
   agent-mode bootstrap whose private annotation, incoming role, and exact

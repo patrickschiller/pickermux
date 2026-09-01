@@ -38,6 +38,17 @@ PickerMux is macOS-specific because it uses LaunchAgents, LaunchServices, and
 the macOS Keychain. The installer runs entirely as the current user: it neither
 uses `sudo` nor edits shell startup files.
 
+Confirm that the required Node.js runtime is visible in the terminal before
+installing:
+
+```bash
+node --version
+```
+
+The command must report `v22.15.0` or newer. If it reports `node: command not
+found` or `env: node: No such file or directory`, install a supported Node.js
+release, open a new terminal, and rerun the check.
+
 ## Install
 
 After satisfying the requirements above, install the latest release with one
@@ -82,16 +93,21 @@ and follow the managed setup procedure in
 ## Verify the installation
 
 ```bash
-pickermux --version
-pickermux status
-pickermux doctor
+~/.local/bin/pickermux --version
+~/.local/bin/pickermux status
+~/.local/bin/pickermux doctor
+~/.local/bin/pickermux discover
 ```
 
-`doctor` is deterministic and does not submit a model prompt. Its independent
+For this release, the first command must print `pickermux 0.5.0`. `status`
+checks the managed configuration, catalog, compatibility contract, and bridge;
+`discover` lists the LLMs currently loaded in LM Studio. `doctor` is
+deterministic and does not submit a model prompt. Its independent
 `codex-account-cache` check reports whether the signed-in account cache matches
 the installed Codex client even when the bridge runtime or mixed catalog is
 absent. Use `pickermux doctor --live` only when you intentionally want a real
-LM Studio inference check.
+LM Studio inference check. Once `~/.local/bin` is in `PATH`, the shorter
+`pickermux` form is equivalent.
 
 ## Daily workflow
 
@@ -100,7 +116,33 @@ LM Studio inference check.
 3. Fully quit and reopen Codex Desktop.
 4. Select the namespaced LM Studio model from the normal Codex model picker.
 
-## Upgrade and uninstall
+## Text-only performance
+
+PickerMux 0.5.0 reduces prompt-prefill work for newly discovered, uncertified
+LM Studio models. Codex Desktop can attach a large generated coding-agent
+bootstrap even to a short question. On a text-only route, PickerMux replaces
+the donor coding-agent profile with a compact assistant prompt, removes
+optional tool schemas, and omits only generated bootstrap fragments that match
+the verified Codex contract.
+
+This optimization does not discard the conversation. User messages,
+attachments, conversation history, current environment facts, AGENTS/project
+and managed instructions, and explicitly selected skill instructions still go
+to the model. Verified generated cross-thread memory and
+collaboration/multi-agent policy are omitted; changed or unrecognized payloads
+are retained. A tool-certified model deliberately receives the full coding-agent
+prompt and context instead.
+
+The improvement targets time spent processing the input; it does not make the
+model generate tokens faster. For a meaningful comparison with LM Studio's
+chat UI, start a new short Codex conversation, use an uncertified model, and
+compare the uncached prompt tokens and time to first output in LM Studio's
+server log. Project context, retained history, model loading, quantization, and
+hardware can still dominate latency. See
+[Troubleshooting](docs/TROUBLESHOOTING.md#lm-studio-takes-minutes-before-the-first-token)
+if a new short turn still sends an unexpectedly large prompt.
+
+## Upgrade
 
 PickerMux never updates silently. Run the same latest-release installer again
 to stage and activate a newer version. A healthy installation is refreshed
@@ -110,7 +152,13 @@ Setup checks the account-scoped Codex model cache before staging, repeats the
 check under the lifecycle lock, and checks it again immediately before
 activation. A missing or client-version-mismatched cache leaves the active
 installation unchanged. Fully quit Codex Desktop with `Command-Q` before
-running setup or any uninstall mode.
+running setup. After the installer completes, repeat the
+[verification commands](#verify-the-installation), then reopen Codex Desktop so
+it loads the new catalog.
+
+## Uninstall
+
+Fully quit Codex Desktop with `Command-Q` before running any uninstall mode.
 
 Remove only the Codex integration, LaunchAgent, and managed runtime with:
 
@@ -164,18 +212,11 @@ deliberately conservative:
 - **No fake capabilities.** Context size and reasoning options come from the
   loaded LM Studio instance. PickerMux never inflates a model's context window.
 - **Safe model defaults.** Newly discovered external models start in text-only
-  mode. Uncertified LM Studio models use a latency-first text-only prompt. The
-  bridge removes optional tool schemas and verified Codex-generated app,
-  cross-thread memory, tool, and agent-mode bootstrap before the conversation,
-  then rejects forced tool turns until that exact model and configuration pass
-  a live certification matrix. Removal requires the expected private
-  annotation, message role, exact message/content shape, and a per-kind exact
-  envelope or pinned-template verifier. User messages, attachments, current
-  environment facts, AGENTS/project and managed instructions, selected skill
-  instructions, and conversation history remain intact. A structurally valid
-  pinned/template payload that no longer matches is retained without preventing
-  later, independently verified bootstrap from being removed; malformed
-  envelopes and unknown context still stop compaction conservatively.
+  mode. The bridge enforces the text-only boundary, reduces verified generated
+  bootstrap for faster prompt prefill, and rejects forced tool turns until that
+  exact model and configuration pass a live certification matrix. Unknown or
+  changed context is retained conservatively rather than removed by a fuzzy
+  match. See [Text-only performance](#text-only-performance).
 - **Credential isolation.** Native Codex authentication and metadata are never
   forwarded to LM Studio or another external provider, including Codex client
   metadata carried inside a Responses request body.
