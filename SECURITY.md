@@ -77,6 +77,18 @@ Native Codex request bodies remain byte preserving. Treat request logs produced
 by older PickerMux releases as sensitive because they may contain installation,
 session, thread, window, or turn identifiers.
 
+Uncertified LM Studio text-only routes additionally omit only explicitly
+allowlisted Codex-generated bootstrap context before the first conversation
+item. Every omission is bound to the expected private annotation, role, exact
+message/content shape, and either an exact envelope or a pinned full-template
+verifier. The dynamic memory path and summary are canonicalized before the
+complete template hash is checked. Malformed, mixed, and unknown annotations
+are retained and stop further compaction; unknown structural fields are
+rejected before forwarding. This latency-first boundary deliberately keeps
+generated cross-thread memory out of the local provider request while
+preserving direct user content, attachments, current environment facts,
+AGENTS/project and managed instructions, selected skills, and history.
+
 ## Uninstall and purge boundary
 
 The normal `pickermux uninstall` lifecycle restores Codex configuration and

@@ -24,10 +24,13 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
   more immediately before activation. A missing or version-mismatched cache
   leaves the active PickerMux installation unchanged.
 - Reduce LM Studio time to first token for uncertified text-only models by
-  replacing the donor coding-agent instructions with a compact prompt and
-  excluding only Codex bootstrap context whose private annotation, incoming
-  role, and single complete envelope match the verified contract. User content,
-  attachments, project instructions, memory, and history remain intact.
+  replacing the donor coding-agent profile with a latency-first allowlisted
+  prompt and excluding verified desktop-app, cross-thread-memory, tool, and
+  agent-mode bootstrap whose private annotation, incoming role, and exact
+  message/content shape plus per-kind envelope or pinned-template verifier match
+  the Codex contract. User content, attachments, current environment facts,
+  project and managed instructions, selected skill instructions, and history
+  remain intact.
 
 ### Security
 

@@ -22,10 +22,11 @@ PickerMux 0.4.1 and later remove optional function-tool catalogs from
 uncertified text-only requests. Version 0.4.0 could forward those schemas even
 though the catalog disabled tool use, making a small active context fail before
 ordinary chat text was processed. PickerMux 0.5.0 also replaces the donor
-coding-agent instructions with a compact text-only prompt for LM Studio and
-excludes only bootstrap blocks whose annotation, role, and single envelope
-exactly match the verified Codex contract. Upgrade before diagnosing the
-remaining prompt size.
+coding-agent profile with a latency-first text-only profile for uncertified LM
+Studio models. It excludes verified app, cross-thread-memory, tool, and
+agent-mode bootstrap only when the annotation, role, exact shape, and per-kind
+envelope or pinned-template verifier match the Codex contract. Upgrade before
+diagnosing the remaining prompt size.
 
 ## LM Studio takes minutes before the first token
 
@@ -38,14 +39,25 @@ PickerMux network latency.
 After upgrading to PickerMux 0.5.0, fully quit Codex Desktop, run
 `pickermux refresh`, and reopen Codex so the generated catalog is reloaded. An
 uncertified LM Studio model should then report substantially fewer uncached
-prompt tokens for a new short conversation. PickerMux still preserves user
-messages, attachments, conversation history, memory, project instructions, and
-environment facts, so those can legitimately make a later turn larger.
+prompt tokens for a new short conversation. PickerMux preserves user messages,
+attachments, conversation history, current environment facts, AGENTS/project
+and managed instructions, and explicitly selected skill instructions. Those
+can legitimately make a later or project-scoped turn larger.
 
-A certified tool-capable model deliberately receives the full coding-agent
-prompt and tool context. Select an uncertified text-only model when low first-
-token latency matters more than workspace tools. Do not post an unredacted
-request log: Codex client metadata from older PickerMux versions can contain
+The latency-first text-only route does not forward Codex's generated
+cross-thread memory bootstrap or collaboration/multi-agent policy. Paste any
+prior context needed for the answer into the conversation. A certified
+tool-capable model deliberately receives the full coding-agent prompt and
+context instead.
+
+These signatures are deliberately version-bound. If a later Codex Desktop
+changes a generated bootstrap payload, PickerMux retains it rather than using a
+fuzzy match; a renewed prompt-size increase then requires a PickerMux
+compatibility update.
+
+Select an uncertified text-only model when low first-token latency matters more
+than workspace tools and cross-thread memory. Do not post an unredacted request
+log: Codex client metadata from older PickerMux versions can contain
 installation, session, thread, window, and turn identifiers.
 
 ## A loaded LM Studio model is missing

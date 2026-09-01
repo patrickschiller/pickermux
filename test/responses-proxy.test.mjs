@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import http from "node:http";
 import { promisify } from "node:util";
 import * as zlib from "node:zlib";
@@ -10,6 +11,10 @@ import {
   runtimeSupportsZstd,
 } from "../src/body-codec.mjs";
 import { createResponsesProxy } from "../src/responses-proxy.mjs";
+
+async function readContextFixture(name) {
+  return (await readFile(new URL(`./fixtures/${name}`, import.meta.url), "utf8")).trim();
+}
 
 async function listen(server) {
   await new Promise((resolve, reject) => {
@@ -866,6 +871,26 @@ test("LM Studio text-only routes compact only annotated bootstrap context", asyn
   t.after(() => close(proxy.server));
 
   const large = "bootstrap-overhead-".repeat(4_000);
+  const appContext = await readContextFixture(
+    "codex-desktop-app-context-0.151.txt",
+  );
+  const appContextWithoutSidebar = await readContextFixture(
+    "codex-desktop-app-context-0.151-4593.txt",
+  );
+  const threadCoordination = await readContextFixture(
+    "codex-thread-coordination-0.151-1492.txt",
+  );
+  const rootMultiAgentUsageHint = await readContextFixture(
+    "codex-root-multi-agent-usage-hint-0.151.txt",
+  );
+  const subagentMultiAgentUsageHint = await readContextFixture(
+    "codex-subagent-multi-agent-usage-hint-0.151.txt",
+  );
+  const memoryBootstrap = (await readContextFixture(
+    "codex-memory-read-path-0.151.md",
+  ))
+    .replaceAll("{{ base_path }}", "/Users/example/.codex/memories")
+    .replace("{{ memory_summary }}", large);
   const tools = Array.from({ length: 226 }, (_unused, index) => ({
     type: "function",
     name: `tool_${index}`,
@@ -878,9 +903,43 @@ test("LM Studio text-only routes compact only annotated bootstrap context", asyn
     input: [
       {
         type: "message",
+        id: "msg-bootstrap",
         role: "developer",
         content: [
-          { type: "input_text", text: "memory-instructions-stay" },
+          {
+            type: "input_text",
+            text: appContext,
+          },
+          { type: "input_text", text: threadCoordination },
+          { type: "input_text", text: memoryBootstrap },
+          {
+            type: "input_text",
+            text: "managed-config-instructions-stay",
+          },
+          {
+            type: "input_text",
+            text: `<apps_instructions>\n${large}\n</apps_instructions>`,
+          },
+          {
+            type: "input_text",
+            text: `<plugins_instructions>\n${large}\n</plugins_instructions>`,
+          },
+          {
+            type: "input_text",
+            text: `<environments_instructions>\n${large}\n</environments_instructions>`,
+          },
+          {
+            type: "input_text",
+            text: `<skills_instructions>\n${large}\n</skills_instructions>`,
+          },
+          {
+            type: "input_text",
+            text: `<skills_instructions>\n${large}\n</skills_instructions>`,
+          },
+          {
+            type: "input_text",
+            text: `<skills_instructions>\n${large}\n</skills_instructions>`,
+          },
           {
             type: "input_text",
             text: `<skills_instructions>\n${large}\n</skills_instructions>`,
@@ -889,44 +948,123 @@ test("LM Studio text-only routes compact only annotated bootstrap context", asyn
             type: "input_text",
             text: `<permissions instructions>\n${large}\n</permissions instructions>`,
           },
+          {
+            type: "input_text",
+            text: `<collaboration_mode>\n${large}\n</collaboration_mode>`,
+          },
+          {
+            type: "input_text",
+            text: `<multi_agent_mode>\n${large}\n</multi_agent_mode>`,
+          },
+          {
+            type: "input_text",
+            text: `<tools>\n${large}\n</tools>`,
+          },
         ],
         internal_chat_message_metadata_passthrough: {
+          create_time: 1_788_268_519.125,
+          turn_id: "turn-bootstrap",
           content_item_kinds: [
-            "memory.instructions",
+            "generic.developer_instructions",
+            "generic.developer_instructions",
+            "memories.instructions",
+            "managed_config.developer_instructions",
+            "apps.instructions",
+            "plugins.usage_instructions",
+            "environments.instructions",
             "host_skills.instructions",
+            "skills.catalog",
+            "skills.instructions",
+            "orchestrator_skills.instructions",
             "permissions.instructions",
+            "collaboration_mode.instructions",
+            "multi_agent.mode_instructions",
+            "tools.deferred_namespaces",
           ],
         },
       },
       {
         type: "message",
+        id: "msg-app-context-without-sidebar",
+        role: "developer",
+        content: [{ type: "input_text", text: appContextWithoutSidebar }],
+        internal_chat_message_metadata_passthrough: {
+          create_time: 1_788_268_519.1875,
+          turn_id: "turn-bootstrap",
+          content_item_kinds: ["generic.developer_instructions"],
+        },
+      },
+      {
+        type: "message",
+        id: "msg-multi-agent-hint",
+        role: "developer",
+        content: [{ type: "input_text", text: rootMultiAgentUsageHint }],
+        internal_chat_message_metadata_passthrough: {
+          create_time: 1_788_268_519.25,
+          turn_id: "turn-bootstrap",
+          content_item_kinds: ["multi_agent.usage_hint"],
+        },
+      },
+      {
+        type: "message",
+        id: "msg-subagent-multi-agent-hint",
+        role: "developer",
+        content: [{ type: "input_text", text: subagentMultiAgentUsageHint }],
+        internal_chat_message_metadata_passthrough: {
+          create_time: 1_788_268_519.3125,
+          turn_id: "turn-bootstrap",
+          content_item_kinds: ["multi_agent.role_instructions"],
+        },
+      },
+      {
+        type: "message",
+        id: "msg-user-bootstrap",
         role: "user",
         content: [
           {
             type: "input_text",
             text: `<recommended_plugins>\n${large}\n</recommended_plugins>`,
           },
-          { type: "input_text", text: "environment-context-stays" },
+          {
+            type: "input_text",
+            text: "<environment_context>\n  <cwd>/workspace</cwd>\n</environment_context>",
+          },
+          {
+            type: "input_text",
+            text: "# AGENTS.md instructions for /workspace\n\n<INSTRUCTIONS>\nproject-instructions-stay\n</INSTRUCTIONS>",
+          },
+          {
+            type: "input_text",
+            text: "selected-skill-instructions-stay",
+          },
         ],
         internal_chat_message_metadata_passthrough: {
+          create_time: 1_788_268_519.375,
+          turn_id: "turn-bootstrap",
           content_item_kinds: [
             "plugins.recommendations",
             "environments.environment_context",
+            "agents_md.instructions",
+            "skills.selected_skill_instructions",
           ],
         },
       },
       {
         type: "message",
+        id: "msg-user-question",
         role: "user",
         content: [
           {
             type: "input_text",
-            text: "Explain this literal tag: <skills_instructions>user text</skills_instructions>",
+            text: "Explain these literal tags: <skills_instructions>user text</skills_instructions> <app-context>user app text</app-context>",
           },
           { type: "input_image", image_url: "data:image/png;base64,dXNlci1pbWFnZQ==" },
+          { type: "input_audio", audio_url: "data:audio/wav;base64,dXNlci1hdWRpbw==" },
         ],
         internal_chat_message_metadata_passthrough: {
-          content_item_kinds: ["user.text", "images.input_image"],
+          create_time: 1_788_268_519.5,
+          turn_id: "turn-bootstrap",
+          content_item_kinds: ["user.text", "user.image", "user.audio"],
         },
       },
       {
@@ -973,13 +1111,19 @@ test("LM Studio text-only routes compact only annotated bootstrap context", asyn
   assert.equal(observed.input[0].role, "system");
   assert.deepEqual(
     observed.input[0].content.map((part) => part.text),
-    ["memory-instructions-stay", "\n\n", "late-permissions-stay"],
+    ["managed-config-instructions-stay", "\n\n", "late-permissions-stay"],
   );
   assert.equal(observed.input[1].role, "user");
-  assert.equal(observed.input[1].content[0].text, "environment-context-stays");
+  assert.match(observed.input[1].content[0].text, /<environment_context>/u);
+  assert.match(observed.input[1].content[1].text, /project-instructions-stay/u);
+  assert.match(
+    observed.input[1].content[2].text,
+    /selected-skill-instructions-stay/u,
+  );
   assert.equal(observed.input[2].role, "user");
   assert.match(observed.input[2].content[0].text, /literal tag/u);
   assert.equal(observed.input[2].content[1].type, "input_image");
+  assert.equal(observed.input[2].content[2].type, "input_audio");
   assert.equal(observed.input[3].role, "assistant");
   assert.equal(observed.input[4].content[0].text, "What did I ask before?");
   assert.equal(
@@ -988,12 +1132,14 @@ test("LM Studio text-only routes compact only annotated bootstrap context", asyn
   );
   assert.doesNotMatch(
     observedBytes.toString("utf8"),
-    /bootstrap-overhead|installation-id-must-not-reach|thread-id-must-not-reach|turn-id-must-not-reach|tool_225/u,
+    /bootstrap-overhead|Codex desktop context|Thread coordination:|MEMORY_SUMMARY|primary agent in a team|collaborating to complete a task|installation-id-must-not-reach|thread-id-must-not-reach|turn-id-must-not-reach|tool_225/u,
   );
-  assert.ok(observedBytes.length < sourceBytes.length / 20);
+  const sourceInputBytes = Buffer.byteLength(JSON.stringify(source.input));
+  const observedInputBytes = Buffer.byteLength(JSON.stringify(observed.input));
+  assert.ok(observedInputBytes < sourceInputBytes / 20);
 });
 
-test("LM Studio text-only compaction preserves unknown and malformed context", async (t) => {
+test("LM Studio text-only compaction fails closed on unknown or malformed context", async (t) => {
   const observed = [];
   const upstream = http.createServer((request, response) => {
     const chunks = [];
@@ -1020,6 +1166,18 @@ test("LM Studio text-only compaction preserves unknown and malformed context", a
   });
   t.after(() => close(proxy.server));
 
+  const rootMultiAgentUsageHint = await readContextFixture(
+    "codex-root-multi-agent-usage-hint-0.151.txt",
+  );
+  const subagentMultiAgentUsageHint = await readContextFixture(
+    "codex-subagent-multi-agent-usage-hint-0.151.txt",
+  );
+  const memoryTemplate = await readContextFixture(
+    "codex-memory-read-path-0.151.md",
+  );
+  const memoryBootstrap = memoryTemplate
+    .replaceAll("{{ base_path }}", "/Users/example/.codex/memories")
+    .replace("{{ memory_summary }}", "exact-memory-summary");
   const cases = [
     {
       path: "/v1/responses",
@@ -1136,6 +1294,422 @@ test("LM Studio text-only compaction preserves unknown and malformed context", a
     },
     {
       path: "/v1/responses",
+      statusCode: 400,
+      input: [
+        {
+          type: "message",
+          role: "developer",
+          future_message_field: "future-message-field-stays",
+          content: [
+            {
+              type: "input_text",
+              text: "<tools>message-shape-context-stays</tools>",
+            },
+          ],
+          internal_chat_message_metadata_passthrough: {
+            content_item_kinds: ["tools.deferred_namespaces"],
+          },
+        },
+        {
+          type: "message",
+          role: "developer",
+          content: [
+            {
+              type: "input_text",
+              text: "<apps_instructions>after-message-shape-stays</apps_instructions>",
+            },
+          ],
+          internal_chat_message_metadata_passthrough: {
+            content_item_kinds: ["apps.instructions"],
+          },
+        },
+      ],
+      canaries: [
+        "future-message-field-stays",
+        "message-shape-context-stays",
+        "after-message-shape-stays",
+      ],
+      absentCanaries: [],
+    },
+    {
+      path: "/v1/responses",
+      statusCode: 400,
+      input: [
+        {
+          type: "message",
+          role: "developer",
+          content: [
+            {
+              type: "input_text",
+              text: "<tools>metadata-shape-context-stays</tools>",
+            },
+          ],
+          internal_chat_message_metadata_passthrough: {
+            content_item_kinds: ["tools.deferred_namespaces"],
+            future_metadata_field: true,
+          },
+        },
+        {
+          type: "message",
+          role: "developer",
+          content: [
+            {
+              type: "input_text",
+              text: "<apps_instructions>after-metadata-shape-stays</apps_instructions>",
+            },
+          ],
+          internal_chat_message_metadata_passthrough: {
+            content_item_kinds: ["apps.instructions"],
+          },
+        },
+      ],
+      canaries: [
+        "metadata-shape-context-stays",
+        "after-metadata-shape-stays",
+      ],
+      absentCanaries: [],
+    },
+    {
+      path: "/v1/responses",
+      statusCode: 400,
+      input: [
+        {
+          type: "message",
+          role: "developer",
+          content: [
+            {
+              type: "input_text",
+              text: "<tools>content-shape-context-stays</tools>",
+              future_content_field: "future-content-field-stays",
+            },
+          ],
+          internal_chat_message_metadata_passthrough: {
+            content_item_kinds: ["tools.deferred_namespaces"],
+          },
+        },
+        {
+          type: "message",
+          role: "developer",
+          content: [
+            {
+              type: "input_text",
+              text: "<apps_instructions>after-content-shape-stays</apps_instructions>",
+            },
+          ],
+          internal_chat_message_metadata_passthrough: {
+            content_item_kinds: ["apps.instructions"],
+          },
+        },
+      ],
+      canaries: [
+        "content-shape-context-stays",
+        "future-content-field-stays",
+        "after-content-shape-stays",
+      ],
+      absentCanaries: [],
+    },
+    {
+      path: "/v1/responses",
+      input: [
+        {
+          type: "message",
+          role: "developer",
+          content: [
+            {
+              type: "input_text",
+              text: rootMultiAgentUsageHint.replace(
+                "primary agent",
+                "custom-primary-agent-stays",
+              ),
+            },
+          ],
+          internal_chat_message_metadata_passthrough: {
+            content_item_kinds: ["multi_agent.usage_hint"],
+          },
+        },
+        {
+          type: "message",
+          role: "developer",
+          content: [
+            {
+              type: "input_text",
+              text: "<tools>after-custom-usage-hint-stays</tools>",
+            },
+          ],
+          internal_chat_message_metadata_passthrough: {
+            content_item_kinds: ["tools.deferred_namespaces"],
+          },
+        },
+      ],
+      canaries: [
+        "custom-primary-agent-stays",
+        "after-custom-usage-hint-stays",
+      ],
+      absentCanaries: [],
+    },
+    {
+      path: "/v1/responses",
+      input: [
+        {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: rootMultiAgentUsageHint }],
+          internal_chat_message_metadata_passthrough: {
+            content_item_kinds: ["multi_agent.usage_hint"],
+          },
+        },
+        {
+          type: "message",
+          role: "developer",
+          content: [
+            {
+              type: "input_text",
+              text: "<tools>after-wrong-role-usage-hint-stays</tools>",
+            },
+          ],
+          internal_chat_message_metadata_passthrough: {
+            content_item_kinds: ["tools.deferred_namespaces"],
+          },
+        },
+      ],
+      canaries: [
+        "primary agent in a team",
+        "after-wrong-role-usage-hint-stays",
+      ],
+      absentCanaries: [],
+    },
+    {
+      path: "/v1/responses",
+      input: [
+        {
+          type: "message",
+          role: "developer",
+          content: [
+            { type: "input_text", text: subagentMultiAgentUsageHint },
+            {
+              type: "input_text",
+              text: "role-instructions-companion-stays",
+            },
+          ],
+          internal_chat_message_metadata_passthrough: {
+            content_item_kinds: [
+              "multi_agent.role_instructions",
+              "managed_config.developer_instructions",
+            ],
+          },
+        },
+        {
+          type: "message",
+          role: "developer",
+          content: [
+            {
+              type: "input_text",
+              text: "<tools>after-nonstandalone-role-instructions-stays</tools>",
+            },
+          ],
+          internal_chat_message_metadata_passthrough: {
+            content_item_kinds: ["tools.deferred_namespaces"],
+          },
+        },
+      ],
+      canaries: [
+        "collaborating to complete a task",
+        "role-instructions-companion-stays",
+        "after-nonstandalone-role-instructions-stays",
+      ],
+      absentCanaries: [],
+    },
+    {
+      path: "/v1/responses",
+      input: [
+        {
+          type: "message",
+          role: "developer",
+          content: [
+            {
+              type: "input_text",
+              text: "<app-context>exact-custom-app-context-stays</app-context>",
+            },
+          ],
+          internal_chat_message_metadata_passthrough: {
+            content_item_kinds: ["generic.developer_instructions"],
+          },
+        },
+        {
+          type: "message",
+          role: "developer",
+          content: [
+            {
+              type: "input_text",
+              text: "<tools>after-custom-app-context-stays</tools>",
+            },
+          ],
+          internal_chat_message_metadata_passthrough: {
+            content_item_kinds: ["tools.deferred_namespaces"],
+          },
+        },
+      ],
+      canaries: [
+        "exact-custom-app-context-stays",
+        "after-custom-app-context-stays",
+      ],
+      absentCanaries: [],
+    },
+    {
+      path: "/v1/responses",
+      input: [
+        {
+          type: "message",
+          role: "developer",
+          content: [
+            {
+              type: "input_text",
+              text: memoryBootstrap.replace(
+                "exact-memory-summary",
+                "duplicate-memory-marker-stays\n" +
+                  "========= MEMORY_SUMMARY BEGINS =========",
+              ),
+            },
+          ],
+          internal_chat_message_metadata_passthrough: {
+            content_item_kinds: ["memories.instructions"],
+          },
+        },
+        {
+          type: "message",
+          role: "developer",
+          content: [
+            {
+              type: "input_text",
+              text: "<tools>after-duplicate-memory-marker-stays</tools>",
+            },
+          ],
+          internal_chat_message_metadata_passthrough: {
+            content_item_kinds: ["tools.deferred_namespaces"],
+          },
+        },
+      ],
+      canaries: [
+        "duplicate-memory-marker-stays",
+        "after-duplicate-memory-marker-stays",
+      ],
+      absentCanaries: [],
+    },
+    {
+      path: "/v1/responses",
+      input: [
+        {
+          type: "message",
+          role: "developer",
+          content: [
+            {
+              type: "input_text",
+              text: memoryBootstrap.replace(
+                "Use it whenever it is likely to help.",
+                "modified-memory-scaffold-stays",
+              ),
+            },
+          ],
+          internal_chat_message_metadata_passthrough: {
+            content_item_kinds: ["memories.instructions"],
+          },
+        },
+        {
+          type: "message",
+          role: "developer",
+          content: [
+            {
+              type: "input_text",
+              text: "<tools>after-modified-memory-scaffold-stays</tools>",
+            },
+          ],
+          internal_chat_message_metadata_passthrough: {
+            content_item_kinds: ["tools.deferred_namespaces"],
+          },
+        },
+      ],
+      canaries: [
+        "modified-memory-scaffold-stays",
+        "after-modified-memory-scaffold-stays",
+      ],
+      absentCanaries: [],
+    },
+    {
+      path: "/v1/responses",
+      input: [
+        {
+          type: "message",
+          role: "developer",
+          content: [
+            {
+              type: "input_text",
+              text: "outside-app-context-stays<app-context>app-context-stays</app-context>",
+            },
+          ],
+          internal_chat_message_metadata_passthrough: {
+            content_item_kinds: ["generic.developer_instructions"],
+          },
+        },
+        {
+          type: "message",
+          role: "developer",
+          content: [
+            {
+              type: "input_text",
+              text: "<tools>after-malformed-app-context-stays</tools>",
+            },
+          ],
+          internal_chat_message_metadata_passthrough: {
+            content_item_kinds: ["tools.deferred_namespaces"],
+          },
+        },
+      ],
+      canaries: [
+        "outside-app-context-stays",
+        "app-context-stays",
+        "after-malformed-app-context-stays",
+      ],
+      absentCanaries: [],
+    },
+    {
+      path: "/v1/responses",
+      input: [
+        {
+          type: "message",
+          role: "developer",
+          content: [
+            {
+              type: "input_text",
+              text: "## Memory\nmalformed-memory-stays\n========= MEMORY_SUMMARY BEGINS =========\nsummary-without-closing-marker\nWhen memory is likely relevant, start with the quick memory pass above before\ndeep repo exploration.",
+            },
+          ],
+          internal_chat_message_metadata_passthrough: {
+            content_item_kinds: ["memories.instructions"],
+          },
+        },
+        {
+          type: "message",
+          role: "developer",
+          content: [
+            {
+              type: "input_text",
+              text: "<apps_instructions>after-malformed-memory-stays</apps_instructions>",
+            },
+          ],
+          internal_chat_message_metadata_passthrough: {
+            content_item_kinds: ["apps.instructions"],
+          },
+        },
+      ],
+      canaries: [
+        "malformed-memory-stays",
+        "summary-without-closing-marker",
+        "after-malformed-memory-stays",
+      ],
+      absentCanaries: [],
+    },
+    {
+      path: "/v1/responses",
       input: [
         {
           type: "message",
@@ -1205,28 +1779,9 @@ test("LM Studio text-only compaction preserves unknown and malformed context", a
       ],
       absentCanaries: [],
     },
-    {
-      path: "/v1/responses",
-      input: [
-        {
-          type: "message",
-          role: "developer",
-          content: [
-            {
-              type: "input_text",
-              text: "<skills_instructions>all-filtered-fallback-stays</skills_instructions>",
-            },
-          ],
-          internal_chat_message_metadata_passthrough: {
-            content_item_kinds: ["host_skills.instructions"],
-          },
-        },
-      ],
-      canaries: ["all-filtered-fallback-stays"],
-      absentCanaries: [],
-    },
   ];
 
+  const forwardedCases = [];
   for (const value of cases) {
     const result = await httpRequest({
       port: proxy.port,
@@ -1236,11 +1791,14 @@ test("LM Studio text-only compaction preserves unknown and malformed context", a
         input: value.input,
       })),
     });
-    assert.equal(result.statusCode, 200);
+    const expectedStatusCode = value.statusCode ?? 200;
+    assert.equal(result.statusCode, expectedStatusCode);
+    if (expectedStatusCode === 200) forwardedCases.push(value);
+    else assert.equal(JSON.parse(result.body).error.code, "INVALID_BODY");
   }
 
-  assert.equal(observed.length, cases.length);
-  cases.forEach((value, index) => {
+  assert.equal(observed.length, forwardedCases.length);
+  forwardedCases.forEach((value, index) => {
     const serialized = JSON.stringify(observed[index]);
     value.canaries.forEach((canary) => assert.match(serialized, new RegExp(canary, "u")));
     value.absentCanaries.forEach((canary) =>
@@ -1248,6 +1806,161 @@ test("LM Studio text-only compaction preserves unknown and malformed context", a
     );
     assert.doesNotMatch(serialized, /internal_chat_message_metadata_passthrough/u);
   });
+});
+
+test("LM Studio text-only routes reject bootstrap-only input", async (t) => {
+  let upstreamRequests = 0;
+  const upstream = http.createServer((_request, response) => {
+    upstreamRequests += 1;
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end('{"ok":true}');
+  });
+  const upstreamPort = await listen(upstream);
+  t.after(() => close(upstream));
+  const proxy = await createProxyHarness({
+    registry: {
+      resolve: () => ({
+        kind: "external",
+        providerKind: "lmstudio-responses",
+        baseUrl: `http://127.0.0.1:${upstreamPort}/v1`,
+        allowPrivateNetwork: true,
+        upstreamModel: "qwen/qwen3.8-27b",
+        toolsEnabled: false,
+      }),
+    },
+  });
+  t.after(() => close(proxy.server));
+
+  const memoryBootstrap = (await readContextFixture(
+    "codex-memory-read-path-0.151.md",
+  ))
+    .replaceAll("{{ base_path }}", "/Users/example/.codex/memories")
+    .replace("{{ memory_summary }}", "bootstrap-only-memory-canary");
+  const result = await httpRequest({
+    port: proxy.port,
+    body: Buffer.from(JSON.stringify({
+      model: "lmstudio/qwen/qwen3.8-27b",
+      input: [
+        {
+          type: "message",
+          id: "msg-bootstrap-only",
+          role: "developer",
+          content: [{ type: "input_text", text: memoryBootstrap }],
+          internal_chat_message_metadata_passthrough: {
+            content_item_kinds: ["memories.instructions"],
+            create_time: 1_788_268_519.625,
+            turn_id: "turn-bootstrap-only",
+          },
+        },
+      ],
+    })),
+  });
+
+  assert.equal(result.statusCode, 400);
+  assert.equal(JSON.parse(result.body).error.code, "INVALID_BODY");
+  assert.equal(upstreamRequests, 0);
+});
+
+test("tool-enabled LM Studio routes preserve annotated bootstrap context", async (t) => {
+  let observed;
+  const upstream = http.createServer((request, response) => {
+    const chunks = [];
+    request.on("data", (chunk) => chunks.push(chunk));
+    request.on("end", () => {
+      observed = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end('{"ok":true}');
+    });
+  });
+  const upstreamPort = await listen(upstream);
+  t.after(() => close(upstream));
+  const proxy = await createProxyHarness({
+    registry: {
+      resolve: () => ({
+        kind: "external",
+        providerKind: "lmstudio-responses",
+        baseUrl: `http://127.0.0.1:${upstreamPort}/v1`,
+        allowPrivateNetwork: true,
+        upstreamModel: "qwen/qwen3.8-27b",
+        toolsEnabled: true,
+      }),
+    },
+  });
+  t.after(() => close(proxy.server));
+
+  const memory = [
+    "## Memory",
+    "tool-enabled-memory-stays",
+    "========= MEMORY_SUMMARY BEGINS =========",
+    "tool-enabled-summary-stays",
+    "========= MEMORY_SUMMARY ENDS =========",
+    "When memory is likely relevant, start with the quick memory pass above before",
+    "deep repo exploration.",
+  ].join("\n");
+  const result = await httpRequest({
+    port: proxy.port,
+    body: Buffer.from(JSON.stringify({
+      model: "lmstudio/qwen/qwen3.8-27b",
+      input: [
+        {
+          type: "message",
+          role: "developer",
+          content: [
+            {
+              type: "input_text",
+              text: "<app-context>tool-enabled-app-context-stays</app-context>",
+            },
+            { type: "input_text", text: memory },
+            {
+              type: "input_text",
+              text: "<skills_instructions>tool-enabled-skills-stay</skills_instructions>",
+            },
+            {
+              type: "input_text",
+              text: "<collaboration_mode>tool-enabled-mode-stays</collaboration_mode>",
+            },
+          ],
+          internal_chat_message_metadata_passthrough: {
+            content_item_kinds: [
+              "generic.developer_instructions",
+              "memories.instructions",
+              "skills.catalog",
+              "collaboration_mode.instructions",
+            ],
+          },
+        },
+        {
+          type: "message",
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: "<recommended_plugins>tool-enabled-plugins-stay</recommended_plugins>",
+            },
+            { type: "input_text", text: "tool-enabled-user-stays" },
+          ],
+          internal_chat_message_metadata_passthrough: {
+            content_item_kinds: ["plugins.recommendations", "user.text"],
+          },
+        },
+      ],
+    })),
+  });
+
+  assert.equal(result.statusCode, 200);
+  const serialized = JSON.stringify(observed);
+  for (const canary of [
+    "tool-enabled-app-context-stays",
+    "tool-enabled-memory-stays",
+    "tool-enabled-summary-stays",
+    "tool-enabled-skills-stay",
+    "tool-enabled-mode-stays",
+    "tool-enabled-plugins-stay",
+    "tool-enabled-user-stays",
+  ]) {
+    assert.match(serialized, new RegExp(canary, "u"));
+  }
+  assert.doesNotMatch(serialized, /internal_chat_message_metadata_passthrough/u);
 });
 
 test("text-only routes reject forced tool choices and tool-call history", async (t) => {

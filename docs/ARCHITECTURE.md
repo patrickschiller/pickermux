@@ -115,14 +115,30 @@ The LM Studio adapter therefore performs bounded, explicit normalization:
 - rewrites the public namespaced slug to the upstream LM Studio model ID;
 - gives uncertified text-only models a compact assistant prompt instead of the
   donor Codex coding-agent prompt;
+- builds that text-only model-message profile from an allowlist, so optional
+  agent fields added to a future donor cannot silently re-enable bootstrap
+  context;
 - maps supported reasoning levels and omits only known synthetic defaults;
 - removes unsupported cache and encrypted-reasoning fields;
-- removes generated skill-catalog, permission, and plugin-recommendation
-  bootstrap blocks only when their private Codex annotation, incoming message
-  role, and single complete XML envelope all match the verified contract;
-  unknown or malformed annotations stop further compaction, while user
-  messages, attachments, project and managed instructions, memory, environment
-  facts, app context, and conversation history are retained;
+- for an uncertified LM Studio route, removes verified generated desktop-app,
+  cross-thread-memory, skill-catalog, permission, app/plugin/environment usage,
+  collaboration/multi-agent, deferred-tool, and plugin-recommendation bootstrap
+  before the first conversation item. Each removal requires its private Codex
+  annotation, expected incoming role, exact message/content shape, and a
+  per-kind verifier. Wrapped fragments require one complete exact envelope;
+  the desktop-app payload, unwrapped thread-coordination payload, and unwrapped
+  multi-agent policy payloads additionally require a pinned full-payload hash.
+  Memory path and summary values are
+  canonicalized, and the remaining complete Codex 0.151 template must match
+  its pinned hash. Unknown, malformed,
+  or mixed annotations retain the item and stop further compaction. Unknown
+  structural fields are rejected before forwarding instead of being guessed or
+  silently discarded;
+- preserves user messages, images and audio, current environment facts,
+  AGENTS/project and managed instructions, selected skill instructions, and
+  conversation history. The latency-first text-only route deliberately omits
+  Codex cross-thread memory and agent-mode policy; certified LM Studio routes
+  retain the full context;
 - combines system and developer messages into one leading system block while
   preserving chronological content;
 - removes unsupported optional built-in tools;

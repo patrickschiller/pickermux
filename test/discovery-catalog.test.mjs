@@ -57,6 +57,18 @@ const donor = {
   model_messages: {
     instructions_template: "Donor instructions {{ personality }}",
     instructions_variables: { personality_default: "" },
+    persistent_instructions: "Donor persistent instructions",
+    tools: { developer_instructions: "Donor tool instructions" },
+    approvals: { developer_instructions: "Donor approval instructions" },
+    collaboration_modes: { default: "Donor collaboration instructions" },
+    auto_review: { developer_instructions: "Donor review instructions" },
+    permissions: { developer_instructions: "Donor permission instructions" },
+    multi_agent: { developer_instructions: "Donor multi-agent instructions" },
+    token_budget: { developer_instructions: "Donor budget instructions" },
+    confirmation_policies: {
+      developer_instructions: "Donor confirmation instructions",
+    },
+    guardian_v2: { developer_instructions: "Donor guardian instructions" },
   },
   apply_patch_tool_type: "freeform",
   web_search_tool_type: "text_and_image",
@@ -619,13 +631,12 @@ test("builds complete conservative entries without mutating the donor", () => {
   const model = catalog.models[0];
   assert.equal(model.base_instructions, TEXT_ONLY_MODEL_INSTRUCTIONS);
   assert.deepEqual(model.model_messages, {
-    ...donor.model_messages,
     instructions_template: TEXT_ONLY_MODEL_INSTRUCTIONS,
     instructions_variables: null,
   });
   assert.doesNotMatch(
     JSON.stringify(model),
-    /Legacy donor instructions|Donor instructions/u,
+    /Legacy donor instructions|Donor instructions|Donor tool|Donor approval|Donor collaboration|Donor review|Donor permission|Donor multi-agent|Donor budget|Donor confirmation|Donor guardian/u,
   );
   assert.ok(TEXT_ONLY_MODEL_INSTRUCTIONS.length < 256);
   assert.match(model.comp_hash, /^model-bridge-p5-[0-9a-f]{16}$/u);
@@ -642,10 +653,10 @@ test("builds complete conservative entries without mutating the donor", () => {
   assert.equal(model.include_skills_usage_instructions, false);
   assert.equal(model.include_plugin_usage_instructions, false);
   assert.equal(model.include_apps_usage_instructions, false);
-  assert.equal(
-    catalog.models[1].model_messages.instructions_template,
-    TEXT_ONLY_MODEL_INSTRUCTIONS,
-  );
+  assert.deepEqual(catalog.models[1].model_messages, {
+    instructions_template: TEXT_ONLY_MODEL_INSTRUCTIONS,
+    instructions_variables: null,
+  });
 });
 
 test("enables only direct unified-exec after an exact model certification", () => {

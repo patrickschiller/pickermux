@@ -362,7 +362,7 @@ function catalogEntry(donor, model, priority, certifiedForTools = false) {
         certifiedForTools
           ? "tools-certified"
           : compactTextOnlyPrompt
-            ? "text-only-compact"
+            ? "text-only-latency"
             : "text-only-full",
       ].join("\0"),
     )
@@ -416,10 +416,11 @@ function catalogEntry(donor, model, priority, certifiedForTools = false) {
 
   if (compactTextOnlyPrompt) {
     // Tool-free local turns do not need the donor model's full coding-agent
-    // prompt. Keep both the canonical and legacy fields aligned because Codex
+    // profile. Build this object from an allowlist so new donor-only agent
+    // fields cannot silently re-enable bootstrap context on a local model.
+    // Keep the canonical and legacy instruction fields aligned because Codex
     // versions consume one or the other when loading model metadata.
     entry.model_messages = {
-      ...(isPlainObject(entry.model_messages) ? entry.model_messages : {}),
       instructions_template: TEXT_ONLY_MODEL_INSTRUCTIONS,
       instructions_variables: null,
     };

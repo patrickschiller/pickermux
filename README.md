@@ -164,12 +164,15 @@ deliberately conservative:
 - **No fake capabilities.** Context size and reasoning options come from the
   loaded LM Studio instance. PickerMux never inflates a model's context window.
 - **Safe model defaults.** Newly discovered external models start in text-only
-  mode. LM Studio models use a compact text-only prompt. The bridge removes
-  optional tool schemas and only Codex bootstrap blocks whose annotation,
-  message role, and single envelope exactly match the verified contract, then
-  rejects forced tool turns until that exact model and configuration pass a
-  live certification matrix. User messages, attachments, project instructions,
-  memory, and conversation history remain intact.
+  mode. Uncertified LM Studio models use a latency-first text-only prompt. The
+  bridge removes optional tool schemas and verified Codex-generated app,
+  cross-thread memory, tool, and agent-mode bootstrap before the conversation,
+  then rejects forced tool turns until that exact model and configuration pass
+  a live certification matrix. Removal requires the expected private
+  annotation, message role, exact message/content shape, and a per-kind exact
+  envelope or pinned-template verifier. User messages, attachments, current
+  environment facts, AGENTS/project and managed instructions, selected skill
+  instructions, and conversation history remain intact.
 - **Credential isolation.** Native Codex authentication and metadata are never
   forwarded to LM Studio or another external provider, including Codex client
   metadata carried inside a Responses request body.
