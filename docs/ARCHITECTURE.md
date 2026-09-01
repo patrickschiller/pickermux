@@ -130,10 +130,13 @@ The LM Studio adapter therefore performs bounded, explicit normalization:
   multi-agent policy payloads additionally require a pinned full-payload hash.
   Memory path and summary values are
   canonicalized, and the remaining complete Codex 0.151 template must match
-  its pinned hash. Unknown, malformed,
-  or mixed annotations retain the item and stop further compaction. Unknown
-  structural fields are rejected before forwarding instead of being guessed or
-  silently discarded;
+  its pinned hash. A recognized hash/template payload whose expected role,
+  exact input-text shape, and standalone placement still match is retained when
+  only the verifier differs; later fragments remain independently eligible for
+  removal. Unknown kinds, wrong roles, malformed envelopes or template
+  structure, and mixed annotations retain the item and stop further
+  compaction. Unknown structural fields are rejected before forwarding instead
+  of being guessed or silently discarded;
 - preserves user messages, images and audio, current environment facts,
   AGENTS/project and managed instructions, selected skill instructions, and
   conversation history. The latency-first text-only route deliberately omits

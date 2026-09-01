@@ -82,12 +82,16 @@ allowlisted Codex-generated bootstrap context before the first conversation
 item. Every omission is bound to the expected private annotation, role, exact
 message/content shape, and either an exact envelope or a pinned full-template
 verifier. The dynamic memory path and summary are canonicalized before the
-complete template hash is checked. Malformed, mixed, and unknown annotations
-are retained and stop further compaction; unknown structural fields are
-rejected before forwarding. This latency-first boundary deliberately keeps
-generated cross-thread memory out of the local provider request while
-preserving direct user content, attachments, current environment facts,
-AGENTS/project and managed instructions, selected skills, and history.
+complete template hash is checked. A recognized hash/template payload with the
+expected role, exact input-text structure, and required standalone placement is
+retained when only its verifier differs; later context must still independently
+prove its own omission contract. Malformed envelopes, wrong roles, mixed or
+unknown annotations, and unrecognized template structure retain the item and
+stop further compaction. Unknown structural fields are rejected before
+forwarding. This latency-first boundary deliberately keeps generated
+cross-thread memory out of the local provider request while preserving direct
+user content, attachments, current environment facts, AGENTS/project and
+managed instructions, selected skills, and history.
 
 ## Uninstall and purge boundary
 

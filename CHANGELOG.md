@@ -30,7 +30,8 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
   message/content shape plus per-kind envelope or pinned-template verifier match
   the Codex contract. User content, attachments, current environment facts,
   project and managed instructions, selected skill instructions, and history
-  remain intact.
+  remain intact. A recognized pinned/template mismatch is retained without
+  re-enabling later independently verified bootstrap context.
 
 ### Security
 

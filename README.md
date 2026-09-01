@@ -172,7 +172,10 @@ deliberately conservative:
   annotation, message role, exact message/content shape, and a per-kind exact
   envelope or pinned-template verifier. User messages, attachments, current
   environment facts, AGENTS/project and managed instructions, selected skill
-  instructions, and conversation history remain intact.
+  instructions, and conversation history remain intact. A structurally valid
+  pinned/template payload that no longer matches is retained without preventing
+  later, independently verified bootstrap from being removed; malformed
+  envelopes and unknown context still stop compaction conservatively.
 - **Credential isolation.** Native Codex authentication and metadata are never
   forwarded to LM Studio or another external provider, including Codex client
   metadata carried inside a Responses request body.

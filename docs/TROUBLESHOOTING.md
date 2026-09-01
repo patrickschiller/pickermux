@@ -26,7 +26,10 @@ coding-agent profile with a latency-first text-only profile for uncertified LM
 Studio models. It excludes verified app, cross-thread-memory, tool, and
 agent-mode bootstrap only when the annotation, role, exact shape, and per-kind
 envelope or pinned-template verifier match the Codex contract. Upgrade before
-diagnosing the remaining prompt size.
+diagnosing the remaining prompt size. If a structurally recognized pinned or
+template payload differs from the verified bytes, PickerMux keeps that payload
+but continues removing later bootstrap that independently passes its own
+contract; an envelope or structural mismatch still stops compaction.
 
 ## LM Studio takes minutes before the first token
 

@@ -71,18 +71,14 @@ const LM_STUDIO_TEXT_ONLY_OMITTED_CONTEXT = new Map([
     "generic.developer_instructions",
     {
       roles: new Set(["developer"]),
-      validate: (part) =>
-        hasPinnedContextHash(
-          part,
-          CODEX_0_151_GENERIC_DEVELOPER_BOOTSTRAP_HASHES,
-        ),
+      verify: verifyGenericDeveloperBootstrap,
     },
   ],
   [
     "memories.instructions",
     {
       roles: new Set(["developer"]),
-      validate: hasExactMemoryBootstrap,
+      verify: verifyMemoryBootstrap,
     },
   ],
   [
@@ -160,8 +156,8 @@ const LM_STUDIO_TEXT_ONLY_OMITTED_CONTEXT = new Map([
     {
       roles: new Set(["developer"]),
       standalone: true,
-      validate: (part) =>
-        hasPinnedContextHash(part, CODEX_0_151_MULTI_AGENT_USAGE_HINT_HASHES),
+      verify: (part) =>
+        verifyPinnedContextHash(part, CODEX_0_151_MULTI_AGENT_USAGE_HINT_HASHES),
     },
   ],
   [
@@ -169,8 +165,8 @@ const LM_STUDIO_TEXT_ONLY_OMITTED_CONTEXT = new Map([
     {
       roles: new Set(["developer"]),
       standalone: true,
-      validate: (part) =>
-        hasPinnedContextHash(part, CODEX_0_151_MULTI_AGENT_USAGE_HINT_HASHES),
+      verify: (part) =>
+        verifyPinnedContextHash(part, CODEX_0_151_MULTI_AGENT_USAGE_HINT_HASHES),
     },
   ],
   [
@@ -515,16 +511,20 @@ function contextHash(text) {
   return createHash("sha256").update(text).digest("hex");
 }
 
-function hasPinnedContextHash(part, expectedHashOrHashes) {
-  const actualHash = hasExactInputTextShape(part)
-    ? contextHash(part.text.trim())
-    : null;
-  return (
-    actualHash !== null &&
-    (expectedHashOrHashes instanceof Set
-      ? expectedHashOrHashes.has(actualHash)
-      : actualHash === expectedHashOrHashes)
-  );
+function expectedContextHash(expectedHashOrHashes, actualHash) {
+  return expectedHashOrHashes instanceof Set
+    ? expectedHashOrHashes.has(actualHash)
+    : actualHash === expectedHashOrHashes;
+}
+
+function verifyPinnedContextHash(part, expectedHashOrHashes) {
+  if (!hasExactInputTextShape(part)) return "malformed";
+  return expectedContextHash(
+    expectedHashOrHashes,
+    contextHash(part.text.trim()),
+  )
+    ? "match"
+    : "mismatch";
 }
 
 function hasExactContextEnvelope(part, markers) {
@@ -541,8 +541,24 @@ function hasExactContextEnvelope(part, markers) {
   );
 }
 
-function hasExactMemoryBootstrap(part) {
-  if (!hasExactInputTextShape(part)) return false;
+function hasExactAppContextEnvelope(part) {
+  return hasExactContextEnvelope(part, [
+    "<app-context>",
+    "</app-context>",
+  ]);
+}
+
+function verifyGenericDeveloperBootstrap(part) {
+  const pinned = verifyPinnedContextHash(
+    part,
+    CODEX_0_151_GENERIC_DEVELOPER_BOOTSTRAP_HASHES,
+  );
+  if (pinned !== "mismatch") return pinned;
+  return hasExactAppContextEnvelope(part) ? "mismatch" : "malformed";
+}
+
+function verifyMemoryBootstrap(part) {
+  if (!hasExactInputTextShape(part)) return "malformed";
   const text = part.text.trim();
   const summaryOpening = "========= MEMORY_SUMMARY BEGINS =========\n";
   const summaryClosing = "\n========= MEMORY_SUMMARY ENDS =========";
@@ -556,7 +572,7 @@ function hasExactMemoryBootstrap(part) {
     text.indexOf(summaryClosing, closingIndex + summaryClosing.length) !== -1 ||
     text.slice(summaryStart, closingIndex).trim().length === 0
   ) {
-    return false;
+    return "malformed";
   }
 
   const basePathOpening = "Memory layout (general -> specific):\n\n- ";
@@ -569,32 +585,43 @@ function hasExactMemoryBootstrap(part) {
     basePathEnd <= basePathStart ||
     basePathEnd >= openingIndex
   ) {
-    return false;
+    return "malformed";
   }
   const basePath = text.slice(basePathStart, basePathEnd);
-  if (!basePath.startsWith("/") || basePath.includes("\n")) return false;
+  if (!basePath.startsWith("/") || basePath.includes("\n")) return "malformed";
 
   const canonical = (
     text.slice(0, summaryStart) +
     "{{ memory_summary }}" +
     text.slice(closingIndex)
   ).replaceAll(basePath, "{{ base_path }}");
-  return (
-    contextHash(canonical) ===
-    CODEX_0_151_PINNED_CONTEXT_HASHES.memoryTemplate
-  );
+  return expectedContextHash(
+    CODEX_0_151_PINNED_CONTEXT_HASHES.memoryTemplate,
+    contextHash(canonical),
+  )
+    ? "match"
+    : "mismatch";
 }
 
 function lmStudioTextOnlyContextDisposition(kind, role, part, contentLength) {
   const omittedContext = LM_STUDIO_TEXT_ONLY_OMITTED_CONTEXT.get(kind);
   if (omittedContext) {
-    const validContent =
-      typeof omittedContext.validate === "function"
-        ? omittedContext.validate(part)
-        : hasExactContextEnvelope(part, omittedContext.markers);
-    return omittedContext.roles.has(role) &&
-      (!omittedContext.standalone || contentLength === 1) &&
-      validContent
+    if (
+      !omittedContext.roles.has(role) ||
+      (omittedContext.standalone && contentLength !== 1) ||
+      !hasExactInputTextShape(part)
+    ) {
+      return "unknown";
+    }
+    if (typeof omittedContext.verify === "function") {
+      const verification = omittedContext.verify(part);
+      if (verification === "match") return "omit";
+      // A recognized hash/template payload can change independently of the
+      // surrounding Codex bootstrap. Preserve those bytes, but keep removing
+      // later context that still proves its own omission contract.
+      return verification === "mismatch" ? "retain" : "unknown";
+    }
+    return hasExactContextEnvelope(part, omittedContext.markers)
       ? "omit"
       : "unknown";
   }

@@ -874,11 +874,11 @@ test("LM Studio text-only routes compact only annotated bootstrap context", asyn
   const appContext = await readContextFixture(
     "codex-desktop-app-context-0.151.txt",
   );
-  const appContextWithoutSidebar = await readContextFixture(
-    "codex-desktop-app-context-0.151-4593.txt",
-  );
   const threadCoordination = await readContextFixture(
     "codex-thread-coordination-0.151-1492.txt",
+  );
+  const appContextWithoutSidebar = await readContextFixture(
+    "codex-desktop-app-context-0.151-4593.txt",
   );
   const rootMultiAgentUsageHint = await readContextFixture(
     "codex-root-multi-agent-usage-hint-0.151.txt",
@@ -1139,7 +1139,7 @@ test("LM Studio text-only routes compact only annotated bootstrap context", asyn
   assert.ok(observedInputBytes < sourceInputBytes / 20);
 });
 
-test("LM Studio text-only compaction fails closed on unknown or malformed context", async (t) => {
+test("LM Studio text-only compaction retains verifier drift and fails closed on malformed context", async (t) => {
   const observed = [];
   const upstream = http.createServer((request, response) => {
     const chunks = [];
@@ -1175,9 +1175,27 @@ test("LM Studio text-only compaction fails closed on unknown or malformed contex
   const memoryTemplate = await readContextFixture(
     "codex-memory-read-path-0.151.md",
   );
+  const appContext = await readContextFixture(
+    "codex-desktop-app-context-0.151.txt",
+  );
+  const threadCoordination = await readContextFixture(
+    "codex-thread-coordination-0.151-1492.txt",
+  );
   const memoryBootstrap = memoryTemplate
     .replaceAll("{{ base_path }}", "/Users/example/.codex/memories")
     .replace("{{ memory_summary }}", "exact-memory-summary");
+  const mutatedAppContext = appContext.replace(
+    "# Codex desktop context",
+    "# changed-app-context-stays",
+  );
+  const mutatedMemoryBootstrap = memoryBootstrap.replace(
+    "Use it whenever it is likely to help.",
+    "modified-memory-scaffold-stays",
+  );
+  const mutatedThreadCoordination = threadCoordination.replace(
+    "Thread ownership:",
+    "Thread ownership drift stays:",
+  );
   const cases = [
     {
       path: "/v1/responses",
@@ -1443,9 +1461,8 @@ test("LM Studio text-only compaction fails closed on unknown or malformed contex
       ],
       canaries: [
         "custom-primary-agent-stays",
-        "after-custom-usage-hint-stays",
       ],
-      absentCanaries: [],
+      absentCanaries: ["after-custom-usage-hint-stays"],
     },
     {
       path: "/v1/responses",
@@ -1551,7 +1568,75 @@ test("LM Studio text-only compaction fails closed on unknown or malformed contex
       ],
       canaries: [
         "exact-custom-app-context-stays",
-        "after-custom-app-context-stays",
+      ],
+      absentCanaries: ["after-custom-app-context-stays"],
+    },
+    {
+      path: "/v1/responses",
+      input: [
+        {
+          type: "message",
+          role: "developer",
+          content: [
+            {
+              type: "input_text",
+              text: mutatedAppContext,
+            },
+          ],
+          internal_chat_message_metadata_passthrough: {
+            content_item_kinds: ["generic.developer_instructions"],
+          },
+        },
+        {
+          type: "message",
+          role: "developer",
+          content: [
+            {
+              type: "input_text",
+              text: "<tools>after-mutated-app-context-remove</tools>",
+            },
+          ],
+          internal_chat_message_metadata_passthrough: {
+            content_item_kinds: ["tools.deferred_namespaces"],
+          },
+        },
+      ],
+      canaries: ["changed-app-context-stays"],
+      absentCanaries: ["after-mutated-app-context-remove"],
+    },
+    {
+      path: "/v1/responses",
+      input: [
+        {
+          type: "message",
+          role: "developer",
+          content: [
+            {
+              type: "input_text",
+              text: mutatedThreadCoordination,
+            },
+          ],
+          internal_chat_message_metadata_passthrough: {
+            content_item_kinds: ["generic.developer_instructions"],
+          },
+        },
+        {
+          type: "message",
+          role: "developer",
+          content: [
+            {
+              type: "input_text",
+              text: "<tools>after-mutated-thread-coordination-stays</tools>",
+            },
+          ],
+          internal_chat_message_metadata_passthrough: {
+            content_item_kinds: ["tools.deferred_namespaces"],
+          },
+        },
+      ],
+      canaries: [
+        "Thread ownership drift stays",
+        "after-mutated-thread-coordination-stays",
       ],
       absentCanaries: [],
     },
@@ -1604,10 +1689,7 @@ test("LM Studio text-only compaction fails closed on unknown or malformed contex
           content: [
             {
               type: "input_text",
-              text: memoryBootstrap.replace(
-                "Use it whenever it is likely to help.",
-                "modified-memory-scaffold-stays",
-              ),
+              text: mutatedMemoryBootstrap,
             },
           ],
           internal_chat_message_metadata_passthrough: {
@@ -1630,9 +1712,8 @@ test("LM Studio text-only compaction fails closed on unknown or malformed contex
       ],
       canaries: [
         "modified-memory-scaffold-stays",
-        "after-modified-memory-scaffold-stays",
       ],
-      absentCanaries: [],
+      absentCanaries: ["after-modified-memory-scaffold-stays"],
     },
     {
       path: "/v1/responses",
