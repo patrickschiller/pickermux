@@ -1,11 +1,16 @@
 import assert from "node:assert/strict";
 import {
   access,
+  link,
+  lstat,
   mkdir,
   mkdtemp,
+  open,
   readFile,
+  rename,
   rm,
   stat,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -16,6 +21,7 @@ import {
   bridgeBaseUrl,
   bridgeHealthUrl,
   createRuntimeRecord,
+  assertManagedLaunchAgent,
   getBridgeServiceStatus,
   readRuntime,
   renderLaunchAgent,
@@ -82,6 +88,18 @@ async function assertMissing(filePath) {
   await assert.rejects(access(filePath), (error) => error?.code === "ENOENT");
 }
 
+async function trackedFileHandle(target, flags, onRead) {
+  const handle = await open(target, flags);
+  return {
+    close: () => handle.close(),
+    readFile: async () => {
+      onRead();
+      return handle.readFile();
+    },
+    stat: () => handle.stat(),
+  };
+}
+
 test("runtime records are validated and persisted in a private atomic file", async (t) => {
   const fixture = await makeFixture(t, "private-");
 
@@ -104,6 +122,96 @@ test("runtime records are validated and persisted in a private atomic file", asy
   );
   await writeFile(fixture.runtimePath, '{"version":2}\n');
   await assert.rejects(readRuntime(fixture.runtimePath), /invalid or unsupported/u);
+});
+
+test("runtime reads reject links to native auth before opening the payload", async (t) => {
+  await t.test("symbolic link", async (t) => {
+    const fixture = await makeFixture(t, "runtime-auth-symlink-");
+    const authPath = path.join(fixture.directory, "auth.json");
+    const authContents = "native-auth-sentinel\n";
+    await mkdir(path.dirname(fixture.runtimePath), {
+      recursive: true,
+      mode: 0o700,
+    });
+    await writeFile(authPath, authContents, { mode: 0o600 });
+    await symlink(authPath, fixture.runtimePath);
+    let openCalls = 0;
+
+    await assert.rejects(
+      readRuntime(fixture.runtimePath, {
+        openImpl: async () => {
+          openCalls += 1;
+          throw new Error("runtime payload must not be opened");
+        },
+      }),
+      /must be a regular file/iu,
+    );
+
+    assert.equal(openCalls, 0);
+    assert.equal((await lstat(fixture.runtimePath)).isSymbolicLink(), true);
+    assert.equal(await readFile(authPath, "utf8"), authContents);
+  });
+
+  await t.test("hard link", async (t) => {
+    const fixture = await makeFixture(t, "runtime-auth-hardlink-");
+    const authPath = path.join(fixture.directory, "auth.json");
+    const authContents = "native-auth-sentinel\n";
+    await mkdir(path.dirname(fixture.runtimePath), {
+      recursive: true,
+      mode: 0o700,
+    });
+    await writeFile(authPath, authContents, { mode: 0o600 });
+    await link(authPath, fixture.runtimePath);
+    let openCalls = 0;
+
+    await assert.rejects(
+      readRuntime(fixture.runtimePath, {
+        openImpl: async () => {
+          openCalls += 1;
+          throw new Error("runtime payload must not be opened");
+        },
+      }),
+      /exactly one hard link/iu,
+    );
+
+    assert.equal(openCalls, 0);
+    const [authStats, runtimeStats] = await Promise.all([
+      lstat(authPath),
+      lstat(fixture.runtimePath),
+    ]);
+    assert.equal(authStats.ino, runtimeStats.ino);
+    assert.equal(authStats.nlink, 2);
+    assert.equal(runtimeStats.nlink, 2);
+    assert.equal(await readFile(authPath, "utf8"), authContents);
+    assert.equal(await readFile(fixture.runtimePath, "utf8"), authContents);
+  });
+});
+
+test("runtime reads reject an inode swap before payload processing", async (t) => {
+  const fixture = await makeFixture(t, "runtime-inode-swap-");
+  await writeRuntime(fixture.runtimePath, fixture.runtime);
+  const originalPath = `${fixture.runtimePath}.original`;
+  const replacementPath = `${fixture.runtimePath}.replacement`;
+  const replacementContents = "foreign-runtime-payload\n";
+  await writeFile(replacementPath, replacementContents, { mode: 0o600 });
+  let readCalls = 0;
+
+  await assert.rejects(
+    readRuntime(fixture.runtimePath, {
+      openImpl: async (target, flags) => {
+        await rename(target, originalPath);
+        await rename(replacementPath, target);
+        return trackedFileHandle(target, flags, () => {
+          readCalls += 1;
+        });
+      },
+    }),
+    /changed before payload read/iu,
+  );
+
+  assert.equal(readCalls, 0);
+  assert.equal(await readFile(fixture.runtimePath, "utf8"), replacementContents);
+  assert.deepEqual(await readRuntime(originalPath), fixture.runtime);
 });
 
 test("bridge URLs include the private capability prefix", async (t) => {
@@ -356,6 +464,240 @@ test("stop boots out a loaded service and removes its managed files", async (t) 
   );
   await assertMissing(fixture.runtimePath);
   await assertMissing(fixture.launchAgentPath);
+});
+
+test("managed launch-agent removal validates exact ownership and contents", async (t) => {
+  const fixture = await makeFixture(t, "owned-stop-");
+  const workingDirectory = fixture.directory;
+  const nodePath = "/private/test-node";
+  await mkdir(path.dirname(fixture.launchAgentPath), { recursive: true });
+  await writeFile(
+    fixture.launchAgentPath,
+    renderLaunchAgent({
+      label: fixture.launchAgentLabel,
+      nodePath,
+      binPath: fixture.binPath,
+      configPath: fixture.configPath,
+      runtimePath: fixture.runtimePath,
+      workingDirectory,
+      logPath: fixture.logPath,
+    }),
+    { mode: 0o600 },
+  );
+  const expectedLaunchAgent = {
+    binPath: fixture.binPath,
+    configPath: fixture.configPath,
+    runtimePath: fixture.runtimePath,
+    workingDirectory,
+    logPath: fixture.logPath,
+  };
+  const owned = await assertManagedLaunchAgent({
+    launchAgentPath: fixture.launchAgentPath,
+    launchAgentLabel: fixture.launchAgentLabel,
+    ...expectedLaunchAgent,
+  });
+  assert.equal(owned.present, true);
+  assert.equal(owned.nodePath, nodePath);
+
+  await writeFile(fixture.launchAgentPath, "foreign plist\n", { mode: 0o600 });
+  let launchctlCalled = false;
+  await assert.rejects(
+    stopBridgeService({
+      ...fixture,
+      expectedLaunchAgent,
+      execFileImpl: async () => {
+        launchctlCalled = true;
+        return { stdout: "", stderr: "" };
+      },
+    }),
+    /modified or foreign|unrecognized/iu,
+  );
+  assert.equal(launchctlCalled, false);
+  assert.equal(await readFile(fixture.launchAgentPath, "utf8"), "foreign plist\n");
+});
+
+test("managed launch-agent validation rejects links to native auth before opening the payload", async (t) => {
+  const expectedLaunchAgent = (fixture) => ({
+    launchAgentPath: fixture.launchAgentPath,
+    launchAgentLabel: fixture.launchAgentLabel,
+    binPath: fixture.binPath,
+    configPath: fixture.configPath,
+    runtimePath: fixture.runtimePath,
+    workingDirectory: fixture.directory,
+    logPath: fixture.logPath,
+  });
+
+  await t.test("symbolic link", async (t) => {
+    const fixture = await makeFixture(t, "launch-agent-auth-symlink-");
+    const authPath = path.join(fixture.directory, "auth.json");
+    const authContents = "native-auth-sentinel\n";
+    await mkdir(path.dirname(fixture.launchAgentPath), {
+      recursive: true,
+      mode: 0o700,
+    });
+    await writeFile(authPath, authContents, { mode: 0o600 });
+    await symlink(authPath, fixture.launchAgentPath);
+    let openCalls = 0;
+
+    await assert.rejects(
+      assertManagedLaunchAgent({
+        ...expectedLaunchAgent(fixture),
+        openImpl: async () => {
+          openCalls += 1;
+          throw new Error("launch-agent payload must not be opened");
+        },
+      }),
+      /not a regular file/iu,
+    );
+
+    assert.equal(openCalls, 0);
+    assert.equal((await lstat(fixture.launchAgentPath)).isSymbolicLink(), true);
+    assert.equal(await readFile(authPath, "utf8"), authContents);
+  });
+
+  await t.test("hard link", async (t) => {
+    const fixture = await makeFixture(t, "launch-agent-auth-hardlink-");
+    const authPath = path.join(fixture.directory, "auth.json");
+    const authContents = "native-auth-sentinel\n";
+    await mkdir(path.dirname(fixture.launchAgentPath), {
+      recursive: true,
+      mode: 0o700,
+    });
+    await writeFile(authPath, authContents, { mode: 0o600 });
+    await link(authPath, fixture.launchAgentPath);
+    let openCalls = 0;
+
+    await assert.rejects(
+      assertManagedLaunchAgent({
+        ...expectedLaunchAgent(fixture),
+        openImpl: async () => {
+          openCalls += 1;
+          throw new Error("launch-agent payload must not be opened");
+        },
+      }),
+      /more than one hard link/iu,
+    );
+
+    assert.equal(openCalls, 0);
+    const [authStats, launchAgentStats] = await Promise.all([
+      lstat(authPath),
+      lstat(fixture.launchAgentPath),
+    ]);
+    assert.equal(authStats.ino, launchAgentStats.ino);
+    assert.equal(authStats.nlink, 2);
+    assert.equal(launchAgentStats.nlink, 2);
+    assert.equal(await readFile(authPath, "utf8"), authContents);
+    assert.equal(await readFile(fixture.launchAgentPath, "utf8"), authContents);
+  });
+});
+
+test("managed launch-agent validation rejects an inode swap before payload processing", async (t) => {
+  const fixture = await makeFixture(t, "launch-agent-inode-swap-");
+  const originalPath = `${fixture.launchAgentPath}.original`;
+  const replacementPath = `${fixture.launchAgentPath}.replacement`;
+  const replacementContents = "foreign-launch-agent-payload\n";
+  await mkdir(path.dirname(fixture.launchAgentPath), {
+    recursive: true,
+    mode: 0o700,
+  });
+  await writeFile(
+    fixture.launchAgentPath,
+    renderLaunchAgent({
+      label: fixture.launchAgentLabel,
+      nodePath: "/private/test-node",
+      binPath: fixture.binPath,
+      configPath: fixture.configPath,
+      runtimePath: fixture.runtimePath,
+      workingDirectory: fixture.directory,
+      logPath: fixture.logPath,
+    }),
+    { mode: 0o600 },
+  );
+  await writeFile(replacementPath, replacementContents, { mode: 0o600 });
+  let readCalls = 0;
+
+  await assert.rejects(
+    assertManagedLaunchAgent({
+      launchAgentPath: fixture.launchAgentPath,
+      launchAgentLabel: fixture.launchAgentLabel,
+      binPath: fixture.binPath,
+      configPath: fixture.configPath,
+      runtimePath: fixture.runtimePath,
+      workingDirectory: fixture.directory,
+      logPath: fixture.logPath,
+      openImpl: async (target, flags) => {
+        await rename(target, originalPath);
+        await rename(replacementPath, target);
+        return trackedFileHandle(target, flags, () => {
+          readCalls += 1;
+        });
+      },
+    }),
+    /changed before payload read/iu,
+  );
+
+  assert.equal(readCalls, 0);
+  assert.equal(
+    await readFile(fixture.launchAgentPath, "utf8"),
+    replacementContents,
+  );
+  assert.equal(
+    (await assertManagedLaunchAgent({
+      launchAgentPath: originalPath,
+      launchAgentLabel: fixture.launchAgentLabel,
+      binPath: fixture.binPath,
+      configPath: fixture.configPath,
+      runtimePath: fixture.runtimePath,
+      workingDirectory: fixture.directory,
+      logPath: fixture.logPath,
+    })).present,
+    true,
+  );
+});
+
+test("managed launch-agent removal restores a file changed after bootout", async (t) => {
+  const fixture = await makeFixture(t, "owned-stop-race-");
+  const expectedLaunchAgent = {
+    binPath: fixture.binPath,
+    configPath: fixture.configPath,
+    runtimePath: fixture.runtimePath,
+    workingDirectory: fixture.directory,
+    logPath: fixture.logPath,
+  };
+  await mkdir(path.dirname(fixture.launchAgentPath), { recursive: true });
+  await writeFile(
+    fixture.launchAgentPath,
+    renderLaunchAgent({
+      label: fixture.launchAgentLabel,
+      nodePath: "/private/test-node",
+      ...expectedLaunchAgent,
+    }),
+    { mode: 0o600 },
+  );
+  await writeRuntime(fixture.runtimePath, fixture.runtime);
+
+  await assert.rejects(
+    stopBridgeService({
+      ...fixture,
+      expectedLaunchAgent,
+      execFileImpl: async (_file, args) => {
+        if (args[0] === "bootout") {
+          await writeFile(
+            fixture.launchAgentPath,
+            "foreign replacement\n",
+            { mode: 0o600 },
+          );
+        }
+        return { stdout: "", stderr: "" };
+      },
+    }),
+    /modified or foreign|replaced during removal|unrecognized/iu,
+  );
+  assert.equal(
+    await readFile(fixture.launchAgentPath, "utf8"),
+    "foreign replacement\n",
+  );
+  assert.deepEqual(await readRuntime(fixture.runtimePath), fixture.runtime);
 });
 
 test("service status distinguishes installation, process, and health states", async (t) => {

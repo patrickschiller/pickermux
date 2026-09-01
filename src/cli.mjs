@@ -1,7 +1,8 @@
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { readdir, unlink } from "node:fs/promises";
+import { readdir, rmdir, unlink } from "node:fs/promises";
 
+import { inspectCodexAccountCache } from "./account-cache.mjs";
 import { assertRuntimeCompressionSupport } from "./body-codec.mjs";
 import { loadBridgeConfig } from "./bridge-config.mjs";
 import { discoverBridgeModels } from "./bridge-discovery.mjs";
@@ -18,6 +19,7 @@ import {
   runModelCertification,
 } from "./certification-runner.mjs";
 import {
+  assertManagedLaunchAgent,
   bridgeBaseUrl,
   createRuntimeRecord,
   getBridgeServiceStatus,
@@ -48,14 +50,20 @@ import {
 } from "./codex.mjs";
 import {
   getConfigStatus,
+  inventoryManagedConfigOwnership,
   installConfig,
+  revalidateManagedConfigOwnership,
   uninstallConfig,
 } from "./config-manager.mjs";
 import {
   createCredentialResolver,
   deleteProviderCredential,
+  listRegisteredKeychainProviderIds,
   providerCredentialStatus,
+  purgeKeychainProviderRegistry,
+  registerKeychainProvider,
   setProviderCredential,
+  unregisterKeychainProvider,
 } from "./keychain-credentials.mjs";
 import {
   invalidateModelCertification,
@@ -64,6 +72,8 @@ import {
 import {
   removeManagedDistribution,
   setupManagedDistribution,
+  validateDistributionInstallation,
+  withInstallationLock,
 } from "./distribution-installer.mjs";
 import {
   projectRoot,
@@ -76,6 +86,20 @@ import {
   buildProviderRegistry,
   createReloadableProviderRegistry,
 } from "./provider-registry.mjs";
+import {
+  inventoryPickerMuxBackups,
+  inventoryPickerMuxInstallDirectory,
+  purgePickerMuxBackups,
+  removeInventoriedRuntimeMetadata,
+  revalidateInventoriedRuntimeMetadata,
+  revalidatePickerMuxBackupInventory,
+  revalidatePickerMuxInstallDirectoryInventory,
+} from "./purge-data.mjs";
+import {
+  inventoryManagedServicePackage,
+  revalidateManagedServicePackageInventory,
+  removeInventoriedServicePackage,
+} from "./runtime-purge.mjs";
 import {
   assertCatalogSelection,
   reconcileSelectedCatalogModel,
@@ -123,11 +147,13 @@ Usage:
   pickermux refresh [--config PATH] [--json]
   pickermux doctor [--config PATH] [--live] [--json]
   pickermux status [--config PATH] [--json]
-  pickermux uninstall [--force] [--remove-cli] [--json]
+  pickermux uninstall [--force] [--remove-cli | --purge] [--json]
   pickermux version | pickermux --version
 
 The bridge binds only to 127.0.0.1. Native ChatGPT authentication is never
-stored and is stripped before every external request.`;
+stored and is stripped before every external request. Full purge removes only
+verified PickerMux-owned data and registered provider credentials; it never
+reads or removes ~/.codex/auth.json.`;
 }
 
 function parseArguments(argv) {
@@ -147,6 +173,7 @@ function parseArguments(argv) {
     distributionRoot: undefined,
     force: false,
     removeCli: false,
+    purge: false,
     json: false,
     live: false,
     all: false,
@@ -157,6 +184,7 @@ function parseArguments(argv) {
     const argument = argv[index];
     if (argument === "--force") options.force = true;
     else if (argument === "--remove-cli") options.removeCli = true;
+    else if (argument === "--purge") options.purge = true;
     else if (argument === "--all") options.all = true;
     else if (argument === "--json") options.json = true;
     else if (argument === "--live") options.live = true;
@@ -179,6 +207,10 @@ function parseArguments(argv) {
   }
   if (options.force && command !== "uninstall") throw new Error("--force is supported only by uninstall");
   if (options.removeCli && command !== "uninstall") throw new Error("--remove-cli is supported only by uninstall");
+  if (options.purge && command !== "uninstall") throw new Error("--purge is supported only by uninstall");
+  if (options.purge && options.removeCli) {
+    throw new Error("--purge already includes --remove-cli");
+  }
   if (options.distributionRoot && command !== "setup") {
     throw new Error("--distribution-root is supported only by setup");
   }
@@ -371,7 +403,11 @@ async function rollbackInstallation({
   const failures = [];
   if (configInstalled) {
     try {
-      await uninstallConfig({ configPath: paths.configPath, statePath: paths.statePath });
+      await uninstallConfig({
+        configPath: paths.configPath,
+        statePath: paths.statePath,
+        backupDirectory: paths.backupDirectory,
+      });
     } catch (error) {
       failures.push(error);
     }
@@ -446,7 +482,12 @@ async function install({
   let servicePackage;
   let previousCatalog;
   let previousCompatibility;
+  let registeredProviderIds = [];
   try {
+    registeredProviderIds = await registerConfiguredKeychainProviders({
+      config,
+      registryPath: paths.keychainRegistryPath,
+    });
     const built = await buildCatalog({
       config,
       codexPath,
@@ -529,17 +570,39 @@ async function install({
       restartRequired: true,
     };
   } catch (error) {
-    await rollbackInstallation({
-      paths,
-      configInstalled,
-      serviceStarted,
-      catalogPromoted,
-      previousCatalog,
-      compatibilityPromoted,
-      previousCompatibility,
-      servicePackage,
-      cause: error,
-    });
+    let registryRollbackError;
+    try {
+      await rollbackKeychainProviderRegistrations(
+        registeredProviderIds,
+        paths.keychainRegistryPath,
+      );
+    } catch (rollbackError) {
+      registryRollbackError = rollbackError;
+    }
+    try {
+      await rollbackInstallation({
+        paths,
+        configInstalled,
+        serviceStarted,
+        catalogPromoted,
+        previousCatalog,
+        compatibilityPromoted,
+        previousCompatibility,
+        servicePackage,
+        cause: error,
+      });
+    } catch (installationError) {
+      if (!registryRollbackError) throw installationError;
+      throw new Error(
+        `${installationError.message}; Keychain provider registry rollback was incomplete: ${registryRollbackError.message}`,
+        {
+          cause: new AggregateError([
+            installationError,
+            registryRollbackError,
+          ]),
+        },
+      );
+    }
   } finally {
     await unlink(stagingPath).catch(() => {});
   }
@@ -653,6 +716,7 @@ async function refresh({ config, paths, codexPath, sourceRoot = projectRoot }) {
       statePath: paths.statePath,
     });
     let servicePackage;
+    let registeredProviderIds = [];
     try {
       servicePackage = await stageServicePackage({
         sourceRoot,
@@ -683,10 +747,22 @@ async function refresh({ config, paths, codexPath, sourceRoot = projectRoot }) {
             .join("; "),
         );
       }
+      registeredProviderIds = await registerConfiguredKeychainProviders({
+        config,
+        registryPath: paths.keychainRegistryPath,
+      });
       await cleanupLegacyRuntimePackages(paths, servicePackage);
       await finalizeServicePackage(servicePackage);
     } catch (error) {
       let selectionRollbackError;
+      try {
+        await rollbackKeychainProviderRegistrations(
+          registeredProviderIds,
+          paths.keychainRegistryPath,
+        );
+      } catch (rollbackError) {
+        selectionRollbackError = rollbackError;
+      }
       try {
         await restoreRefreshState({
           paths,
@@ -697,7 +773,12 @@ async function refresh({ config, paths, codexPath, sourceRoot = projectRoot }) {
           servicePackage,
         });
       } catch (rollbackError) {
-        selectionRollbackError = rollbackError;
+        selectionRollbackError = selectionRollbackError
+          ? new AggregateError(
+              [selectionRollbackError, rollbackError],
+              "Refresh registry and state rollback failed",
+            )
+          : rollbackError;
       }
       if (selection.changed && typeof selection.rollback === "function") {
         try {
@@ -841,20 +922,85 @@ function configuredProvider(config, providerId) {
   return provider;
 }
 
-async function credentialCommand({ command, config, providerId }) {
+async function rollbackKeychainProviderRegistrations(
+  providerIds,
+  registryPath,
+  unregisterImpl = unregisterKeychainProvider,
+) {
+  const failures = [];
+  for (const providerId of [...providerIds].reverse()) {
+    try {
+      await unregisterImpl(providerId, { registryPath });
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  if (failures.length > 0) {
+    throw new AggregateError(
+      failures,
+      "PickerMux Keychain provider registry rollback failed",
+    );
+  }
+}
+
+async function registerConfiguredKeychainProviders({
+  config,
+  registryPath,
+  registerImpl = registerKeychainProvider,
+  unregisterImpl = unregisterKeychainProvider,
+}) {
+  const addedProviderIds = [];
+  try {
+    for (const provider of config.providers.filter(
+      (entry) => entry.credentialKeychain === true,
+    )) {
+      const result = await registerImpl(provider, { registryPath });
+      if (result.added) addedProviderIds.push(result.providerId);
+    }
+  } catch (error) {
+    try {
+      await rollbackKeychainProviderRegistrations(
+        addedProviderIds,
+        registryPath,
+        unregisterImpl,
+      );
+    } catch (rollbackError) {
+      throw new Error(
+        `PickerMux Keychain provider registry update failed and rollback was incomplete: ${rollbackError.message}`,
+        { cause: new AggregateError([error, rollbackError]) },
+      );
+    }
+    throw error;
+  }
+  return Object.freeze(addedProviderIds);
+}
+
+export async function credentialCommand({
+  command,
+  config,
+  providerId,
+  registryPath,
+  registerImpl = registerKeychainProvider,
+  unregisterImpl = unregisterKeychainProvider,
+  setCredentialImpl = setProviderCredential,
+  deleteCredentialImpl = deleteProviderCredential,
+  credentialStatusImpl = providerCredentialStatus,
+}) {
   const provider = configuredProvider(config, providerId);
   if (provider.credentialKeychain !== true) {
     throw new Error(`Provider ${providerId} is not configured with credentialKeychain=true`);
   }
   if (command === "credential-set") {
-    await setProviderCredential(provider);
+    await registerImpl(provider, { registryPath });
+    await setCredentialImpl(provider);
     return { providerId, source: "keychain", updated: true };
   }
   if (command === "credential-delete") {
-    const deleted = await deleteProviderCredential(provider);
+    const deleted = await deleteCredentialImpl(provider);
+    await unregisterImpl(provider, { registryPath });
     return { providerId, source: "keychain", deleted };
   }
-  return providerCredentialStatus(provider);
+  return credentialStatusImpl(provider);
 }
 
 async function certify({ config, paths, codexPath, model, all }) {
@@ -970,29 +1116,408 @@ async function cleanupLegacyRuntimePackages(paths, activePackage) {
   return cleanupManagedArtifacts({ runtimeDirectories: legacy });
 }
 
-async function uninstallIntegration({ paths, force }) {
-  const removedConfig = await uninstallConfig({
+function expectedManagedLaunchAgent(paths) {
+  return {
+    binPath: path.join(paths.serviceDirectory, "bin", "lmstudio-picker.mjs"),
+    configPath: paths.serviceConfigPath,
+    runtimePath: paths.runtimePath,
+    workingDirectory: paths.serviceDirectory,
+    logPath: paths.logPath,
+  };
+}
+
+function managedLaunchAgentOptions(paths) {
+  return {
+    launchAgentPath: paths.launchAgentPath,
+    launchAgentLabel: paths.launchAgentLabel,
+    ...expectedManagedLaunchAgent(paths),
+  };
+}
+
+export async function uninstallIntegration({
+  paths,
+  force,
+  servicePackageInventory,
+  runtimePreflightCompleted = false,
+  installDirectoryInventory,
+  backupDirectoryInventory,
+  configOwnershipReceipt,
+  readBackupImpl,
+  sourceRoot = projectRoot,
+  inventoryInstallImpl = inventoryPickerMuxInstallDirectory,
+  inventoryBackupsImpl = inventoryPickerMuxBackups,
+  inventoryConfigImpl = inventoryManagedConfigOwnership,
+  revalidateConfigImpl = revalidateManagedConfigOwnership,
+  revalidateRuntimeImpl = revalidateManagedServicePackageInventory,
+  revalidateMetadataImpl = revalidateInventoriedRuntimeMetadata,
+  uninstallConfigImpl = uninstallConfig,
+  stopServiceImpl = stopBridgeService,
+  removeMetadataImpl = removeInventoriedRuntimeMetadata,
+  removeRuntimeImpl = removeInventoriedServicePackage,
+}) {
+  if (typeof runtimePreflightCompleted !== "boolean") {
+    throw new TypeError("runtimePreflightCompleted must be a boolean");
+  }
+  if (runtimePreflightCompleted && servicePackageInventory === undefined) {
+    throw new TypeError(
+      "runtimePreflightCompleted requires a supplied service package inventory",
+    );
+  }
+  await assertManagedLaunchAgent(managedLaunchAgentOptions(paths));
+  const runtimeDirectories = await managedRuntimeDirectories(paths);
+  const unexpectedRuntimeDirectories = runtimeDirectories.filter(
+    (entry) => path.resolve(entry) !== path.resolve(paths.serviceDirectory),
+  );
+  if (unexpectedRuntimeDirectories.length > 0) {
+    throw new Error(
+      "PickerMux uninstall refuses unreceipted previous runtime packages; review or refresh the installation first",
+    );
+  }
+  const runtimeInventory = servicePackageInventory ??
+    await inventoryManagedServicePackage({
+      serviceDirectory: paths.serviceDirectory,
+      sourceRoot,
+    });
+  const installInventory = installDirectoryInventory ??
+    await inventoryInstallImpl({ installDirectory: paths.installDirectory });
+  if (!runtimePreflightCompleted) {
+    await revalidateRuntimeImpl(runtimeInventory);
+  }
+  await revalidateMetadataImpl(installInventory);
+  const backupInventory = backupDirectoryInventory ??
+    await inventoryBackupsImpl({
+      backupDirectory: paths.backupDirectory,
+      configPath: paths.configPath,
+    });
+  const configOwnership = configOwnershipReceipt ??
+    await inventoryConfigImpl({
+      configPath: paths.configPath,
+      statePath: paths.statePath,
+      backupDirectory: paths.backupDirectory,
+      backupDirectoryInventory: backupInventory,
+      readBackupImpl,
+    });
+  await revalidateConfigImpl(configOwnership, { readBackupImpl });
+  const removedConfig = await uninstallConfigImpl({
     configPath: paths.configPath,
     statePath: paths.statePath,
+    backupDirectory: paths.backupDirectory,
+    backupDirectoryInventory: backupInventory,
+    ownershipReceipt: configOwnership,
+    readBackupImpl,
     force,
   });
-  const service = await stopBridgeService({
+  const service = await stopServiceImpl({
     runtimePath: paths.runtimePath,
     launchAgentPath: paths.launchAgentPath,
     launchAgentLabel: paths.launchAgentLabel,
+    expectedLaunchAgent: expectedManagedLaunchAgent(paths),
+    removeRuntime: false,
   });
-  const artifacts = await cleanupManagedArtifacts({
-    managedFiles: [
-      paths.runtimePath,
-      paths.catalogPath,
-      paths.serviceConfigPath,
-      paths.compatibilityPath,
-      paths.certificationPath,
-      paths.logPath,
-    ],
-    runtimeDirectories: await managedRuntimeDirectories(paths),
+  const artifacts = await removeMetadataImpl({
+    inventory: installInventory,
   });
-  return { removedConfig, service, artifacts };
+  if (artifacts.cleanupPendingPath) {
+    const error = new Error(
+      `PickerMux runtime metadata cleanup is pending at ${artifacts.cleanupPendingPath}`,
+    );
+    error.cleanupPendingPath = artifacts.cleanupPendingPath;
+    throw error;
+  }
+  const runtimePackage = await removeRuntimeImpl({
+    inventory: runtimeInventory,
+    // Config and metadata cleanup above account for every permitted parent
+    // transition; runtime-purge still rejects additions and identity changes.
+    allowReceiptBoundParentTransitions: true,
+  });
+  if (runtimePackage.cleanupPendingPath) {
+    const error = new Error(
+      `PickerMux runtime package cleanup is pending at ${runtimePackage.cleanupPendingPath}`,
+    );
+    error.cleanupPendingPath = runtimePackage.cleanupPendingPath;
+    throw error;
+  }
+  return {
+    removedConfig,
+    service,
+    artifacts: {
+      ...artifacts,
+      removedRuntimeDirectories: runtimePackage.changed
+        ? [paths.serviceDirectory]
+        : [],
+      runtimeCleanupPendingPath: runtimePackage.cleanupPendingPath,
+      metadataCleanupPendingPath: artifacts.cleanupPendingPath,
+    },
+  };
+}
+
+function sameProviderIds(left, right) {
+  return left.length === right.length && left.every(
+    (providerId, index) => providerId === right[index],
+  );
+}
+
+function assertSameDistributionOwnership(previous, confirmed) {
+  if (
+    previous?.installed !== true ||
+    confirmed?.installed !== true ||
+    typeof previous.activeDirectory !== "string" ||
+    confirmed.activeDirectory !== previous.activeDirectory ||
+    !Buffer.isBuffer(previous.raw) ||
+    !Buffer.isBuffer(confirmed.raw) ||
+    !confirmed.raw.equals(previous.raw)
+  ) {
+    throw new Error(
+      "PickerMux CLI ownership state changed before integration removal",
+    );
+  }
+}
+
+async function assertCodexDesktopClosed(desktopRunningImpl) {
+  if (await desktopRunningImpl()) {
+    throw new Error(
+      "PickerMux uninstall requires Codex Desktop to be fully quit with Command-Q",
+    );
+  }
+}
+
+function assertFullPurgeCompleted(
+  result,
+  installDirectory,
+  distributionPaths = resolveDistributionPaths(),
+) {
+  const pendingPaths = [...new Set([
+    result?.removed?.cleanupPendingPath,
+    result?.beforeResult?.integration?.artifacts?.metadataCleanupPendingPath,
+    result?.beforeResult?.integration?.artifacts?.runtimeCleanupPendingPath,
+    result?.beforeResult?.backups?.cleanupPendingPath,
+    result?.beforeResult?.registry?.cleanupPendingPath,
+  ].filter((entry) => typeof entry === "string" && entry.length > 0))];
+  const installDirectoryRemoved =
+    result?.beforeResult?.installDirectoryRemoved === true;
+  const versionsDirectoryRemoved =
+    result?.removed?.versionsDirectoryRemoved === true;
+  const applicationDirectoryRemoved =
+    result?.removed?.applicationDirectoryRemoved === true;
+  if (
+    pendingPaths.length === 0 &&
+    installDirectoryRemoved &&
+    versionsDirectoryRemoved &&
+    applicationDirectoryRemoved
+  ) {
+    return result;
+  }
+
+  const reasons = [];
+  if (pendingPaths.length > 0) {
+    reasons.push(`private cleanup remains pending at ${pendingPaths.join(", ")}`);
+  }
+  if (!installDirectoryRemoved) {
+    reasons.push(`the managed installation directory remains at ${installDirectory}`);
+  }
+  if (!versionsDirectoryRemoved) {
+    reasons.push(
+      `the PickerMux versions path remains at ${distributionPaths.versionsDirectory}`,
+    );
+  }
+  if (!applicationDirectoryRemoved) {
+    reasons.push(
+      `the PickerMux application directory remains at ${distributionPaths.applicationDirectory}`,
+    );
+  }
+  const error = new Error(
+    `PickerMux full uninstall is incomplete: ${reasons.join("; ")}`,
+  );
+  error.code = "PICKERMUX_PURGE_INCOMPLETE";
+  error.cleanupPendingPaths = Object.freeze(pendingPaths);
+  error.installDirectoryRemoved = installDirectoryRemoved;
+  error.versionsDirectoryRemoved = versionsDirectoryRemoved;
+  error.applicationDirectoryRemoved = applicationDirectoryRemoved;
+  throw error;
+}
+
+export async function purgePickerMux({
+  paths = resolveInstallPaths(),
+  distributionPaths = resolveDistributionPaths(),
+  force = false,
+  desktopRunningImpl = isCodexDesktopRunning,
+  validateDistributionImpl = validateDistributionInstallation,
+  validateLaunchAgentImpl = assertManagedLaunchAgent,
+  inventoryInstallImpl = inventoryPickerMuxInstallDirectory,
+  inventoryBackupsImpl = inventoryPickerMuxBackups,
+  inventoryRuntimeImpl = inventoryManagedServicePackage,
+  inventoryConfigImpl = inventoryManagedConfigOwnership,
+  revalidateInstallImpl = revalidatePickerMuxInstallDirectoryInventory,
+  revalidateBackupsImpl = revalidatePickerMuxBackupInventory,
+  revalidateRuntimeImpl = revalidateManagedServicePackageInventory,
+  revalidateConfigImpl = revalidateManagedConfigOwnership,
+  listProviderIdsImpl = listRegisteredKeychainProviderIds,
+  removeDistributionImpl = removeManagedDistribution,
+  uninstallIntegrationImpl = uninstallIntegration,
+  deleteCredentialImpl = deleteProviderCredential,
+  purgeBackupsImpl = purgePickerMuxBackups,
+  purgeRegistryImpl = purgeKeychainProviderRegistry,
+  rmdirImpl = rmdir,
+} = {}) {
+  await assertCodexDesktopClosed(desktopRunningImpl);
+  const distribution = await validateDistributionImpl({
+    paths: distributionPaths,
+  });
+  if (!distribution.installed) {
+    throw new Error(
+      "PickerMux full uninstall requires a receipt-validated CLI installation",
+    );
+  }
+  await validateLaunchAgentImpl(managedLaunchAgentOptions(paths));
+  const installInventory = await inventoryInstallImpl({
+    installDirectory: paths.installDirectory,
+  });
+  const backupInventory = await inventoryBackupsImpl({
+    backupDirectory: paths.backupDirectory,
+    configPath: paths.configPath,
+  });
+  const configOwnership = await inventoryConfigImpl({
+    configPath: paths.configPath,
+    statePath: paths.statePath,
+    backupDirectory: paths.backupDirectory,
+    backupDirectoryInventory: backupInventory,
+  });
+  const runtimeInventory = await inventoryRuntimeImpl({
+    serviceDirectory: paths.serviceDirectory,
+    sourceRoot: distribution.activeDirectory,
+  });
+  const providerIds = await listProviderIdsImpl({
+    registryPath: paths.keychainRegistryPath,
+  });
+
+  const result = await removeDistributionImpl({
+    paths: distributionPaths,
+    requireExclusiveApplicationDirectory: true,
+    async beforeRemove(confirmedDistribution) {
+      assertSameDistributionOwnership(distribution, confirmedDistribution);
+      await assertCodexDesktopClosed(desktopRunningImpl);
+      await validateLaunchAgentImpl(managedLaunchAgentOptions(paths));
+      await revalidateInstallImpl(installInventory);
+      await revalidateBackupsImpl(backupInventory);
+      await revalidateRuntimeImpl(runtimeInventory);
+      await revalidateConfigImpl(configOwnership);
+      const confirmedProviderIds = await listProviderIdsImpl({
+        registryPath: paths.keychainRegistryPath,
+      });
+      if (!sameProviderIds(providerIds, confirmedProviderIds)) {
+        throw new Error(
+          "PickerMux Keychain provider registry changed during full uninstall",
+        );
+      }
+
+      let integration;
+      let backups;
+      const credentials = [];
+      const registry = await purgeRegistryImpl({
+        registryPath: paths.keychainRegistryPath,
+        expectedProviderIds: providerIds,
+        async beforeCommit() {
+          backups = await purgeBackupsImpl({
+            backupDirectory: paths.backupDirectory,
+            configPath: paths.configPath,
+            inventory: backupInventory,
+            async beforeCommit({ readBackup } = {}) {
+              // Keychain values are deliberately never read, so a successful
+              // deletion cannot be recreated. Perform every receipt check and
+              // reversible quarantine first. On a partial deletion failure,
+              // the surrounding layers restore CLI, registry, and backups;
+              // the integration remains active and a retry is idempotent.
+              for (const providerId of providerIds) {
+                try {
+                  const deleted = await deleteCredentialImpl(providerId);
+                  credentials.push(Object.freeze({ providerId, deleted }));
+                } catch (cause) {
+                  const error = new Error(
+                    `PickerMux full uninstall could not delete every registered Keychain credential; one or more credentials may already be absent. The integration remains active and ownership receipts are retained for an idempotent retry (failed provider: ${providerId})`,
+                    { cause },
+                  );
+                  error.code = "PICKERMUX_CREDENTIAL_PURGE_INCOMPLETE";
+                  error.providerId = providerId;
+                  error.completedProviderIds = Object.freeze(
+                    credentials.map((entry) => entry.providerId),
+                  );
+                  throw error;
+                }
+              }
+              try {
+                integration = await uninstallIntegrationImpl({
+                  paths,
+                  force,
+                  servicePackageInventory: runtimeInventory,
+                  // The strict runtime preflight ran above before registry and
+                  // backup quarantine changed receipt-owned sibling paths.
+                  runtimePreflightCompleted: true,
+                  installDirectoryInventory: installInventory,
+                  backupDirectoryInventory: backupInventory,
+                  configOwnershipReceipt: configOwnership,
+                  readBackupImpl: readBackup,
+                  sourceRoot: distribution.activeDirectory,
+                });
+              } catch (cause) {
+                const error = new Error(
+                  "PickerMux integration removal failed after entering the irreversible Keychain phase; zero or more registered credentials may already be absent. CLI, registry, and backups are retained for recovery, and a retry treats already-absent credentials as complete",
+                  { cause },
+                );
+                error.code = "PICKERMUX_PURGE_COMMIT_INCOMPLETE";
+                error.completedProviderIds = Object.freeze(
+                  credentials.map((entry) => entry.providerId),
+                );
+                throw error;
+              }
+            },
+          });
+        },
+      });
+
+      const cleanupPendingPath =
+        integration.artifacts?.metadataCleanupPendingPath ??
+        integration.artifacts?.runtimeCleanupPendingPath ??
+        backups.cleanupPendingPath ??
+        registry.cleanupPendingPath;
+      if (cleanupPendingPath) {
+        const error = new Error(
+          `PickerMux full uninstall stopped with private cleanup pending at ${cleanupPendingPath}; the CLI will be retained for recovery`,
+        );
+        error.code = "PICKERMUX_PURGE_INCOMPLETE";
+        error.cleanupPendingPath = cleanupPendingPath;
+        throw error;
+      }
+
+      let installDirectoryRemoved = false;
+      try {
+        await rmdirImpl(paths.installDirectory);
+        installDirectoryRemoved = true;
+      } catch (error) {
+        if (error?.code === "ENOENT") installDirectoryRemoved = true;
+        else if (error?.code === "ENOTEMPTY") {
+          const incomplete = new Error(
+            `PickerMux full uninstall is incomplete because the managed installation directory is not empty: ${paths.installDirectory}`,
+            { cause: error },
+          );
+          incomplete.code = "PICKERMUX_PURGE_INCOMPLETE";
+          incomplete.installDirectoryRemoved = false;
+          throw incomplete;
+        } else throw error;
+      }
+      return {
+        integration,
+        credentials: Object.freeze(credentials),
+        backups,
+        registry,
+        installDirectoryRemoved,
+      };
+    },
+  });
+  return assertFullPurgeCompleted(
+    result,
+    paths.installDirectory,
+    distributionPaths,
+  );
 }
 
 export async function setupPickerMux({
@@ -1005,6 +1530,7 @@ export async function setupPickerMux({
   loadConfigImpl = loadBridgeConfig,
   configStatusImpl = getConfigStatus,
   desktopRunningImpl = isCodexDesktopRunning,
+  accountCacheImpl = inspectCodexAccountCache,
   discoverImpl = discoverBridgeModels,
   installImpl = install,
   refreshImpl = refresh,
@@ -1023,6 +1549,24 @@ export async function setupPickerMux({
       "PickerMux setup requires Codex Desktop to be fully quit with Command-Q",
     );
   }
+  const assertAccountCacheReady = async () => {
+    try {
+      return await accountCacheImpl({
+        codexHome: paths.codexHome,
+        codexPath,
+      });
+    } catch (error) {
+      if (error?.code !== "CODEX_ACCOUNT_CACHE_REFRESH_REQUIRED") throw error;
+      const recovery = initialStatus.installed
+        ? "Run 'pickermux uninstall' to restore the native Codex configuration, open Codex while signed in until its native model picker loads, fully quit it with Command-Q, and rerun setup with the same config."
+        : "Open Codex while signed in until its native model picker loads, fully quit it with Command-Q, and rerun setup.";
+      throw new Error(
+        `PickerMux setup stopped before activation because Codex ${error.codexClientVersion ?? "Desktop"} has no matching account model cache. No active PickerMux state was changed. ${recovery}`,
+        { cause: error },
+      );
+    }
+  };
+  await assertAccountCacheReady();
   const effectiveConfigPath = setupConfigPath
     ? path.resolve(setupConfigPath)
     : initialStatus.installed
@@ -1039,6 +1583,21 @@ export async function setupPickerMux({
   return setupImpl({
     sourceRoot,
     paths: distributionPaths,
+    async beforeControlCommit() {
+      const status = await configStatusImpl({
+        configPath: paths.configPath,
+        statePath: paths.statePath,
+      });
+      if (status.healthy !== true || status.installed !== initialStatus.installed) {
+        throw new Error("PickerMux integration state changed concurrently during setup");
+      }
+      if (await desktopRunningImpl()) {
+        throw new Error(
+          "PickerMux setup requires Codex Desktop to remain fully quit with Command-Q",
+        );
+      }
+      await assertAccountCacheReady();
+    },
     async activate({ distributionRoot, previousVersion, version }) {
       const status = await configStatusImpl({
         configPath: paths.configPath,
@@ -1052,6 +1611,12 @@ export async function setupPickerMux({
       if (status.installed !== initialStatus.installed) {
         throw new Error("PickerMux integration state changed concurrently during setup");
       }
+      if (await desktopRunningImpl()) {
+        throw new Error(
+          "PickerMux setup requires Codex Desktop to remain fully quit with Command-Q",
+        );
+      }
+      await assertAccountCacheReady();
       const config = await loadConfigImpl(effectiveConfigPath);
       if (status.installed) {
         const result = await refreshImpl({
@@ -1077,7 +1642,9 @@ export async function setupPickerMux({
   });
 }
 
-export async function runCli(argv) {
+export async function runCli(argv, {
+  purgeImpl = purgePickerMux,
+} = {}) {
   const options = parseArguments(argv);
   if (options.command === "help") {
     process.stdout.write(`${usage()}\n`);
@@ -1090,8 +1657,8 @@ export async function runCli(argv) {
     return result;
   }
   const paths = resolveInstallPaths();
+  const distributionPaths = resolveDistributionPaths();
   if (options.command === "setup") {
-    const distributionPaths = resolveDistributionPaths();
     const result = await setupPickerMux({
       sourceRoot: options.distributionRoot
         ? path.resolve(options.distributionRoot)
@@ -1122,23 +1689,73 @@ export async function runCli(argv) {
     return result;
   }
   if (options.command === "uninstall") {
-    const result = options.removeCli
-      ? await removeManagedDistribution({
-          paths: resolveDistributionPaths(),
-          beforeRemove: async () => uninstallIntegration({
+    let result;
+    if (options.purge) {
+      result = await purgeImpl({
+        paths,
+        distributionPaths,
+        force: options.force,
+      });
+      assertFullPurgeCompleted(
+        result,
+        paths.installDirectory,
+        distributionPaths,
+      );
+    } else if (options.removeCli) {
+      await assertCodexDesktopClosed(isCodexDesktopRunning);
+      const distribution = await validateDistributionInstallation({
+        paths: distributionPaths,
+      });
+      if (!distribution.installed) {
+        throw new Error(
+          "No receipt-validated PickerMux CLI installation was found",
+        );
+      }
+      const servicePackageInventory = await inventoryManagedServicePackage({
+        serviceDirectory: paths.serviceDirectory,
+        sourceRoot: distribution.activeDirectory,
+      });
+      result = await removeManagedDistribution({
+        paths: distributionPaths,
+        beforeRemove: async (confirmedDistribution) => {
+          assertSameDistributionOwnership(distribution, confirmedDistribution);
+          await assertCodexDesktopClosed(isCodexDesktopRunning);
+          return uninstallIntegration({
             paths,
             force: options.force,
-          }),
-        })
-      : await uninstallIntegration({ paths, force: options.force });
+            servicePackageInventory,
+            sourceRoot: distribution.activeDirectory,
+          });
+        },
+      });
+    } else {
+      result = await withInstallationLock(
+        distributionPaths,
+        async () => {
+          await assertCodexDesktopClosed(isCodexDesktopRunning);
+          const servicePackageInventory = await inventoryManagedServicePackage({
+            serviceDirectory: paths.serviceDirectory,
+            sourceRoot: projectRoot,
+          });
+          return uninstallIntegration({
+            paths,
+            force: options.force,
+            servicePackageInventory,
+            sourceRoot: projectRoot,
+          });
+        },
+      );
+    }
     if (options.json) printJson(result);
     else {
       process.stdout.write(
-        options.removeCli
-          ? "Model bridge and receipt-validated PickerMux CLI removed; backups and Keychain credentials were preserved.\n"
-          : result.removedConfig.changed
-            ? "Model bridge removed; previous Codex configuration restored and managed runtime cleaned.\n"
-            : "Managed bridge service and runtime artifacts were removed.\n",
+        options.purge
+          ? "PickerMux integration, receipt-validated CLI, verified backups, and registered provider Keychain credentials were removed.\n"
+          : options.removeCli
+            ? "Model bridge and receipt-validated PickerMux CLI removed; backups and Keychain credentials were preserved.\n"
+            : result.removedConfig.changed
+              ? "Model bridge removed; previous Codex configuration restored and managed runtime cleaned.\n"
+              : "Managed bridge service and runtime artifacts were removed.\n",
       );
       if (options.removeCli && result.removed.cleanupPendingPath) {
         process.stderr.write(
@@ -1157,11 +1774,17 @@ export async function runCli(argv) {
       options.command,
     )
   ) {
-    const result = await credentialCommand({
+    const executeCredentialCommand = () => credentialCommand({
       command: options.command,
       config,
       providerId: options.providerId,
+      registryPath: paths.keychainRegistryPath,
     });
+    const result = new Set(["credential-set", "credential-delete"]).has(
+      options.command,
+    )
+      ? await withInstallationLock(distributionPaths, executeCredentialCommand)
+      : await executeCredentialCommand();
     if (options.json) printJson(result);
     else if (options.command === "credential-status") {
       process.stdout.write(
@@ -1225,7 +1848,10 @@ export async function runCli(argv) {
     return summary;
   }
   if (options.command === "install") {
-    const result = await install({ config, configPath, paths, codexPath });
+    const result = await withInstallationLock(
+      distributionPaths,
+      async () => install({ config, configPath, paths, codexPath }),
+    );
     if (options.json) printJson(result);
     else {
       printNativeCatalogWarning(result);
@@ -1236,7 +1862,10 @@ export async function runCli(argv) {
     return result;
   }
   if (options.command === "refresh") {
-    const result = await refresh({ config, paths, codexPath });
+    const result = await withInstallationLock(
+      distributionPaths,
+      async () => refresh({ config, paths, codexPath }),
+    );
     if (options.json) printJson(result);
     else {
       printNativeCatalogWarning(result);
@@ -1245,13 +1874,16 @@ export async function runCli(argv) {
     return result;
   }
   if (options.command === "certify") {
-    const result = await certify({
-      config,
-      paths,
-      codexPath,
-      model: options.model,
-      all: options.all,
-    });
+    const result = await withInstallationLock(
+      distributionPaths,
+      async () => certify({
+        config,
+        paths,
+        codexPath,
+        model: options.model,
+        all: options.all,
+      }),
+    );
     if (options.json) printJson(result);
     else {
       for (const entry of result.certified) {

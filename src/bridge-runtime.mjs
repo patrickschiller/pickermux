@@ -1,11 +1,11 @@
 import { execFile as execFileCallback } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
-import { existsSync, realpathSync } from "node:fs";
+import { constants as fsConstants, existsSync, realpathSync } from "node:fs";
 import {
   chmod,
+  lstat,
   mkdir,
   open,
-  readFile,
   rename,
   unlink,
   writeFile,
@@ -14,6 +14,8 @@ import path from "node:path";
 import { promisify } from "node:util";
 
 const execFile = promisify(execFileCallback);
+const MANAGED_READ_FLAGS =
+  fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0);
 
 function requireString(value, label) {
   if (typeof value !== "string" || value.trim() === "") {
@@ -61,6 +63,15 @@ function xml(value) {
     .replaceAll("'", "&apos;");
 }
 
+function unescapeXml(value) {
+  return value
+    .replaceAll("&quot;", '"')
+    .replaceAll("&apos;", "'")
+    .replaceAll("&gt;", ">")
+    .replaceAll("&lt;", "<")
+    .replaceAll("&amp;", "&");
+}
+
 async function writePrivateAtomic(destination, contents, mode = 0o600) {
   const resolved = path.resolve(destination);
   await mkdir(path.dirname(resolved), { recursive: true, mode: 0o700 });
@@ -75,6 +86,139 @@ async function writePrivateAtomic(destination, contents, mode = 0o600) {
   await chmod(temporary, mode);
   await rename(temporary, resolved);
   return resolved;
+}
+
+function managedFileSnapshot(stats) {
+  return Object.freeze({
+    dev: stats.dev,
+    ino: stats.ino,
+    uid: stats.uid,
+    mode: stats.mode,
+    nlink: stats.nlink,
+    size: stats.size,
+    mtimeMs: stats.mtimeMs,
+    ctimeMs: stats.ctimeMs,
+  });
+}
+
+function sameManagedFileSnapshot(left, right) {
+  return (
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.uid === right.uid &&
+    left.mode === right.mode &&
+    left.nlink === right.nlink &&
+    left.size === right.size &&
+    left.mtimeMs === right.mtimeMs &&
+    left.ctimeMs === right.ctimeMs
+  );
+}
+
+function assertPrivateRuntimeFile(stats, runtimePath) {
+  if (!stats.isFile() || stats.isSymbolicLink()) {
+    throw new Error(`Bridge runtime must be a regular file: ${runtimePath}`);
+  }
+  if (stats.nlink !== 1) {
+    throw new Error(
+      `Bridge runtime must have exactly one hard link: ${runtimePath}`,
+    );
+  }
+  if (typeof process.getuid === "function" && stats.uid !== process.getuid()) {
+    throw new Error(`Bridge runtime is not owned by the current user: ${runtimePath}`);
+  }
+  if ((stats.mode & 0o077) !== 0) {
+    throw new Error(`Bridge runtime permissions are not private: ${runtimePath}`);
+  }
+}
+
+function assertPrivateLaunchAgentFile(stats) {
+  if (!stats.isFile() || stats.isSymbolicLink()) {
+    throw new Error("Refusing to remove a launch agent that is not a regular file");
+  }
+  if (stats.nlink !== 1) {
+    throw new Error(
+      "Refusing to remove a launch agent with more than one hard link",
+    );
+  }
+  if (typeof process.getuid === "function" && stats.uid !== process.getuid()) {
+    throw new Error("Refusing to remove a launch agent not owned by the current user");
+  }
+  if ((stats.mode & 0o077) !== 0) {
+    throw new Error("Refusing to remove a launch agent with non-private permissions");
+  }
+}
+
+async function readIdentityBoundManagedFile(
+  target,
+  {
+    allowMissing = false,
+    assertFile,
+    lstatImpl = lstat,
+    openImpl = open,
+  },
+) {
+  let initialPathStats;
+  try {
+    initialPathStats = await lstatImpl(target);
+  } catch (error) {
+    if (allowMissing && error?.code === "ENOENT") return null;
+    throw error;
+  }
+  assertFile(initialPathStats, target);
+  const initialSnapshot = managedFileSnapshot(initialPathStats);
+
+  let handle;
+  try {
+    handle = await openImpl(target, MANAGED_READ_FLAGS);
+    const openedStats = await handle.stat();
+    const openedPathStats = await lstatImpl(target);
+    assertFile(openedStats, target);
+    assertFile(openedPathStats, target);
+    if (
+      !sameManagedFileSnapshot(
+        initialSnapshot,
+        managedFileSnapshot(openedStats),
+      ) ||
+      !sameManagedFileSnapshot(
+        initialSnapshot,
+        managedFileSnapshot(openedPathStats),
+      )
+    ) {
+      throw new Error(`Managed file changed before payload read: ${target}`);
+    }
+
+    const contents = await handle.readFile();
+    const confirmedStats = await handle.stat();
+    const confirmedPathStats = await lstatImpl(target);
+    assertFile(confirmedStats, target);
+    assertFile(confirmedPathStats, target);
+    if (
+      !sameManagedFileSnapshot(
+        initialSnapshot,
+        managedFileSnapshot(confirmedStats),
+      ) ||
+      !sameManagedFileSnapshot(
+        initialSnapshot,
+        managedFileSnapshot(confirmedPathStats),
+      ) ||
+      contents.length !== confirmedStats.size
+    ) {
+      throw new Error(`Managed file changed while reading payload: ${target}`);
+    }
+    return Object.freeze({
+      contents,
+      snapshot: managedFileSnapshot(confirmedStats),
+    });
+  } catch (error) {
+    if (error?.code === "ELOOP" || error?.code === "ENOENT") {
+      throw new Error(`Managed file changed before payload read: ${target}`, {
+        cause: error,
+      });
+    }
+    throw error;
+  } finally {
+    await handle?.close().catch(() => {});
+  }
 }
 
 export function createRuntimeRecord({ configPath, capability, instanceId } = {}) {
@@ -98,10 +242,18 @@ export async function writeRuntime(runtimePath, runtime) {
   return runtime;
 }
 
-export async function readRuntime(runtimePath) {
+export async function readRuntime(
+  runtimePath,
+  { lstatImpl = lstat, openImpl = open } = {},
+) {
   let parsed;
   try {
-    parsed = JSON.parse(await readFile(runtimePath, "utf8"));
+    const captured = await readIdentityBoundManagedFile(runtimePath, {
+      assertFile: assertPrivateRuntimeFile,
+      lstatImpl,
+      openImpl,
+    });
+    parsed = JSON.parse(captured.contents.toString("utf8"));
   } catch (error) {
     throw new Error(`Failed to read bridge runtime ${runtimePath}: ${error.message}`, {
       cause: error,
@@ -190,6 +342,57 @@ ${argumentsXml}
   </dict>
 </plist>
 `;
+}
+
+export async function assertManagedLaunchAgent({
+  launchAgentPath,
+  launchAgentLabel,
+  binPath,
+  configPath,
+  runtimePath,
+  workingDirectory,
+  logPath,
+  lstatImpl = lstat,
+  openImpl = open,
+} = {}) {
+  const captured = await readIdentityBoundManagedFile(launchAgentPath, {
+    allowMissing: true,
+    assertFile: assertPrivateLaunchAgentFile,
+    lstatImpl,
+    openImpl,
+  });
+  if (captured === null) return { present: false };
+  const metadata = captured.snapshot;
+  const contents = captured.contents.toString("utf8");
+  const argumentsBlock = contents.match(
+    /<key>ProgramArguments<\/key>\s*<array>([\s\S]*?)<\/array>/u,
+  )?.[1];
+  const encodedNodePath = argumentsBlock?.match(/<string>(.*?)<\/string>/u)?.[1];
+  if (!encodedNodePath) {
+    throw new Error("Refusing to remove an unrecognized launch agent");
+  }
+  const nodePath = unescapeXml(encodedNodePath);
+  if (!path.isAbsolute(nodePath) || /[\u0000\r\n]/u.test(nodePath)) {
+    throw new Error("Refusing to remove a launch agent with an invalid Node path");
+  }
+  const expected = renderLaunchAgent({
+    label: launchAgentLabel,
+    nodePath,
+    binPath,
+    configPath,
+    runtimePath,
+    workingDirectory,
+    logPath,
+  });
+  if (contents !== expected) {
+    throw new Error("Refusing to remove a modified or foreign launch agent");
+  }
+  return {
+    present: true,
+    nodePath,
+    device: metadata.dev,
+    inode: metadata.ino,
+  };
 }
 
 async function serviceLoaded({ label, uid = process.getuid(), execFileImpl = execFile }) {
@@ -296,8 +499,33 @@ export async function stopBridgeService({
   launchAgentLabel,
   execFileImpl = execFile,
   removeRuntime = true,
+  expectedLaunchAgent,
 }) {
+  const launchAgent = expectedLaunchAgent
+    ? await assertManagedLaunchAgent({
+        ...expectedLaunchAgent,
+        launchAgentPath,
+        launchAgentLabel,
+      })
+    : undefined;
   const loaded = await serviceLoaded({ label: launchAgentLabel, execFileImpl });
+  if (loaded && launchAgent?.present === false) {
+    throw new Error("Refusing to stop a loaded launch agent whose managed plist is missing");
+  }
+  if (launchAgent?.present) {
+    const confirmed = await assertManagedLaunchAgent({
+      ...expectedLaunchAgent,
+      launchAgentPath,
+      launchAgentLabel,
+    });
+    if (
+      !confirmed.present ||
+      confirmed.device !== launchAgent.device ||
+      confirmed.inode !== launchAgent.inode
+    ) {
+      throw new Error("Refusing to stop a launch agent that changed during removal");
+    }
+  }
   if (loaded) {
     await execFileImpl(
       "/bin/launchctl",
@@ -305,9 +533,61 @@ export async function stopBridgeService({
       { encoding: "utf8", timeout: 15_000 },
     );
   }
-  await unlink(launchAgentPath).catch((error) => {
-    if (error?.code !== "ENOENT") throw error;
-  });
+  if (launchAgent?.present) {
+    const quarantinePath = path.join(
+      path.dirname(launchAgentPath),
+      `.${path.basename(launchAgentPath)}.remove.${process.pid}.${randomBytes(8).toString("hex")}.staging`,
+    );
+    const quarantine = await lstat(quarantinePath).catch((error) => {
+      if (error?.code === "ENOENT") return null;
+      throw error;
+    });
+    if (quarantine !== null) {
+      throw new Error("Refusing to reuse an existing launch-agent quarantine");
+    }
+    await rename(launchAgentPath, quarantinePath);
+    try {
+      const staged = await assertManagedLaunchAgent({
+        ...expectedLaunchAgent,
+        launchAgentPath: quarantinePath,
+        launchAgentLabel,
+      });
+      if (
+        !staged.present ||
+        staged.device !== launchAgent.device ||
+        staged.inode !== launchAgent.inode
+      ) {
+        throw new Error("Refusing to remove a launch agent replaced during removal");
+      }
+      await unlink(quarantinePath);
+    } catch (error) {
+      const replacement = await lstat(launchAgentPath).catch((readError) => {
+        if (readError?.code === "ENOENT") return null;
+        throw readError;
+      });
+      const staged = await lstat(quarantinePath).catch((readError) => {
+        if (readError?.code === "ENOENT") return null;
+        throw readError;
+      });
+      if (replacement === null && staged !== null) {
+        await rename(quarantinePath, launchAgentPath);
+      }
+      throw error;
+    }
+    const replacement = await lstat(launchAgentPath).catch((error) => {
+      if (error?.code === "ENOENT") return null;
+      throw error;
+    });
+    if (replacement !== null) {
+      throw new Error(
+        "A new launch agent appeared during removal and was preserved for review",
+      );
+    }
+  } else {
+    await unlink(launchAgentPath).catch((error) => {
+      if (error?.code !== "ENOENT") throw error;
+    });
+  }
   if (removeRuntime) {
     await unlink(runtimePath).catch((error) => {
       if (error?.code !== "ENOENT") throw error;

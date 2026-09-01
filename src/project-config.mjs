@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 
-const PROVIDER_ID_PATTERN = /^[a-z0-9_-]+$/;
+import { isValidProviderId } from "./provider-id.mjs";
+
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
 
 export function isLoopbackEndpoint(value) {
@@ -36,9 +37,9 @@ export function validateProjectConfig(input) {
   }
 
   const providerId = String(input.providerId ?? "").trim();
-  if (!PROVIDER_ID_PATTERN.test(providerId)) {
+  if (!isValidProviderId(providerId)) {
     throw new Error(
-      "providerId must contain only lowercase letters, digits, underscores, or hyphens",
+      "providerId must be at most 127 characters and contain only lowercase letters, digits, underscores, or hyphens",
     );
   }
   if (providerId === "lmstudio" || providerId === "openai") {

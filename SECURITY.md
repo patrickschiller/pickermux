@@ -56,6 +56,8 @@ Reports involving any of the following are particularly important:
 - unsafe writes to Codex configuration, backups, or the LaunchAgent runtime;
 - release-installer checksum bypass, unsafe archive extraction, distribution
   receipt forgery, or replacement of an unrelated user launcher;
+- uninstall or purge removing modified, foreign, or concurrently replaced
+  runtime, distribution, backup, registry, or Keychain state;
 - command execution, path traversal, decompression abuse, or resource
   exhaustion through untrusted requests;
 - certification records enabling tools for a different model or configuration;
@@ -65,6 +67,69 @@ Reports involving any of the following are particularly important:
 
 General hardening ideas without a concrete vulnerability can be proposed with
 the public feature-request form.
+
+## Uninstall and purge boundary
+
+The normal `pickermux uninstall` lifecycle restores Codex configuration and
+removes the managed bridge runtime while deliberately retaining verified
+PickerMux backups and provider credentials. Removing the receipt-owned CLI with
+`--remove-cli` does not change that retention policy.
+
+Receipt-owned CLI paths are detached into a private quarantine, revalidated
+against the installation receipt after integration removal, and cleaned only
+as exact inventoried files, the exact `current` symlink, and empty directories.
+SHA-256 digests and device/inode identity bind cleanup to the state that was
+inspected. Changed or additional bytes remain at the reported quarantine path;
+no recursive distribution cleanup may consume data added after staging.
+
+Every uninstall inventories `runtime-app` before changing Codex configuration
+and binds its file tree byte-for-byte to the invoking PickerMux payload. It
+rejects symbolic links, special files, unexpected entries, modified contents,
+unsafe ownership, multiply linked regular files, and leftover
+`runtime-app.previous-*` packages. Ownership-sensitive cache, configuration,
+receipt, runtime, backup, and registry payloads are not read through symbolic
+or hard links. Removal then unlinks only the inventoried files and empty
+directories; it never recursively deletes an untrusted runtime tree.
+
+`pickermux uninstall --purge` is the explicit full-removal operation. It may
+delete only backups whose PickerMux ownership, SHA-256 digest, and filesystem
+identity can be verified and only exact PickerMux Keychain entries named by the
+private provider registry. The registry contains canonical provider IDs, never
+credential values. Purge does not enumerate unrelated Keychain items or infer
+deletion targets from untrusted configuration. Provider IDs use the canonical
+configuration grammar with a 127-character maximum, and registry changes are
+serialized and revalidated before deletion.
+
+Foreign, modified, ambiguous, publicly accessible, or otherwise unsafe
+ownership state fails closed. `--force` may resolve an acknowledged conflict in
+PickerMux's managed Codex configuration, but it never bypasses distribution,
+runtime, backup, provider-registry, or Keychain ownership checks.
+
+macOS Keychain does not provide an atomic transaction across multiple generic
+password items. PickerMux deliberately never reads credential values for a
+rollback. It therefore stages and validates every reversible filesystem change
+before deleting the first registered item. If a later exact deletion fails,
+purge fails, leaves the integration active, restores the CLI, backup directory,
+and provider registry, and retains ownership receipts for an idempotent retry;
+an item already deleted in that attempt remains absent. A later integration
+failure after all Keychain deletions is likewise reported as an incomplete,
+irreversible commit with recovery state retained, never as successful removal.
+
+These checks serialize cooperating PickerMux lifecycle commands and reject
+drift observable before each final filesystem operation. They do not claim to
+isolate PickerMux from a malicious process already running with the same macOS
+user identity: Node.js and macOS expose pathname-based unlink operations, so
+such a process can race the last check by replacing a quarantined filename.
+PickerMux still never performs recursive purge cleanup. Do not run purge while
+another same-user process is intentionally modifying its private quarantine.
+
+Runtime, backup, and registry deletion use private quarantine paths with a
+second identity check. If one of those cleanups cannot finish, full purge fails
+and retains or restores the receipt-owned CLI so the exact reported path can be
+reviewed; the failure is not reported as a successful full removal.
+
+No uninstall mode reads, modifies, or deletes native Codex authentication. In
+particular, PickerMux never reads or removes `~/.codex/auth.json`.
 
 ## Release installer trust
 

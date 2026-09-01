@@ -1,9 +1,9 @@
 import { stat } from "node:fs/promises";
 import path from "node:path";
 
+import { inspectCodexAccountCache } from "./account-cache.mjs";
 import { runtimeSupportsZstd } from "./body-codec.mjs";
 import {
-  loadCachedNativeCatalog,
   loadBundledCatalog,
   loadCodexClientVersion,
   readCodexCatalog,
@@ -52,11 +52,6 @@ export function assertNativeCatalogSnapshot({
     }
   }
   return actual.length;
-}
-
-async function loadCurrentNativeCatalog({ codexHome, codexPath }) {
-  const expectedClientVersion = await loadCodexClientVersion({ codexPath });
-  return loadCachedNativeCatalog({ codexHome, expectedClientVersion });
 }
 
 function visibleText(response) {
@@ -133,7 +128,7 @@ export async function runBridgeDoctor({
   serviceStatusImpl = getBridgeServiceStatus,
   discoveryImpl = discoverBridgeModels,
   debugModelsImpl = debugModels,
-  nativeCatalogImpl = loadCurrentNativeCatalog,
+  accountCacheImpl = inspectCodexAccountCache,
   runtimeSupportsZstdImpl = runtimeSupportsZstd,
   bundledCatalogImpl = loadBundledCatalog,
   clientVersionImpl = loadCodexClientVersion,
@@ -179,6 +174,31 @@ export async function runBridgeDoctor({
   } catch (error) {
     checks.push(check("desktop-compatibility", false, error.message));
   }
+
+  let accountCache;
+  try {
+    accountCache = await accountCacheImpl({
+      codexHome: paths.codexHome,
+      codexPath,
+      codexClientVersion,
+      clientVersionImpl,
+    });
+    codexClientVersion ??= accountCache.codexClientVersion;
+    const modelCount = accountCache.catalog.models.length;
+    const staleWarning = accountCache.warning
+      ? `; WARNING: ${accountCache.warning}`
+      : "";
+    checks.push(
+      check(
+        "codex-account-cache",
+        true,
+        `${accountCache.cacheClientVersion}, ${modelCount} account model(s), fetched ${accountCache.fetchedAt}${staleWarning}`,
+      ),
+    );
+  } catch (error) {
+    checks.push(check("codex-account-cache", false, error.message));
+  }
+
   let runtime;
   try {
     runtime = await readRuntime(paths.runtimePath);
@@ -298,28 +318,26 @@ export async function runBridgeDoctor({
     checks.push(check("mixed-catalog-file", false, error.message));
   }
 
-  if (catalog) {
+  if (catalog && accountCache) {
     try {
-      const account = await nativeCatalogImpl({
-        codexHome: paths.codexHome,
-        codexPath,
-      });
       const nativeCount = assertNativeCatalogSnapshot({
         mixedCatalog: catalog,
-        nativeCatalog: account.catalog,
+        nativeCatalog: accountCache.catalog,
         externalSlugs,
       });
-      const warning = account.warning ? `; WARNING: ${account.warning}` : "";
       checks.push(
         check(
           "native-account-catalog",
           true,
-          `${nativeCount} exact account model(s), fetched ${account.fetchedAt}${warning}`,
+          `${nativeCount} exact account model(s) in the mixed catalog`,
         ),
       );
     } catch (error) {
       checks.push(check("native-account-catalog", false, error.message));
     }
+  }
+
+  if (catalog) {
     if (runtime && serviceStatus?.healthy) {
       try {
         const runningIds = await readBridgeModelIds({

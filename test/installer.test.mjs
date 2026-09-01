@@ -3,14 +3,18 @@ import { execFile } from "node:child_process";
 import {
   access,
   chmod,
+  link,
   lstat,
   mkdir,
   mkdtemp,
   readFile,
+  readdir,
   readlink,
   rename,
   rm,
   stat,
+  symlink,
+  unlink,
   writeFile,
 } from "node:fs/promises";
 import os from "node:os";
@@ -85,6 +89,14 @@ async function pathExists(target) {
   }
 }
 
+async function removalStagingPath(paths) {
+  const parent = path.dirname(paths.applicationDirectory);
+  const matches = (await readdir(parent)).filter((name) =>
+    /^\.PickerMux\.removal\.[1-9]\d*\.[0-9a-f]{16}\.staging$/u.test(name));
+  assert.equal(matches.length, 1);
+  return path.join(parent, matches[0]);
+}
+
 test("distribution paths honor isolated HOME and CODEX_HOME", async (t) => {
   const fixture = await temporaryFixture(t);
   assert.equal(
@@ -102,6 +114,10 @@ test("distribution paths honor isolated HOME and CODEX_HOME", async (t) => {
   assert.equal(
     fixture.installPaths.launchAgentPath,
     path.join(fixture.home, "Library", "LaunchAgents", "com.local.codex-model-bridge.plist"),
+  );
+  assert.equal(
+    fixture.installPaths.keychainRegistryPath,
+    path.join(fixture.codexHome, "model-bridge", "keychain-state.json"),
   );
 });
 
@@ -267,6 +283,277 @@ test("failed upgrade restores the old pointer, launcher, receipt, and version se
   );
 });
 
+test("first cache preflight leaves a real 0.4.1 installation byte-for-byte unchanged", async (t) => {
+  const fixture = await temporaryFixture(t, "0.4.1", "installed");
+  await setupManagedDistribution({
+    sourceRoot: fixture.source,
+    paths: fixture.distributionPaths,
+    activate: async () => ({ action: "install" }),
+  });
+  const previousReceipt = await readFile(fixture.distributionPaths.receiptPath);
+  const previousLauncher = await readFile(fixture.distributionPaths.launcherPath);
+  const previousCurrent = await readlink(fixture.distributionPaths.currentPath);
+  const previousVersions = (await readdir(
+    fixture.distributionPaths.versionsDirectory,
+  )).sort();
+  const upgrade = await temporaryFixture(t, "0.4.2", "upgrade");
+  const upgradePath = path.join(
+    fixture.distributionPaths.versionsDirectory,
+    "0.4.2",
+  );
+  let cacheChecks = 0;
+  let setupCalled = false;
+  let activateCalled = false;
+  let loadConfigCalled = false;
+  let discoveryCalled = false;
+  let refreshCalled = false;
+  let stagedVersionObserved = false;
+
+  await assert.rejects(
+    setupPickerMux({
+      sourceRoot: upgrade.source,
+      paths: fixture.installPaths,
+      distributionPaths: fixture.distributionPaths,
+      codexPath: "/Applications/Test Codex.app/codex",
+      configStatusImpl: async () => ({
+        installed: true,
+        healthy: true,
+        status: "installed",
+      }),
+      desktopRunningImpl: async () => false,
+      accountCacheImpl: async () => {
+        cacheChecks += 1;
+        stagedVersionObserved = await pathExists(upgradePath);
+        const error = new Error("private cache version details");
+        error.code = "CODEX_ACCOUNT_CACHE_REFRESH_REQUIRED";
+        error.codexClientVersion = "0.151.0";
+        throw error;
+      },
+      loadConfigImpl: async () => {
+        loadConfigCalled = true;
+        return {};
+      },
+      discoverImpl: async () => {
+        discoveryCalled = true;
+        return { models: [{ id: "lmstudio/test" }] };
+      },
+      setupImpl: async (input) => {
+        setupCalled = true;
+        return setupManagedDistribution({
+          ...input,
+          activate: async (activationInput) => {
+            activateCalled = true;
+            return input.activate(activationInput);
+          },
+        });
+      },
+      refreshImpl: async () => {
+        refreshCalled = true;
+      },
+    }),
+    (error) => {
+      assert.match(error.message, /stopped before activation/iu);
+      assert.match(error.message, /No active PickerMux state was changed/iu);
+      assert.doesNotMatch(error.message, /private cache version details/iu);
+      return true;
+    },
+  );
+
+  assert.equal(cacheChecks, 1);
+  assert.equal(stagedVersionObserved, false);
+  assert.equal(setupCalled, false);
+  assert.equal(activateCalled, false);
+  assert.equal(loadConfigCalled, false);
+  assert.equal(discoveryCalled, false);
+  assert.equal(refreshCalled, false);
+  assert.deepEqual(await readFile(fixture.distributionPaths.receiptPath), previousReceipt);
+  assert.deepEqual(await readFile(fixture.distributionPaths.launcherPath), previousLauncher);
+  assert.equal(await readlink(fixture.distributionPaths.currentPath), previousCurrent);
+  assert.deepEqual(
+    (await readdir(fixture.distributionPaths.versionsDirectory)).sort(),
+    previousVersions,
+  );
+  assert.equal(await pathExists(upgradePath), false);
+  assert.equal(
+    (await validateDistributionInstallation({
+      paths: fixture.distributionPaths,
+    })).receipt.activeVersion,
+    "0.4.1",
+  );
+});
+
+test("second cache preflight removes staged 0.4.2 and preserves 0.4.1 byte-for-byte", async (t) => {
+  const fixture = await temporaryFixture(t, "0.4.1", "installed");
+  await setupManagedDistribution({
+    sourceRoot: fixture.source,
+    paths: fixture.distributionPaths,
+    activate: async () => ({ action: "install" }),
+  });
+  const previousReceipt = await readFile(fixture.distributionPaths.receiptPath);
+  const previousLauncher = await readFile(fixture.distributionPaths.launcherPath);
+  const previousCurrent = await readlink(fixture.distributionPaths.currentPath);
+  const previousVersions = (await readdir(
+    fixture.distributionPaths.versionsDirectory,
+  )).sort();
+  const upgrade = await temporaryFixture(t, "0.4.2", "upgrade");
+  const upgradePath = path.join(
+    fixture.distributionPaths.versionsDirectory,
+    "0.4.2",
+  );
+  let cacheChecks = 0;
+  let setupCalled = false;
+  let activateCalled = false;
+  let loadConfigCalls = 0;
+  let discoveryCalls = 0;
+  let refreshCalled = false;
+  let stagedVersionObserved = false;
+
+  await assert.rejects(
+    setupPickerMux({
+      sourceRoot: upgrade.source,
+      paths: fixture.installPaths,
+      distributionPaths: fixture.distributionPaths,
+      codexPath: "/Applications/Test Codex.app/codex",
+      configStatusImpl: async () => ({
+        installed: true,
+        healthy: true,
+        status: "installed",
+      }),
+      desktopRunningImpl: async () => false,
+      accountCacheImpl: async () => {
+        cacheChecks += 1;
+        if (cacheChecks === 1) return { ready: true };
+        stagedVersionObserved = await pathExists(upgradePath);
+        const error = new Error("private cache version details");
+        error.code = "CODEX_ACCOUNT_CACHE_REFRESH_REQUIRED";
+        error.codexClientVersion = "0.151.0";
+        throw error;
+      },
+      loadConfigImpl: async () => {
+        loadConfigCalls += 1;
+        return {};
+      },
+      discoverImpl: async () => {
+        discoveryCalls += 1;
+        return { models: [{ id: "lmstudio/test" }] };
+      },
+      setupImpl: async (input) => {
+        setupCalled = true;
+        return setupManagedDistribution({
+          ...input,
+          activate: async (activationInput) => {
+            activateCalled = true;
+            return input.activate(activationInput);
+          },
+        });
+      },
+      refreshImpl: async () => {
+        refreshCalled = true;
+      },
+    }),
+    (error) => {
+      assert.match(error.message, /stopped before activation/iu);
+      assert.match(error.message, /No active PickerMux state was changed/iu);
+      assert.doesNotMatch(error.message, /private cache version details/iu);
+      return true;
+    },
+  );
+
+  assert.equal(cacheChecks, 2);
+  assert.equal(stagedVersionObserved, true);
+  assert.equal(setupCalled, true);
+  assert.equal(activateCalled, false);
+  assert.equal(loadConfigCalls, 1);
+  assert.equal(discoveryCalls, 1);
+  assert.equal(refreshCalled, false);
+  assert.deepEqual(await readFile(fixture.distributionPaths.receiptPath), previousReceipt);
+  assert.deepEqual(await readFile(fixture.distributionPaths.launcherPath), previousLauncher);
+  assert.equal(await readlink(fixture.distributionPaths.currentPath), previousCurrent);
+  assert.deepEqual(
+    (await readdir(fixture.distributionPaths.versionsDirectory)).sort(),
+    previousVersions,
+  );
+  assert.equal(await pathExists(upgradePath), false);
+  assert.equal(
+    (await validateDistributionInstallation({
+      paths: fixture.distributionPaths,
+    })).receipt.activeVersion,
+    "0.4.1",
+  );
+});
+
+test("third cache preflight rolls a real 0.4.1 to 0.4.2 upgrade back byte-for-byte", async (t) => {
+  const fixture = await temporaryFixture(t, "0.4.1", "installed");
+  await setupManagedDistribution({
+    sourceRoot: fixture.source,
+    paths: fixture.distributionPaths,
+    activate: async () => ({ action: "install" }),
+  });
+  const previousReceipt = await readFile(fixture.distributionPaths.receiptPath);
+  const previousLauncher = await readFile(fixture.distributionPaths.launcherPath);
+  const previousCurrent = await readlink(fixture.distributionPaths.currentPath);
+  const previousVersions = (await readdir(
+    fixture.distributionPaths.versionsDirectory,
+  )).sort();
+  const upgrade = await temporaryFixture(t, "0.4.2", "upgrade");
+  let cacheChecks = 0;
+  let refreshCalled = false;
+
+  await assert.rejects(
+    setupPickerMux({
+      sourceRoot: upgrade.source,
+      paths: fixture.installPaths,
+      distributionPaths: fixture.distributionPaths,
+      codexPath: "/Applications/Test Codex.app/codex",
+      configStatusImpl: async () => ({
+        installed: true,
+        healthy: true,
+        status: "installed",
+      }),
+      desktopRunningImpl: async () => false,
+      accountCacheImpl: async () => {
+        cacheChecks += 1;
+        if (cacheChecks < 3) return { ready: true };
+        const error = new Error("private cache version details");
+        error.code = "CODEX_ACCOUNT_CACHE_REFRESH_REQUIRED";
+        error.codexClientVersion = "0.151.0";
+        throw error;
+      },
+      loadConfigImpl: async () => ({}),
+      discoverImpl: async () => ({ models: [{ id: "lmstudio/test" }] }),
+      refreshImpl: async () => {
+        refreshCalled = true;
+      },
+    }),
+    (error) => {
+      assert.match(error.message, /previous CLI activation was restored/iu);
+      assert.match(error.message, /stopped before activation/iu);
+      assert.doesNotMatch(error.message, /private cache version details/iu);
+      return true;
+    },
+  );
+
+  assert.equal(cacheChecks, 3);
+  assert.equal(refreshCalled, false);
+  assert.deepEqual(await readFile(fixture.distributionPaths.receiptPath), previousReceipt);
+  assert.deepEqual(await readFile(fixture.distributionPaths.launcherPath), previousLauncher);
+  assert.equal(await readlink(fixture.distributionPaths.currentPath), previousCurrent);
+  assert.deepEqual(
+    (await readdir(fixture.distributionPaths.versionsDirectory)).sort(),
+    previousVersions,
+  );
+  assert.equal(
+    await pathExists(path.join(fixture.distributionPaths.versionsDirectory, "0.4.2")),
+    false,
+  );
+  assert.equal(
+    (await validateDistributionInstallation({
+      paths: fixture.distributionPaths,
+    })).receipt.activeVersion,
+    "0.4.1",
+  );
+});
+
 test("setup safely handles downgrades, foreign state, locks, and modified managed state", async (t) => {
   await t.test("downgrade", async (t) => {
     const fixture = await temporaryFixture(t, "0.5.0", "current");
@@ -362,6 +649,59 @@ test("setup safely handles downgrades, foreign state, locks, and modified manage
       /lock permissions are unsafe/iu,
     );
     assert.equal(await readFile(fixture.distributionPaths.lockPath, "utf8"), "999999\n");
+  });
+
+  await t.test("auth aliases are never processed as stale-lock payloads", async (t) => {
+    const cases = [
+      {
+        name: "symbolic link",
+        create: (source, destination) => symlink(source, destination),
+        errorPattern: /setup lock.*not a regular file/iu,
+        expectedLinks: 1,
+      },
+      {
+        name: "hard link",
+        create: (source, destination) => link(source, destination),
+        errorPattern: /setup lock.*hard link/iu,
+        expectedLinks: 2,
+      },
+    ];
+
+    for (const entry of cases) {
+      await t.test(entry.name, async (subtest) => {
+        const fixture = await temporaryFixture(subtest, "0.4.0", entry.name);
+        await mkdir(fixture.distributionPaths.applicationDirectory, {
+          recursive: true,
+          mode: 0o700,
+        });
+        await mkdir(fixture.codexHome, { recursive: true, mode: 0o700 });
+        const authPath = path.join(fixture.codexHome, "auth.json");
+        const authContents = Buffer.from("999999\n");
+        await writeFile(authPath, authContents, { mode: 0o600 });
+        await entry.create(authPath, fixture.distributionPaths.lockPath);
+        const authBefore = await lstat(authPath);
+        let processKillCalls = 0;
+
+        await assert.rejects(
+          setupManagedDistribution({
+            sourceRoot: fixture.source,
+            paths: fixture.distributionPaths,
+            processKillImpl() {
+              processKillCalls += 1;
+            },
+            activate: async () => ({}),
+          }),
+          entry.errorPattern,
+        );
+
+        assert.equal(processKillCalls, 0);
+        assert.deepEqual(await readFile(authPath), authContents);
+        const authAfter = await lstat(authPath);
+        assert.equal(authAfter.dev, authBefore.dev);
+        assert.equal(authAfter.ino, authBefore.ino);
+        assert.equal(authAfter.nlink, entry.expectedLinks);
+      });
+    }
   });
 
   await t.test("modified launcher", async (t) => {
@@ -560,6 +900,252 @@ test("CLI removal restores its distribution when integration removal fails", asy
   );
 });
 
+test("CLI removal preserves stable purge failures after a successful rollback", async (t) => {
+  const cases = [
+    {
+      code: "PICKERMUX_CREDENTIAL_PURGE_INCOMPLETE",
+      providerId: "beta",
+      completedProviderIds: ["alpha"],
+    },
+    {
+      code: "PICKERMUX_PURGE_COMMIT_INCOMPLETE",
+      completedProviderIds: ["alpha", "beta"],
+    },
+    {
+      code: "PICKERMUX_PURGE_INCOMPLETE",
+      installDirectoryRemoved: false,
+      cleanupPendingPath: "/private/pickermux/.cleanup.pending",
+    },
+  ];
+
+  for (const expected of cases) {
+    await t.test(expected.code, async (subtest) => {
+      const fixture = await temporaryFixture(subtest, "0.4.2", expected.code);
+      await setupManagedDistribution({
+        sourceRoot: fixture.source,
+        paths: fixture.distributionPaths,
+        activate: async () => ({}),
+      });
+      const previousReceipt = await readFile(
+        fixture.distributionPaths.receiptPath,
+      );
+      const previousLauncher = await readFile(
+        fixture.distributionPaths.launcherPath,
+      );
+
+      await assert.rejects(
+        removeManagedDistribution({
+          paths: fixture.distributionPaths,
+          beforeRemove: async () => {
+            const error = new Error("sanitized purge failure");
+            Object.assign(error, expected, { unsafeCredentialValue: "secret" });
+            throw error;
+          },
+        }),
+        (error) => {
+          assert.equal(error.code, expected.code);
+          assert.match(error.message, new RegExp(expected.code, "u"));
+          assert.deepEqual(
+            error.completedProviderIds,
+            expected.completedProviderIds,
+          );
+          assert.equal(error.providerId, expected.providerId);
+          assert.equal(
+            error.installDirectoryRemoved,
+            expected.installDirectoryRemoved,
+          );
+          assert.equal(
+            error.cleanupPendingPath,
+            expected.cleanupPendingPath,
+          );
+          assert.equal(error.unsafeCredentialValue, undefined);
+          return true;
+        },
+      );
+
+      assert.deepEqual(
+        await readFile(fixture.distributionPaths.receiptPath),
+        previousReceipt,
+      );
+      assert.deepEqual(
+        await readFile(fixture.distributionPaths.launcherPath),
+        previousLauncher,
+      );
+    });
+  }
+});
+
+test("exclusive CLI removal rejects foreign application state before staging", async (t) => {
+  const fixture = await temporaryFixture(t);
+  await setupManagedDistribution({
+    sourceRoot: fixture.source,
+    paths: fixture.distributionPaths,
+    activate: async () => ({}),
+  });
+  const foreign = path.join(
+    fixture.distributionPaths.applicationDirectory,
+    "operator-notes.txt",
+  );
+  await writeFile(foreign, "preserve\n", { mode: 0o600 });
+  let beforeRemoveCalled = false;
+
+  await assert.rejects(
+    removeManagedDistribution({
+      paths: fixture.distributionPaths,
+      requireExclusiveApplicationDirectory: true,
+      beforeRemove: async () => {
+        beforeRemoveCalled = true;
+      },
+    }),
+    /full removal refuses unowned application state.*operator-notes\.txt/iu,
+  );
+
+  assert.equal(beforeRemoveCalled, false);
+  assert.equal(await readFile(foreign, "utf8"), "preserve\n");
+  assert.equal(
+    (await validateDistributionInstallation({
+      paths: fixture.distributionPaths,
+    })).installed,
+    true,
+  );
+});
+
+test("CLI removal preserves application and versions paths created after staging", async (t) => {
+  const fixture = await temporaryFixture(t);
+  await setupManagedDistribution({
+    sourceRoot: fixture.source,
+    paths: fixture.distributionPaths,
+    activate: async () => ({}),
+  });
+  const foreignVersion = path.join(
+    fixture.distributionPaths.versionsDirectory,
+    "foreign.txt",
+  );
+  const foreignApplication = path.join(
+    fixture.distributionPaths.applicationDirectory,
+    "concurrent.txt",
+  );
+
+  const result = await removeManagedDistribution({
+    paths: fixture.distributionPaths,
+    requireExclusiveApplicationDirectory: true,
+    beforeRemove: async () => {
+      await mkdir(fixture.distributionPaths.versionsDirectory, {
+        recursive: false,
+        mode: 0o700,
+      });
+      await writeFile(foreignVersion, "preserve version\n", { mode: 0o600 });
+      await writeFile(foreignApplication, "preserve application\n", {
+        mode: 0o600,
+      });
+    },
+  });
+
+  assert.equal(result.removed.versionsDirectoryRemoved, false);
+  assert.equal(result.removed.applicationDirectoryRemoved, false);
+  assert.equal(await readFile(foreignVersion, "utf8"), "preserve version\n");
+  assert.equal(
+    await readFile(foreignApplication, "utf8"),
+    "preserve application\n",
+  );
+});
+
+test("distribution validation rejects hard-linked managed files before reading", async (t) => {
+  const cases = [
+    {
+      name: "receipt",
+      target: (fixture) => fixture.distributionPaths.receiptPath,
+    },
+    {
+      name: "launcher",
+      target: (fixture) => fixture.distributionPaths.launcherPath,
+    },
+    {
+      name: "version file",
+      target: (fixture) => path.join(
+        fixture.distributionPaths.versionsDirectory,
+        "0.4.0",
+        "package.json",
+      ),
+    },
+  ];
+
+  for (const entry of cases) {
+    await t.test(entry.name, async (subtest) => {
+      const fixture = await temporaryFixture(subtest, "0.4.0", entry.name);
+      await setupManagedDistribution({
+        sourceRoot: fixture.source,
+        paths: fixture.distributionPaths,
+        activate: async () => ({}),
+      });
+      const authPath = path.join(fixture.codexHome, "auth.json");
+      const authContents = Buffer.from("private auth sentinel\n");
+      await mkdir(fixture.codexHome, { recursive: true, mode: 0o700 });
+      await writeFile(authPath, authContents, { mode: 0o600 });
+      const target = entry.target(fixture);
+      await unlink(target);
+      await link(authPath, target);
+      const authBefore = await lstat(authPath);
+
+      await assert.rejects(
+        validateDistributionInstallation({ paths: fixture.distributionPaths }),
+        /hard link/iu,
+      );
+
+      assert.deepEqual(await readFile(authPath), authContents);
+      const authAfter = await lstat(authPath);
+      assert.equal(authAfter.dev, authBefore.dev);
+      assert.equal(authAfter.ino, authBefore.ino);
+      assert.equal(authAfter.nlink, 2);
+    });
+  }
+});
+
+test("CLI removal never restores quarantine drift after integration failure", async (t) => {
+  const fixture = await temporaryFixture(t);
+  await setupManagedDistribution({
+    sourceRoot: fixture.source,
+    paths: fixture.distributionPaths,
+    activate: async () => ({}),
+  });
+  let staging;
+  let changed;
+
+  await assert.rejects(
+    removeManagedDistribution({
+      paths: fixture.distributionPaths,
+      beforeRemove: async () => {
+        staging = await removalStagingPath(fixture.distributionPaths);
+        changed = path.join(
+          staging,
+          "versions",
+          "0.4.0",
+          "src",
+          "main.mjs",
+        );
+        await writeFile(changed, "export const foreign = true;\n", {
+          mode: 0o600,
+        });
+        throw new Error("simulated integration failure after drift");
+      },
+    }),
+    (error) => {
+      assert.match(error.message, /changed CLI quarantine was not restored/iu);
+      assert.equal(error.cleanupPendingPath, staging);
+      return true;
+    },
+  );
+
+  assert.equal(await pathExists(fixture.distributionPaths.launcherPath), false);
+  assert.equal(await pathExists(fixture.distributionPaths.currentPath), false);
+  assert.equal(await pathExists(fixture.distributionPaths.receiptPath), false);
+  assert.equal(await pathExists(fixture.distributionPaths.versionsDirectory), false);
+  assert.equal(
+    await readFile(changed, "utf8"),
+    "export const foreign = true;\n",
+  );
+});
+
 test("CLI removal rolls staged files back before mutating integration", async (t) => {
   const fixture = await temporaryFixture(t);
   await setupManagedDistribution({
@@ -606,8 +1192,8 @@ test("partial CLI quarantine cleanup never fragments active state or blocks setu
     beforeRemove: async () => {
       beforeRemoveCalled = true;
     },
-    rmImpl: async (staging) => {
-      await rm(path.join(staging, "launcher"), { force: false });
+    unlinkImpl: async (target) => {
+      await unlink(target);
       throw new Error("simulated partial quarantine cleanup failure");
     },
   });
@@ -629,6 +1215,125 @@ test("partial CLI quarantine cleanup never fragments active state or blocks setu
   });
   assert.equal(reinstalled.version, "0.4.0");
   assert.equal(reinstalled.activation.action, "reinstall");
+});
+
+test("CLI removal preserves foreign state added after staging", async (t) => {
+  const fixture = await temporaryFixture(t);
+  await setupManagedDistribution({
+    sourceRoot: fixture.source,
+    paths: fixture.distributionPaths,
+    activate: async () => ({}),
+  });
+  let staging;
+  let foreign;
+
+  const result = await removeManagedDistribution({
+    paths: fixture.distributionPaths,
+    beforeRemove: async () => {
+      staging = await removalStagingPath(fixture.distributionPaths);
+      foreign = path.join(staging, "foreign.txt");
+      await writeFile(foreign, "preserve\n", { mode: 0o600 });
+    },
+  });
+
+  assert.equal(result.removed.cleanupPendingPath, staging);
+  assert.equal(await readFile(foreign, "utf8"), "preserve\n");
+  assert.equal(await pathExists(fixture.distributionPaths.launcherPath), false);
+  assert.equal(await pathExists(fixture.distributionPaths.receiptPath), false);
+});
+
+test("CLI removal preserves a receipt-bound file replaced after staging", async (t) => {
+  const fixture = await temporaryFixture(t);
+  await setupManagedDistribution({
+    sourceRoot: fixture.source,
+    paths: fixture.distributionPaths,
+    activate: async () => ({}),
+  });
+  let staging;
+  let replacement;
+
+  const result = await removeManagedDistribution({
+    paths: fixture.distributionPaths,
+    beforeRemove: async () => {
+      staging = await removalStagingPath(fixture.distributionPaths);
+      replacement = path.join(staging, "replacement.mjs");
+      const managed = path.join(
+        staging,
+        "versions",
+        "0.4.0",
+        "src",
+        "main.mjs",
+      );
+      await writeFile(replacement, "export const replacement = true;\n", {
+        mode: 0o600,
+      });
+      await rename(replacement, managed);
+      replacement = managed;
+    },
+  });
+
+  assert.equal(result.removed.cleanupPendingPath, staging);
+  assert.equal(
+    await readFile(replacement, "utf8"),
+    "export const replacement = true;\n",
+  );
+});
+
+test("CLI removal preserves additions made during exact cleanup", async (t) => {
+  const fixture = await temporaryFixture(t);
+  await setupManagedDistribution({
+    sourceRoot: fixture.source,
+    paths: fixture.distributionPaths,
+    activate: async () => ({}),
+  });
+  let staging;
+  let foreign;
+  let unlinkCalls = 0;
+
+  const result = await removeManagedDistribution({
+    paths: fixture.distributionPaths,
+    beforeRemove: async () => {
+      staging = await removalStagingPath(fixture.distributionPaths);
+    },
+    unlinkImpl: async (target) => {
+      await unlink(target);
+      unlinkCalls += 1;
+      if (unlinkCalls === 1) {
+        foreign = path.join(staging, "concurrent.txt");
+        await writeFile(foreign, "preserve\n", { mode: 0o600 });
+      }
+    },
+  });
+
+  assert.ok(unlinkCalls > 1);
+  assert.equal(result.removed.cleanupPendingPath, staging);
+  assert.equal(await readFile(foreign, "utf8"), "preserve\n");
+});
+
+test("CLI removal fails hard when cleanup quarantine disappears", async (t) => {
+  const fixture = await temporaryFixture(t);
+  await setupManagedDistribution({
+    sourceRoot: fixture.source,
+    paths: fixture.distributionPaths,
+    activate: async () => ({}),
+  });
+  let staging;
+
+  await assert.rejects(
+    removeManagedDistribution({
+      paths: fixture.distributionPaths,
+      beforeRemove: async () => {
+        staging = await removalStagingPath(fixture.distributionPaths);
+      },
+      unlinkImpl: async () => {
+        await rm(staging, { recursive: true, force: false });
+        throw new Error("simulated external quarantine removal");
+      },
+    }),
+    /cleanup failed after its private quarantine disappeared/iu,
+  );
+  assert.equal(await pathExists(staging), false);
+  assert.equal(await pathExists(fixture.distributionPaths.launcherPath), false);
 });
 
 test("CLI removal refuses modified ownership state before integration mutation", async (t) => {
@@ -661,6 +1366,11 @@ test("setup orchestration preflights desktop, loaded LLM, config, and lifecycle 
     distributionPaths: fixture.distributionPaths,
     codexPath: "/Applications/Test Codex.app/codex",
     desktopRunningImpl: async () => false,
+    accountCacheImpl: async () => ({
+      ready: true,
+      codexClientVersion: "0.151.0",
+      cacheClientVersion: "0.151.0",
+    }),
     discoverImpl: async () => ({ models: [{ id: "lmstudio/test" }] }),
   };
 
@@ -711,9 +1421,9 @@ test("setup orchestration preflights desktop, loaded LLM, config, and lifecycle 
         return { source: configPath };
       },
       setupImpl: async ({ activate }) => activate({
-        distributionRoot: "/managed/versions/0.5.0",
-        previousVersion: "0.4.0",
-        version: "0.5.0",
+        distributionRoot: "/managed/versions/0.4.2",
+        previousVersion: "0.4.1",
+        version: "0.4.2",
       }),
       refreshImpl: async (input) => {
         refreshInput = input;
@@ -725,7 +1435,7 @@ test("setup orchestration preflights desktop, loaded LLM, config, and lifecycle 
       fixture.installPaths.serviceConfigPath,
       fixture.installPaths.serviceConfigPath,
     ]);
-    assert.equal(refreshInput.sourceRoot, "/managed/versions/0.5.0");
+    assert.equal(refreshInput.sourceRoot, "/managed/versions/0.4.2");
   });
 
   await t.test("running Codex blocks setup before distribution mutation", async () => {
@@ -767,6 +1477,109 @@ test("setup orchestration preflights desktop, loaded LLM, config, and lifecycle 
       /at least one loaded external LLM/iu,
     );
     assert.equal(setupCalled, false);
+  });
+
+  await t.test("stale account cache blocks setup before distribution mutation", async () => {
+    let setupCalled = false;
+    let discoveryCalled = false;
+    await assert.rejects(
+      setupPickerMux({
+        ...baseOptions,
+        configStatusImpl: async () => ({
+          installed: false,
+          healthy: true,
+          status: "not-installed",
+        }),
+        accountCacheImpl: async () => {
+          const error = new Error("cache mismatch details must remain internal");
+          error.code = "CODEX_ACCOUNT_CACHE_REFRESH_REQUIRED";
+          error.codexClientVersion = "0.151.0";
+          throw error;
+        },
+        discoverImpl: async () => {
+          discoveryCalled = true;
+          return { models: [{ id: "lmstudio/test" }] };
+        },
+        setupImpl: async () => {
+          setupCalled = true;
+        },
+      }),
+      (error) => {
+        assert.match(error.message, /stopped before activation/iu);
+        assert.match(error.message, /No active PickerMux state was changed/iu);
+        assert.match(error.message, /Codex 0\.151\.0/iu);
+        assert.doesNotMatch(error.message, /internal/u);
+        return true;
+      },
+    );
+    assert.equal(discoveryCalled, false);
+    assert.equal(setupCalled, false);
+  });
+
+  await t.test("cache is rechecked under the setup lock before control activation", async () => {
+    let cacheChecks = 0;
+    let activateCalled = false;
+    await assert.rejects(
+      setupPickerMux({
+        ...baseOptions,
+        configStatusImpl: async () => ({
+          installed: false,
+          healthy: true,
+          status: "not-installed",
+        }),
+        accountCacheImpl: async () => {
+          cacheChecks += 1;
+          if (cacheChecks === 1) return { ready: true };
+          const error = new Error("changed concurrently");
+          error.code = "CODEX_ACCOUNT_CACHE_REFRESH_REQUIRED";
+          error.codexClientVersion = "0.151.0";
+          throw error;
+        },
+        loadConfigImpl: async () => ({}),
+        setupImpl: async ({ beforeControlCommit, activate }) => {
+          await beforeControlCommit();
+          activateCalled = true;
+          return activate({
+            distributionRoot: "/managed/versions/0.4.2",
+            previousVersion: null,
+            version: "0.4.2",
+          });
+        },
+      }),
+      /stopped before activation/iu,
+    );
+    assert.equal(cacheChecks, 2);
+    assert.equal(activateCalled, false);
+  });
+
+  await t.test("Codex starting after preflight blocks lifecycle activation", async () => {
+    let desktopChecks = 0;
+    let installCalled = false;
+    await assert.rejects(
+      setupPickerMux({
+        ...baseOptions,
+        configStatusImpl: async () => ({
+          installed: false,
+          healthy: true,
+          status: "not-installed",
+        }),
+        desktopRunningImpl: async () => {
+          desktopChecks += 1;
+          return desktopChecks > 1;
+        },
+        loadConfigImpl: async () => ({}),
+        setupImpl: async ({ activate }) => activate({
+          distributionRoot: "/managed/versions/0.4.2",
+          previousVersion: null,
+          version: "0.4.2",
+        }),
+        installImpl: async () => {
+          installCalled = true;
+        },
+      }),
+      /remain fully quit/iu,
+    );
+    assert.equal(installCalled, false);
   });
 
   await t.test("inconsistent integration blocks setup before other preflights", async () => {

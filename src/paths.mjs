@@ -58,6 +58,7 @@ export function resolveInstallPaths(environment = process.env) {
     configPath: path.join(codexHome, "config.toml"),
     catalogPath: path.join(installDirectory, "models.json"),
     statePath: path.join(installDirectory, "state.json"),
+    keychainRegistryPath: path.join(installDirectory, "keychain-state.json"),
     backupDirectory: path.join(installDirectory, "backups"),
     runtimePath: path.join(installDirectory, "runtime.json"),
     serviceConfigPath: path.join(installDirectory, "service-config.json"),

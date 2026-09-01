@@ -12,6 +12,8 @@ import {
 import path from "node:path";
 import { promisify } from "node:util";
 
+import { readCodexAccountCacheFile } from "./codex-account-cache-file.mjs";
+
 const execFile = promisify(execFileCallback);
 const DEFAULT_CODEX_PATH = "/Applications/ChatGPT.app/Contents/Resources/codex";
 const MAX_BUNDLED_CATALOG_BYTES = 32 * 1024 * 1024;
@@ -167,7 +169,7 @@ export async function loadCachedNativeCatalog({
   codexHome,
   expectedClientVersion,
   now = Date.now(),
-  readFileImpl = readFile,
+  readFileImpl = readCodexAccountCacheFile,
 } = {}) {
   if (typeof codexHome !== "string" || !codexHome.trim()) {
     throw new Error("Codex home must not be empty");

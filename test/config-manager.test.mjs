@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import {
   chmod,
+  link,
   mkdir,
   mkdtemp,
   readFile,
   rm,
   stat,
   symlink,
+  unlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -17,6 +19,8 @@ import {
   CONFIG_MARKERS,
   getConfigStatus,
   installConfig,
+  inventoryManagedConfigOwnership,
+  revalidateManagedConfigOwnership,
   restoreManagedPickerDefaults,
   setManagedPickerSelection,
   uninstallConfig,
@@ -434,6 +438,74 @@ test("compare-and-swap refuses concurrent config changes during install and unin
     await uninstallConfig(fixture.paths());
     assert.match(await readFile(fixture.configPath, "utf8"), /concurrent_user_edit = true/);
   });
+
+  await t.test("hard-link replacement", async (t) => {
+    const fixture = await makeFixture(t);
+    const original = 'model = "gpt-5.6-sol"\n';
+    const authPath = join(fixture.directory, "codex", "auth.json");
+    const authContents = Buffer.from('{"tokens":"must-not-be-read"}\n');
+    await writeFile(fixture.configPath, original);
+    await writeFile(authPath, authContents, { mode: 0o600 });
+    const authBefore = await snapshotFile(authPath);
+    await chmod(authPath, 0o000);
+
+    try {
+      await assert.rejects(
+        installConfig(
+          fixture.options({
+            async beforeConfigCommit() {
+              await unlink(fixture.configPath);
+              await link(authPath, fixture.configPath);
+            },
+          }),
+        ),
+        (error) =>
+          error.code === "CONFIG_CHANGED_CONCURRENTLY" &&
+          error.details?.cause?.code === "CONFIG_NOT_REGULAR",
+      );
+    } finally {
+      await chmod(authPath, 0o600);
+    }
+    assert.deepEqual(await readFile(fixture.configPath), authContents);
+    assert.deepEqual(await snapshotFile(authPath), authBefore);
+    await assert.rejects(readFile(fixture.statePath), { code: "ENOENT" });
+  });
+});
+
+test("failed state removal rolls the config back exactly and permits a clean retry", async (t) => {
+  const fixture = await makeFixture(t);
+  const original = 'model = "gpt-5.6-sol"\nuser_setting = true\n';
+  await writeFile(fixture.configPath, original, { mode: 0o640 });
+  await chmod(fixture.configPath, 0o640);
+  await installConfig(fixture.options());
+  const installedConfig = await snapshotFile(fixture.configPath);
+  const installedState = await snapshotFile(fixture.statePath);
+  const stateDirectory = join(fixture.directory, "state");
+
+  await assert.rejects(
+    (async () => {
+      try {
+        await uninstallConfig({
+          ...fixture.paths(),
+          beforeConfigCommit: () => chmod(stateDirectory, 0o500),
+        });
+      } finally {
+        await chmod(stateDirectory, 0o700);
+      }
+    })(),
+    (error) =>
+      error.code === "STATE_REMOVE_FAILED" &&
+      error.details?.rollbackCause === undefined,
+  );
+  const rolledBackConfig = await snapshotFile(fixture.configPath);
+  assert.deepEqual(rolledBackConfig.contents, installedConfig.contents);
+  assert.equal(rolledBackConfig.mode, installedConfig.mode);
+  assert.deepEqual(await snapshotFile(fixture.statePath), installedState);
+
+  const retried = await uninstallConfig(fixture.paths());
+  assert.equal(retried.changed, true);
+  assert.equal(await readFile(fixture.configPath, "utf8"), original);
+  await assert.rejects(readFile(fixture.statePath), { code: "ENOENT" });
 });
 
 test("provider-scoped content after the end marker is detected and protected", async (t) => {
@@ -486,6 +558,199 @@ test("symbolic-link configs are refused", async (t) => {
   assert.equal(await readFile(target, "utf8"), 'model = "gpt-5.6-sol"\n');
 });
 
+test("hard-linked configs are refused without reading or changing auth.json", async (t) => {
+  const fixture = await makeFixture(t);
+  const authPath = join(fixture.directory, "codex", "auth.json");
+  const authContents = Buffer.from('{"tokens":"must-not-be-read"}\n');
+  await writeFile(authPath, authContents, { mode: 0o600 });
+  await link(authPath, fixture.configPath);
+  const authBefore = await snapshotFile(authPath);
+  await chmod(authPath, 0o000);
+
+  try {
+    await assert.rejects(
+      installConfig(fixture.options()),
+      (error) => error.code === "CONFIG_NOT_REGULAR",
+    );
+  } finally {
+    await chmod(authPath, 0o600);
+  }
+  assert.deepEqual(await snapshotFile(authPath), authBefore);
+});
+
+test("uninstall refuses a forged backupPath before reading foreign Codex state", async (t) => {
+  const fixture = await makeFixture(t);
+  const original = 'model = "gpt-5.6-sol"\n';
+  const authPath = join(fixture.directory, "codex", "auth.json");
+  await writeFile(fixture.configPath, original);
+  await writeFile(authPath, original, { mode: 0o600 });
+  await installConfig(fixture.options());
+  const installedConfig = await readFile(fixture.configPath);
+  const authBefore = await snapshotFile(authPath);
+  const state = JSON.parse(await readFile(fixture.statePath, "utf8"));
+  state.backupPath = authPath;
+  await writeFile(fixture.statePath, `${JSON.stringify(state, null, 2)}\n`);
+
+  await assert.rejects(
+    uninstallConfig(fixture.paths()),
+    (error) => error.code === "UNSAFE_BACKUP_PATH",
+  );
+  assert.deepEqual(await readFile(fixture.configPath), installedConfig);
+  assert.deepEqual(await snapshotFile(authPath), authBefore);
+});
+
+test("ownership revalidation does not open a state that appeared after an absent inventory", async (t) => {
+  const fixture = await makeFixture(t);
+  const receipt = await inventoryManagedConfigOwnership(fixture.paths());
+  const foreignState = Buffer.from("foreign account state must not be read\n");
+  await mkdir(join(fixture.directory, "state"), {
+    recursive: true,
+    mode: 0o700,
+  });
+  await writeFile(fixture.statePath, foreignState, { mode: 0o000 });
+
+  await assert.rejects(
+    revalidateManagedConfigOwnership(receipt),
+    (error) => error.code === "STATE_CHANGED_CONCURRENTLY",
+  );
+  await chmod(fixture.statePath, 0o600);
+  assert.deepEqual(await readFile(fixture.statePath), foreignState);
+});
+
+test("ownership revalidation rejects a regular state replacement before opening it", async (t) => {
+  const fixture = await makeFixture(t);
+  await writeFile(fixture.configPath, 'model = "gpt-5.6-sol"\n');
+  await installConfig(fixture.options());
+  const receipt = await inventoryManagedConfigOwnership(fixture.paths());
+  const foreignState = Buffer.from("foreign account state must not be read\n");
+  await unlink(fixture.statePath);
+  await writeFile(fixture.statePath, foreignState, { mode: 0o000 });
+
+  await assert.rejects(
+    revalidateManagedConfigOwnership(receipt),
+    (error) => error.code === "MANAGED_FILE_CHANGED",
+  );
+  await chmod(fixture.statePath, 0o600);
+  assert.deepEqual(await readFile(fixture.statePath), foreignState);
+});
+
+test("uninstall refuses a hard-linked configuration state", async (t) => {
+  const fixture = await makeFixture(t);
+  await writeFile(fixture.configPath, 'model = "gpt-5.6-sol"\n');
+  await installConfig(fixture.options());
+  const stateBytes = await readFile(fixture.statePath);
+  const authPath = join(fixture.directory, "codex", "auth.json");
+  await unlink(fixture.statePath);
+  await writeFile(authPath, stateBytes, { mode: 0o600 });
+  await link(authPath, fixture.statePath);
+  const installedConfig = await readFile(fixture.configPath);
+
+  await assert.rejects(
+    uninstallConfig(fixture.paths()),
+    (error) => error.code === "UNSAFE_MANAGED_FILE",
+  );
+  assert.deepEqual(await readFile(fixture.configPath), installedConfig);
+  assert.deepEqual(await readFile(authPath), stateBytes);
+});
+
+test("uninstall refuses state.json replaced by a symlink after ownership inventory", async (t) => {
+  const fixture = await makeFixture(t);
+  const original = 'model = "gpt-5.6-sol"\n';
+  await writeFile(fixture.configPath, original);
+  await installConfig(fixture.options());
+  const installedConfig = await readFile(fixture.configPath);
+  const stateBytes = await readFile(fixture.statePath);
+  const authPath = join(fixture.directory, "codex", "auth.json");
+  await writeFile(authPath, stateBytes, { mode: 0o600 });
+  const authBefore = await snapshotFile(authPath);
+
+  await assert.rejects(
+    uninstallConfig({
+      ...fixture.paths(),
+      async beforeConfigCommit() {
+        await unlink(fixture.statePath);
+        await symlink(authPath, fixture.statePath);
+      },
+    }),
+    (error) => error.code === "UNSAFE_MANAGED_FILE",
+  );
+  assert.deepEqual(await readFile(fixture.configPath), installedConfig);
+  assert.deepEqual(await snapshotFile(authPath), authBefore);
+});
+
+test("uninstall refuses a managed backup replaced by a symlink", async (t) => {
+  const fixture = await makeFixture(t);
+  const original = 'model = "gpt-5.6-sol"\n';
+  await writeFile(fixture.configPath, original);
+  const installed = await installConfig(fixture.options());
+  const installedConfig = await readFile(fixture.configPath);
+  const authPath = join(fixture.directory, "codex", "auth.json");
+  await writeFile(authPath, original, { mode: 0o600 });
+  const authBefore = await snapshotFile(authPath);
+  await unlink(installed.backupPath);
+  await symlink(authPath, installed.backupPath);
+
+  await assert.rejects(
+    uninstallConfig(fixture.paths()),
+    (error) =>
+      error.code === "BACKUP_UNREADABLE" &&
+      error.details?.cause?.code === "UNSAFE_MANAGED_FILE",
+  );
+  assert.deepEqual(await readFile(fixture.configPath), installedConfig);
+  assert.deepEqual(await snapshotFile(authPath), authBefore);
+});
+
+test("uninstall refuses a managed backup replaced by a hard link", async (t) => {
+  const fixture = await makeFixture(t);
+  const original = 'model = "gpt-5.6-sol"\n';
+  await writeFile(fixture.configPath, original);
+  const installed = await installConfig(fixture.options());
+  const installedConfig = await readFile(fixture.configPath);
+  const authPath = join(fixture.directory, "codex", "auth.json");
+  await unlink(installed.backupPath);
+  await writeFile(authPath, original, { mode: 0o600 });
+  await link(authPath, installed.backupPath);
+
+  await assert.rejects(
+    uninstallConfig(fixture.paths()),
+    (error) =>
+      error.code === "BACKUP_UNREADABLE" &&
+      error.details?.cause?.code === "UNSAFE_MANAGED_FILE",
+  );
+  assert.deepEqual(await readFile(fixture.configPath), installedConfig);
+  assert.equal(await readFile(authPath, "utf8"), original);
+});
+
+test("uninstall requires a private backup directory while allowing a 0640 backup", async (t) => {
+  const fixture = await makeFixture(t);
+  const original = 'model = "gpt-5.6-sol"\n';
+  await writeFile(fixture.configPath, original, { mode: 0o640 });
+  const installed = await installConfig(fixture.options());
+  const installedConfig = await readFile(fixture.configPath);
+  assert.equal((await stat(installed.backupPath)).mode & 0o777, 0o640);
+  await chmod(fixture.backupDirectory, 0o755);
+
+  await assert.rejects(
+    uninstallConfig(fixture.paths()),
+    (error) =>
+      error.code === "BACKUP_UNREADABLE" &&
+      error.details?.cause?.code === "UNSAFE_MANAGED_FILE",
+  );
+  assert.deepEqual(await readFile(fixture.configPath), installedConfig);
+});
+
+test("uninstall defaults to model-bridge/backups beside state.json", async (t) => {
+  const fixture = await makeFixture(t);
+  const statePath = join(fixture.directory, "codex", "model-bridge", "state.json");
+  const backupDirectory = join(fixture.directory, "codex", "model-bridge", "backups");
+  const original = 'model = "gpt-5.6-sol"\n';
+  await writeFile(fixture.configPath, original);
+  await installConfig(fixture.options({ statePath, backupDirectory }));
+
+  await uninstallConfig({ configPath: fixture.configPath, statePath });
+  assert.equal(await readFile(fixture.configPath, "utf8"), original);
+});
+
 async function makeFixture(t) {
   const directory = await mkdtemp(join(tmpdir(), "lmstudio-config-manager-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -501,7 +766,7 @@ async function makeFixture(t) {
     statePath,
     backupDirectory,
     catalogPath,
-    paths: () => ({ configPath, statePath }),
+    paths: () => ({ configPath, statePath, backupDirectory }),
     options: (overrides = {}) => ({
       configPath,
       statePath,
@@ -530,5 +795,20 @@ function pickStatus(value) {
     installed: value.installed,
     healthy: value.healthy,
     status: value.status,
+  };
+}
+
+async function snapshotFile(target) {
+  const [contents, metadata] = await Promise.all([
+    readFile(target),
+    stat(target),
+  ]);
+  return {
+    contents,
+    dev: metadata.dev,
+    ino: metadata.ino,
+    mode: metadata.mode & 0o777,
+    size: metadata.size,
+    mtimeMs: metadata.mtimeMs,
   };
 }

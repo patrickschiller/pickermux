@@ -18,6 +18,20 @@ test("accepts the explicit legacy loopback configuration", () => {
   assert.deepEqual(validateProjectConfig(valid), valid);
 });
 
+test("legacy provider ids use the same canonical 127-character bound", () => {
+  const acceptedId = `a${"b".repeat(126)}`;
+  assert.equal(
+    validateProjectConfig({ ...valid, providerId: acceptedId }).providerId,
+    acceptedId,
+  );
+  for (const providerId of [`a${"b".repeat(127)}`, "_leading", "trailing_"]) {
+    assert.throws(
+      () => validateProjectConfig({ ...valid, providerId }),
+      /at most 127 characters/iu,
+    );
+  }
+});
+
 test("recognizes only unauthenticated HTTP loopback endpoints", () => {
   assert.equal(isLoopbackEndpoint("http://127.0.0.1:1234/v1"), true);
   assert.equal(isLoopbackEndpoint("http://localhost:1234/v1"), true);

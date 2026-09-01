@@ -60,7 +60,7 @@ or another shell file automatically. Until then, use the absolute command path.
 For a reproducible installation, replace `latest` with an exact release:
 
 ```bash
-/usr/bin/curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://github.com/patrickschiller/pickermux/releases/download/v0.4.1/install.sh | /bin/sh
+/usr/bin/curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://github.com/patrickschiller/pickermux/releases/download/v0.4.2/install.sh | /bin/sh
 ```
 
 Both one-line forms execute code downloaded from GitHub. The archive checksum
@@ -87,9 +87,11 @@ pickermux status
 pickermux doctor
 ```
 
-`doctor` is deterministic and does not submit a model prompt. Use
-`pickermux doctor --live` only when you intentionally want a real LM Studio
-inference check.
+`doctor` is deterministic and does not submit a model prompt. Its independent
+`codex-account-cache` check reports whether the signed-in account cache matches
+the installed Codex client even when the bridge runtime or mixed catalog is
+absent. Use `pickermux doctor --live` only when you intentionally want a real
+LM Studio inference check.
 
 ## Daily workflow
 
@@ -104,6 +106,11 @@ PickerMux never updates silently. Run the same latest-release installer again
 to stage and activate a newer version. A healthy installation is refreshed
 transactionally; failed activation restores the previous CLI and bridge state.
 The same version is safe to run again, while an implicit downgrade is refused.
+Setup checks the account-scoped Codex model cache before staging, repeats the
+check under the lifecycle lock, and checks it again immediately before
+activation. A missing or client-version-mismatched cache leaves the active
+installation unchanged. Fully quit Codex Desktop with `Command-Q` before
+running setup or any uninstall mode.
 
 Remove only the Codex integration, LaunchAgent, and managed runtime with:
 
@@ -120,6 +127,26 @@ pickermux uninstall --remove-cli
 Verified configuration backups and provider credentials in the macOS Keychain
 are deliberately retained in both cases. PickerMux never removes unrecognized
 launcher files or distribution paths.
+
+For an explicit full removal, including verified PickerMux backups and every
+PickerMux provider credential identified by its private, secret-free provider
+registry, use:
+
+```bash
+pickermux uninstall --purge
+```
+
+`--purge` implies `--remove-cli`. Runtime, CLI, backup, and registry state is
+inventoried and revalidated using installation receipts, SHA-256 hashes, and
+device/inode identity before exact entries are removed. State observed as
+modified, foreign, ambiguous, or concurrently replaced fails closed and remains
+available for review; PickerMux does not recursively delete an untrusted
+directory. Ownership-sensitive cache, configuration, receipt, runtime, backup,
+and registry files are rejected before payload reads when they are symbolic or
+multiply linked. The same-user final-syscall race boundary is documented in
+[SECURITY.md](SECURITY.md), together with recovery semantics for a partial
+multi-item Keychain deletion. Full purge never reads, changes, or removes
+native Codex authentication, including `~/.codex/auth.json`.
 
 ## Why PickerMux
 
@@ -191,6 +218,7 @@ catalog lifecycle, request normalization, and certification design.
 | `pickermux credential-delete PROVIDER` | Delete the named provider's Keychain item. |
 | `pickermux uninstall` | Restore the previous Codex configuration and remove managed runtime files. |
 | `pickermux uninstall --remove-cli` | Also remove only the receipt-owned CLI launcher and versioned distribution. |
+| `pickermux uninstall --purge` | Fully remove the integration, receipt-owned CLI, verified backups, and registered provider Keychain credentials. |
 
 Run `pickermux help`, `pickermux --help`, or `pickermux -h` for the compact CLI
 reference. `bin/lmstudio-picker.mjs` remains available as a compatibility alias.
@@ -253,6 +281,9 @@ proxy.
   rollback state are written privately and transactionally.
 - Release payloads are versioned, checksum-verified, and extracted only after
   unsafe paths and file types have been rejected.
+- Uninstall inventories and revalidates exact owned paths before removal. Full
+  purge refuses modified or foreign runtime, distribution, backup, and
+  provider-registry state instead of deleting it recursively.
 
 Read [SECURITY.md](SECURITY.md) before reporting a vulnerability or sharing
 diagnostic output.
@@ -267,10 +298,13 @@ pickermux doctor
 ```
 
 If compatibility is reported as `update-required`, rerun the latest-release
-installer before continuing. If the Codex account cache no longer matches the
-installed client, uninstall the PickerMux integration, launch and fully quit
-Codex once without the override, then run setup again. This lets Codex refresh
-its own account-visible catalog first.
+installer. Setup performs the cache check at all three activation barriers and
+does not change active PickerMux state when the cache still belongs to an older
+Codex version. Follow the printed recovery steps: if PickerMux is installed,
+run `pickermux uninstall`; then launch Codex while signed in, wait for its
+native picker to load, fully quit with `Command-Q`, and rerun setup with the
+same custom configuration, if one was used. Do not delete `models_cache.json`
+or `~/.codex/auth.json` as a workaround.
 
 See [Troubleshooting](docs/TROUBLESHOOTING.md) for recovery procedures and
 redaction guidance.

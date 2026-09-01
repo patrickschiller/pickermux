@@ -1,6 +1,8 @@
 import { readFile } from "node:fs/promises";
 import { isIP } from "node:net";
 
+import { isValidProviderId } from "./provider-id.mjs";
+
 export const BRIDGE_SCHEMA_VERSION = 2;
 
 export const BRIDGE_DEFAULTS = Object.freeze({
@@ -48,7 +50,6 @@ const MODEL_KEYS = new Set([
   "reasoningEffort",
   "reasoningEfforts",
 ]);
-const PROVIDER_ID_PATTERN = /^[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?$/u;
 const NATIVE_MODEL_ID_PATTERN = /^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$/u;
 const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/u;
 const SUPPORTED_PROVIDER_KINDS = new Set([
@@ -398,9 +399,9 @@ function normalizeProvider(input, index, seenProviderIds, seenSlugs) {
   assertOnlyKeys(input, PROVIDER_KEYS, label);
 
   const id = requireSingleLine(input.id, `${label}.id`);
-  if (!PROVIDER_ID_PATTERN.test(id)) {
+  if (!isValidProviderId(id)) {
     throw new Error(
-      `${label}.id must contain only lowercase letters, digits, underscores, or hyphens`,
+      `${label}.id must be at most 127 characters and contain only lowercase letters, digits, underscores, or hyphens`,
     );
   }
   if (id === BRIDGE_DEFAULTS.providerId || id === "openai") {

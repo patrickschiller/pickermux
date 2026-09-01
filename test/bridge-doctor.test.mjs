@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { CodexAccountCacheRefreshRequiredError } from "../src/account-cache.mjs";
 import { validateBridgeConfig } from "../src/bridge-config.mjs";
 import {
   assertNativeCatalogSnapshot,
@@ -12,14 +13,29 @@ import {
   runBridgeLiveCheck,
 } from "../src/bridge-doctor.mjs";
 import { bridgeBaseUrl, createRuntimeRecord, writeRuntime } from "../src/bridge-runtime.mjs";
+import { splitMixedCatalog } from "../src/provider-registry.mjs";
 
-async function fixture(t) {
+const NATIVE_MODEL = {
+  slug: "gpt-5.6-sol",
+  comp_hash: "native-sol-component",
+  visibility: "list",
+  supported_in_api: true,
+};
+const EXTERNAL_MODEL = {
+  slug: "lmstudio/qwen/upstream",
+  visibility: "list",
+  supported_in_api: true,
+};
+async function fixture(t, {
+  discovery,
+  catalogModels = [NATIVE_MODEL, EXTERNAL_MODEL],
+} = {}) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "bridge-doctor-"));
   t.after(async () => {
     const { rm } = await import("node:fs/promises");
     await rm(directory, { recursive: true, force: true });
   });
-  const config = validateBridgeConfig({
+  const configInput = {
     schemaVersion: 2,
     bridge: {},
     providers: [
@@ -28,6 +44,7 @@ async function fixture(t) {
         kind: "lmstudio-responses",
         baseUrl: "http://127.0.0.1:1234/v1",
         allowPrivateNetwork: true,
+        ...(discovery ? { discovery } : {}),
         models: [
           {
             id: "qwen/upstream",
@@ -38,7 +55,8 @@ async function fixture(t) {
         ],
       },
     ],
-  });
+  };
+  const config = validateBridgeConfig(configInput);
   const paths = {
     codexHome: directory,
     configPath: path.join(directory, "config.toml"),
@@ -54,10 +72,7 @@ async function fixture(t) {
   });
   await writeRuntime(paths.runtimePath, runtime);
   const catalog = {
-    models: [
-      { slug: "gpt-5.6-sol", visibility: "list", supported_in_api: true },
-      { slug: "lmstudio/qwen/upstream", visibility: "list", supported_in_api: true },
-    ],
+    models: catalogModels,
   };
   await writeFile(paths.catalogPath, `${JSON.stringify(catalog)}\n`, { mode: 0o600 });
   await chmod(paths.catalogPath, 0o600);
@@ -88,9 +103,15 @@ test("mixed doctor verifies service, config, discovery, file and Codex catalog",
       providers: [],
     }),
     debugModelsImpl: async () => catalog,
-    nativeCatalogImpl: async () => ({
+    accountCacheImpl: async ({ codexClientVersion }) => ({
+      ready: true,
+      status: "ready",
+      codexClientVersion,
+      cacheClientVersion: codexClientVersion,
       catalog: { models: [catalog.models[0]] },
       fetchedAt: "2026-08-28T16:06:00Z",
+      warning: null,
+      source: "codex-account-cache",
     }),
     runtimeSupportsZstdImpl: () => true,
     bundledCatalogImpl: async () => ({ models: [] }),
@@ -117,6 +138,7 @@ test("mixed doctor verifies service, config, discovery, file and Codex catalog",
   assert.deepEqual(result.checks.map((entry) => entry.name), [
     "node-runtime",
     "desktop-compatibility",
+    "codex-account-cache",
     "bridge-service",
     "managed-config",
     "external-discovery",
@@ -126,6 +148,116 @@ test("mixed doctor verifies service, config, discovery, file and Codex catalog",
     "codex-model-catalog",
     "tool-certifications",
   ]);
+});
+
+test("doctor inspects the Codex account cache without an installed bridge", async (t) => {
+  const { config, paths } = await fixture(t);
+  await Promise.all([
+    unlink(paths.runtimePath),
+    unlink(paths.catalogPath),
+  ]);
+  const calls = [];
+  const result = await runBridgeDoctor({
+    config,
+    paths,
+    codexPath: "/fake/codex",
+    statusImpl: async () => ({
+      installed: false,
+      healthy: true,
+      status: "not-installed",
+    }),
+    discoveryImpl: async () => ({ models: [], providers: [] }),
+    accountCacheImpl: async (options) => {
+      calls.push(options);
+      return {
+        ready: true,
+        status: "ready",
+        codexClientVersion: options.codexClientVersion,
+        cacheClientVersion: "0.151.0",
+        fetchedAt: "2026-08-30T10:00:00.000Z",
+        warning: null,
+        source: "codex-account-cache",
+        catalog: { models: [NATIVE_MODEL] },
+      };
+    },
+    runtimeSupportsZstdImpl: () => true,
+    bundledCatalogImpl: async () => ({ models: [] }),
+    clientVersionImpl: async () => "0.151.0",
+    compatibilityImpl: async () => ({
+      status: "update-required",
+      compatible: false,
+      reasons: ["manifest-missing"],
+    }),
+    certificationStatusesImpl: async () => [],
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].codexHome, paths.codexHome);
+  assert.equal(calls[0].codexPath, "/fake/codex");
+  assert.equal(calls[0].codexClientVersion, "0.151.0");
+  assert.deepEqual(
+    result.checks.find((entry) => entry.name === "codex-account-cache"),
+    {
+      name: "codex-account-cache",
+      status: "pass",
+      detail: "0.151.0, 1 account model(s), fetched 2026-08-30T10:00:00.000Z",
+    },
+  );
+  assert.equal(
+    result.checks.some((entry) => entry.name === "native-account-catalog"),
+    false,
+  );
+});
+
+test("doctor reports a refresh-required account cache without managed artifacts", async (t) => {
+  const { config, paths } = await fixture(t);
+  await Promise.all([
+    unlink(paths.runtimePath),
+    unlink(paths.catalogPath),
+  ]);
+  const cause = new Error(
+    "Codex account model cache version 0.150.1 does not match client 0.151.0",
+  );
+  const result = await runBridgeDoctor({
+    config,
+    paths,
+    codexPath: "/fake/codex",
+    statusImpl: async () => ({
+      installed: false,
+      healthy: true,
+      status: "not-installed",
+    }),
+    discoveryImpl: async () => ({ models: [], providers: [] }),
+    accountCacheImpl: async () => {
+      throw new CodexAccountCacheRefreshRequiredError({
+        codexClientVersion: "0.151.0",
+        cause,
+      });
+    },
+    runtimeSupportsZstdImpl: () => true,
+    bundledCatalogImpl: async () => ({ models: [] }),
+    clientVersionImpl: async () => "0.151.0",
+    compatibilityImpl: async () => ({
+      status: "update-required",
+      compatible: false,
+      reasons: ["manifest-missing"],
+    }),
+    certificationStatusesImpl: async () => [],
+  });
+
+  const cacheCheck = result.checks.find(
+    (entry) => entry.name === "codex-account-cache",
+  );
+  assert.equal(cacheCheck.status, "fail");
+  assert.equal(
+    cacheCheck.detail,
+    "Codex account model cache refresh is required for client 0.151.0",
+  );
+  assert.doesNotMatch(cacheCheck.detail, /0\.150\.1/u);
+  assert.equal(
+    result.checks.some((entry) => entry.name === "native-account-catalog"),
+    false,
+  );
 });
 
 test("native account snapshot comparison catches hidden picker models", () => {

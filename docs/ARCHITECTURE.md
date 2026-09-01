@@ -1,6 +1,6 @@
 # PickerMux Architecture
 
-This document describes the public v0.4 bridge contract. It is intended for
+This document describes the public v0.4.2 bridge contract. It is intended for
 contributors, security reviewers, and users who want to understand what runs on
 their Mac.
 
@@ -184,6 +184,16 @@ configuration, and selection update. The previous runtime package remains
 available until catalog validation, bridge restart, Codex schema checks, and
 the doctor all pass. A failure restores the previous files and service state.
 
+Release setup validates the account-scoped Codex cache before staging a new
+distribution, repeats the same read-only preflight under the lifecycle lock
+before changing active CLI controls, and performs it once more immediately
+before integration activation. A missing, malformed, or client-version-
+mismatched cache therefore stops without changing active PickerMux state and
+cannot silently fall back to the bundled catalog. The account-cache reader
+opens only the exact `models_cache.json` inode and rejects symbolic or multiple
+hard links before reading its payload, so it cannot be redirected to native
+Codex authentication state.
+
 Uninstall restores the verified prior Codex values and removes managed runtime
 artifacts. It intentionally leaves backup directories and provider Keychain
 items alone.
@@ -207,8 +217,55 @@ Integration uninstall and distribution removal are intentionally distinct.
 `--remove-cli` option additionally removes only receipt-owned launcher and
 version directories. Owned CLI paths are first moved into a private quarantine;
 only then is the integration removed. A partial quarantine-cleanup failure
-cannot recreate or fragment the active installation and does not block a later
-setup. Neither mode purges backups or Keychain credentials.
+in this distribution layer cannot recreate or fragment the active installation
+and does not block a later setup. After integration removal, the staged receipt,
+launcher, pointer, versions, SHA-256 digests, and device/inode identities are
+revalidated. Cleanup unlinks only that exact inventory and removes empty
+directories without recursive deletion. Neither mode purges backups or
+Keychain credentials.
+
+Before any uninstall mutation, `runtime-app` is inventoried and compared
+byte-for-byte with the invoking source distribution. Symlinks, special files,
+modified or additional entries, and residual `runtime-app.previous-*` packages
+fail closed. The accepted tree is renamed, revalidated by content digest and
+filesystem identity, and removed one exact file and empty directory at a time;
+runtime cleanup never uses recursive deletion.
+
+The explicit `uninstall --purge` mode implies receipt-validated CLI removal and
+also removes only validated PickerMux backup files and provider Keychain items
+listed in the private, secret-free credential registry. Backup and registry
+state is inventoried, quarantined, and revalidated before exact cleanup. It
+rejects foreign or modified LaunchAgents, unexpected backup contents, unsafe
+paths, and invalid ownership state. Native Codex credentials and unrecognized
+files are always outside its scope; `~/.codex/auth.json` is never read,
+modified, or removed.
+
+Runtime, backup, and registry quarantines are separate from the distribution
+quarantine. If one of their exact cleanups remains pending, purge fails and the
+receipt-owned CLI is retained or restored for recovery instead of reporting a
+successful full removal.
+
+Credential mutation, install, refresh, certification, and purge serialize
+registry updates through the same private lifecycle lock. Successful install
+and refresh register configured Keychain provider IDs so upgrades from a
+pre-registry release retain exact, secret-free deletion ownership. Registry
+entries use the configuration's canonical provider-ID grammar and
+127-character maximum.
+
+Because macOS Keychain cannot atomically delete several items, the credential
+phase begins only after CLI, registry, backup, runtime, and configuration
+ownership has been staged or revalidated. Credential values are never read for
+rollback. A partial credential failure leaves the integration active and
+restores reversible state for an idempotent retry, while exact entries already
+deleted remain absent. An integration failure after the credential phase also
+retains the CLI and ownership receipts and is reported as an incomplete commit.
+
+Receipts, hashes, inode identity, private random quarantines, and the lifecycle
+lock protect against stale state and drift observed by cooperating PickerMux
+commands. The final file removal primitive remains pathname based; a malicious
+process already running as the same macOS user can race that last syscall. This
+same-user boundary is explicit in `SECURITY.md`, and no purge path broadens into
+recursive deletion.
 
 ## Compatibility contract
 
@@ -217,6 +274,10 @@ version and a canonical fingerprint of the bundled catalog. `status`, `doctor`,
 and bridge startup all validate this contract. An unknown or changed contract
 produces `update-required` and stops the bridge rather than silently adapting to
 an unverified client update.
+
+`doctor` also runs the account-cache inspection as an independent check. It can
+therefore report whether the signed-in account cache matches the current Codex
+client even when the bridge runtime or generated mixed catalog is absent.
 
 ## Private local data
 
@@ -231,6 +292,7 @@ overridden.
 | `service-config.json` | Installed secret-free provider configuration | Private file |
 | `certifications.json` | Model-bound tool certification receipts | Private file |
 | `compatibility.json` | Installed client and catalog contract | Private file |
+| `keychain-state.json` | Secret-free registry of PickerMux provider credential IDs | Private file |
 | `runtime-app/` | Self-contained service runtime | Private directory |
 | `backups/` | Verified configuration backups | Private directory |
 

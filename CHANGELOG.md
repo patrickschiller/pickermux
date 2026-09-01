@@ -7,6 +7,33 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-09-01
+
+### Added
+
+- A standalone `codex-account-cache` check in `pickermux doctor`, independent
+  of bridge-runtime and mixed-catalog availability.
+- An explicit `pickermux uninstall --purge` lifecycle that removes the managed
+  integration, receipt-owned CLI distribution, verified configuration backups,
+  and registered PickerMux provider credentials.
+
+### Fixed
+
+- Setup now validates the account-scoped Codex model cache before staging,
+  repeats that read-only preflight under the lifecycle lock, and checks it once
+  more immediately before activation. A missing or version-mismatched cache
+  leaves the active PickerMux installation unchanged.
+
+### Security
+
+- Runtime, CLI, backup, and provider-registry removal now use exact ownership
+  inventories with receipt, digest, and filesystem-identity revalidation;
+  changed or foreign data is retained for review instead of being deleted
+  recursively.
+- Full purge deletes only exact provider-scoped Keychain entries recorded in
+  PickerMux's private, secret-free registry. Native Codex authentication,
+  including `~/.codex/auth.json`, is never read, modified, or removed.
+
 ## [0.4.1] - 2026-08-30
 
 ### Fixed
@@ -66,6 +93,7 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
   paths and file types, refuses root execution and foreign launchers, and
   restores the previous distribution state when activation fails.
 
-[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.4.2...HEAD
+[0.4.2]: https://github.com/patrickschiller/pickermux/releases/tag/v0.4.2
 [0.4.1]: https://github.com/patrickschiller/pickermux/releases/tag/v0.4.1
 [0.4.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.4.0

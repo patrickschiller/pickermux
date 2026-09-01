@@ -28,7 +28,9 @@ not the npm registry.
    extracted archive.
 7. Verify README links and render the Mermaid architecture diagram.
 8. For lifecycle changes, complete a real clean install, same-version rerun,
-   upgrade, failed-upgrade rollback, and uninstall on supported macOS hardware.
+   upgrade, all three cache-mismatch preflight/race barriers, failed-upgrade
+   rollback, standard uninstall, CLI removal, and full purge on supported
+   macOS hardware.
 
 ## Release assets
 
@@ -103,11 +105,37 @@ At minimum, record:
 - Node.js 22.15.0 and the current supported Node.js line;
 - Codex Desktop and LM Studio versions;
 - clean setup, `--version`, `status`, and `doctor`;
+- independent `codex-account-cache` doctor output with the runtime and mixed
+  catalog absent;
 - local model visibility after a full Codex restart;
 - same-version rerun and upgrade from the preceding release;
+- cache mismatch before staging, under the lifecycle lock, and immediately
+  before activation, confirming that active CLI and bridge state remain
+  unchanged in every case;
 - checksum and foreign-launcher failures without mutation;
-- integration-only uninstall and receipt-owned CLI removal;
-- confirmation that backups and Keychain items remain.
+- integration-only uninstall and receipt-owned CLI removal, confirming that
+  backups and Keychain items remain;
+- full purge, confirming that only verified backups and registered PickerMux
+  Keychain items are removed and foreign state is refused;
+- runtime removal with a byte-identical installed payload, plus refusal of a
+  modified payload, an added or symbolic-link entry, and a residual
+  `runtime-app.previous-*` package without recursive deletion;
+- provider-registry drift and an overlong provider ID, confirming that neither
+  can expand the Keychain deletion set;
+- distribution-quarantine additions and file replacements before and during
+  exact cleanup, confirming that foreign bytes remain pending and are not
+  recursively deleted;
+- interrupted runtime, backup, and registry cleanup, confirming that full
+  removal is not reported and the receipt-owned CLI remains available for
+  explicit recovery;
+- a failure on the second registered Keychain deletion, confirming a top-level
+  `PICKERMUX_CREDENTIAL_PURGE_INCOMPLETE`, an active integration, restored
+  receipts, and a successful idempotent retry;
+- an integration failure after the Keychain phase, confirming a top-level
+  `PICKERMUX_PURGE_COMMIT_INCOMPLETE`, retained recovery receipts, and no false
+  full-removal success output;
+- standalone `credential-delete` with a failing registry update, confirming
+  that retry safely unregisters an already-absent exact Keychain item.
 
 CI cannot prove current Codex Desktop, LM Studio, LaunchServices, or real model
 behavior. Those checks remain a release-blocking manual gate whenever the

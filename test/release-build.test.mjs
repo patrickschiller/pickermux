@@ -722,6 +722,24 @@ test("the repository itself produces a smoke-testable release archive", async (t
   t.after(() => rm(parentDirectory, { recursive: true, force: true }));
   const outputDirectory = path.join(parentDirectory, "release");
   const result = await buildRelease({ projectDirectory, outputDirectory });
+  const archiveEntries = parseTarGzip(
+    await readFile(path.join(outputDirectory, result.archiveName)),
+  );
+  const archivePaths = new Set(archiveEntries.map((entry) => entry.path));
+  assert.equal(archivePaths.has("src/account-cache.mjs"), true);
+  assert.equal(archivePaths.has("src/codex-account-cache-file.mjs"), true);
+  assert.equal(archivePaths.has("src/certification-transport.mjs"), true);
+  assert.equal(archivePaths.has("src/provider-id.mjs"), true);
+  assert.equal(archivePaths.has("src/purge-data.mjs"), true);
+  assert.equal(archivePaths.has("src/runtime-purge.mjs"), true);
+  assert.equal(
+    archivePaths.has(["src", ["smart", "router.mjs"].join("-")].join("/")),
+    false,
+  );
+  assert.equal(
+    archivePaths.has(["src", ["smart", "routing.mjs"].join("-")].join("/")),
+    false,
+  );
   const extractionDirectory = path.join(parentDirectory, "extracted");
   await mkdir(extractionDirectory);
   await execFileAsync("tar", [
