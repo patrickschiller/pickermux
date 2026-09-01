@@ -9,6 +9,7 @@ import {
   CODEX_CONTEXT_HIGH_RISK_BELOW_TOKENS,
   CODEX_CONTEXT_RECOMMENDED_TOKENS,
   MODEL_DEFAULT_REASONING_DESCRIPTION,
+  TEXT_ONLY_MODEL_INSTRUCTIONS,
   buildCodexCatalog,
   buildMixedCodexCatalog,
   contextPickerPresentation,
@@ -52,6 +53,7 @@ const donor = {
   visibility: "list",
   supported_in_api: true,
   priority: 8,
+  base_instructions: "Legacy donor instructions must not reach text-only LM Studio",
   model_messages: {
     instructions_template: "Donor instructions {{ personality }}",
     instructions_variables: { personality_default: "" },
@@ -592,12 +594,14 @@ test("builds complete conservative entries without mutating the donor", () => {
         displayName: "Qwen 3.8 27B",
         type: "llm",
         contextWindow: 42_496,
+        source: "lmstudio-rest",
       },
       {
         id: "prism/bonsai-27b",
         displayName: "Bonsai 27B",
         type: "llm",
         contextWindow: 32_768,
+        source: "openai-compatible-fallback",
       },
     ],
   });
@@ -613,7 +617,18 @@ test("builds complete conservative entries without mutating the donor", () => {
   );
 
   const model = catalog.models[0];
-  assert.deepEqual(model.model_messages, donor.model_messages);
+  assert.equal(model.base_instructions, TEXT_ONLY_MODEL_INSTRUCTIONS);
+  assert.deepEqual(model.model_messages, {
+    ...donor.model_messages,
+    instructions_template: TEXT_ONLY_MODEL_INSTRUCTIONS,
+    instructions_variables: null,
+  });
+  assert.doesNotMatch(
+    JSON.stringify(model),
+    /Legacy donor instructions|Donor instructions/u,
+  );
+  assert.ok(TEXT_ONLY_MODEL_INSTRUCTIONS.length < 256);
+  assert.match(model.comp_hash, /^model-bridge-p5-[0-9a-f]{16}$/u);
   assert.equal(model.context_window, 42_496);
   assert.equal(model.max_context_window, 42_496);
   assert.equal(model.supports_search_tool, false);
@@ -627,6 +642,10 @@ test("builds complete conservative entries without mutating the donor", () => {
   assert.equal(model.include_skills_usage_instructions, false);
   assert.equal(model.include_plugin_usage_instructions, false);
   assert.equal(model.include_apps_usage_instructions, false);
+  assert.equal(
+    catalog.models[1].model_messages.instructions_template,
+    TEXT_ONLY_MODEL_INSTRUCTIONS,
+  );
 });
 
 test("enables only direct unified-exec after an exact model certification", () => {
@@ -636,12 +655,14 @@ test("enables only direct unified-exec after an exact model certification", () =
       displayName: "Certified Qwen",
       type: "llm",
       contextWindow: 32_768,
+      source: "lmstudio-rest",
     },
     {
       id: "lmstudio/gemma/text-only",
       displayName: "Text-only Gemma",
       type: "llm",
       contextWindow: 32_768,
+      source: "lmstudio-rest",
     },
   ];
   const catalog = buildCodexCatalog({
@@ -657,10 +678,38 @@ test("enables only direct unified-exec after an exact model certification", () =
   assert.equal(certified.supports_search_tool, false);
   assert.deepEqual(certified.experimental_supported_tools, []);
   assert.equal(certified.multi_agent_version, null);
+  assert.equal(certified.base_instructions, donor.base_instructions);
+  assert.deepEqual(certified.model_messages, donor.model_messages);
 
   assert.equal(textOnly.tool_mode, null);
   assert.equal(textOnly.shell_type, "disabled");
+  assert.equal(textOnly.base_instructions, TEXT_ONLY_MODEL_INSTRUCTIONS);
+  assert.equal(
+    textOnly.model_messages.instructions_template,
+    TEXT_ONLY_MODEL_INSTRUCTIONS,
+  );
   assert.notEqual(certified.comp_hash, textOnly.comp_hash);
+});
+
+test("keeps the donor prompt for generic Responses-compatible providers", () => {
+  const catalog = buildCodexCatalog({
+    bundledCatalog: { models: [donor] },
+    discoveredModels: [
+      {
+        id: "vendor/text-only",
+        displayName: "Vendor text-only",
+        type: "llm",
+        contextWindow: 32_768,
+        source: "openai-compatible-models",
+      },
+    ],
+  });
+  const [model] = catalog.models;
+
+  assert.equal(model.tool_mode, null);
+  assert.equal(model.base_instructions, donor.base_instructions);
+  assert.deepEqual(model.model_messages, donor.model_messages);
+  assert.match(model.comp_hash, /^model-bridge-p5-[0-9a-f]{16}$/u);
 });
 
 test("persists model-defined reasoning efforts in supported catalog metadata", () => {
@@ -731,7 +780,7 @@ test("keeps context out of the picker name and warns only below 32K", () => {
     suffix: "",
     description:
       "LM Studio; currently loaded with 8,192 context tokens. " +
-      "Likely too small for the current Codex agent prompt; " +
+      "Likely too small for longer Codex turns; " +
       "reload it in LM Studio with 32,768 tokens or more.",
   });
   assert.equal(
@@ -741,7 +790,7 @@ test("keeps context out of the picker name and warns only below 32K", () => {
   assert.equal(
     contextPickerPresentation(8_192).description,
     "External model; published with 8,192 context tokens. " +
-      "Likely too small for the current Codex agent prompt; " +
+      "Likely too small for longer Codex turns; " +
       "use a model or deployment with at least 32,768 tokens of confirmed " +
       "active context.",
   );

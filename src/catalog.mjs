@@ -24,6 +24,14 @@ export const CODEX_CONTEXT_HIGH_RISK_BELOW_TOKENS = 24_576;
 export const CODEX_CONTEXT_RECOMMENDED_TOKENS = 32_768;
 export const MODEL_DEFAULT_REASONING_DESCRIPTION =
   "Uses the model's loaded reasoning setting";
+export const TEXT_ONLY_MODEL_INSTRUCTIONS =
+  "You are a text-only assistant in Codex Desktop. Answer the user's request " +
+  "directly and accurately. You cannot use tools or inspect workspace files " +
+  "unless their contents are included in the conversation.";
+const LM_STUDIO_MODEL_SOURCES = new Set([
+  "lmstudio-rest",
+  "openai-compatible-fallback",
+]);
 const REASONING_DESCRIPTIONS = Object.freeze({
   none: "No reasoning",
   minimal: "Minimal reasoning",
@@ -68,7 +76,7 @@ export function contextPickerPresentation(contextWindow, { source } = {}) {
       suffix: "",
       description:
         `${contextStatement} ` +
-        `Likely too small for the current Codex agent prompt; ` +
+        `Likely too small for longer Codex turns; ` +
         (lmStudioLive
           ? `reload it in LM Studio with ${formatInteger(CODEX_CONTEXT_RECOMMENDED_TOKENS)} tokens or more.`
           : `use a model or deployment with at least ${formatInteger(CODEX_CONTEXT_RECOMMENDED_TOKENS)} tokens of confirmed active context.`),
@@ -337,19 +345,25 @@ function validateDiscoveredModel(model, index, seen) {
 
 function catalogEntry(donor, model, priority, certifiedForTools = false) {
   const entry = cloneJson(donor);
+  const compactTextOnlyPrompt =
+    !certifiedForTools && LM_STUDIO_MODEL_SOURCES.has(model.source);
   const contextPresentation = contextPickerPresentation(model.contextWindow, {
     source: model.source,
   });
   const compHash = createHash("sha256")
     .update(
       [
-        "model-bridge-p4",
+        "model-bridge-p5",
         model.id,
         model.contextWindow,
         model.reasoningEffort,
         model.reasoningEfforts.join(","),
         model.reasoningOmitEfforts.join(","),
-        certifiedForTools ? "tools-certified" : "text-only",
+        certifiedForTools
+          ? "tools-certified"
+          : compactTextOnlyPrompt
+            ? "text-only-compact"
+            : "text-only-full",
       ].join("\0"),
     )
     .digest("hex")
@@ -365,7 +379,7 @@ function catalogEntry(donor, model, priority, certifiedForTools = false) {
   entry.context_window = model.contextWindow;
   entry.max_context_window = model.contextWindow;
   entry.effective_context_window_percent = 90;
-  entry.comp_hash = `model-bridge-p4-${compHash}`;
+  entry.comp_hash = `model-bridge-p5-${compHash}`;
 
   // A loaded model remains usable for text before certification. Only a
   // receipt bound to this exact provider/model/context/client contract enables
@@ -399,6 +413,18 @@ function catalogEntry(donor, model, priority, certifiedForTools = false) {
   entry.service_tiers = [];
   entry.availability_nux = null;
   entry.upgrade = null;
+
+  if (compactTextOnlyPrompt) {
+    // Tool-free local turns do not need the donor model's full coding-agent
+    // prompt. Keep both the canonical and legacy fields aligned because Codex
+    // versions consume one or the other when loading model metadata.
+    entry.model_messages = {
+      ...(isPlainObject(entry.model_messages) ? entry.model_messages : {}),
+      instructions_template: TEXT_ONLY_MODEL_INSTRUCTIONS,
+      instructions_variables: null,
+    };
+    entry.base_instructions = TEXT_ONLY_MODEL_INSTRUCTIONS;
+  }
 
   if (isPlainObject(entry.truncation_policy)) {
     const donorLimit = entry.truncation_policy.limit;

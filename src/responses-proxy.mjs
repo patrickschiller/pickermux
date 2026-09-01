@@ -37,6 +37,64 @@ const LEGACY_LM_STUDIO_REASONING_ALIASES = Object.freeze({
   max: "xhigh",
   ultra: "xhigh",
 });
+const LM_STUDIO_TEXT_ONLY_OMITTED_CONTEXT_ENVELOPES = new Map([
+  [
+    "host_skills.instructions",
+    {
+      roles: new Set(["developer"]),
+      markers: ["<skills_instructions>", "</skills_instructions>"],
+    },
+  ],
+  [
+    "permissions.instructions",
+    {
+      roles: new Set(["developer"]),
+      markers: ["<permissions instructions>", "</permissions instructions>"],
+    },
+  ],
+  [
+    "plugins.recommendations",
+    {
+      roles: new Set(["user"]),
+      markers: ["<recommended_plugins>", "</recommended_plugins>"],
+    },
+  ],
+]);
+const LM_STUDIO_TEXT_ONLY_RETAINED_CONTEXT_PREFIXES = Object.freeze([
+  "additional_content.",
+  "agents_md.",
+  "app.",
+  "app_context.",
+  "codex_app.",
+  "collaboration_mode.",
+  "compaction.",
+  "current_time.",
+  "environments.",
+  "extension.",
+  "generic.",
+  "goals.",
+  "guardian.",
+  "hooks.",
+  "managed_config.",
+  "memory.",
+  "memories.",
+  "model.",
+  "model_switch.",
+  "multi_agent.",
+  "network_proxy.",
+  "notes.",
+  "personality.",
+  "persistent_mode.",
+  "realtime_conversation.",
+  "rollout_budget.",
+  "skills.selected_skill_instructions",
+  "token_budget.",
+]);
+const LM_STUDIO_TEXT_ONLY_BOOTSTRAP_ROLES = new Set([
+  "system",
+  "developer",
+  "user",
+]);
 
 const DEFAULT_LIMITS = Object.freeze({
   requestBodyBytes: 8 * 1024 * 1024,
@@ -293,6 +351,109 @@ function mergeLmStudioSystemMessages(input) {
   ];
 }
 
+function hasContextKindPrefix(kind, prefixes) {
+  return prefixes.some((prefix) => kind.startsWith(prefix));
+}
+
+function hasExactContextEnvelope(part, markers) {
+  if (
+    part?.type !== "input_text" ||
+    typeof part.text !== "string" ||
+    !Array.isArray(markers)
+  ) {
+    return false;
+  }
+  const text = part.text.trim();
+  const [opening, closing] = markers;
+  if (!text.startsWith(opening)) return false;
+  const firstClosing = text.indexOf(closing, opening.length);
+  return (
+    firstClosing === text.length - closing.length &&
+    text.indexOf(opening, opening.length) === -1
+  );
+}
+
+function lmStudioTextOnlyContextDisposition(kind, role, part) {
+  const omittedContext = LM_STUDIO_TEXT_ONLY_OMITTED_CONTEXT_ENVELOPES.get(kind);
+  if (omittedContext) {
+    return omittedContext.roles.has(role) &&
+      hasExactContextEnvelope(part, omittedContext.markers)
+      ? "omit"
+      : "unknown";
+  }
+  if (hasContextKindPrefix(kind, LM_STUDIO_TEXT_ONLY_RETAINED_CONTEXT_PREFIXES)) {
+    return "retain";
+  }
+  if (
+    kind.startsWith("user.") ||
+    kind.startsWith("images.") ||
+    kind.startsWith("shell.")
+  ) {
+    return "conversation";
+  }
+  return "unknown";
+}
+
+/**
+ * Remove only annotated, tool-dependent bootstrap fragments before the first
+ * real conversation item. Missing, malformed, mixed-user, and future
+ * annotations retain the original item and end compaction conservatively.
+ */
+function compactLmStudioTextOnlyInput(input) {
+  const compacted = [];
+  let compactingBootstrap = true;
+  for (const item of input) {
+    if (
+      !compactingBootstrap ||
+      item === null ||
+      Array.isArray(item) ||
+      typeof item !== "object" ||
+      item.type !== "message" ||
+      !LM_STUDIO_TEXT_ONLY_BOOTSTRAP_ROLES.has(item.role)
+    ) {
+      compactingBootstrap = false;
+      compacted.push(item);
+      continue;
+    }
+
+    const kinds = item.internal_chat_message_metadata_passthrough
+      ?.content_item_kinds;
+    if (
+      !Array.isArray(item.content) ||
+      !Array.isArray(kinds) ||
+      kinds.length !== item.content.length ||
+      kinds.length === 0 ||
+      kinds.some((kind) => typeof kind !== "string" || !kind)
+    ) {
+      compactingBootstrap = false;
+      compacted.push(item);
+      continue;
+    }
+
+    const dispositions = kinds.map((kind, index) =>
+      lmStudioTextOnlyContextDisposition(kind, item.role, item.content[index]),
+    );
+    if (
+      dispositions.includes("conversation") ||
+      dispositions.includes("unknown")
+    ) {
+      compactingBootstrap = false;
+      compacted.push(item);
+      continue;
+    }
+
+    const content = item.content.filter(
+      (_part, index) => dispositions[index] !== "omit",
+    );
+    if (content.length > 0) {
+      compacted.push(
+        content.length === item.content.length ? item : { ...item, content },
+      );
+    }
+  }
+  return compacted.length > 0 ? compacted : input;
+}
+
 function lmStudioReasoningSelection(requested, route) {
   const supported = new Set(
     Array.isArray(route.reasoningEfforts) && route.reasoningEfforts.length > 0
@@ -421,9 +582,15 @@ function externalBody(body, route, maxBytes, { certificationRequest = false } = 
     });
   }
 
+  const toolsEnabled = route.toolsEnabled === true || certificationRequest;
   const rewritten = { ...body, model: route.upstreamModel };
+  delete rewritten.client_metadata;
   if (Array.isArray(body.input)) {
-    const sanitizedInput = body.input.map((item) => {
+    const sourceInput =
+      route.providerKind === "lmstudio-responses" && !toolsEnabled
+        ? compactLmStudioTextOnlyInput(body.input)
+        : body.input;
+    const sanitizedInput = sourceInput.map((item) => {
       if (item === null || Array.isArray(item) || typeof item !== "object") return item;
       const sanitized = { ...item };
       delete sanitized.internal_chat_message_metadata_passthrough;
@@ -444,7 +611,6 @@ function externalBody(body, route, maxBytes, { certificationRequest = false } = 
   }
 
   let toolCodec;
-  const toolsEnabled = route.toolsEnabled === true || certificationRequest;
   if (!toolsEnabled) enforceTextOnlyRequest(rewritten, body);
   if (route.providerKind === "lmstudio-responses") {
     delete rewritten.prompt_cache_key;

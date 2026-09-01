@@ -75,8 +75,8 @@ security meaning.
 ## Initial `v0.4.0` release
 
 The repository was published before a GitHub Release was created, so the
-one-line installer is part of the first `v0.4.0` release rather than a separate
-`v0.5.0` feature release.
+one-line installer is part of the first `v0.4.0` release rather than being
+deferred to a later feature release.
 
 After the release commit is on protected `main` and CI passes, create and push
 the annotated tag:
@@ -90,9 +90,9 @@ Watch the release workflow. Do not publish announcements until the generated
 release exists and both the latest and version-pinned README installer URLs
 work from a logged-out environment.
 
-## Patch releases
+## Subsequent releases
 
-For every patch, require the release commit to be merged into and synchronized
+For every release, require the release commit to be merged into and synchronized
 with `main`, confirm that neither the tag nor release already exists, and then
 create an annotated tag from that exact `main` commit. Never tag an unmerged PR
 head or replace already published release assets.

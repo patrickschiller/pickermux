@@ -68,6 +68,15 @@ Reports involving any of the following are particularly important:
 General hardening ideas without a concrete vulnerability can be proposed with
 the public feature-request form.
 
+## Provider request boundary
+
+External provider headers are rebuilt from a narrow allowlist. External JSON
+bodies also exclude Codex `client_metadata` and internal content annotations;
+ordinary provider API `metadata` remains available to configured providers.
+Native Codex request bodies remain byte preserving. Treat request logs produced
+by older PickerMux releases as sensitive because they may contain installation,
+session, thread, window, or turn identifiers.
+
 ## Uninstall and purge boundary
 
 The normal `pickermux uninstall` lifecycle restores Codex configuration and

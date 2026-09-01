@@ -140,6 +140,9 @@ test("native route relays compressed request bytes, approved headers and SSE byt
       model: "gpt-5.6-sol",
       reasoning: { effort: "ultra" },
       prompt_cache_key: "native-cache-key-must-remain",
+      client_metadata: {
+        thread_id: "native-thread-id-must-remain-byte-exact",
+      },
       include: ["reasoning.encrypted_content"],
       tools: [
         { type: "web_search" },
@@ -235,6 +238,11 @@ test("external route rewrites model and effort while replacing all caller creden
         model: "lmstudio/qwen/qwen3.8-27b",
         reasoning: { effort: "ultra", summary: "auto" },
         input: "test",
+        client_metadata: {
+          installation_id: "external-installation-canary",
+          thread_id: "external-thread-canary",
+        },
+        metadata: { caller_value: "preserved" },
       }),
     ),
   );
@@ -257,6 +265,8 @@ test("external route rewrites model and effort while replacing all caller creden
   assert.equal(observed.path, "/v1/responses/compact");
   assert.equal(observed.json.model, "qwen/qwen3.8-27b");
   assert.deepEqual(observed.json.reasoning, { effort: "low", summary: "auto" });
+  assert.equal(observed.json.client_metadata, undefined);
+  assert.deepEqual(observed.json.metadata, { caller_value: "preserved" });
   assert.equal(observed.headers.authorization, "Bearer external-token");
   assert.equal(observed.headers["content-encoding"], undefined);
   assert.equal(observed.headers["chatgpt-account-id"], undefined);
@@ -264,9 +274,13 @@ test("external route rewrites model and effort while replacing all caller creden
   assert.equal(observed.headers["x-codex-routing-hint"], undefined);
   assert.equal(observed.headers["x-oai-attestation"], undefined);
   assert.doesNotMatch(JSON.stringify(observed), /chatgpt-token|chatgpt-cookie|attestation/u);
+  assert.doesNotMatch(
+    JSON.stringify(observed),
+    /external-installation-canary|external-thread-canary/u,
+  );
 });
 
-test("external route preserves caller reasoning when no route override is configured", async (t) => {
+test("generic external route preserves caller reasoning and annotated context", async (t) => {
   let observed;
   const upstream = http.createServer((request, response) => {
     const chunks = [];
@@ -282,6 +296,7 @@ test("external route preserves caller reasoning when no route override is config
     registry: {
       resolve: () => ({
         kind: "external",
+        providerKind: "openai-responses",
         baseUrl: `http://127.0.0.1:${upstreamPort}/v1`,
         allowPrivateNetwork: true,
         upstreamModel: "vendor-model",
@@ -291,11 +306,34 @@ test("external route preserves caller reasoning when no route override is config
   t.after(() => close(proxy.server));
 
   const body = Buffer.from(
-    JSON.stringify({ model: "vendor/public", reasoning: { effort: "medium" } }),
+    JSON.stringify({
+      model: "vendor/public",
+      reasoning: { effort: "medium" },
+      input: [
+        {
+          type: "message",
+          role: "developer",
+          content: [
+            {
+              type: "input_text",
+              text: "<skills_instructions>generic-provider-context-stays</skills_instructions>",
+            },
+          ],
+          internal_chat_message_metadata_passthrough: {
+            content_item_kinds: ["host_skills.instructions"],
+          },
+        },
+      ],
+    }),
   );
   const result = await httpRequest({ port: proxy.port, body });
   assert.equal(result.statusCode, 200);
   assert.deepEqual(observed.reasoning, { effort: "medium" });
+  assert.match(JSON.stringify(observed.input), /generic-provider-context-stays/u);
+  assert.doesNotMatch(
+    JSON.stringify(observed.input),
+    /internal_chat_message_metadata_passthrough/u,
+  );
 });
 
 test("external route strips internal metadata canaries without changing other input fields", async (t) => {
@@ -796,6 +834,422 @@ test("text-only routes strip large optional tool catalogs before forwarding", as
   assert.equal(observed.input, "Reply with a short greeting.");
 });
 
+test("LM Studio text-only routes compact only annotated bootstrap context", async (t) => {
+  let observed;
+  let observedBytes;
+  const upstream = http.createServer((request, response) => {
+    const chunks = [];
+    request.on("data", (chunk) => chunks.push(chunk));
+    request.on("end", () => {
+      observedBytes = Buffer.concat(chunks);
+      observed = JSON.parse(observedBytes.toString("utf8"));
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end('{"ok":true}');
+    });
+  });
+  const upstreamPort = await listen(upstream);
+  t.after(() => close(upstream));
+  const proxy = await createProxyHarness({
+    registry: {
+      resolve: () => ({
+        kind: "external",
+        providerKind: "lmstudio-responses",
+        baseUrl: `http://127.0.0.1:${upstreamPort}/v1`,
+        allowPrivateNetwork: true,
+        upstreamModel: "qwen/qwen3.8-27b",
+        toolsEnabled: false,
+        reasoningEffort: "low",
+        reasoningEfforts: ["none", "low", "medium", "xhigh"],
+      }),
+    },
+  });
+  t.after(() => close(proxy.server));
+
+  const large = "bootstrap-overhead-".repeat(4_000);
+  const tools = Array.from({ length: 226 }, (_unused, index) => ({
+    type: "function",
+    name: `tool_${index}`,
+    description: `tool-overhead-${index}-${"x".repeat(400)}`,
+    parameters: { type: "object", properties: {} },
+  }));
+  const source = {
+    model: "lmstudio/qwen/qwen3.8-27b",
+    instructions: "compact-text-only-instructions-stay",
+    input: [
+      {
+        type: "message",
+        role: "developer",
+        content: [
+          { type: "input_text", text: "memory-instructions-stay" },
+          {
+            type: "input_text",
+            text: `<skills_instructions>\n${large}\n</skills_instructions>`,
+          },
+          {
+            type: "input_text",
+            text: `<permissions instructions>\n${large}\n</permissions instructions>`,
+          },
+        ],
+        internal_chat_message_metadata_passthrough: {
+          content_item_kinds: [
+            "memory.instructions",
+            "host_skills.instructions",
+            "permissions.instructions",
+          ],
+        },
+      },
+      {
+        type: "message",
+        role: "user",
+        content: [
+          {
+            type: "input_text",
+            text: `<recommended_plugins>\n${large}\n</recommended_plugins>`,
+          },
+          { type: "input_text", text: "environment-context-stays" },
+        ],
+        internal_chat_message_metadata_passthrough: {
+          content_item_kinds: [
+            "plugins.recommendations",
+            "environments.environment_context",
+          ],
+        },
+      },
+      {
+        type: "message",
+        role: "user",
+        content: [
+          {
+            type: "input_text",
+            text: "Explain this literal tag: <skills_instructions>user text</skills_instructions>",
+          },
+          { type: "input_image", image_url: "data:image/png;base64,dXNlci1pbWFnZQ==" },
+        ],
+        internal_chat_message_metadata_passthrough: {
+          content_item_kinds: ["user.text", "images.input_image"],
+        },
+      },
+      {
+        type: "message",
+        role: "assistant",
+        content: [{ type: "output_text", text: "Earlier answer stays" }],
+      },
+      {
+        type: "message",
+        role: "developer",
+        content: [{ type: "input_text", text: "late-permissions-stay" }],
+        internal_chat_message_metadata_passthrough: {
+          content_item_kinds: ["permissions.instructions"],
+        },
+      },
+      {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "What did I ask before?" }],
+      },
+    ],
+    tools,
+    tool_choice: "auto",
+    parallel_tool_calls: true,
+    reasoning: { effort: "low", summary: "detailed" },
+    client_metadata: {
+      installation_id: "installation-id-must-not-reach-upstream",
+      thread_id: "thread-id-must-not-reach-upstream",
+      turn_id: "turn-id-must-not-reach-upstream",
+    },
+    metadata: { caller_value: "preserved" },
+  };
+  const sourceBytes = Buffer.from(JSON.stringify(source));
+  const result = await httpRequest({ port: proxy.port, body: sourceBytes });
+
+  assert.equal(result.statusCode, 200);
+  assert.equal(observed.instructions, "compact-text-only-instructions-stay");
+  assert.deepEqual(observed.reasoning, { effort: "low", summary: "detailed" });
+  assert.deepEqual(observed.metadata, { caller_value: "preserved" });
+  assert.equal(observed.client_metadata, undefined);
+  assert.equal(observed.tools, undefined);
+  assert.equal(observed.tool_choice, undefined);
+  assert.equal(observed.parallel_tool_calls, undefined);
+  assert.equal(observed.input[0].role, "system");
+  assert.deepEqual(
+    observed.input[0].content.map((part) => part.text),
+    ["memory-instructions-stay", "\n\n", "late-permissions-stay"],
+  );
+  assert.equal(observed.input[1].role, "user");
+  assert.equal(observed.input[1].content[0].text, "environment-context-stays");
+  assert.equal(observed.input[2].role, "user");
+  assert.match(observed.input[2].content[0].text, /literal tag/u);
+  assert.equal(observed.input[2].content[1].type, "input_image");
+  assert.equal(observed.input[3].role, "assistant");
+  assert.equal(observed.input[4].content[0].text, "What did I ask before?");
+  assert.equal(
+    observed.input.some((item) => item.internal_chat_message_metadata_passthrough),
+    false,
+  );
+  assert.doesNotMatch(
+    observedBytes.toString("utf8"),
+    /bootstrap-overhead|installation-id-must-not-reach|thread-id-must-not-reach|turn-id-must-not-reach|tool_225/u,
+  );
+  assert.ok(observedBytes.length < sourceBytes.length / 20);
+});
+
+test("LM Studio text-only compaction preserves unknown and malformed context", async (t) => {
+  const observed = [];
+  const upstream = http.createServer((request, response) => {
+    const chunks = [];
+    request.on("data", (chunk) => chunks.push(chunk));
+    request.on("end", () => {
+      observed.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end('{"ok":true}');
+    });
+  });
+  const upstreamPort = await listen(upstream);
+  t.after(() => close(upstream));
+  const proxy = await createProxyHarness({
+    registry: {
+      resolve: () => ({
+        kind: "external",
+        providerKind: "lmstudio-responses",
+        baseUrl: `http://127.0.0.1:${upstreamPort}/v1`,
+        allowPrivateNetwork: true,
+        upstreamModel: "qwen/qwen3.8-27b",
+        toolsEnabled: false,
+      }),
+    },
+  });
+  t.after(() => close(proxy.server));
+
+  const cases = [
+    {
+      path: "/v1/responses",
+      input: [
+        {
+          type: "message",
+          role: "developer",
+          content: [
+            { type: "input_text", text: "future-context-stays" },
+            {
+              type: "input_text",
+              text: "<skills_instructions>later-known-skills-remove</skills_instructions>",
+            },
+          ],
+          internal_chat_message_metadata_passthrough: {
+            content_item_kinds: [
+              "future.context",
+              "host_skills.instructions",
+            ],
+          },
+        },
+        {
+          type: "message",
+          role: "developer",
+          content: [
+            {
+              type: "input_text",
+              text: "<skills_instructions>later-skills-remove</skills_instructions>",
+            },
+          ],
+          internal_chat_message_metadata_passthrough: {
+            content_item_kinds: ["host_skills.instructions"],
+          },
+        },
+      ],
+      canaries: [
+        "future-context-stays",
+        "later-known-skills-remove",
+        "later-skills-remove",
+      ],
+      absentCanaries: [],
+    },
+    {
+      path: "/v1/responses/compact",
+      input: [
+        {
+          type: "message",
+          role: "developer",
+          content: [
+            { type: "input_text", text: "misaligned-one-stays" },
+            { type: "input_text", text: "misaligned-two-stays" },
+          ],
+          internal_chat_message_metadata_passthrough: {
+            content_item_kinds: ["host_skills.instructions"],
+          },
+        },
+      ],
+      canaries: ["misaligned-one-stays", "misaligned-two-stays"],
+      absentCanaries: [],
+    },
+    {
+      path: "/v1/responses",
+      input: [
+        {
+          type: "message",
+          role: "user",
+          content: [
+            { type: "input_text", text: "mixed-permissions-stay" },
+            { type: "input_text", text: "mixed-user-text-stays" },
+          ],
+          internal_chat_message_metadata_passthrough: {
+            content_item_kinds: ["permissions.instructions", "user.text"],
+          },
+        },
+      ],
+      canaries: ["mixed-permissions-stay", "mixed-user-text-stays"],
+      absentCanaries: [],
+    },
+    {
+      path: "/v1/responses",
+      input: [
+        {
+          type: "message",
+          role: "developer",
+          content: [
+            {
+              type: "input_text",
+              text: "<skills_instructions>mismatched-envelope-stays",
+            },
+          ],
+          internal_chat_message_metadata_passthrough: {
+            content_item_kinds: ["host_skills.instructions"],
+          },
+        },
+        {
+          type: "message",
+          role: "developer",
+          content: [
+            {
+              type: "input_text",
+              text: "<skills_instructions>after-envelope-mismatch-stays</skills_instructions>",
+            },
+          ],
+          internal_chat_message_metadata_passthrough: {
+            content_item_kinds: ["host_skills.instructions"],
+          },
+        },
+      ],
+      canaries: [
+        "mismatched-envelope-stays",
+        "after-envelope-mismatch-stays",
+      ],
+      absentCanaries: [],
+    },
+    {
+      path: "/v1/responses",
+      input: [
+        {
+          type: "message",
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: "<skills_instructions>wrong-role-stays</skills_instructions>",
+            },
+          ],
+          internal_chat_message_metadata_passthrough: {
+            content_item_kinds: ["host_skills.instructions"],
+          },
+        },
+        {
+          type: "message",
+          role: "developer",
+          content: [
+            {
+              type: "input_text",
+              text: "<permissions instructions>after-wrong-role-stays</permissions instructions>",
+            },
+          ],
+          internal_chat_message_metadata_passthrough: {
+            content_item_kinds: ["permissions.instructions"],
+          },
+        },
+      ],
+      canaries: ["wrong-role-stays", "after-wrong-role-stays"],
+      absentCanaries: [],
+    },
+    {
+      path: "/v1/responses",
+      input: [
+        {
+          type: "message",
+          role: "developer",
+          content: [
+            {
+              type: "input_text",
+              text: "<skills_instructions>first-stays</skills_instructions>outside-stays<skills_instructions>second-stays</skills_instructions>",
+            },
+          ],
+          internal_chat_message_metadata_passthrough: {
+            content_item_kinds: ["host_skills.instructions"],
+          },
+        },
+        {
+          type: "message",
+          role: "developer",
+          content: [
+            {
+              type: "input_text",
+              text: "<permissions instructions>after-concatenated-envelope-stays</permissions instructions>",
+            },
+          ],
+          internal_chat_message_metadata_passthrough: {
+            content_item_kinds: ["permissions.instructions"],
+          },
+        },
+      ],
+      canaries: [
+        "first-stays",
+        "outside-stays",
+        "second-stays",
+        "after-concatenated-envelope-stays",
+      ],
+      absentCanaries: [],
+    },
+    {
+      path: "/v1/responses",
+      input: [
+        {
+          type: "message",
+          role: "developer",
+          content: [
+            {
+              type: "input_text",
+              text: "<skills_instructions>all-filtered-fallback-stays</skills_instructions>",
+            },
+          ],
+          internal_chat_message_metadata_passthrough: {
+            content_item_kinds: ["host_skills.instructions"],
+          },
+        },
+      ],
+      canaries: ["all-filtered-fallback-stays"],
+      absentCanaries: [],
+    },
+  ];
+
+  for (const value of cases) {
+    const result = await httpRequest({
+      port: proxy.port,
+      path: value.path,
+      body: Buffer.from(JSON.stringify({
+        model: "lmstudio/qwen/qwen3.8-27b",
+        input: value.input,
+      })),
+    });
+    assert.equal(result.statusCode, 200);
+  }
+
+  assert.equal(observed.length, cases.length);
+  cases.forEach((value, index) => {
+    const serialized = JSON.stringify(observed[index]);
+    value.canaries.forEach((canary) => assert.match(serialized, new RegExp(canary, "u")));
+    value.absentCanaries.forEach((canary) =>
+      assert.doesNotMatch(serialized, new RegExp(canary, "u")),
+    );
+    assert.doesNotMatch(serialized, /internal_chat_message_metadata_passthrough/u);
+  });
+});
+
 test("text-only routes reject forced tool choices and tool-call history", async (t) => {
   let upstreamRequests = 0;
   const upstream = http.createServer((_request, response) => {
@@ -875,7 +1329,27 @@ test("only the private certification marker bypasses text-only tool stripping", 
   t.after(() => close(proxy.server));
   const requestBody = Buffer.from(JSON.stringify({
     model: "lmstudio/microsoft/phi-4-mini-reasoning",
-    input: "Use the probe",
+    instructions: "certification-instructions-stay",
+    input: [
+      {
+        type: "message",
+        role: "developer",
+        content: [
+          {
+            type: "input_text",
+            text: "<skills_instructions>certification-context-stays</skills_instructions>",
+          },
+        ],
+        internal_chat_message_metadata_passthrough: {
+          content_item_kinds: ["host_skills.instructions"],
+        },
+      },
+      {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "Use the probe" }],
+      },
+    ],
     tools: [{ type: "function", name: "probe", parameters: {} }],
     tool_choice: { type: "function", name: "probe" },
   }));
@@ -895,6 +1369,8 @@ test("only the private certification marker bypasses text-only tool stripping", 
   assert.equal(accepted.statusCode, 200);
   assert.equal(observed.body.tools[0].name, "probe");
   assert.equal(observed.body.tool_choice, "required");
+  assert.equal(observed.body.instructions, "certification-instructions-stay");
+  assert.match(JSON.stringify(observed.body.input), /certification-context-stays/u);
   assert.equal(observed.headers["x-pickermux-certification"], undefined);
 });
 

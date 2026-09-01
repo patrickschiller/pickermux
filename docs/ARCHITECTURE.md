@@ -1,6 +1,6 @@
 # PickerMux Architecture
 
-This document describes the public v0.4.2 bridge contract. It is intended for
+This document describes the public v0.5.0 bridge contract. It is intended for
 contributors, security reviewers, and users who want to understand what runs on
 their Mac.
 
@@ -97,7 +97,10 @@ preserving on this route.
 For an exact namespaced external slug, PickerMux discards the caller's header
 set and constructs a new provider request. ChatGPT bearer tokens, cookies,
 account identifiers, attestation values, and Codex metadata are not eligible for
-the external header set.
+the external header set. The external JSON body also excludes Codex
+`client_metadata` and internal content annotations. Ordinary provider API
+`metadata` remains part of the caller's request contract. Native request bodies
+remain byte preserving.
 
 Provider credentials are resolved only for the selected route. Persistent
 providers can use a provider-scoped macOS Keychain item. Successful lookups are
@@ -110,8 +113,16 @@ Codex and local models do not always expose identical Responses API behavior.
 The LM Studio adapter therefore performs bounded, explicit normalization:
 
 - rewrites the public namespaced slug to the upstream LM Studio model ID;
+- gives uncertified text-only models a compact assistant prompt instead of the
+  donor Codex coding-agent prompt;
 - maps supported reasoning levels and omits only known synthetic defaults;
 - removes unsupported cache and encrypted-reasoning fields;
+- removes generated skill-catalog, permission, and plugin-recommendation
+  bootstrap blocks only when their private Codex annotation, incoming message
+  role, and single complete XML envelope all match the verified contract;
+  unknown or malformed annotations stop further compaction, while user
+  messages, attachments, project and managed instructions, memory, environment
+  facts, app context, and conversation history are retained;
 - combines system and developer messages into one leading system block while
   preserving chronological content;
 - removes unsupported optional built-in tools;
@@ -121,6 +132,10 @@ The LM Studio adapter therefore performs bounded, explicit normalization:
 - maps arbitrary Codex tool namespaces to collision-resistant function names;
 - restores public namespace names in JSON and streaming responses;
 - normalizes empty function parameter schemas.
+
+Successful tool certification restores the full donor coding-agent prompt and
+preserves its annotated context because those models can use the corresponding
+Codex tool surface. Certification traffic itself receives the same treatment.
 
 Request decompression supports gzip, deflate, Brotli, and Zstandard. Decoded
 body size, response header size, header wait, stream idle time, and total

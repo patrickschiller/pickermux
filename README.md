@@ -60,7 +60,7 @@ or another shell file automatically. Until then, use the absolute command path.
 For a reproducible installation, replace `latest` with an exact release:
 
 ```bash
-/usr/bin/curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://github.com/patrickschiller/pickermux/releases/download/v0.4.2/install.sh | /bin/sh
+/usr/bin/curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://github.com/patrickschiller/pickermux/releases/download/v0.5.0/install.sh | /bin/sh
 ```
 
 Both one-line forms execute code downloaded from GitHub. The archive checksum
@@ -164,10 +164,15 @@ deliberately conservative:
 - **No fake capabilities.** Context size and reasoning options come from the
   loaded LM Studio instance. PickerMux never inflates a model's context window.
 - **Safe model defaults.** Newly discovered external models start in text-only
-  mode. The bridge removes optional tool schemas and rejects forced tool turns
-  until that exact model and configuration pass a live certification matrix.
+  mode. LM Studio models use a compact text-only prompt. The bridge removes
+  optional tool schemas and only Codex bootstrap blocks whose annotation,
+  message role, and single envelope exactly match the verified contract, then
+  rejects forced tool turns until that exact model and configuration pass a
+  live certification matrix. User messages, attachments, project instructions,
+  memory, and conversation history remain intact.
 - **Credential isolation.** Native Codex authentication and metadata are never
-  forwarded to LM Studio or another external provider.
+  forwarded to LM Studio or another external provider, including Codex client
+  metadata carried inside a Responses request body.
 - **Transactional lifecycle.** Install, refresh, rollback, diagnostics, and
   uninstall are designed as one managed workflow rather than a collection of
   manual edits to `~/.codex`.
