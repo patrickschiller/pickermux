@@ -1,6 +1,6 @@
 # PickerMux Architecture
 
-This document describes the public v0.5.2 bridge contract. It is intended for
+This document describes the public v0.5.3 bridge contract. It is intended for
 contributors, security reviewers, and users who want to understand what runs on
 their Mac.
 
@@ -225,9 +225,13 @@ between the provider table and the next TOML table or end of file. It virtually
 reinserts the exact marker only when one unique candidate reproduces the
 receipt's SHA-256 block digest and every preserved tail line is blank or a
 comment. Status exposes `installed-marker-recovered`; refresh, selection changes,
-and uninstall can then proceed without silently rewriting the config. Missing
-begin/root markers, duplicate boundaries, provider-scoped content changes, and
-every ambiguous candidate remain inconsistent.
+and uninstall can then proceed without silently rewriting the config. One
+narrow setup-recovery exception materializes the exact marker when this state
+coincides with a failed initial account-cache preflight: the downloaded payload
+uses the lifecycle lock, revalidates configuration ownership and status, and
+atomically inserts only the receipt-proven line so an older installed CLI can
+uninstall. Missing begin/root markers, duplicate boundaries, provider-scoped
+content changes, and every ambiguous candidate remain inconsistent.
 
 Install and refresh stage the runtime, catalog, compatibility manifest, service
 configuration, and selection update. The previous runtime package remains
@@ -238,8 +242,12 @@ Release setup validates the account-scoped Codex cache before staging a new
 distribution, repeats the same read-only preflight under the lifecycle lock
 before changing active CLI controls, and performs it once more immediately
 before integration activation. A missing, malformed, or client-version-
-mismatched cache therefore stops without changing active PickerMux state and
-cannot silently fall back to the bundled catalog. The account-cache reader
+mismatched cache therefore stops without changing active PickerMux distribution
+or runtime state and cannot silently fall back to the bundled catalog. If the
+sole existing integration defect is a receipt-recovered provider end marker,
+the first preflight may restore that marker without activating the downloaded
+CLI or runtime; the reported recovery instructions can then be completed by an
+older CLI. The account-cache reader
 opens only the exact `models_cache.json` inode and rejects symbolic or multiple
 hard links before reading its payload, so it cannot be redirected to native
 Codex authentication state.

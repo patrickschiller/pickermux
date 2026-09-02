@@ -22,6 +22,7 @@ import {
   inventoryManagedConfigOwnership,
   revalidateManagedConfigOwnership,
   restoreManagedPickerDefaults,
+  restoreRecoveredProviderEndMarker,
   setManagedPickerSelection,
   uninstallConfig,
 } from "../src/config-manager.mjs";
@@ -254,6 +255,78 @@ test("missing provider end recovery finds a unique receipted boundary before pre
     await readFile(fixture.configPath, "utf8"),
     original.replace("[features]", "\n[features]"),
   );
+});
+
+test("receipt-recovered provider end markers can be materialized atomically for an older CLI", async (t) => {
+  const fixture = await makeFixture(t);
+  await writeFile(
+    fixture.configPath,
+    'model = "gpt-5.6-sol"\n[features]\nweb_search = true\n',
+  );
+  await installConfig(fixture.options());
+  const installed = await readFile(fixture.configPath, "utf8");
+  const damaged = installed.replace(CONFIG_MARKERS.providerEnd, "");
+  await writeFile(fixture.configPath, damaged);
+
+  const restored = await restoreRecoveredProviderEndMarker(fixture.paths());
+  assert.deepEqual(
+    { changed: restored.changed, marker: restored.marker },
+    { changed: true, marker: "provider-end" },
+  );
+  const materialized = await readFile(fixture.configPath, "utf8");
+  assert.equal(
+    materialized.replace(`${CONFIG_MARKERS.providerEnd}\n`, ""),
+    damaged,
+  );
+  assert.deepEqual(pickStatus(await getConfigStatus(fixture.paths())), {
+    installed: true,
+    healthy: true,
+    status: "installed",
+  });
+
+  const repeated = await restoreRecoveredProviderEndMarker(fixture.paths());
+  assert.deepEqual(
+    { changed: repeated.changed, marker: repeated.marker },
+    { changed: false, marker: null },
+  );
+});
+
+test("marker materialization fails closed on provider drift and concurrent config changes", async (t) => {
+  await t.test("provider drift", async (t) => {
+    const fixture = await makeFixture(t);
+    await writeFile(fixture.configPath, 'model = "gpt-5.6-sol"\n');
+    await installConfig(fixture.options());
+    const installed = await readFile(fixture.configPath, "utf8");
+    const damaged = installed
+      .replace(CONFIG_MARKERS.providerEnd, "")
+      .replace("http://127.0.0.1:1234/v1", "http://127.0.0.1:9999/v1");
+    await writeFile(fixture.configPath, damaged);
+
+    await assert.rejects(
+      restoreRecoveredProviderEndMarker(fixture.paths()),
+      (error) => error.code === "MANAGED_BLOCK_BOUNDARY_INVALID",
+    );
+    assert.equal(await readFile(fixture.configPath, "utf8"), damaged);
+  });
+
+  await t.test("concurrent edit", async (t) => {
+    const fixture = await makeFixture(t);
+    await writeFile(fixture.configPath, 'model = "gpt-5.6-sol"\n');
+    await installConfig(fixture.options());
+    const installed = await readFile(fixture.configPath, "utf8");
+    const damaged = installed.replace(CONFIG_MARKERS.providerEnd, "");
+    const concurrent = `${damaged}user_setting = true\n`;
+    await writeFile(fixture.configPath, damaged);
+
+    await assert.rejects(
+      restoreRecoveredProviderEndMarker({
+        ...fixture.paths(),
+        beforeConfigCommit: () => writeFile(fixture.configPath, concurrent),
+      }),
+      (error) => error.code === "CONFIG_CHANGED_CONCURRENTLY",
+    );
+    assert.equal(await readFile(fixture.configPath, "utf8"), concurrent);
+  });
 });
 
 test("missing provider end recovery supports CRLF at end of file", async (t) => {

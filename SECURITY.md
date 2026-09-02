@@ -108,10 +108,15 @@ returned by the bridge health endpoint.
 Managed configuration recovery is limited to a missing provider end marker
 whose virtual reinsertion at exactly one safe line boundary before the next
 TOML table or end of file recreates the receipt-recorded block digest. Blank or
-comment-only tail lines remain outside the owned block and are preserved. The
-recovery does not write the marker. Missing root/begin markers, duplicate or
-foreign boundaries, provider content changes, unsafe table scope, ambiguous
-candidates, and receipt mismatch remain blocked.
+comment-only tail lines remain outside the owned block and are preserved.
+Status, refresh, and ordinary uninstall recovery do not write the marker. If
+the initial release-setup account-cache preflight fails while this exact state
+is active, the downloaded payload may materialize only the receipt-proven marker
+under the private lifecycle lock. It revalidates state ownership, configuration
+bytes, the unique candidate, and Codex shutdown immediately before an atomic
+compare-and-swap write; CLI and runtime state remain unchanged. Missing
+root/begin markers, duplicate or foreign boundaries, provider content changes,
+unsafe table scope, ambiguous candidates, and receipt mismatch remain blocked.
 
 ## Uninstall and purge boundary
 

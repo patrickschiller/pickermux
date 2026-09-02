@@ -7,6 +7,18 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-09-02
+
+### Fixed
+
+- Setup no longer leaves an older CLI unable to uninstall when a
+  receipt-recoverable provider end marker coincides with a missing or stale
+  Codex account cache. Before the initial cache preflight returns its recovery
+  instructions, the downloaded setup payload atomically restores only that
+  uniquely receipt-proven marker under the lifecycle lock. CLI and runtime
+  activation remain unchanged, while every ambiguous or edited configuration
+  still fails closed.
+
 ## [0.5.2] - 2026-09-02
 
 ### Fixed
@@ -151,7 +163,8 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
   paths and file types, refuses root execution and foreign launchers, and
   restores the previous distribution state when activation fails.
 
-[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.5.2...HEAD
+[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.5.3...HEAD
+[0.5.3]: https://github.com/patrickschiller/pickermux/releases/tag/v0.5.3
 [0.5.2]: https://github.com/patrickschiller/pickermux/releases/tag/v0.5.2
 [0.5.1]: https://github.com/patrickschiller/pickermux/releases/tag/v0.5.1
 [0.5.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.5.0

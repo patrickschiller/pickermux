@@ -84,6 +84,43 @@ async function temporaryFixture(t, version = "0.4.0", marker = "first") {
   };
 }
 
+async function installRecoverableMarkerConfig(fixture) {
+  await mkdir(fixture.codexHome, { recursive: true });
+  const originalConfig = [
+    'model = "gpt-5.6-sol"',
+    "[features]",
+    "web_search = true",
+    "",
+  ].join("\n");
+  await writeFile(fixture.installPaths.configPath, originalConfig);
+  await installConfig({
+    configPath: fixture.installPaths.configPath,
+    statePath: fixture.installPaths.statePath,
+    backupDirectory: fixture.installPaths.backupDirectory,
+    model: "lmstudio/test",
+    modelProvider: "model_bridge_test",
+    modelCatalogJson: fixture.installPaths.catalogPath,
+    modelReasoningEffort: "low",
+    provider: {
+      id: "model_bridge_test",
+      name: "OpenAI",
+      baseUrl: "http://127.0.0.1:4210/c/test-capability/v1",
+      wireApi: "responses",
+      requiresOpenAiAuth: true,
+      supportsWebsockets: false,
+      supportsStandaloneWebSearch: false,
+      requestMaxRetries: 0,
+      streamMaxRetries: 0,
+      streamIdleTimeoutMs: 30_000,
+    },
+  });
+  const installedConfig = await readFile(fixture.installPaths.configPath, "utf8");
+  const damagedConfig = installedConfig.replace(CONFIG_MARKERS.providerEnd, "");
+  assert.notEqual(damagedConfig, installedConfig);
+  await writeFile(fixture.installPaths.configPath, damagedConfig);
+  return { damagedConfig, installedConfig, originalConfig };
+}
+
 async function pathExists(target) {
   try {
     await access(target);
@@ -1614,51 +1651,15 @@ test("setup orchestration preflights desktop, loaded LLM, config, and lifecycle 
       paths: recoveryFixture.distributionPaths,
       activate: async () => ({ action: "install" }),
     });
-    await mkdir(recoveryFixture.codexHome, { recursive: true });
-    const originalConfig = [
-      'model = "gpt-5.6-sol"',
-      "[features]",
-      "web_search = true",
-      "",
-    ].join("\n");
-    await writeFile(recoveryFixture.installPaths.configPath, originalConfig);
-    await installConfig({
-      configPath: recoveryFixture.installPaths.configPath,
-      statePath: recoveryFixture.installPaths.statePath,
-      backupDirectory: recoveryFixture.installPaths.backupDirectory,
-      model: "lmstudio/test",
-      modelProvider: "model_bridge_test",
-      modelCatalogJson: recoveryFixture.installPaths.catalogPath,
-      modelReasoningEffort: "low",
-      provider: {
-        id: "model_bridge_test",
-        name: "OpenAI",
-        baseUrl: "http://127.0.0.1:4210/c/test-capability/v1",
-        wireApi: "responses",
-        requiresOpenAiAuth: true,
-        supportsWebsockets: false,
-        supportsStandaloneWebSearch: false,
-        requestMaxRetries: 0,
-        streamMaxRetries: 0,
-        streamIdleTimeoutMs: 30_000,
-      },
-    });
-    const installedConfig = await readFile(
-      recoveryFixture.installPaths.configPath,
-      "utf8",
+    const { damagedConfig } = await installRecoverableMarkerConfig(
+      recoveryFixture,
     );
-    const damagedConfig = installedConfig.replace(
-      CONFIG_MARKERS.providerEnd,
-      "",
-    );
-    assert.notEqual(damagedConfig, installedConfig);
-    await writeFile(recoveryFixture.installPaths.configPath, damagedConfig);
 
     await writeFile(
       path.join(recoveryFixture.source, "package.json"),
       `${JSON.stringify({
         name: "pickermux",
-        version: "0.5.2",
+        version: "0.5.3",
         type: "module",
       }, null, 2)}\n`,
     );
@@ -1682,11 +1683,11 @@ test("setup orchestration preflights desktop, loaded LLM, config, and lifecycle 
       },
     });
 
-    assert.equal(result.version, "0.5.2");
+    assert.equal(result.version, "0.5.3");
     assert.equal(result.activation.action, "upgrade");
     assert.equal(
       refreshedFrom,
-      path.join(recoveryFixture.distributionPaths.versionsDirectory, "0.5.2"),
+      path.join(recoveryFixture.distributionPaths.versionsDirectory, "0.5.3"),
     );
     assert.equal(
       await readFile(recoveryFixture.installPaths.configPath, "utf8"),
@@ -1714,7 +1715,68 @@ test("setup orchestration preflights desktop, loaded LLM, config, and lifecycle 
       (await validateDistributionInstallation({
         paths: recoveryFixture.distributionPaths,
       })).receipt.activeVersion,
-      "0.5.2",
+      "0.5.3",
+    );
+  });
+
+  await t.test("cache preflight materializes a recovered marker so the older CLI can uninstall", async (t) => {
+    const recoveryFixture = await temporaryFixture(t, "0.5.0", "old-payload");
+    await setupManagedDistribution({
+      sourceRoot: recoveryFixture.source,
+      paths: recoveryFixture.distributionPaths,
+      activate: async () => ({ action: "install" }),
+    });
+    const { damagedConfig } = await installRecoverableMarkerConfig(
+      recoveryFixture,
+    );
+    const cacheError = new Error("refresh required");
+    cacheError.code = "CODEX_ACCOUNT_CACHE_REFRESH_REQUIRED";
+    cacheError.codexClientVersion = "0.152.0";
+    let setupCalled = false;
+
+    await assert.rejects(
+      setupPickerMux({
+        sourceRoot: recoveryFixture.source,
+        paths: recoveryFixture.installPaths,
+        distributionPaths: recoveryFixture.distributionPaths,
+        codexPath: "/Applications/Test Codex.app/codex",
+        desktopRunningImpl: async () => false,
+        accountCacheImpl: async () => {
+          throw cacheError;
+        },
+        setupImpl: async () => {
+          setupCalled = true;
+        },
+      }),
+      /receipt-verified missing provider end marker was restored.*installed PickerMux CLI can uninstall safely/iu,
+    );
+    assert.equal(setupCalled, false);
+
+    const materializedConfig = await readFile(
+      recoveryFixture.installPaths.configPath,
+      "utf8",
+    );
+    assert.equal(
+      materializedConfig.replace(`${CONFIG_MARKERS.providerEnd}\n`, ""),
+      damagedConfig,
+    );
+    const recoveredStatus = await getConfigStatus({
+      configPath: recoveryFixture.installPaths.configPath,
+      statePath: recoveryFixture.installPaths.statePath,
+    });
+    assert.deepEqual(
+      {
+        installed: recoveredStatus.installed,
+        healthy: recoveredStatus.healthy,
+        status: recoveredStatus.status,
+      },
+      { installed: true, healthy: true, status: "installed" },
+    );
+    assert.equal(
+      (await validateDistributionInstallation({
+        paths: recoveryFixture.distributionPaths,
+      })).receipt.activeVersion,
+      "0.5.0",
     );
   });
 });

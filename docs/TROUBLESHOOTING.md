@@ -111,7 +111,11 @@ LaunchAgent restart loop. Rerun the latest-release installer. Setup checks the C
 account cache before staging the downloaded CLI, checks it again under the
 lifecycle lock before committing CLI controls, and checks it once more
 immediately before integration activation. A missing, malformed, or
-version-mismatched cache stops without changing active PickerMux state.
+version-mismatched cache stops without changing active CLI or runtime state. If
+the installed configuration has only a receipt-recoverable missing provider end
+marker, the initial preflight first restores that exact marker atomically under
+the lifecycle lock. This lets an older installed CLI complete the instructed
+uninstall instead of leaving setup and uninstall blocked on each other.
 
 After a successful setup, run:
 

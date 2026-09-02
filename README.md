@@ -71,7 +71,7 @@ or another shell file automatically. Until then, use the absolute command path.
 For a reproducible installation, replace `latest` with an exact release:
 
 ```bash
-/usr/bin/curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://github.com/patrickschiller/pickermux/releases/download/v0.5.2/install.sh | /bin/sh
+/usr/bin/curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://github.com/patrickschiller/pickermux/releases/download/v0.5.3/install.sh | /bin/sh
 ```
 
 Both one-line forms execute code downloaded from GitHub. The archive checksum
@@ -99,7 +99,7 @@ and follow the managed setup procedure in
 ~/.local/bin/pickermux discover
 ```
 
-For this release, the first command must print `pickermux 0.5.2`. `status`
+For this release, the first command must print `pickermux 0.5.3`. `status`
 checks the managed configuration, catalog, compatibility contract, and bridge;
 `discover` lists the LLMs currently loaded in LM Studio. `doctor` is
 deterministic and does not submit a model prompt. Its independent
@@ -348,6 +348,10 @@ proxy.
   virtual reinsertion recreates the receipt-recorded block digest at a safe
   line boundary before the next TOML table; blank or comment-only tail lines
   are preserved, while ambiguous or edited state remains blocked.
+- If that exact recovered-marker state coincides with a failed initial account
+  cache preflight, the downloaded setup payload atomically restores only the
+  receipt-proven marker so an older installed CLI can complete recovery; active
+  CLI and runtime state are not changed.
 - Release payloads are versioned, checksum-verified, and extracted only after
   unsafe paths and file types have been rejected.
 - Uninstall inventories and revalidates exact owned paths before removal. Full

@@ -269,3 +269,9 @@ owned block and are preserved. `status` then reports
 remain available; any provider-scoped content change, duplicate or missing
 begin/root marker, unsafe scope tail, ambiguous candidate, or receipt mismatch
 still fails closed.
+
+If this recovered-marker state coincides with a failed initial account-cache
+preflight during release setup, the downloaded payload atomically materializes
+only the receipt-proven marker under the lifecycle lock before returning the
+uninstall-and-cache-refresh instructions. This changes neither the active CLI
+nor runtime, but it allows an older installed CLI to perform the safe uninstall.
