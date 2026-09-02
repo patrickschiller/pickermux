@@ -118,6 +118,38 @@ compare-and-swap write; CLI and runtime state remain unchanged. Missing
 root/begin markers, duplicate or foreign boundaries, provider content changes,
 unsafe table scope, ambiguous candidates, and receipt mismatch remain blocked.
 
+## Full-refresh application boundary
+
+`pickermux refresh --full` is an explicit interactive recovery operation. It
+rejects `--json` and starts only after the user confirms that Codex will quit
+twice and active tasks may be interrupted. Ordinary `refresh` never starts this
+application-control sequence merely because an otherwise valid account cache
+is old.
+
+The one-time helper requests Codex shutdown through its normal Apple-event
+lifecycle and verifies stable LaunchServices state. It never sends a forced
+kill signal. Codex is reopened by its bundle identifier with a narrow allowlist
+of ordinary macOS session variables; provider credentials, Codex overrides,
+capability values, and the invoking shell's unrelated environment are not
+forwarded to the app.
+
+Temporary suspension uses the existing receipt and ownership boundaries. It
+does not purge provider credentials, verified backups, certification receipts,
+or the receipt-owned CLI distribution. Reactivation is allowed only after
+Codex produces a structurally safe cache for the exact client version and after
+Codex has fully quit again. When a valid baseline cache existed, the accepted
+cache must also have a later fetch timestamp. The ordinary transactional
+refresh and rollback checks remain authoritative for republishing the
+integration.
+
+A private checkpoint records the last completed phase so a retry can revalidate
+live state before continuing a half-finished operation. It does not contain
+native authentication, provider credential values, private prompts, model
+responses, or the bridge capability path. A failure before suspension removes
+the transient checkpoint because no integration mutation needs recovery. From
+suspension onward, a failed or ambiguous phase retains private recovery
+evidence and fails closed; it is not reported as a successful reactivation.
+
 ## Uninstall and purge boundary
 
 The normal `pickermux uninstall` lifecycle restores Codex configuration and
@@ -149,6 +181,19 @@ credential values. Purge does not enumerate unrelated Keychain items or infer
 deletion targets from untrusted configuration. Provider IDs use the canonical
 configuration grammar with a 127-character maximum, and registry changes are
 serialized and revalidated before deletion.
+
+The canonical `model_bridge` full-purge configuration restore may append one
+marker-bounded, inert compatibility table in `config.toml` so Codex can parse
+historical chats. Its no-auth, loopback-port-zero, zero-retry definition cannot
+route a new request to an external provider. The append is part of the atomic
+compare-and-swap restore; a later installation removes only the exact unchanged
+end-of-file table while producing its normal verified backup. Any modified,
+foreign, or non-terminal `model_bridge` table remains a fail-closed conflict
+and is never overwritten. The bounded marker contains only a boolean for
+whether the restored config must remain a file. It is false only when the path
+was absent before installation and no user bytes survive restoration, preserving
+absence, an empty file, or surviving user content without recording that content
+or personal data.
 
 Foreign, modified, ambiguous, publicly accessible, or otherwise unsafe
 ownership state fails closed. `--force` may resolve an acknowledged conflict in

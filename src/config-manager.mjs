@@ -42,6 +42,16 @@ export const CONFIG_MARKERS = Object.freeze({
   providerEnd: "# <<< lm-studio-model-router:p2 provider <<<",
 });
 
+const HISTORICAL_MODEL_BRIDGE_PROVIDER_ID = "model_bridge";
+const HISTORICAL_MODEL_BRIDGE_MARKER_NAMESPACE =
+  "pickermux:historical-model-bridge";
+const HISTORICAL_MODEL_BRIDGE_MARKERS = Object.freeze({
+  begin: "# >>> pickermux:historical-model-bridge >>>",
+  end: "# <<< pickermux:historical-model-bridge <<<",
+});
+const HISTORICAL_MODEL_BRIDGE_CONFIG_EXISTED_PREFIX =
+  "# pickermux:historical-model-bridge-config-existed=";
+
 const LEGACY_P1_MARKERS = Object.freeze([
   "# >>> lm-studio-model-router:p1 root >>>",
   "# <<< lm-studio-model-router:p1 root <<<",
@@ -78,9 +88,19 @@ export async function installConfig(options) {
   }
 
   const current = await readConfigFile(configPath);
+  const priorConfig = removeHistoricalModelBridgeCompatibility(
+    current.text,
+    settings.provider.id,
+  );
+  const sourceBytes = priorConfig.removed
+    ? Buffer.from(priorConfig.text, "utf8")
+    : current.bytes;
+  const configExisted =
+    priorConfig.configExisted ?? current.exists;
   assertNoManagedMarkers(current.text);
 
-  const analysis = analyzeConfig(current.text, settings.provider.id);
+  const analysis = analyzeConfig(priorConfig.text, settings.provider.id);
+  assertNoHistoricalModelBridgeMarkerComments(priorConfig.text);
   const eol = analysis.eol;
   const rootBlock = renderRootBlock(settings, eol);
   const providerBlock = renderProviderBlock(settings.provider, eol);
@@ -96,13 +116,13 @@ export async function installConfig(options) {
     settings.backupDirectory,
     settings.now,
   );
-  await writeExactBackup(backupPath, current.bytes, current.mode);
+  await writeExactBackup(backupPath, sourceBytes, current.mode);
 
   const state = {
     version: STATE_VERSION,
     installedAt: settings.now.toISOString(),
     configPath,
-    configExisted: current.exists,
+    configExisted,
     configMode: current.mode,
     backupPath,
     providerId: settings.provider.id,
@@ -111,7 +131,7 @@ export async function installConfig(options) {
     model: settings.model,
     modelReasoningEffort: settings.modelReasoningEffort,
     catalog: settings.modelCatalogJson,
-    sourceSha256: sha256(current.bytes),
+    sourceSha256: sha256(sourceBytes),
     installedSha256: sha256(installedText),
     metadataPreservation: {
       mode: true,
@@ -453,6 +473,12 @@ export async function uninstallConfig(options) {
     force = false,
     beforeConfigCommit,
   } = normalizeOwnershipOptions(options);
+  if (
+    options.preserveHistoricalModelBridge !== undefined &&
+    typeof options.preserveHistoricalModelBridge !== "boolean"
+  ) {
+    throw new TypeError("preserveHistoricalModelBridge must be a boolean");
+  }
   const ownershipReceipt = options.ownershipReceipt ??
     await inventoryManagedConfigOwnership({
       configPath,
@@ -478,6 +504,54 @@ export async function uninstallConfig(options) {
         "ORPHANED_MANAGED_BLOCK",
         "Managed markers exist, but the installation state file is missing.",
       );
+    }
+    if (options.preserveHistoricalModelBridge === true) {
+      const historical = removeHistoricalModelBridgeCompatibility(
+        current.text,
+        HISTORICAL_MODEL_BRIDGE_PROVIDER_ID,
+      );
+      if (
+        hasProviderDefinition(
+          historical.text,
+          HISTORICAL_MODEL_BRIDGE_PROVIDER_ID,
+        )
+      ) {
+        throw failure(
+          "HISTORICAL_PROVIDER_CONFLICT",
+          "Refusing to replace an existing model_bridge provider while preserving historical chat compatibility.",
+        );
+      }
+      assertNoHistoricalModelBridgeMarkerComments(historical.text);
+      if (historical.removed) {
+        return {
+          changed: false,
+          installed: false,
+          configPath,
+          statePath,
+          historicalCompatibility: true,
+        };
+      }
+      const finalContents = Buffer.from(
+        appendHistoricalModelBridgeCompatibility(
+          current.text,
+          current.exists,
+        ),
+        "utf8",
+      );
+      await atomicWrite(configPath, finalContents, current.mode, {
+        expectedSource: snapshotOf(current),
+        beforeCommit: ownershipCommitGuard(
+          ownershipReceipt,
+          beforeConfigCommit,
+        ),
+      });
+      return {
+        changed: true,
+        installed: false,
+        configPath,
+        statePath,
+        historicalCompatibility: true,
+      };
     }
     return { changed: false, installed: false, configPath, statePath };
   }
@@ -568,7 +642,40 @@ export async function uninstallConfig(options) {
     restoredContents = restoredText;
   }
 
-  if (pristineInstall && state.configExisted === false) {
+  const preserveHistoricalModelBridge =
+    options.preserveHistoricalModelBridge === true &&
+    state.providerId === HISTORICAL_MODEL_BRIDGE_PROVIDER_ID;
+  let finalRestoredContents = restoredContents;
+  if (preserveHistoricalModelBridge) {
+    const restoredText = restoredContents?.toString("utf8") ?? "";
+    if (
+      hasProviderDefinition(
+        restoredText,
+        HISTORICAL_MODEL_BRIDGE_PROVIDER_ID,
+      )
+    ) {
+      throw failure(
+        "HISTORICAL_PROVIDER_CONFLICT",
+        "Refusing to replace an existing model_bridge provider while preserving historical chat compatibility.",
+      );
+    }
+    assertNoHistoricalModelBridgeMarkerComments(restoredText);
+    const historicalConfigExisted =
+      state.configExisted !== false || restoredText !== "";
+    finalRestoredContents = Buffer.from(
+      appendHistoricalModelBridgeCompatibility(
+        restoredText,
+        historicalConfigExisted,
+      ),
+      "utf8",
+    );
+  }
+  const configWasRemoved =
+    pristineInstall &&
+    state.configExisted === false &&
+    !preserveHistoricalModelBridge;
+
+  if (configWasRemoved) {
     await atomicRemove(configPath, {
       expectedSource: snapshotOf(current),
       beforeCommit: ownershipCommitGuard(
@@ -579,14 +686,14 @@ export async function uninstallConfig(options) {
   } else {
     await atomicWrite(
       configPath,
-      restoredContents,
+      finalRestoredContents,
       pristineInstall ? (state.configMode ?? current.mode) : current.mode,
       {
-      expectedSource: snapshotOf(current),
-      beforeCommit: ownershipCommitGuard(
-        ownershipReceipt,
-        beforeConfigCommit,
-      ),
+        expectedSource: snapshotOf(current),
+        beforeCommit: ownershipCommitGuard(
+          ownershipReceipt,
+          beforeConfigCommit,
+        ),
       },
     );
   }
@@ -598,9 +705,8 @@ export async function uninstallConfig(options) {
       await rollbackConfigAfterStateRemovalFailure({
         configPath,
         installedConfig: current,
-        restoredContents,
-        configWasRemoved:
-          pristineInstall && state.configExisted === false,
+        restoredContents: finalRestoredContents,
+        configWasRemoved,
       });
     } catch (caught) {
       rollbackError = caught;
@@ -625,6 +731,7 @@ export async function uninstallConfig(options) {
     catalog: state.catalog,
     metadataPreservation: state.metadataPreservation,
     restoredAssignments: state.priorAssignments.map(({ key }) => key),
+    historicalCompatibility: preserveHistoricalModelBridge,
   };
 }
 
@@ -1011,14 +1118,20 @@ function parseState(contents, path) {
 
 function analyzeConfig(source, providerId) {
   const lines = splitLines(source);
+  const lexicalLines = scanTomlLexicalLines(source).lines;
   const eol = detectEol(lines);
-  const firstTable = lines.findIndex((line) => isTableHeader(line.raw));
+  const tableStarts = new Set(
+    lexicalLines
+      .filter((line) => isTableHeader(line.code))
+      .map((line) => line.start),
+  );
+  const firstTable = lines.findIndex((line) => tableStarts.has(line.start));
   const rootEnd = firstTable === -1 ? lines.length : firstTable;
   const assignments = [];
 
   for (let index = 0; index < rootEnd; index += 1) {
     const line = lines[index];
-    const parsed = parseManagedRootLine(line.raw);
+    const parsed = parseManagedRootLine(lexicalLines[index].code);
     if (!parsed) continue;
     if (parsed.malformed) {
       throw failure(
@@ -1048,7 +1161,7 @@ function analyzeConfig(source, providerId) {
     }
   }
 
-  if (hasProviderTable(lines, providerId)) {
+  if (hasProviderDefinition(source, providerId)) {
     throw failure(
       "PROVIDER_TABLE_CONFLICT",
       `Provider table already exists: [model_providers.${providerId}]`,
@@ -1056,7 +1169,7 @@ function analyzeConfig(source, providerId) {
     );
   }
 
-  return { lines, eol, firstTable, assignments };
+  return { lines, eol, firstTable, assignments, tableStarts };
 }
 
 function parseManagedRootLine(raw) {
@@ -1103,12 +1216,235 @@ function isTableHeader(raw) {
   return /^\[\[?.+?\]\]?$/.test(code);
 }
 
-function hasProviderTable(lines, providerId) {
-  const escaped = escapeRegex(providerId);
-  const pattern = new RegExp(
-    String.raw`^\[\[?\s*model_providers\s*\.\s*(?:${escaped}|"${escaped}"|'${escaped}')\s*\]\]?$`,
+function hasProviderDefinition(source, providerId) {
+  const { lines } = scanTomlLexicalLines(source);
+  let tablePath = [];
+  for (const line of lines) {
+    const code = line.code.trim();
+    if (code === "") continue;
+    if (isTableHeader(code)) {
+      tablePath = parseTomlTablePath(code);
+      if (
+        isProviderPath(tablePath, providerId) ||
+        isProviderRootArrayHeader(code, tablePath)
+      ) {
+        return true;
+      }
+      continue;
+    }
+    if (!tablePath) continue;
+    const assignmentPath = parseTomlAssignmentKeyPath(code);
+    if (!assignmentPath) continue;
+    const fullPath = [...tablePath, ...assignmentPath];
+    if (
+      isProviderPath(fullPath, providerId) ||
+      (fullPath.length === 1 && fullPath[0] === "model_providers")
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isProviderPath(path, providerId) {
+  return (
+    path?.length >= 2 &&
+    path[0] === "model_providers" &&
+    path[1] === providerId
   );
-  return lines.some((line) => pattern.test(stripTomlComment(line.raw).trim()));
+}
+
+function isProviderRootArrayHeader(header, path) {
+  return (
+    header.startsWith("[[") &&
+    path?.length === 1 &&
+    path[0] === "model_providers"
+  );
+}
+
+function parseTomlTablePath(header) {
+  const array = header.startsWith("[[");
+  const closing = array ? "]]" : "]";
+  if (!header.startsWith(array ? "[[" : "[") || !header.endsWith(closing)) {
+    return null;
+  }
+  const contents = header.slice(array ? 2 : 1, -closing.length);
+  const parsed = parseTomlDottedKey(contents);
+  return parsed?.end === contents.length ? parsed.path : null;
+}
+
+function parseTomlAssignmentKeyPath(code) {
+  const parsed = parseTomlDottedKey(code);
+  return parsed && code[parsed.end] === "=" ? parsed.path : null;
+}
+
+function parseTomlDottedKey(source) {
+  const path = [];
+  let index = 0;
+  while (/\s/u.test(source[index] ?? "")) index += 1;
+  while (index < source.length) {
+    const segment = parseTomlKeySegment(source, index);
+    if (!segment) return null;
+    path.push(segment.value);
+    index = segment.end;
+    while (/\s/u.test(source[index] ?? "")) index += 1;
+    if (source[index] !== ".") return { path, end: index };
+    index += 1;
+    while (/\s/u.test(source[index] ?? "")) index += 1;
+  }
+  return null;
+}
+
+function parseTomlKeySegment(source, start) {
+  const character = source[start];
+  if (character === "'") {
+    const end = source.indexOf("'", start + 1);
+    if (end === -1) return null;
+    return { value: source.slice(start + 1, end), end: end + 1 };
+  }
+  if (character === '"') return parseTomlBasicKeySegment(source, start);
+  const match = source.slice(start).match(/^[A-Za-z0-9_-]+/u);
+  return match
+    ? { value: match[0], end: start + match[0].length }
+    : null;
+}
+
+function parseTomlBasicKeySegment(source, start) {
+  let value = "";
+  for (let index = start + 1; index < source.length; index += 1) {
+    const character = source[index];
+    if (character === '"') return { value, end: index + 1 };
+    if (character !== "\\") {
+      if (character === "\n" || character === "\r") return null;
+      value += character;
+      continue;
+    }
+    const escaped = source[index + 1];
+    const mapped = {
+      b: "\b",
+      t: "\t",
+      n: "\n",
+      f: "\f",
+      r: "\r",
+      '"': '"',
+      "\\": "\\",
+    }[escaped];
+    if (mapped !== undefined) {
+      value += mapped;
+      index += 1;
+      continue;
+    }
+    const width = escaped === "u" ? 4 : escaped === "U" ? 8 : 0;
+    if (width === 0) return null;
+    const hex = source.slice(index + 2, index + 2 + width);
+    if (!new RegExp(`^[0-9A-Fa-f]{${width}}$`, "u").test(hex)) return null;
+    const codePoint = Number.parseInt(hex, 16);
+    if (codePoint > 0x10ffff) return null;
+    value += String.fromCodePoint(codePoint);
+    index += width + 1;
+  }
+  return null;
+}
+
+function scanTomlLexicalLines(source) {
+  let multilineQuote = null;
+  const comments = [];
+  const lines = splitLines(source).map((line) => {
+    const code = line.raw.split("");
+    let index = 0;
+    while (index < line.raw.length) {
+      if (multilineQuote) {
+        const closing = findTomlMultilineStringEnd(
+          line.raw,
+          index,
+          multilineQuote,
+        );
+        if (!closing) {
+          maskCharacters(code, index, line.raw.length);
+          index = line.raw.length;
+          continue;
+        }
+        maskCharacters(code, index, closing.end);
+        index = closing.end;
+        multilineQuote = null;
+        continue;
+      }
+
+      const character = line.raw[index];
+      if (character === "#") {
+        comments.push(line.raw.slice(index + 1));
+        maskCharacters(code, index, line.raw.length);
+        break;
+      }
+      if (
+        (character === '"' || character === "'") &&
+        line.raw.startsWith(character.repeat(3), index)
+      ) {
+        maskCharacters(code, index, index + 3);
+        multilineQuote = character;
+        index += 3;
+        continue;
+      }
+      if (character === '"') {
+        index = skipTomlBasicString(line.raw, index);
+        continue;
+      }
+      if (character === "'") {
+        index = skipTomlLiteralString(line.raw, index);
+        continue;
+      }
+      index += 1;
+    }
+    return { ...line, code: code.join("") };
+  });
+  if (multilineQuote) {
+    throw failure(
+      "MALFORMED_TOML_MULTILINE_STRING",
+      "Codex config contains an unterminated multiline TOML string.",
+    );
+  }
+  return { lines, comments };
+}
+
+function findTomlMultilineStringEnd(source, start, quote) {
+  for (let index = start; index < source.length; index += 1) {
+    if (!source.startsWith(quote.repeat(3), index)) continue;
+    if (quote === '"' && isEscapedTomlQuote(source, index)) continue;
+    let end = index + 3;
+    while (source[end] === quote) end += 1;
+    return { end };
+  }
+  return null;
+}
+
+function isEscapedTomlQuote(source, index) {
+  let backslashes = 0;
+  for (let cursor = index - 1; cursor >= 0 && source[cursor] === "\\"; cursor -= 1) {
+    backslashes += 1;
+  }
+  return backslashes % 2 === 1;
+}
+
+function skipTomlBasicString(source, start) {
+  for (let index = start + 1; index < source.length; index += 1) {
+    if (source[index] === "\\") {
+      index += 1;
+      continue;
+    }
+    if (source[index] === '"') return index + 1;
+  }
+  return source.length;
+}
+
+function skipTomlLiteralString(source, start) {
+  const end = source.indexOf("'", start + 1);
+  return end === -1 ? source.length : end + 1;
+}
+
+function maskCharacters(characters, start, end) {
+  for (let index = start; index < end; index += 1) {
+    characters[index] = " ";
+  }
 }
 
 function installBlocks(analysis, rootBlock, providerBlock, eol) {
@@ -1120,7 +1456,9 @@ function installBlocks(analysis, rootBlock, providerBlock, eol) {
   );
 
   let insertionIndex;
-  insertionIndex = filteredLines.findIndex((line) => isTableHeader(line.raw));
+  insertionIndex = filteredLines.findIndex((line) =>
+    analysis.tableStarts.has(line.start),
+  );
   if (insertionIndex === -1) insertionIndex = filteredLines.length;
 
   const before = joinLines(filteredLines.slice(0, insertionIndex));
@@ -1162,6 +1500,69 @@ function renderProviderBlock(provider, eol) {
   appendInteger(lines, "stream_idle_timeout_ms", provider.streamIdleTimeoutMs);
   lines.push(CONFIG_MARKERS.providerEnd, "");
   return lines.join(eol);
+}
+
+function renderHistoricalModelBridgeCompatibility(eol, configExisted) {
+  return [
+    HISTORICAL_MODEL_BRIDGE_MARKERS.begin,
+    "# Preserves historical chat parsing after PickerMux is removed.",
+    `${HISTORICAL_MODEL_BRIDGE_CONFIG_EXISTED_PREFIX}${configExisted ? "true" : "false"}`,
+    `[model_providers.${HISTORICAL_MODEL_BRIDGE_PROVIDER_ID}]`,
+    'name = "PickerMux (uninstalled)"',
+    'base_url = "http://127.0.0.1:0/v1"',
+    'wire_api = "responses"',
+    "requires_openai_auth = false",
+    "supports_websockets = false",
+    "supports_standalone_web_search = false",
+    "request_max_retries = 0",
+    "stream_max_retries = 0",
+    HISTORICAL_MODEL_BRIDGE_MARKERS.end,
+    "",
+  ].join(eol);
+}
+
+function appendHistoricalModelBridgeCompatibility(source, configExisted) {
+  const eol = detectEol(splitLines(source));
+  const compatibility = renderHistoricalModelBridgeCompatibility(
+    eol,
+    configExisted,
+  );
+  return source === "" ? compatibility : `${source}${eol}${compatibility}`;
+}
+
+function removeHistoricalModelBridgeCompatibility(source, providerId) {
+  if (providerId !== HISTORICAL_MODEL_BRIDGE_PROVIDER_ID) {
+    return { text: source, removed: false };
+  }
+  const eol = detectEol(splitLines(source));
+  for (const configExisted of [true, false]) {
+    const block = renderHistoricalModelBridgeCompatibility(eol, configExisted);
+    const suffix = `${eol}${block}`;
+    if (source === block) {
+      return { text: "", removed: true, configExisted };
+    }
+    if (configExisted && source.endsWith(suffix)) {
+      return {
+        text: source.slice(0, -suffix.length),
+        removed: true,
+        configExisted,
+      };
+    }
+  }
+  return { text: source, removed: false };
+}
+
+function assertNoHistoricalModelBridgeMarkerComments(source) {
+  if (
+    scanTomlLexicalLines(source).comments.some((comment) =>
+      comment.includes(HISTORICAL_MODEL_BRIDGE_MARKER_NAMESPACE),
+    )
+  ) {
+    throw failure(
+      "HISTORICAL_MARKER_CONFLICT",
+      "Historical model_bridge compatibility markers are present but do not match the exact removable end-of-file block.",
+    );
+  }
 }
 
 function appendInteger(lines, key, value) {

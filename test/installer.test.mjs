@@ -643,7 +643,14 @@ test("setup safely handles downgrades, foreign state, locks, and modified manage
         paths: fixture.distributionPaths,
         activate: async () => ({}),
       }),
-      /another PickerMux setup or removal is in progress/iu,
+      (error) => {
+        assert.match(
+          error.message,
+          /another PickerMux setup or removal is in progress/iu,
+        );
+        assert.equal(error.code, "PICKERMUX_INSTALLATION_LOCK_BUSY");
+        return true;
+      },
     );
   });
 
@@ -688,7 +695,11 @@ test("setup safely handles downgrades, foreign state, locks, and modified manage
         },
         activate: async () => ({}),
       }),
-      /lock permissions are unsafe/iu,
+      (error) => {
+        assert.match(error.message, /lock permissions are unsafe/iu);
+        assert.notEqual(error.code, "PICKERMUX_INSTALLATION_LOCK_BUSY");
+        return true;
+      },
     );
     assert.equal(await readFile(fixture.distributionPaths.lockPath, "utf8"), "999999\n");
   });
@@ -1591,6 +1602,39 @@ test("setup orchestration preflights desktop, loaded LLM, config, and lifecycle 
       /stopped before activation/iu,
     );
     assert.equal(cacheChecks, 2);
+    assert.equal(activateCalled, false);
+  });
+
+  await t.test("pending full refresh is rechecked under the setup lock", async () => {
+    let activateCalled = false;
+    let pendingChecks = 0;
+    await assert.rejects(
+      setupPickerMux({
+        ...baseOptions,
+        configStatusImpl: async () => ({
+          installed: false,
+          healthy: true,
+          status: "not-installed",
+        }),
+        accountCacheImpl: async () => ({ ready: true }),
+        loadConfigImpl: async () => ({}),
+        assertNoPendingFullRefreshImpl: async () => {
+          pendingChecks += 1;
+          throw new Error("full refresh became pending before lock acquisition");
+        },
+        setupImpl: async ({ beforeControlCommit, activate }) => {
+          await beforeControlCommit();
+          activateCalled = true;
+          return activate({
+            distributionRoot: "/managed/versions/0.5.4",
+            previousVersion: null,
+            version: "0.5.4",
+          });
+        },
+      }),
+      /full refresh became pending before lock acquisition/iu,
+    );
+    assert.equal(pendingChecks, 1);
     assert.equal(activateCalled, false);
   });
 

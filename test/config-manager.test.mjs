@@ -680,6 +680,808 @@ test("provider table conflicts are rejected without changing config", async (t) 
   assert.equal(await readFile(fixture.configPath, "utf8"), source);
 });
 
+test("quoted TOML provider table paths fail closed without matching single keys", async (t) => {
+  const headers = [
+    '["model_providers".model_bridge_fixture]',
+    '[model_providers."model_bridge_fixture"]',
+    "['model_providers'.'model_bridge_fixture']",
+    '["model\\u005fproviders"."model\\u005fbridge\\u005ffixture"]',
+  ];
+  for (const header of headers) {
+    await t.test(header, async (t) => {
+      const fixture = await makeFixture(t);
+      const source = `${header}\nname = "Do not overwrite"\n`;
+      await writeFile(fixture.configPath, source);
+      await assert.rejects(
+        installConfig(fixture.options()),
+        (error) => error.code === "PROVIDER_TABLE_CONFLICT",
+      );
+      assert.equal(await readFile(fixture.configPath, "utf8"), source);
+    });
+  }
+
+  const fixture = await makeFixture(t);
+  const unrelated = '["model_providers.model_bridge_fixture"]\nname = "Unrelated single key"\n';
+  await writeFile(fixture.configPath, unrelated);
+  await installConfig(fixture.options());
+  assert.match(await readFile(fixture.configPath, "utf8"), /Unrelated single key/u);
+});
+
+test("inline and dotted TOML provider definitions fail closed in install and state-absent purge", async (t) => {
+  const sourcesFor = (providerId) => {
+    const escapedProviderId = providerId.replaceAll("_", "\\u005f");
+    return [
+      [
+        "inline provider in parent table",
+        `[model_providers]\n${providerId} = { name = "Foreign" }\n`,
+      ],
+      [
+        "root dotted provider",
+        `model_providers.${providerId} = { name = "Foreign" }\n`,
+      ],
+      [
+        "quoted dotted provider",
+        `"model_providers"."${providerId}" = { name = "Foreign" }\n`,
+      ],
+      [
+        "escaped quoted dotted provider",
+        `"model\\u005fproviders"."${escapedProviderId}" = { name = "Foreign" }\n`,
+      ],
+      [
+        "sealed root inline table",
+        'model_providers = { other = { name = "Foreign" } }\n',
+      ],
+      [
+        "array-of-tables provider root",
+        '[[model_providers]]\nname = "Foreign"\n',
+      ],
+      [
+        "escaped array-of-tables provider root",
+        '[["model\\u005fproviders"]]\nname = "Foreign"\n',
+      ],
+      [
+        "root target subtree",
+        `model_providers.${providerId}.options.retries = 1\n`,
+      ],
+      [
+        "parent-table target subtree",
+        `[model_providers]\n${providerId}.options = { retries = 1 }\n`,
+      ],
+      [
+        "target subtable",
+        `[model_providers.${providerId}.options]\nretries = 1\n`,
+      ],
+    ];
+  };
+  const provider = {
+    id: "model_bridge",
+    name: "Model Bridge Fixture",
+    baseUrl: "http://127.0.0.1:1234/v1/",
+    wireApi: "responses",
+    requiresOpenAiAuth: false,
+    supportsWebsockets: false,
+    supportsStandaloneWebSearch: false,
+  };
+
+  for (const [name, source] of sourcesFor("model_bridge_fixture")) {
+    await t.test(`install: ${name}`, async (t) => {
+      const fixture = await makeFixture(t);
+      await writeFile(fixture.configPath, source);
+      await assert.rejects(
+        installConfig(fixture.options()),
+        (error) => error.code === "PROVIDER_TABLE_CONFLICT",
+      );
+      assert.equal(await readFile(fixture.configPath, "utf8"), source);
+      await assert.rejects(stat(fixture.statePath), { code: "ENOENT" });
+    });
+  }
+
+  for (const [name, source] of sourcesFor("model_bridge")) {
+    await t.test(`state-absent purge: ${name}`, async (t) => {
+      const fixture = await makeFixture(t);
+      await writeFile(fixture.configPath, source);
+      await assert.rejects(
+        uninstallConfig({
+          ...fixture.paths(),
+          preserveHistoricalModelBridge: true,
+        }),
+        (error) => error.code === "HISTORICAL_PROVIDER_CONFLICT",
+      );
+      assert.equal(await readFile(fixture.configPath, "utf8"), source);
+    });
+  }
+
+  await t.test("parent table alone remains available", async (t) => {
+    const fixture = await makeFixture(t);
+    const source = "[model_providers]\n";
+    await writeFile(fixture.configPath, source);
+    const installed = await installConfig(fixture.options());
+    assert.equal(installed.changed, true);
+  });
+
+  await t.test("single quoted dotted key remains unrelated", async (t) => {
+    const fixture = await makeFixture(t);
+    const source = [
+      '"model_providers.model_bridge" = { name = "Unrelated" }',
+      "",
+    ].join("\n");
+    await writeFile(fixture.configPath, source);
+    const preserved = await uninstallConfig({
+      ...fixture.paths(),
+      preserveHistoricalModelBridge: true,
+    });
+    assert.equal(preserved.historicalCompatibility, true);
+    assert.match(
+      await readFile(fixture.configPath, "utf8"),
+      /"model_providers\.model_bridge"/u,
+    );
+  });
+});
+
+test("install removes only the exact end-bounded historical model_bridge compatibility table", async (t) => {
+  const fixture = await makeFixture(t);
+  const original = 'model = "gpt-5.6-sol"\n';
+  const compatibility = [
+    "# >>> pickermux:historical-model-bridge >>>",
+    "# Preserves historical chat parsing after PickerMux is removed.",
+    "# pickermux:historical-model-bridge-config-existed=true",
+    "[model_providers.model_bridge]",
+    'name = "PickerMux (uninstalled)"',
+    'base_url = "http://127.0.0.1:0/v1"',
+    'wire_api = "responses"',
+    "requires_openai_auth = false",
+    "supports_websockets = false",
+    "supports_standalone_web_search = false",
+    "request_max_retries = 0",
+    "stream_max_retries = 0",
+    "# <<< pickermux:historical-model-bridge <<<",
+    "",
+  ].join("\n");
+  const provider = {
+    id: "model_bridge",
+    name: "Model Bridge Fixture",
+    baseUrl: "http://127.0.0.1:1234/v1/",
+    wireApi: "responses",
+    requiresOpenAiAuth: false,
+    supportsWebsockets: false,
+    supportsStandaloneWebSearch: false,
+  };
+
+  await writeFile(fixture.configPath, `${original}\n${compatibility}`);
+  const installed = await installConfig(fixture.options({
+    modelProvider: "model_bridge",
+    provider,
+  }));
+  assert.equal(await readFile(installed.backupPath, "utf8"), original);
+  assert.doesNotMatch(
+    await readFile(fixture.configPath, "utf8"),
+    /historical-model-bridge/u,
+  );
+
+  const modified = `${original}\n${compatibility}# user-owned trailing note\n`;
+  await writeFile(fixture.configPath, modified);
+  await unlink(fixture.statePath);
+  await assert.rejects(
+    installConfig(fixture.options({
+      modelProvider: "model_bridge",
+      provider,
+    })),
+    (error) => error.code === "PROVIDER_TABLE_CONFLICT",
+  );
+  assert.equal(await readFile(fixture.configPath, "utf8"), modified);
+
+  const falseProvenanceWithUserContent = `${original}\n${compatibility.replace(
+    "historical-model-bridge-config-existed=true",
+    "historical-model-bridge-config-existed=false",
+  )}`;
+  await writeFile(fixture.configPath, falseProvenanceWithUserContent);
+  await assert.rejects(
+    installConfig(fixture.options({
+      modelProvider: "model_bridge",
+      provider,
+    })),
+    (error) => error.code === "PROVIDER_TABLE_CONFLICT",
+  );
+  assert.equal(
+    await readFile(fixture.configPath, "utf8"),
+    falseProvenanceWithUserContent,
+  );
+});
+
+test("historical compatibility marker remnants fail closed before install or state-absent purge", async (t) => {
+  const provider = {
+    id: "model_bridge",
+    name: "Model Bridge Fixture",
+    baseUrl: "http://127.0.0.1:1234/v1/",
+    wireApi: "responses",
+    requiresOpenAiAuth: false,
+    supportsWebsockets: false,
+    supportsStandaloneWebSearch: false,
+  };
+  const remnants = [
+    [
+      "provider header removed",
+      [
+        "# >>> pickermux:historical-model-bridge >>> modified",
+        "# pickermux:historical-model-bridge-config-existed=true",
+        'name = "PickerMux (uninstalled)"',
+        "# <<< pickermux:historical-model-bridge <<<",
+        "",
+      ].join("\n"),
+    ],
+    [
+      "provider header renamed",
+      [
+        "# >>> pickermux:historical-model-bridge >>>",
+        "# pickermux:historical-model-bridge-config-existed=true",
+        "[model_providers.model_bridge_old]",
+        'name = "PickerMux (uninstalled)"',
+        "# <<< pickermux:historical-model-bridge <<<",
+        "",
+      ].join("\n"),
+    ],
+  ];
+
+  for (const [name, source] of remnants) {
+    await t.test(`install: ${name}`, async (t) => {
+      const fixture = await makeFixture(t);
+      await writeFile(fixture.configPath, source);
+      await assert.rejects(
+        installConfig(fixture.options({
+          modelProvider: "model_bridge",
+          provider,
+        })),
+        (error) => error.code === "HISTORICAL_MARKER_CONFLICT",
+      );
+      assert.equal(await readFile(fixture.configPath, "utf8"), source);
+      await assert.rejects(stat(fixture.statePath), { code: "ENOENT" });
+    });
+
+    await t.test(`state-absent purge: ${name}`, async (t) => {
+      const fixture = await makeFixture(t);
+      await writeFile(fixture.configPath, source);
+      await assert.rejects(
+        uninstallConfig({
+          ...fixture.paths(),
+          preserveHistoricalModelBridge: true,
+        }),
+        (error) => error.code === "HISTORICAL_MARKER_CONFLICT",
+      );
+      assert.equal(await readFile(fixture.configPath, "utf8"), source);
+      assert.equal(
+        source.match(/pickermux:historical-model-bridge/gu)?.length,
+        (await readFile(fixture.configPath, "utf8"))
+          .match(/pickermux:historical-model-bridge/gu)?.length,
+      );
+    });
+  }
+
+  const quotedFixture = await makeFixture(t);
+  await writeFile(
+    quotedFixture.configPath,
+    'user_note = "pickermux:historical-model-bridge"\n',
+  );
+  const installed = await installConfig(quotedFixture.options({
+    modelProvider: "model_bridge",
+    provider,
+  }));
+  assert.equal(installed.changed, true);
+});
+
+test("historical marker comments are distinguished from multiline string content", async (t) => {
+  const provider = {
+    id: "model_bridge",
+    name: "Model Bridge Fixture",
+    baseUrl: "http://127.0.0.1:1234/v1/",
+    wireApi: "responses",
+    requiresOpenAiAuth: false,
+    supportsWebsockets: false,
+    supportsStandaloneWebSearch: false,
+  };
+
+  for (const [name, delimiter] of [
+    ["basic", '\"\"\"'],
+    ["literal", "'''"],
+  ]) {
+    const stringSource = [
+      `user_note = ${delimiter}`,
+      "# pickermux:historical-model-bridge is string content",
+      'model = "not a root assignment"',
+      "[model_providers.model_bridge]",
+      'model_providers.model_bridge = { name = "also string content" }',
+      delimiter,
+      "",
+    ].join("\n");
+
+    await t.test(`${name} multiline content is not a conflict`, async (t) => {
+      const installFixture = await makeFixture(t);
+      await writeFile(installFixture.configPath, stringSource);
+      const installed = await installConfig(installFixture.options({
+        modelProvider: "model_bridge",
+        provider,
+      }));
+      assert.equal(installed.changed, true);
+      assert.equal(
+        await readFile(installed.backupPath, "utf8"),
+        stringSource,
+      );
+      await uninstallConfig(installFixture.paths());
+      assert.equal(
+        await readFile(installFixture.configPath, "utf8"),
+        stringSource,
+      );
+
+      const purgeFixture = await makeFixture(t);
+      await writeFile(purgeFixture.configPath, stringSource);
+      const preserved = await uninstallConfig({
+        ...purgeFixture.paths(),
+        preserveHistoricalModelBridge: true,
+      });
+      assert.equal(preserved.historicalCompatibility, true);
+      assert.ok(
+        (await readFile(purgeFixture.configPath, "utf8"))
+          .startsWith(stringSource),
+      );
+    });
+
+    const commentSource = [
+      `user_note = ${delimiter}`,
+      "ordinary string content",
+      `${delimiter} # pickermux:historical-model-bridge-orphaned`,
+      "",
+    ].join("\n");
+
+    await t.test(`${name} trailing marker comment is a conflict`, async (t) => {
+      const installFixture = await makeFixture(t);
+      await writeFile(installFixture.configPath, commentSource);
+      await assert.rejects(
+        installConfig(installFixture.options({
+          modelProvider: "model_bridge",
+          provider,
+        })),
+        (error) => error.code === "HISTORICAL_MARKER_CONFLICT",
+      );
+      assert.equal(
+        await readFile(installFixture.configPath, "utf8"),
+        commentSource,
+      );
+
+      const purgeFixture = await makeFixture(t);
+      await writeFile(purgeFixture.configPath, commentSource);
+      await assert.rejects(
+        uninstallConfig({
+          ...purgeFixture.paths(),
+          preserveHistoricalModelBridge: true,
+        }),
+        (error) => error.code === "HISTORICAL_MARKER_CONFLICT",
+      );
+      assert.equal(
+        await readFile(purgeFixture.configPath, "utf8"),
+        commentSource,
+      );
+    });
+  }
+});
+
+test("unterminated multiline strings fail closed before install or state-absent purge", async (t) => {
+  const provider = {
+    id: "model_bridge",
+    name: "Model Bridge Fixture",
+    baseUrl: "http://127.0.0.1:1234/v1/",
+    wireApi: "responses",
+    requiresOpenAiAuth: false,
+    supportsWebsockets: false,
+    supportsStandaloneWebSearch: false,
+  };
+
+  for (const [name, delimiter] of [
+    ["basic", '\"\"\"'],
+    ["literal", "'''"],
+  ]) {
+    const source = [
+      `user_note = ${delimiter}`,
+      "# pickermux:historical-model-bridge-orphaned",
+      "",
+    ].join("\n");
+
+    await t.test(`install: ${name}`, async (t) => {
+      const fixture = await makeFixture(t);
+      await writeFile(fixture.configPath, source);
+      await assert.rejects(
+        installConfig(fixture.options({
+          modelProvider: "model_bridge",
+          provider,
+        })),
+        (error) => error.code === "MALFORMED_TOML_MULTILINE_STRING",
+      );
+      assert.equal(await readFile(fixture.configPath, "utf8"), source);
+      await assert.rejects(stat(fixture.statePath), { code: "ENOENT" });
+    });
+
+    await t.test(`state-absent purge: ${name}`, async (t) => {
+      const fixture = await makeFixture(t);
+      await writeFile(fixture.configPath, source);
+      await assert.rejects(
+        uninstallConfig({
+          ...fixture.paths(),
+          preserveHistoricalModelBridge: true,
+        }),
+        (error) => error.code === "MALFORMED_TOML_MULTILINE_STRING",
+      );
+      assert.equal(await readFile(fixture.configPath, "utf8"), source);
+    });
+  }
+});
+
+test("state-absent purge compatibility restores the ordinary-uninstall sequence", async (t) => {
+  const fixture = await makeFixture(t);
+  const original = 'model = "gpt-5.6-sol"\n';
+  const provider = {
+    id: "model_bridge",
+    name: "Model Bridge Fixture",
+    baseUrl: "http://127.0.0.1:1234/v1/",
+    wireApi: "responses",
+    requiresOpenAiAuth: false,
+    supportsWebsockets: false,
+    supportsStandaloneWebSearch: false,
+  };
+  const options = fixture.options({ modelProvider: "model_bridge", provider });
+  await writeFile(fixture.configPath, original);
+  await installConfig(options);
+  await uninstallConfig(fixture.paths());
+  await assert.rejects(stat(fixture.statePath), { code: "ENOENT" });
+
+  const preserved = await uninstallConfig({
+    ...fixture.paths(),
+    preserveHistoricalModelBridge: true,
+  });
+  assert.equal(preserved.changed, true);
+  assert.match(
+    await readFile(fixture.configPath, "utf8"),
+    /historical-model-bridge-config-existed=true/u,
+  );
+  const retained = await uninstallConfig({
+    ...fixture.paths(),
+    preserveHistoricalModelBridge: true,
+  });
+  assert.deepEqual(
+    { changed: retained.changed, historicalCompatibility: retained.historicalCompatibility },
+    { changed: false, historicalCompatibility: true },
+  );
+
+  const reinstalled = await installConfig(options);
+  assert.deepEqual(await readFile(reinstalled.backupPath), Buffer.from(original));
+  await uninstallConfig(fixture.paths());
+  assert.deepEqual(await readFile(fixture.configPath), Buffer.from(original));
+
+  await t.test("originally absent config remains absent after reinstall and ordinary uninstall", async (t) => {
+    const absentFixture = await makeFixture(t);
+    const absentOptions = absentFixture.options({
+      modelProvider: "model_bridge",
+      provider,
+    });
+    await installConfig(absentOptions);
+    await uninstallConfig(absentFixture.paths());
+    await assert.rejects(stat(absentFixture.configPath), { code: "ENOENT" });
+
+    await uninstallConfig({
+      ...absentFixture.paths(),
+      preserveHistoricalModelBridge: true,
+    });
+    assert.match(
+      await readFile(absentFixture.configPath, "utf8"),
+      /historical-model-bridge-config-existed=false/u,
+    );
+    await installConfig(absentOptions);
+    await uninstallConfig(absentFixture.paths());
+    await assert.rejects(stat(absentFixture.configPath), { code: "ENOENT" });
+  });
+});
+
+test("state-absent purge compatibility fails closed on concurrent state or quoted provider conflicts", async (t) => {
+  await t.test("concurrent state", async (t) => {
+    const fixture = await makeFixture(t);
+    const original = 'model = "gpt-5.6-sol"\n';
+    await writeFile(fixture.configPath, original);
+    await assert.rejects(
+      uninstallConfig({
+        ...fixture.paths(),
+        preserveHistoricalModelBridge: true,
+        beforeConfigCommit: async () => {
+          await mkdir(join(fixture.directory, "state"), {
+            recursive: true,
+            mode: 0o700,
+          });
+          await writeFile(fixture.statePath, "{}\n", { mode: 0o600 });
+        },
+      }),
+      (error) => error.code === "STATE_CHANGED_CONCURRENTLY",
+    );
+    assert.equal(await readFile(fixture.configPath, "utf8"), original);
+  });
+
+  await t.test("quoted provider", async (t) => {
+    const fixture = await makeFixture(t);
+    const source = '["model_providers"."model_bridge"]\nname = "foreign"\n';
+    await writeFile(fixture.configPath, source);
+    await assert.rejects(
+      uninstallConfig({
+        ...fixture.paths(),
+        preserveHistoricalModelBridge: true,
+      }),
+      (error) => error.code === "HISTORICAL_PROVIDER_CONFLICT",
+    );
+    assert.equal(await readFile(fixture.configPath, "utf8"), source);
+  });
+});
+
+test("state-absent purge validates the prefix of an exact terminal tombstone", async (t) => {
+  const compatibility = [
+    "# >>> pickermux:historical-model-bridge >>>",
+    "# Preserves historical chat parsing after PickerMux is removed.",
+    "# pickermux:historical-model-bridge-config-existed=true",
+    "[model_providers.model_bridge]",
+    'name = "PickerMux (uninstalled)"',
+    'base_url = "http://127.0.0.1:0/v1"',
+    'wire_api = "responses"',
+    "requires_openai_auth = false",
+    "supports_websockets = false",
+    "supports_standalone_web_search = false",
+    "request_max_retries = 0",
+    "stream_max_retries = 0",
+    "# <<< pickermux:historical-model-bridge <<<",
+    "",
+  ].join("\n");
+  const cases = [
+    {
+      name: "foreign provider table",
+      prefix: '[model_providers.model_bridge]\nname = "foreign"',
+      code: "HISTORICAL_PROVIDER_CONFLICT",
+    },
+    {
+      name: "stale ownership marker",
+      prefix: [
+        "# pickermux:historical-model-bridge-orphaned",
+        "[features]",
+        "web_search = true",
+      ].join("\n"),
+      code: "HISTORICAL_MARKER_CONFLICT",
+    },
+  ];
+
+  for (const { name, prefix, code } of cases) {
+    await t.test(name, async (t) => {
+      const fixture = await makeFixture(t);
+      const source = `${prefix}\n${compatibility}`;
+      await writeFile(fixture.configPath, source);
+      await assert.rejects(
+        uninstallConfig({
+          ...fixture.paths(),
+          preserveHistoricalModelBridge: true,
+        }),
+        (error) => error.code === code,
+      );
+      assert.equal(await readFile(fixture.configPath, "utf8"), source);
+    });
+  }
+});
+
+test("purge compatibility reinstalls preserve native config bytes across newline boundaries", async (t) => {
+  const provider = {
+    id: "model_bridge",
+    name: "Model Bridge Fixture",
+    baseUrl: "http://127.0.0.1:1234/v1/",
+    wireApi: "responses",
+    requiresOpenAiAuth: false,
+    supportsWebsockets: false,
+    supportsStandaloneWebSearch: false,
+  };
+  for (const [name, original] of [
+    ["LF", 'model = "gpt-5.6-sol"\noperator_setting = true\n'],
+    ["CRLF", 'model = "gpt-5.6-sol"\r\noperator_setting = true\r\n'],
+    ["no final newline", 'model = "gpt-5.6-sol"\noperator_setting = true'],
+  ]) {
+    await t.test(name, async (t) => {
+      const fixture = await makeFixture(t);
+      const options = fixture.options({
+        modelProvider: "model_bridge",
+        provider,
+      });
+      await writeFile(fixture.configPath, original);
+      await installConfig(options);
+      await uninstallConfig({
+        ...fixture.paths(),
+        preserveHistoricalModelBridge: true,
+      });
+
+      const reinstalled = await installConfig(options);
+      assert.deepEqual(await readFile(reinstalled.backupPath), Buffer.from(original));
+      await uninstallConfig(fixture.paths());
+      assert.deepEqual(await readFile(fixture.configPath), Buffer.from(original));
+    });
+  }
+});
+
+test("purge-only historical compatibility restore refuses a concurrent config change", async (t) => {
+  const fixture = await makeFixture(t);
+  const original = 'model = "gpt-5.6-sol"\n';
+  const provider = {
+    id: "model_bridge",
+    name: "Model Bridge Fixture",
+    baseUrl: "http://127.0.0.1:1234/v1/",
+    wireApi: "responses",
+    requiresOpenAiAuth: false,
+    supportsWebsockets: false,
+    supportsStandaloneWebSearch: false,
+  };
+  await writeFile(fixture.configPath, original);
+  await installConfig(fixture.options({
+    modelProvider: "model_bridge",
+    provider,
+  }));
+  const installed = await readFile(fixture.configPath, "utf8");
+  const concurrent = `${installed}user_setting = true\n`;
+
+  await assert.rejects(
+    uninstallConfig({
+      ...fixture.paths(),
+      preserveHistoricalModelBridge: true,
+      beforeConfigCommit: () => writeFile(fixture.configPath, concurrent),
+    }),
+    (error) => error.code === "CONFIG_CHANGED_CONCURRENTLY",
+  );
+  assert.equal(await readFile(fixture.configPath, "utf8"), concurrent);
+  assert.doesNotMatch(
+    await readFile(fixture.configPath, "utf8"),
+    /historical-model-bridge/u,
+  );
+  assert.equal((await getConfigStatus(fixture.paths())).installed, true);
+});
+
+test("ordinary canonical uninstall does not write historical compatibility", async (t) => {
+  const fixture = await makeFixture(t);
+  const original = 'model = "gpt-5.6-sol"\n';
+  const provider = {
+    id: "model_bridge",
+    name: "Model Bridge Fixture",
+    baseUrl: "http://127.0.0.1:1234/v1/",
+    wireApi: "responses",
+    requiresOpenAiAuth: false,
+    supportsWebsockets: false,
+    supportsStandaloneWebSearch: false,
+  };
+  await writeFile(fixture.configPath, original);
+  await installConfig(fixture.options({
+    modelProvider: "model_bridge",
+    provider,
+  }));
+
+  const result = await uninstallConfig(fixture.paths());
+  assert.equal(result.historicalCompatibility, false);
+  assert.equal(await readFile(fixture.configPath, "utf8"), original);
+});
+
+test("purge compatibility creates the only config table when no config existed before install", async (t) => {
+  const fixture = await makeFixture(t);
+  const provider = {
+    id: "model_bridge",
+    name: "Model Bridge Fixture",
+    baseUrl: "http://127.0.0.1:1234/v1/",
+    wireApi: "responses",
+    requiresOpenAiAuth: false,
+    supportsWebsockets: false,
+    supportsStandaloneWebSearch: false,
+  };
+  const options = fixture.options({
+    modelProvider: "model_bridge",
+    provider,
+  });
+
+  await installConfig(options);
+  const ordinary = await uninstallConfig(fixture.paths());
+  assert.equal(ordinary.historicalCompatibility, false);
+  await assert.rejects(stat(fixture.configPath), { code: "ENOENT" });
+
+  await installConfig(options);
+  const purged = await uninstallConfig({
+    ...fixture.paths(),
+    preserveHistoricalModelBridge: true,
+  });
+  const expected = [
+    "# >>> pickermux:historical-model-bridge >>>",
+    "# Preserves historical chat parsing after PickerMux is removed.",
+    "# pickermux:historical-model-bridge-config-existed=false",
+    "[model_providers.model_bridge]",
+    'name = "PickerMux (uninstalled)"',
+    'base_url = "http://127.0.0.1:0/v1"',
+    'wire_api = "responses"',
+    "requires_openai_auth = false",
+    "supports_websockets = false",
+    "supports_standalone_web_search = false",
+    "request_max_retries = 0",
+    "stream_max_retries = 0",
+    "# <<< pickermux:historical-model-bridge <<<",
+    "",
+  ].join("\n");
+  assert.equal(purged.historicalCompatibility, true);
+  assert.equal(await readFile(fixture.configPath, "utf8"), expected);
+  assert.equal((await stat(fixture.configPath)).mode & 0o777, 0o600);
+  await assert.rejects(stat(fixture.statePath), { code: "ENOENT" });
+  assert.deepEqual(
+    pickStatus(await getConfigStatus(fixture.paths())),
+    { installed: false, healthy: true, status: "not-installed" },
+  );
+
+  const reinstalled = await installConfig(options);
+  assert.deepEqual(await readFile(reinstalled.backupPath), Buffer.alloc(0));
+  await uninstallConfig(fixture.paths());
+  await assert.rejects(stat(fixture.configPath), { code: "ENOENT" });
+});
+
+test("tombstone provenance retains an originally empty config file", async (t) => {
+  const fixture = await makeFixture(t);
+  const provider = {
+    id: "model_bridge",
+    name: "Model Bridge Fixture",
+    baseUrl: "http://127.0.0.1:1234/v1/",
+    wireApi: "responses",
+    requiresOpenAiAuth: false,
+    supportsWebsockets: false,
+    supportsStandaloneWebSearch: false,
+  };
+  const options = fixture.options({ modelProvider: "model_bridge", provider });
+  await writeFile(fixture.configPath, "");
+  await installConfig(options);
+  await uninstallConfig({
+    ...fixture.paths(),
+    preserveHistoricalModelBridge: true,
+  });
+  assert.match(
+    await readFile(fixture.configPath, "utf8"),
+    /historical-model-bridge-config-existed=true/u,
+  );
+
+  const reinstalled = await installConfig(options);
+  assert.deepEqual(await readFile(reinstalled.backupPath), Buffer.alloc(0));
+  await uninstallConfig(fixture.paths());
+  assert.equal(await readFile(fixture.configPath, "utf8"), "");
+  assert.equal((await stat(fixture.configPath)).isFile(), true);
+});
+
+test("tombstone provenance retains user content added to an originally absent config", async (t) => {
+  const fixture = await makeFixture(t);
+  const provider = {
+    id: "model_bridge",
+    name: "Model Bridge Fixture",
+    baseUrl: "http://127.0.0.1:1234/v1/",
+    wireApi: "responses",
+    requiresOpenAiAuth: false,
+    supportsWebsockets: false,
+    supportsStandaloneWebSearch: false,
+  };
+  const options = fixture.options({ modelProvider: "model_bridge", provider });
+  await installConfig(options);
+  const installed = await readFile(fixture.configPath, "utf8");
+  const userContent = "[features]\nweb_search = true\n";
+  await writeFile(fixture.configPath, `${installed}${userContent}`);
+
+  await uninstallConfig({
+    ...fixture.paths(),
+    preserveHistoricalModelBridge: true,
+  });
+  const preserved = await readFile(fixture.configPath, "utf8");
+  assert.match(preserved, /historical-model-bridge-config-existed=true/u);
+  assert.ok(preserved.startsWith(userContent));
+
+  const reinstalled = await installConfig(options);
+  assert.deepEqual(
+    await readFile(reinstalled.backupPath),
+    Buffer.from(userContent),
+  );
+  await uninstallConfig(fixture.paths());
+  assert.deepEqual(await readFile(fixture.configPath), Buffer.from(userContent));
+});
+
 test("duplicate and malformed managed root keys are rejected, while table-scoped keys are ignored", async (t) => {
   await t.test("duplicate", async (t) => {
     const fixture = await makeFixture(t);
@@ -845,6 +1647,64 @@ test("failed state removal rolls the config back exactly and permits a clean ret
   const retried = await uninstallConfig(fixture.paths());
   assert.equal(retried.changed, true);
   assert.equal(await readFile(fixture.configPath, "utf8"), original);
+  await assert.rejects(readFile(fixture.statePath), { code: "ENOENT" });
+});
+
+test("failed purge compatibility state removal restores managed config before retry", async (t) => {
+  const fixture = await makeFixture(t);
+  const provider = {
+    id: "model_bridge",
+    name: "Model Bridge Fixture",
+    baseUrl: "http://127.0.0.1:1234/v1/",
+    wireApi: "responses",
+    requiresOpenAiAuth: false,
+    supportsWebsockets: false,
+    supportsStandaloneWebSearch: false,
+  };
+  await writeFile(fixture.configPath, 'model = "gpt-5.6-sol"\n', { mode: 0o640 });
+  await chmod(fixture.configPath, 0o640);
+  await installConfig(fixture.options({
+    modelProvider: "model_bridge",
+    provider,
+  }));
+  const installedConfig = await snapshotFile(fixture.configPath);
+  const installedState = await snapshotFile(fixture.statePath);
+  const stateDirectory = join(fixture.directory, "state");
+
+  await assert.rejects(
+    (async () => {
+      try {
+        await uninstallConfig({
+          ...fixture.paths(),
+          preserveHistoricalModelBridge: true,
+          beforeConfigCommit: () => chmod(stateDirectory, 0o500),
+        });
+      } finally {
+        await chmod(stateDirectory, 0o700);
+      }
+    })(),
+    (error) =>
+      error.code === "STATE_REMOVE_FAILED" &&
+      error.details?.rollbackCause === undefined,
+  );
+  const rolledBackConfig = await snapshotFile(fixture.configPath);
+  assert.deepEqual(rolledBackConfig.contents, installedConfig.contents);
+  assert.equal(rolledBackConfig.mode, installedConfig.mode);
+  assert.deepEqual(await snapshotFile(fixture.statePath), installedState);
+  assert.doesNotMatch(
+    await readFile(fixture.configPath, "utf8"),
+    /historical-model-bridge/u,
+  );
+
+  const retried = await uninstallConfig({
+    ...fixture.paths(),
+    preserveHistoricalModelBridge: true,
+  });
+  assert.equal(retried.historicalCompatibility, true);
+  assert.match(
+    await readFile(fixture.configPath, "utf8"),
+    /\[model_providers\.model_bridge\]/u,
+  );
   await assert.rejects(readFile(fixture.statePath), { code: "ENOENT" });
 });
 

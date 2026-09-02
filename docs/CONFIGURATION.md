@@ -259,6 +259,41 @@ pickermux setup --config /absolute/path/to/pickermux.config.json
 Fully quit and reopen Codex Desktop after a successful install, refresh, or
 certification so it reloads the static catalog.
 
+Ordinary `refresh` accepts an account cache for the exact installed Codex
+client regardless of cache age. The fetch timestamp and derived age remain
+available as neutral `doctor` diagnostics; age by itself does not require a
+configuration change or reinstall.
+
+When native account visibility really must be refreshed, use the explicit
+interactive recovery mode:
+
+```bash
+pickermux refresh --full
+```
+
+Full refresh preserves the already activated private service configuration,
+certification receipts, verified backups, and provider credentials while it
+temporarily suspends the Codex integration. It confirms the disruptive
+operation, gracefully quits Codex, opens it without PickerMux, requires a
+newly valid account cache for the exact client version, gracefully quits Codex
+again, transactionally reactivates the preserved integration, and opens Codex
+with the mixed catalog. A valid starting cache requires a later `fetched_at`;
+when no valid exact-version baseline exists, the recovery requires a newly
+valid exact-version cache. It rejects both `--json` and `--config` and never uses
+a forced kill. Do not use this mode merely to apply provider edits; use the
+normal explicit `refresh --config` flow above for that purpose.
+
+After suspension starts, the recovery helper keeps a private checkpoint until
+the sequence reaches a terminal success. A resumable failure explicitly tells
+you to rerun `pickermux refresh --full`; after the confirmation, the
+receipt-active helper continues the validated checkpoint. Do not delete
+`models_cache.json`, modify the installed service configuration, or run purge
+as a shortcut.
+
+`pickermux status` reports `full-refresh=idle` when no recovery is pending and
+the current phase otherwise. Its JSON form exposes the same information under
+`fullRefresh.status` and `fullRefresh.phase`.
+
 PickerMux normally requires every receipt-owned configuration marker to remain
 present. A missing provider end marker is treated as a virtual boundary only
 when reinserting that exact marker at one unique safe line boundary before the

@@ -18,7 +18,7 @@ import {
   stopBridgeService,
   writeRuntime,
 } from "../src/bridge-runtime.mjs";
-import { installConfig } from "../src/config-manager.mjs";
+import { installConfig, uninstallConfig } from "../src/config-manager.mjs";
 import {
   credentialCommand,
   purgePickerMux,
@@ -245,6 +245,9 @@ test("full uninstall revalidates ownership and stages registry and backups befor
       events.push("registry-committed");
       return { changed: true, cleanupPendingPath: null };
     },
+    assertNoPendingFullRefreshImpl: async () => {
+      events.push("full-refresh-rechecked");
+    },
     rmdirImpl: async () => {
       events.push("install-directory-removed");
     },
@@ -265,6 +268,7 @@ test("full uninstall revalidates ownership and stages registry and backups befor
     "runtime-inventoried",
     "registry-inventoried",
     "cli-staged",
+    "full-refresh-rechecked",
     "desktop-closed",
     "launch-agent-validated",
     "install-revalidated",
@@ -548,11 +552,11 @@ test("real full-purge composition removes only receipt-owned state", async (t) =
     statePath: fixture.paths.statePath,
     backupDirectory: fixture.paths.backupDirectory,
     model: "lmstudio/qwen/local",
-    modelProvider: "model_bridge_fixture",
+    modelProvider: "model_bridge",
     modelCatalogJson: fixture.paths.catalogPath,
     modelReasoningEffort: "low",
     provider: {
-      id: "model_bridge_fixture",
+      id: "model_bridge",
       name: "Model Bridge Fixture",
       baseUrl: "http://127.0.0.1:23456/v1/",
       wireApi: "responses",
@@ -562,6 +566,16 @@ test("real full-purge composition removes only receipt-owned state", async (t) =
     },
     now: new Date("2026-09-01T12:00:00.000Z"),
   });
+  // A prior ordinary uninstall has already restored config and removed the
+  // config state, but this later full purge must still preserve old-chat
+  // parsing while it removes the remaining receipt-owned artifacts.
+  const ordinaryUninstall = await uninstallConfig({
+    configPath: fixture.paths.configPath,
+    statePath: fixture.paths.statePath,
+    backupDirectory: fixture.paths.backupDirectory,
+  });
+  assert.equal(ordinaryUninstall.changed, true);
+  await assert.rejects(stat(fixture.paths.statePath), { code: "ENOENT" });
   await writeRuntime(
     fixture.paths.runtimePath,
     createRuntimeRecord({ configPath: fixture.paths.serviceConfigPath }),
@@ -652,13 +666,16 @@ test("real full-purge composition removes only receipt-owned state", async (t) =
     desktopRunningImpl: async () => false,
     deleteCredentialImpl: async (providerId) =>
       deleteProviderCredential(providerId, { execFileImpl: keychainExec }),
-    uninstallIntegrationImpl: async (options) => uninstallIntegration({
-      ...options,
-      stopServiceImpl: async (stopOptions) => stopBridgeService({
-        ...stopOptions,
-        execFileImpl: launchctlExec,
-      }),
-    }),
+    uninstallIntegrationImpl: async (options) => {
+      assert.equal(options.preserveHistoricalModelBridge, true);
+      return uninstallIntegration({
+        ...options,
+        stopServiceImpl: async (stopOptions) => stopBridgeService({
+          ...stopOptions,
+          execFileImpl: launchctlExec,
+        }),
+      });
+    },
   });
 
   assert.equal(result.beforeResult.integration.removedConfig.changed, true);
@@ -708,7 +725,26 @@ test("real full-purge composition removes only receipt-owned state", async (t) =
     ],
   ]);
 
-  assert.deepEqual(await readFile(fixture.paths.configPath), originalConfig);
+  const historicalCompatibility = Buffer.from([
+    "# >>> pickermux:historical-model-bridge >>>",
+    "# Preserves historical chat parsing after PickerMux is removed.",
+    "# pickermux:historical-model-bridge-config-existed=true",
+    "[model_providers.model_bridge]",
+    'name = "PickerMux (uninstalled)"',
+    'base_url = "http://127.0.0.1:0/v1"',
+    'wire_api = "responses"',
+    "requires_openai_auth = false",
+    "supports_websockets = false",
+    "supports_standalone_web_search = false",
+    "request_max_retries = 0",
+    "stream_max_retries = 0",
+    "# <<< pickermux:historical-model-bridge <<<",
+    "",
+  ].join("\n"));
+  assert.deepEqual(
+    await readFile(fixture.paths.configPath),
+    Buffer.concat([originalConfig, Buffer.from("\n"), historicalCompatibility]),
+  );
   for (const removedPath of [
     fixture.paths.installDirectory,
     fixture.paths.launchAgentPath,
@@ -724,6 +760,32 @@ test("real full-purge composition removes only receipt-owned state", async (t) =
       foreignBefore[index],
     );
   }
+  const reinstalled = await installConfig({
+    configPath: fixture.paths.configPath,
+    statePath: fixture.paths.statePath,
+    backupDirectory: fixture.paths.backupDirectory,
+    model: "lmstudio/qwen/local",
+    modelProvider: "model_bridge",
+    modelCatalogJson: fixture.paths.catalogPath,
+    modelReasoningEffort: "low",
+    provider: {
+      id: "model_bridge",
+      name: "Model Bridge Fixture",
+      baseUrl: "http://127.0.0.1:23456/v1/",
+      wireApi: "responses",
+      requiresOpenAiAuth: false,
+      supportsWebsockets: false,
+      supportsStandaloneWebSearch: false,
+    },
+    now: new Date("2026-09-01T13:00:00.000Z"),
+  });
+  const reinstalledText = await readFile(fixture.paths.configPath, "utf8");
+  assert.doesNotMatch(reinstalledText, /historical-model-bridge/u);
+  assert.equal(
+    (reinstalledText.match(/^\[model_providers\.model_bridge\]$/gmu) ?? []).length,
+    1,
+  );
+  assert.deepEqual(await readFile(reinstalled.backupPath), originalConfig);
 });
 
 test("real full-purge composition retries after a partial credential deletion", async (t) => {
@@ -767,6 +829,7 @@ test("real full-purge composition retries after a partial credential deletion", 
   try {
     await assert.rejects(
       runCli(["uninstall", "--purge"], {
+        assertNoPendingFullRefreshImpl: async () => null,
         purgeImpl: async () => purgePickerMux(purgeOptions),
       }),
       (error) => {
@@ -822,6 +885,7 @@ test("real full-purge CLI preserves commit failure after an empty Keychain phase
 
   await assertCliRejectsWithoutStdout(
     () => runCli(["uninstall", "--purge"], {
+      assertNoPendingFullRefreshImpl: async () => null,
       purgeImpl: async () => purgePickerMux(realPurgeOptions(fixture, {
         uninstallIntegrationImpl: async () => {
           throw new Error("simulated integration refusal");
@@ -918,6 +982,7 @@ test("real full-purge CLI preserves incomplete cleanup failures", async (t) => {
 
       await assertCliRejectsWithoutStdout(
         () => runCli(["uninstall", "--purge"], {
+          assertNoPendingFullRefreshImpl: async () => null,
           purgeImpl: async () => purgePickerMux(realPurgeOptions(
             fixture,
             scenario.overrides,
@@ -1480,6 +1545,7 @@ test("runCli dispatches --purge to the full-uninstall implementation", async () 
     },
   };
   const result = await runCli(["uninstall", "--purge", "--force"], {
+    assertNoPendingFullRefreshImpl: async () => null,
     purgeImpl: async (options) => {
       received = options;
       return expected;
@@ -1489,6 +1555,39 @@ test("runCli dispatches --purge to the full-uninstall implementation", async () 
   assert.equal(received.force, true);
   assert.equal(path.basename(received.paths.keychainRegistryPath), "keychain-state.json");
   assert.equal(typeof received.distributionPaths.receiptPath, "string");
+});
+
+test("runCli discloses the parser-only historical compatibility table after purge", async () => {
+  const stdout = [];
+  const originalWrite = process.stdout.write;
+  process.stdout.write = (chunk) => {
+    stdout.push(String(chunk));
+    return true;
+  };
+  try {
+    await runCli(["uninstall", "--purge"], {
+      assertNoPendingFullRefreshImpl: async () => null,
+      purgeImpl: async () => ({
+        beforeResult: {
+          integration: {
+            removedConfig: { historicalCompatibility: true },
+          },
+          backups: { cleanupPendingPath: null },
+          registry: { cleanupPendingPath: null },
+          installDirectoryRemoved: true,
+        },
+        removed: {
+          cleanupPendingPath: null,
+          versionsDirectoryRemoved: true,
+          applicationDirectoryRemoved: true,
+        },
+      }),
+    });
+  } finally {
+    process.stdout.write = originalWrite;
+  }
+  assert.match(stdout.join(""), /compatibility table remains only so historical chats parse/iu);
+  assert.match(stdout.join(""), /new turns through it fail locally/iu);
 });
 
 test("runCli rejects incomplete full purge results before its success path", async () => {
@@ -1508,6 +1607,7 @@ test("runCli rejects incomplete full purge results before its success path", asy
 
   await assert.rejects(
     runCli(["uninstall", "--purge"], {
+      assertNoPendingFullRefreshImpl: async () => null,
       purgeImpl: async () => ({
         ...base,
         removed: { cleanupPendingPath: "/private/.pickermux-cli.pending" },
@@ -1517,6 +1617,7 @@ test("runCli rejects incomplete full purge results before its success path", asy
   );
   await assert.rejects(
     runCli(["uninstall", "--purge"], {
+      assertNoPendingFullRefreshImpl: async () => null,
       purgeImpl: async () => ({
         ...base,
         beforeResult: {

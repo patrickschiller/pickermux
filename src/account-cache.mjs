@@ -59,6 +59,7 @@ export async function inspectCodexAccountCache({
     codexClientVersion: currentClientVersion,
     cacheClientVersion: account.clientVersion,
     fetchedAt: account.fetchedAt ?? null,
+    ageMs: account.ageMs ?? null,
     warning: account.warning ?? null,
     source: account.source,
     catalog: account.catalog,

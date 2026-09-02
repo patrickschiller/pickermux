@@ -459,6 +459,12 @@ function sameInstallationLockIdentity(snapshot, stats) {
   );
 }
 
+function installationLockBusyError(message) {
+  const error = new Error(message);
+  error.code = "PICKERMUX_INSTALLATION_LOCK_BUSY";
+  return error;
+}
+
 async function openValidatedInstallationLock(paths) {
   const initialStats = await lstatOptional(paths.lockPath);
   if (initialStats === null) return null;
@@ -503,6 +509,7 @@ async function openValidatedInstallationLock(paths) {
     return { handle, raw, snapshot };
   } catch (error) {
     await handle?.close().catch(() => {});
+    if (error?.code === "ENOENT") return null;
     throw error;
   }
 }
@@ -528,7 +535,7 @@ async function recoverStaleInstallationLock(paths, processKillImpl) {
       else if (error?.code !== "EPERM") throw error;
     }
     if (alive) {
-      throw new Error(
+      throw installationLockBusyError(
         `Another PickerMux setup or removal is in progress (PID ${pid})`,
       );
     }
@@ -606,7 +613,7 @@ async function acquireInstallationLock(
       if (created) await unlink(paths.lockPath).catch(() => {});
       if (error?.code !== "EEXIST") throw error;
       if (attempt === 1) {
-        throw new Error(
+        throw installationLockBusyError(
           `Another PickerMux setup or removal is in progress (${paths.lockPath})`,
         );
       }

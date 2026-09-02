@@ -1061,7 +1061,7 @@ test("rejects an account cache from another Codex client version", async () => {
   );
 });
 
-test("rejects future account caches and surfaces stale snapshots", async () => {
+test("rejects future account caches and accepts old exact-version snapshots", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "lmstudio-time-cache-"));
   const cachePath = path.join(directory, "models_cache.json");
   await writeFile(
@@ -1089,12 +1089,13 @@ test("rejects future account caches and surfaces stale snapshots", async () => {
       models: [donor],
     }),
   );
-  const stale = await loadCachedNativeCatalog({
+  const oldSnapshot = await loadCachedNativeCatalog({
     codexHome: directory,
     expectedClientVersion: "0.150.0",
-    now: Date.parse("2026-08-28T16:16:00Z"),
+    now: Date.parse("2026-08-29T01:19:00Z"),
   });
-  assert.match(stale.warning, /16 minute\(s\) old/u);
+  assert.equal(oldSnapshot.ageMs, 559 * 60_000);
+  assert.equal(oldSnapshot.warning, undefined);
 });
 
 test("writes an atomic private catalog with no temporary file left behind", async () => {

@@ -32,7 +32,10 @@ endorsed by, or supported by OpenAI, Codex, or LM Studio.
 - Codex Desktop installed, opened once while signed in, and then fully quit;
 - LM Studio with its local server enabled and at least one LLM loaded;
 - Node.js 22.15.0 or newer with native Zstandard support;
-- a current account model cache created by the installed Codex Desktop build.
+- a valid account model cache created by the installed Codex Desktop build.
+
+The cache must match the installed Codex client version. Its age alone does not
+make it invalid or require an uninstall.
 
 PickerMux is macOS-specific because it uses LaunchAgents, LaunchServices, and
 the macOS Keychain. The installer runs entirely as the current user: it neither
@@ -71,7 +74,7 @@ or another shell file automatically. Until then, use the absolute command path.
 For a reproducible installation, replace `latest` with an exact release:
 
 ```bash
-/usr/bin/curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://github.com/patrickschiller/pickermux/releases/download/v0.5.3/install.sh | /bin/sh
+/usr/bin/curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://github.com/patrickschiller/pickermux/releases/download/v0.5.4/install.sh | /bin/sh
 ```
 
 Both one-line forms execute code downloaded from GitHub. The archive checksum
@@ -99,10 +102,12 @@ and follow the managed setup procedure in
 ~/.local/bin/pickermux discover
 ```
 
-For this release, the first command must print `pickermux 0.5.3`. `status`
-checks the managed configuration, catalog, compatibility contract, and bridge;
-`discover` lists the LLMs currently loaded in LM Studio. `doctor` is
-deterministic and does not submit a model prompt. Its independent
+For this release, the first command must print `pickermux 0.5.4`. `status`
+checks the managed configuration, catalog, compatibility contract, and bridge.
+It also reports `full-refresh=idle` normally or the current recovery phase;
+`status --json` exposes the same state as `fullRefresh.status` and
+`fullRefresh.phase`. `discover` lists the LLMs currently loaded in LM Studio.
+`doctor` is deterministic and does not submit a model prompt. Its independent
 `codex-account-cache` check reports whether the signed-in account cache matches
 the installed Codex client even when the bridge runtime or mixed catalog is
 absent. Use `pickermux doctor --live` only when you intentionally want a real
@@ -115,6 +120,46 @@ LM Studio inference check. Once `~/.local/bin` is in `PATH`, the shorter
 2. Run `pickermux refresh`.
 3. Fully quit and reopen Codex Desktop.
 4. Select the namespaced LM Studio model from the normal Codex model picker.
+
+Normal `refresh` does not warn merely because the matching Codex account cache
+is old. Its fetch time and neutral age remain visible through `doctor`.
+
+## Refresh native account visibility
+
+Use the opt-in recovery mode when a newly entitled native model is missing or
+PickerMux reports that the account cache does not match the installed Codex
+client:
+
+```bash
+pickermux refresh --full
+```
+
+This is an interactive macOS lifecycle operation, not the normal daily refresh.
+Run it from the receipt-active installed PickerMux CLI, not directly from a
+development checkout. It first explains that Codex will quit twice and that
+active Codex tasks can be interrupted, then requires you to type `FULL` exactly.
+`--full` cannot be combined with `--json` or `--config`; it always reuses the
+installed service configuration.
+
+After confirmation, a one-time helper performs the recovery independently of
+the Codex process:
+
+1. request a graceful Codex quit and verify that the app fully stopped;
+2. temporarily suspend the PickerMux integration while retaining its installed
+   configuration, certifications, backups, and provider credentials;
+3. open Codex without PickerMux and wait for a newly valid account cache that
+   matches the installed client version; when a valid starting cache existed,
+   the new `fetched_at` must also be later;
+4. request another graceful quit, transactionally reactivate the preserved
+   PickerMux configuration, and run the normal validation gates;
+5. reopen Codex so it loads the refreshed mixed catalog.
+
+PickerMux never escalates a refused or timed-out graceful quit to a forced kill.
+The helper uses bounded waits and a private checkpoint. If the sequence pauses
+after suspension, rerunning `pickermux refresh --full` and confirming again
+resumes that validated checkpoint. It otherwise fails closed rather than
+claiming that PickerMux was reactivated successfully. See
+[Troubleshooting](docs/TROUBLESHOOTING.md#full-account-cache-refresh-stops-before-completion).
 
 ## Text-only performance
 
@@ -159,8 +204,10 @@ The same version is safe to run again, while an implicit downgrade is refused.
 Setup checks the account-scoped Codex model cache before staging, repeats the
 check under the lifecycle lock, and checks it again immediately before
 activation. A missing or client-version-mismatched cache leaves the active
-installation unchanged. Fully quit Codex Desktop with `Command-Q` before
-running setup. After the installer completes, repeat the
+installation unchanged. Once v0.5.4 is active, later account-cache recovery can
+use `pickermux refresh --full` without a destructive reinstall. Fully quit Codex
+Desktop with `Command-Q` before running setup. After the installer completes,
+repeat the
 [verification commands](#verify-the-installation), then reopen Codex Desktop so
 it loads the new catalog.
 
@@ -203,6 +250,18 @@ multiply linked. The same-user final-syscall race boundary is documented in
 [SECURITY.md](SECURITY.md), together with recovery semantics for a partial
 multi-item Keychain deletion. Full purge never reads, changes, or removes
 native Codex authentication, including `~/.codex/auth.json`.
+
+The canonical `model_bridge` full-purge configuration restoration atomically
+leaves one marker-bounded, inert provider table so Codex can still parse
+historical PickerMux chats. It has no credentials, targets
+`127.0.0.1:0`, and has zero request and stream retries, so new turns fail
+locally rather than reaching a provider. A later PickerMux installation removes
+only that exact unchanged table as part of its atomic configuration update; a
+modified or foreign `model_bridge` table remains a fail-closed conflict. Its
+marker records only whether the restored config must remain a file. It is
+`false` only when no config existed before installation and no user content
+survives restoration; reinstall and a later ordinary uninstall therefore
+preserve an absent path, an empty existing file, and any surviving user bytes.
 
 ## Why PickerMux
 
@@ -273,6 +332,7 @@ catalog lifecycle, request normalization, and certification design.
 | `pickermux build` | Build and validate a mixed catalog without installing it. |
 | `pickermux install` | Install the catalog, managed Codex configuration, and per-user bridge service. |
 | `pickermux refresh` | Rediscover models and atomically refresh the catalog and runtime. |
+| `pickermux refresh --full` | Interactively suspend PickerMux, refresh Codex account visibility, transactionally reactivate it, and reopen Codex. |
 | `pickermux status` | Show managed configuration, service, and compatibility status. |
 | `pickermux doctor` | Run deterministic installation and routing checks. |
 | `pickermux doctor --live` | Add a real LM Studio inference check. |
@@ -373,11 +433,14 @@ pickermux doctor
 If compatibility is reported as `update-required`, rerun the latest-release
 installer. Setup performs the cache check at all three activation barriers and
 does not change active PickerMux state when the cache still belongs to an older
-Codex version. Follow the printed recovery steps: if PickerMux is installed,
-run `pickermux uninstall`; then launch Codex while signed in, wait for its
-native picker to load, fully quit with `Command-Q`, and rerun setup with the
-same custom configuration, if one was used. Do not delete `models_cache.json`
-or `~/.codex/auth.json` as a workaround.
+Codex version. If the receipt-active installed CLI is v0.5.4 or newer and the
+integration is healthy, run `pickermux refresh --full` and follow its
+confirmation and recovery output. If the active release predates that command
+or the integration is already absent, follow setup's manual recovery: run
+`pickermux uninstall` first if the older integration remains installed, launch
+Codex while signed in, wait for its native picker to load, fully quit with
+`Command-Q`, and rerun setup with the same custom configuration, if one was
+used. Do not delete `models_cache.json` or `~/.codex/auth.json` as a workaround.
 
 See [Troubleshooting](docs/TROUBLESHOOTING.md) for recovery procedures and
 redaction guidance.
@@ -387,6 +450,9 @@ redaction guidance.
 - PickerMux currently supports macOS only.
 - Picker catalog changes require a full Codex Desktop restart; there is no
   supported live catalog reload.
+- `refresh --full` changes real macOS application and LaunchAgent state. Unit
+  tests cover its state machine and failure paths, but a release still requires
+  a live macOS acceptance run with Codex Desktop.
 - Access-controlled native models appear only when the authenticated account
   is entitled to them.
 - Local quality, tool reliability, and latency depend on the selected model,

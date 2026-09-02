@@ -100,6 +100,21 @@ refreshed its account model cache, and that `status` does not report a client
 compatibility problem. Do not add a native model slug to an external provider
 configuration.
 
+An old fetch timestamp is not itself an error. If `doctor` passes
+`codex-account-cache` and its client version matches the installed Codex client,
+ordinary `refresh` uses that snapshot without an age warning. When the account
+really has gained or lost native model access, run the explicit interactive
+recovery instead:
+
+```bash
+pickermux refresh --full
+```
+
+Read the confirmation carefully: the operation gracefully quits Codex twice,
+so active Codex tasks can be interrupted. Run it through the receipt-active
+installed CLI and type `FULL` exactly to proceed. It rejects `--json` and
+`--config` and never forces the app to terminate.
+
 ## `update-required`
 
 The installed runtime no longer matches the verified Codex client and bundled
@@ -126,17 +141,47 @@ pickermux doctor
 `doctor` reports `codex-account-cache` independently from the bridge runtime and
 mixed catalog, so this check remains useful after an integration-only
 uninstall. If setup or doctor reports that the account cache needs a refresh
-and PickerMux is still installed:
+and the receipt-active PickerMux CLI is v0.5.4 or newer with a healthy
+integration, use the managed recovery:
 
 ```bash
-pickermux uninstall
+pickermux refresh --full
 ```
 
-Then open Codex Desktop while signed in, wait for its native model picker to
-load, fully quit it with `Command-Q`, and install PickerMux again. Reuse the
-same custom configuration path if one was used. If PickerMux was already
-uninstalled, skip the uninstall step. Never delete `models_cache.json` or
-`~/.codex/auth.json` as a workaround.
+If PickerMux was already uninstalled or the active release predates this
+command, follow setup's manual recovery: run `pickermux uninstall` first if the
+older integration remains installed, open Codex Desktop while signed in, wait
+for its native model picker to load, fully quit it with `Command-Q`, and install
+PickerMux again. Reuse the same custom configuration path if one was used.
+Never delete `models_cache.json` or `~/.codex/auth.json` as a workaround.
+
+## Full account-cache refresh stops before completion
+
+`refresh --full` has bounded waits and fails closed. If a valid exact-version
+cache existed at the start, Codex must produce another valid snapshot with a
+later `fetched_at`. If the original cache was missing or belonged to another
+client version, Codex must produce a newly valid snapshot for the exact current
+client. A slow network, expired sign-in, unchanged account response, refused
+Apple event, or Codex process that does not settle can therefore stop the
+operation safely.
+
+If the graceful quit is refused or times out, return to Codex, save any work,
+quit it normally with `Command-Q`, and rerun `pickermux refresh --full`. PickerMux
+never escalates to a forced kill. If the native-cache wait expires, confirm that
+Codex is signed in and can load its native picker, then follow the checkpoint's
+reported recovery instruction and retry.
+
+An interruption after temporary suspension or during reactivation leaves a
+private checkpoint rather than claiming success. Run `pickermux status`; its
+text output shows `full-refresh=<phase>` while recovery is pending or
+`full-refresh=idle` otherwise, and `status --json` exposes
+`fullRefresh.status` and `fullRefresh.phase`. Then run `pickermux doctor`, rerun
+`pickermux refresh --full`, and type `FULL` again when the worker reports a
+resumable phase. Do not delete the private checkpoint or diagnostic log, the
+account cache, PickerMux receipts, or `~/.codex/auth.json`, and do not use
+`uninstall --purge` to hide an incomplete transaction. A successful resume
+finishes the receipt-validated reactivation and opens Codex with the mixed
+catalog.
 
 ## LM Studio was stopped and local models disappeared
 
@@ -251,6 +296,18 @@ in PickerMux's private, secret-free registry. A modified or foreign LaunchAgent,
 invalid receipt, unsafe permission, symbolic link, unexpected backup entry, or
 provider-registry change stops the purge. `--force` does not override those
 ownership checks.
+
+The canonical `model_bridge` full-purge configuration restoration leaves one
+intentionally unusable compatibility table in `config.toml` so historical chats
+can open. It has no credentials, uses `http://127.0.0.1:0/v1`, and retries zero
+times; select a native model for new turns. A later PickerMux setup removes only
+the exact marker-bounded compatibility table. If setup reports a provider-table
+conflict, do not delete or edit the table broadly: it was modified or is not
+PickerMux-owned and needs manual review. The exact marker also records only
+whether the restored `config.toml` must remain a file. It is false only when the
+path was absent before installation and no user content survives restoration,
+so a setup followed by ordinary uninstall preserves absence, an empty existing
+file, or surviving user bytes.
 
 All uninstall modes compare `runtime-app` byte-for-byte with the invoking
 PickerMux version before changing Codex configuration. A modified or additional
