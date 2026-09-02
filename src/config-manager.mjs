@@ -628,6 +628,74 @@ export async function uninstallConfig(options) {
   };
 }
 
+/**
+ * Materialize the one receipt-recovered provider end marker so an older
+ * installed CLI can complete recovery after a newer setup preflight stops.
+ */
+export async function restoreRecoveredProviderEndMarker(options = {}) {
+  const settings = normalizeOwnershipOptions(options);
+  const ownershipReceipt = options.ownershipReceipt ??
+    await inventoryManagedConfigOwnership(settings);
+  const ownership = ownershipDetails(ownershipReceipt, settings);
+  await revalidateManagedConfigOwnership(ownershipReceipt);
+  if (!ownership.state) {
+    throw failure(
+      "STATE_MISSING",
+      "Managed configuration state does not exist.",
+    );
+  }
+
+  const current = await readConfigFile(settings.configPath, { mustExist: true });
+  const located = locateOwnedBlocks(current.text, ownership.state);
+  const pickerRoot = inspectPickerMutableRoot(located.root, ownership.state);
+  const modified = [];
+  if (
+    sha256(located.root.text) !== ownership.state.blocks.root.sha256 &&
+    !pickerRoot.safe
+  ) {
+    modified.push("root");
+  }
+  if (sha256(located.provider.text) !== ownership.state.blocks.provider.sha256) {
+    modified.push("provider");
+  }
+  if (!hasSafeProviderScopeTail(current.text, located.provider.end)) {
+    modified.push("provider-scope-tail");
+  }
+  if (modified.length > 0) {
+    throw failure(
+      "MANAGED_BLOCK_MODIFIED",
+      `Refusing marker restoration because managed block(s) were edited: ${modified.join(", ")}`,
+      { modified },
+    );
+  }
+  if (!located.provider.recoveredEnd) {
+    return {
+      changed: false,
+      configPath: settings.configPath,
+      statePath: settings.statePath,
+      marker: null,
+    };
+  }
+
+  const restoredText =
+    current.text.slice(0, located.provider.start) +
+    located.provider.text +
+    current.text.slice(located.provider.end);
+  await atomicWrite(settings.configPath, restoredText, current.mode, {
+    expectedSource: snapshotOf(current),
+    beforeCommit: ownershipCommitGuard(
+      ownershipReceipt,
+      settings.beforeConfigCommit,
+    ),
+  });
+  return {
+    changed: true,
+    configPath: settings.configPath,
+    statePath: settings.statePath,
+    marker: "provider-end",
+  };
+}
+
 /** Return a non-mutating installation/health snapshot. */
 export async function getConfigStatus(options) {
   const { configPath, statePath } = normalizePathOptions(options);

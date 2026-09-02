@@ -53,6 +53,7 @@ import {
   inventoryManagedConfigOwnership,
   installConfig,
   revalidateManagedConfigOwnership,
+  restoreRecoveredProviderEndMarker,
   uninstallConfig,
 } from "./config-manager.mjs";
 import {
@@ -1579,6 +1580,7 @@ export async function setupPickerMux({
   configStatusImpl = getConfigStatus,
   desktopRunningImpl = isCodexDesktopRunning,
   accountCacheImpl = inspectCodexAccountCache,
+  repairConfigImpl = restoreRecoveredProviderEndMarker,
   discoverImpl = discoverBridgeModels,
   installImpl = install,
   refreshImpl = refresh,
@@ -1597,7 +1599,7 @@ export async function setupPickerMux({
       "PickerMux setup requires Codex Desktop to be fully quit with Command-Q",
     );
   }
-  const assertAccountCacheReady = async () => {
+  const assertAccountCacheReady = async ({ allowMarkerRepair = false } = {}) => {
     try {
       return await accountCacheImpl({
         codexHome: paths.codexHome,
@@ -1605,16 +1607,55 @@ export async function setupPickerMux({
       });
     } catch (error) {
       if (error?.code !== "CODEX_ACCOUNT_CACHE_REFRESH_REQUIRED") throw error;
+      let markerRestored = false;
+      if (
+        allowMarkerRepair &&
+        initialStatus.installed &&
+        initialStatus.status === "installed-marker-recovered"
+      ) {
+        const repair = await withInstallationLock(
+          distributionPaths,
+          async () => {
+            if (await desktopRunningImpl()) {
+              throw new Error(
+                "PickerMux setup requires Codex Desktop to remain fully quit with Command-Q",
+              );
+            }
+            const currentStatus = await configStatusImpl({
+              configPath: paths.configPath,
+              statePath: paths.statePath,
+            });
+            if (
+              currentStatus.installed !== true ||
+              currentStatus.healthy !== true ||
+              currentStatus.status !== "installed-marker-recovered"
+            ) {
+              throw new Error(
+                "PickerMux integration state changed before marker recovery",
+              );
+            }
+            return repairConfigImpl({
+              configPath: paths.configPath,
+              statePath: paths.statePath,
+              backupDirectory: paths.backupDirectory,
+            });
+          },
+        );
+        markerRestored = repair.changed === true;
+      }
       const recovery = initialStatus.installed
         ? "Run 'pickermux uninstall' to restore the native Codex configuration, open Codex while signed in until its native model picker loads, fully quit it with Command-Q, and rerun setup with the same config."
         : "Open Codex while signed in until its native model picker loads, fully quit it with Command-Q, and rerun setup.";
+      const stateResult = markerRestored
+        ? "The receipt-verified missing provider end marker was restored so the installed PickerMux CLI can uninstall safely; CLI and runtime state were not changed."
+        : "No active PickerMux state was changed.";
       throw new Error(
-        `PickerMux setup stopped before activation because Codex ${error.codexClientVersion ?? "Desktop"} has no matching account model cache. No active PickerMux state was changed. ${recovery}`,
+        `PickerMux setup stopped before activation because Codex ${error.codexClientVersion ?? "Desktop"} has no matching account model cache. ${stateResult} ${recovery}`,
         { cause: error },
       );
     }
   };
-  await assertAccountCacheReady();
+  await assertAccountCacheReady({ allowMarkerRepair: true });
   const effectiveConfigPath = setupConfigPath
     ? path.resolve(setupConfigPath)
     : initialStatus.installed

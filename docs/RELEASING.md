@@ -121,6 +121,10 @@ At minimum, record:
 - cache mismatch before staging, under the lifecycle lock, and immediately
   before activation, confirming that active CLI and bridge state remain
   unchanged in every case;
+- the initial cache mismatch combined with a receipt-recovered provider end
+  marker, confirming that only the exact marker is materialized under lock,
+  the older CLI can then uninstall, and distribution/runtime state remains
+  unchanged;
 - checksum and foreign-launcher failures without mutation;
 - integration-only uninstall and receipt-owned CLI removal, confirming that
   backups and Keychain items remain;
