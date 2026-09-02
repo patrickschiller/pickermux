@@ -1302,18 +1302,36 @@ function recoverMissingProviderEndBlock({
     return null;
   }
 
-  const nextTable = lines.find(
+  const nextTableIndex = lines.findIndex(
     (line, index) =>
       index > providerHeaderIndex && isTableHeader(line.raw),
   );
+  const boundaryIndex = nextTableIndex === -1 ? lines.length : nextTableIndex;
+  const boundary = lines[boundaryIndex]?.start ?? source.length;
   const start = begin.start;
-  const end = nextTable?.start ?? source.length;
-  const actualText = source.slice(start, end);
   const eol = begin.eol || detectEol(lines);
-  const markerPrefix = endsWithNewline(actualText) ? "" : eol;
-  const recoveredText =
-    `${actualText}${markerPrefix}${definition.end}${eol}`;
-  if (sha256(recoveredText) !== definition.sha256) return null;
+  const candidates = [];
+  // An editor can erase only the marker text and leave its empty line. Do not
+  // guess which whitespace belongs to the block: accept only the one safe line
+  // boundary whose virtual block is bound by the private receipt digest.
+  for (
+    let index = providerHeaderIndex + 1;
+    index <= boundaryIndex;
+    index += 1
+  ) {
+    const end = lines[index]?.start ?? source.length;
+    if (!hasSafeProviderScopeTail(source, end)) continue;
+    if (containsAnyManagedMarker(source.slice(end, boundary))) continue;
+    const actualText = source.slice(start, end);
+    const markerPrefix = endsWithNewline(actualText) ? "" : eol;
+    const recoveredText =
+      `${actualText}${markerPrefix}${definition.end}${eol}`;
+    if (sha256(recoveredText) === definition.sha256) {
+      candidates.push({ end, recoveredText });
+    }
+  }
+  if (candidates.length !== 1) return null;
+  const [{ end, recoveredText }] = candidates;
 
   return {
     start,

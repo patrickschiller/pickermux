@@ -260,11 +260,12 @@ Fully quit and reopen Codex Desktop after a successful install, refresh, or
 certification so it reloads the static catalog.
 
 PickerMux normally requires every receipt-owned configuration marker to remain
-present. Version 0.5.1 recognizes one recoverable exception without editing the
-file: a missing provider end marker is treated as a virtual boundary only when
-reinserting that exact marker immediately before the next TOML table (or at end
-of file) reproduces the provider block SHA-256 stored in the private state
-receipt. `status` then reports `installed-marker-recovered`. Refresh, picker
-selection changes, and uninstall remain available; any content change,
-duplicate or missing begin/root marker, unsafe scope tail, or receipt mismatch
+present. A missing provider end marker is treated as a virtual boundary only
+when reinserting that exact marker at one unique safe line boundary before the
+next TOML table (or end of file) reproduces the provider block SHA-256 stored in
+the private state receipt. Blank and comment-only tail lines remain outside the
+owned block and are preserved. `status` then reports
+`installed-marker-recovered`. Refresh, picker selection changes, and uninstall
+remain available; any provider-scoped content change, duplicate or missing
+begin/root marker, unsafe scope tail, ambiguous candidate, or receipt mismatch
 still fails closed.

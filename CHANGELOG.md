@@ -7,6 +7,16 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-09-02
+
+### Fixed
+
+- Missing managed provider end markers are now recovered at the unique safe
+  line boundary whose reconstructed block matches the private receipt. This
+  preserves intervening blank or comment lines instead of requiring the marker
+  to sit immediately before the next TOML table; ambiguous and provider-scoped
+  content changes still fail closed.
+
 ## [0.5.1] - 2026-09-01
 
 ### Added
@@ -141,7 +151,8 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
   paths and file types, refuses root execution and foreign launchers, and
   restores the previous distribution state when activation fails.
 
-[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.5.2...HEAD
+[0.5.2]: https://github.com/patrickschiller/pickermux/releases/tag/v0.5.2
 [0.5.1]: https://github.com/patrickschiller/pickermux/releases/tag/v0.5.1
 [0.5.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.5.0
 [0.4.1]: https://github.com/patrickschiller/pickermux/releases/tag/v0.4.1

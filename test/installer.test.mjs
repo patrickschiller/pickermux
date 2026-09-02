@@ -24,6 +24,11 @@ import { promisify } from "node:util";
 
 import { setupPickerMux } from "../src/cli.mjs";
 import {
+  CONFIG_MARKERS,
+  getConfigStatus,
+  installConfig,
+} from "../src/config-manager.mjs";
+import {
   compareVersions,
   managedLauncherContents,
   removeManagedDistribution,
@@ -1600,6 +1605,117 @@ test("setup orchestration preflights desktop, loaded LLM, config, and lifecycle 
       /inconsistent integration state.*modified/iu,
     );
     assert.equal(desktopChecked, false);
+  });
+
+  await t.test("a new setup payload upgrades an older installation with a receipt-recoverable marker line", async (t) => {
+    const recoveryFixture = await temporaryFixture(t, "0.5.1", "old-payload");
+    await setupManagedDistribution({
+      sourceRoot: recoveryFixture.source,
+      paths: recoveryFixture.distributionPaths,
+      activate: async () => ({ action: "install" }),
+    });
+    await mkdir(recoveryFixture.codexHome, { recursive: true });
+    const originalConfig = [
+      'model = "gpt-5.6-sol"',
+      "[features]",
+      "web_search = true",
+      "",
+    ].join("\n");
+    await writeFile(recoveryFixture.installPaths.configPath, originalConfig);
+    await installConfig({
+      configPath: recoveryFixture.installPaths.configPath,
+      statePath: recoveryFixture.installPaths.statePath,
+      backupDirectory: recoveryFixture.installPaths.backupDirectory,
+      model: "lmstudio/test",
+      modelProvider: "model_bridge_test",
+      modelCatalogJson: recoveryFixture.installPaths.catalogPath,
+      modelReasoningEffort: "low",
+      provider: {
+        id: "model_bridge_test",
+        name: "OpenAI",
+        baseUrl: "http://127.0.0.1:4210/c/test-capability/v1",
+        wireApi: "responses",
+        requiresOpenAiAuth: true,
+        supportsWebsockets: false,
+        supportsStandaloneWebSearch: false,
+        requestMaxRetries: 0,
+        streamMaxRetries: 0,
+        streamIdleTimeoutMs: 30_000,
+      },
+    });
+    const installedConfig = await readFile(
+      recoveryFixture.installPaths.configPath,
+      "utf8",
+    );
+    const damagedConfig = installedConfig.replace(
+      CONFIG_MARKERS.providerEnd,
+      "",
+    );
+    assert.notEqual(damagedConfig, installedConfig);
+    await writeFile(recoveryFixture.installPaths.configPath, damagedConfig);
+
+    await writeFile(
+      path.join(recoveryFixture.source, "package.json"),
+      `${JSON.stringify({
+        name: "pickermux",
+        version: "0.5.2",
+        type: "module",
+      }, null, 2)}\n`,
+    );
+    let refreshedFrom;
+    const result = await setupPickerMux({
+      sourceRoot: recoveryFixture.source,
+      paths: recoveryFixture.installPaths,
+      distributionPaths: recoveryFixture.distributionPaths,
+      codexPath: "/Applications/Test Codex.app/codex",
+      desktopRunningImpl: async () => false,
+      accountCacheImpl: async () => ({
+        ready: true,
+        codexClientVersion: "0.151.0",
+        cacheClientVersion: "0.151.0",
+      }),
+      loadConfigImpl: async () => ({}),
+      discoverImpl: async () => ({ models: [{ id: "lmstudio/test" }] }),
+      refreshImpl: async ({ sourceRoot }) => {
+        refreshedFrom = sourceRoot;
+        return { refreshed: true };
+      },
+    });
+
+    assert.equal(result.version, "0.5.2");
+    assert.equal(result.activation.action, "upgrade");
+    assert.equal(
+      refreshedFrom,
+      path.join(recoveryFixture.distributionPaths.versionsDirectory, "0.5.2"),
+    );
+    assert.equal(
+      await readFile(recoveryFixture.installPaths.configPath, "utf8"),
+      damagedConfig,
+    );
+    const recoveredStatus = await getConfigStatus({
+      configPath: recoveryFixture.installPaths.configPath,
+      statePath: recoveryFixture.installPaths.statePath,
+    });
+    assert.deepEqual(
+      {
+        installed: recoveredStatus.installed,
+        healthy: recoveredStatus.healthy,
+        status: recoveredStatus.status,
+        recoveredMarkers: recoveredStatus.recoveredMarkers,
+      },
+      {
+        installed: true,
+        healthy: true,
+        status: "installed-marker-recovered",
+        recoveredMarkers: ["provider-end"],
+      },
+    );
+    assert.equal(
+      (await validateDistributionInstallation({
+        paths: recoveryFixture.distributionPaths,
+      })).receipt.activeVersion,
+      "0.5.2",
+    );
   });
 });
 
