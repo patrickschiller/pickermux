@@ -42,6 +42,17 @@ async function close(server) {
   );
 }
 
+async function listenLocal(server) {
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
+  return server.address().port;
+}
+
 function request({ port, path, method = "GET", headers = {}, body }) {
   return new Promise((resolve, reject) => {
     const outgoing = http.request(
@@ -135,6 +146,88 @@ test("capability-scoped health and model catalog expose only safe diagnostics", 
   assert.doesNotMatch(models.body, /must-not-leak|credentialEnv|baseUrl|upstreamModel/u);
 });
 
+test("health exposes only aggregate text-only context counters", async (t) => {
+  const privateCanary = "/Users/private/thread-secret-qwen";
+  const observedEvents = [];
+  const upstream = http.createServer((incoming, outgoing) => {
+    incoming.resume();
+    incoming.once("end", () => {
+      outgoing.writeHead(200, { "content-type": "application/json" });
+      outgoing.end('{"ok":true}');
+    });
+  });
+  const upstreamPort = await listenLocal(upstream);
+  t.after(() => close(upstream));
+  const telemetryRegistry = {
+    listModels: () => [],
+    resolve: () => ({
+      kind: "external",
+      providerKind: "lmstudio-responses",
+      baseUrl: `http://127.0.0.1:${upstreamPort}/v1`,
+      allowPrivateNetwork: true,
+      upstreamModel: "private-upstream-model",
+      toolsEnabled: false,
+    }),
+  };
+  const server = await listenBridgeServer({
+    registry: telemetryRegistry,
+    capabilityToken: CAPABILITY,
+    onTextOnlyCompaction: (event) => observedEvents.push(event),
+  });
+  t.after(() => close(server));
+  const port = server.address().port;
+  const base = `/c/${CAPABILITY}`;
+  const response = await request({
+    port,
+    path: `${base}/v1/responses`,
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      model: "lmstudio/private-model",
+      input: [
+        {
+          type: "message",
+          role: "developer",
+          content: [{ type: "input_text", text: privateCanary }],
+          internal_chat_message_metadata_passthrough: {
+            content_item_kinds: ["memories.instructions"],
+          },
+        },
+        {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "hello" }],
+          internal_chat_message_metadata_passthrough: {
+            content_item_kinds: ["user.text"],
+          },
+        },
+      ],
+    }),
+  });
+  assert.equal(response.statusCode, 200);
+  assert.equal(observedEvents.length, 1);
+
+  const health = await request({ port, path: `${base}/health` });
+  const payload = JSON.parse(health.body);
+  assert.equal(payload.textOnlyContext.schemaVersion, 1);
+  assert.equal(payload.textOnlyContext.requests, 1);
+  assert.equal(payload.textOnlyContext.last.outcome, "compacted");
+  assert.equal(payload.textOnlyContext.last.stopReason, "conversation");
+  assert.equal(payload.textOnlyContext.last.omittedParts, 1);
+  assert.deepEqual(
+    payload.textOnlyContext.totals,
+    Object.fromEntries(
+      Object.entries(payload.textOnlyContext.last)
+        .filter(([, value]) => Number.isSafeInteger(value))
+        .map(([name, value]) => [name, value]),
+    ),
+  );
+  assert.doesNotMatch(
+    health.body,
+    /Users|thread-secret|qwen|private-model|upstream-model|memories\.instructions/u,
+  );
+});
+
 test("Host, Origin, capability, query and method checks fail closed", async (t) => {
   const server = await listenBridgeServer({ registry, capabilityToken: CAPABILITY });
   t.after(() => close(server));
@@ -167,6 +260,112 @@ test("Host, Origin, capability, query and method checks fail closed", async (t) 
 
   const method = await request({ port, path: `${base}/v1/responses`, method: "GET" });
   assert.equal(method.statusCode, 405);
+});
+
+test("runtime compatibility blocks model traffic before registry or body handling", async (t) => {
+  let registryCalls = 0;
+  let gateCalls = 0;
+  const privateCanary = "/Users/private/thread-secret";
+  const compatibilityGate = {
+    snapshot() {
+      return {
+        status: "update-required",
+        reasons: ["codex-client-version", privateCanary],
+      };
+    },
+    async assertReady() {
+      gateCalls += 1;
+      throw Object.assign(new Error(privateCanary), {
+        code: "DESKTOP_COMPATIBILITY_UPDATE_REQUIRED",
+      });
+    },
+  };
+  const blockedRegistry = {
+    resolve() {
+      registryCalls += 1;
+      throw new Error("registry must not be consulted");
+    },
+    listModels() {
+      registryCalls += 1;
+      throw new Error("registry must not be consulted");
+    },
+  };
+  const server = await listenBridgeServer({
+    registry: blockedRegistry,
+    capabilityToken: CAPABILITY,
+    compatibilityGate,
+  });
+  t.after(() => close(server));
+  const port = server.address().port;
+  const base = `/c/${CAPABILITY}`;
+
+  const health = await request({ port, path: `${base}/health` });
+  assert.equal(health.statusCode, 200);
+  assert.deepEqual(JSON.parse(health.body), {
+    ok: false,
+    instanceId: null,
+    compatibility: {
+      status: "update-required",
+      reasons: ["codex-client-version"],
+    },
+  });
+
+  const models = await request({ port, path: `${base}/v1/models` });
+  assert.equal(models.statusCode, 503);
+  assert.equal(
+    JSON.parse(models.body).error.code,
+    "DESKTOP_COMPATIBILITY_UPDATE_REQUIRED",
+  );
+
+  for (const endpoint of ["/v1/responses", "/v1/responses/compact"]) {
+    const result = await request({
+      port,
+      path: `${base}${endpoint}`,
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "private-model", prompt: privateCanary }),
+    });
+    assert.equal(result.statusCode, 503);
+    assert.equal(
+      JSON.parse(result.body).error.code,
+      "DESKTOP_COMPATIBILITY_UPDATE_REQUIRED",
+    );
+    assert.doesNotMatch(result.body, /Users|thread-secret|private-model/u);
+  }
+
+  assert.equal(gateCalls, 3);
+  assert.equal(registryCalls, 0);
+});
+
+test("runtime compatibility check failures use a stable unavailable error", async (t) => {
+  const server = await listenBridgeServer({
+    registry,
+    capabilityToken: CAPABILITY,
+    compatibilityGate: {
+      snapshot: () => {
+        throw new Error("private snapshot failure");
+      },
+      assertReady: async () => {
+        throw new Error("private request failure");
+      },
+    },
+  });
+  t.after(() => close(server));
+  const port = server.address().port;
+  const base = `/c/${CAPABILITY}`;
+
+  const health = await request({ port, path: `${base}/health` });
+  assert.deepEqual(JSON.parse(health.body).compatibility, {
+    status: "check-failed",
+    reasons: [],
+  });
+  const models = await request({ port, path: `${base}/v1/models` });
+  assert.equal(models.statusCode, 503);
+  assert.equal(
+    JSON.parse(models.body).error.code,
+    "DESKTOP_COMPATIBILITY_UNAVAILABLE",
+  );
+  assert.doesNotMatch(models.body, /private|snapshot|request failure/u);
 });
 
 test("HTTP Upgrade is rejected with 426", async (t) => {

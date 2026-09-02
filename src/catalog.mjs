@@ -1,7 +1,9 @@
 import { execFile as execFileCallback } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
+import { constants as fsConstants } from "node:fs";
 import {
   chmod,
+  lstat,
   mkdir,
   open,
   readFile,
@@ -19,6 +21,8 @@ const DEFAULT_CODEX_PATH = "/Applications/ChatGPT.app/Contents/Resources/codex";
 const MAX_BUNDLED_CATALOG_BYTES = 32 * 1024 * 1024;
 const MAX_ACCOUNT_CACHE_FUTURE_SKEW_MS = 5 * 60 * 1_000;
 const ACCOUNT_CACHE_STALE_AFTER_MS = 15 * 60 * 1_000;
+const CATALOG_COMPARE_FLAGS =
+  fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0);
 const PREFERRED_DONORS = ["gpt-5.4-mini", "gpt-5.4"];
 export const CODEX_CONTEXT_HIGH_RISK_BELOW_TOKENS = 24_576;
 export const CODEX_CONTEXT_RECOMMENDED_TOKENS = 32_768;
@@ -353,7 +357,7 @@ function catalogEntry(donor, model, priority, certifiedForTools = false) {
   const compHash = createHash("sha256")
     .update(
       [
-        "model-bridge-p5",
+        "model-bridge-p5-v2",
         model.id,
         model.contextWindow,
         model.reasoningEffort,
@@ -545,14 +549,112 @@ export function validateCodexCatalog(catalog) {
   return catalog;
 }
 
-/**
- * Durably publish a private catalog through a same-directory atomic rename.
- */
-export async function writeCatalogAtomic(catalogPath, catalog) {
+function serializedCatalog(catalog) {
+  validateCodexCatalog(catalog);
+  return `${JSON.stringify(catalog, null, 2)}\n`;
+}
+
+function catalogSnapshot(stats) {
+  return Object.freeze({
+    dev: stats.dev,
+    ino: stats.ino,
+    uid: stats.uid,
+    mode: stats.mode,
+    nlink: stats.nlink,
+    size: stats.size,
+    mtimeMs: stats.mtimeMs,
+    ctimeMs: stats.ctimeMs,
+  });
+}
+
+function sameCatalogSnapshot(left, right) {
+  return (
+    left?.dev === right?.dev &&
+    left?.ino === right?.ino &&
+    left?.uid === right?.uid &&
+    left?.mode === right?.mode &&
+    left?.nlink === right?.nlink &&
+    left?.size === right?.size &&
+    left?.mtimeMs === right?.mtimeMs &&
+    left?.ctimeMs === right?.ctimeMs
+  );
+}
+
+function sameStagedCatalogIdentity(left, right) {
+  return (
+    left?.dev === right?.dev &&
+    left?.ino === right?.ino &&
+    left?.uid === right?.uid &&
+    left?.mode === right?.mode &&
+    left?.nlink === right?.nlink &&
+    left?.size === right?.size &&
+    left?.mtimeMs === right?.mtimeMs
+  );
+}
+
+function catalogChangedConcurrently() {
+  const error = new Error(
+    "Catalog changed concurrently; refusing to replace newer state",
+  );
+  error.code = "CATALOG_CHANGED_CONCURRENTLY";
+  return error;
+}
+
+function assertComparableCatalog(stats, expectedSnapshot) {
+  if (
+    !stats.isFile() ||
+    stats.isSymbolicLink() ||
+    stats.nlink !== 1 ||
+    (typeof process.getuid === "function" && stats.uid !== process.getuid()) ||
+    (stats.mode & 0o777) !== 0o600 ||
+    !sameCatalogSnapshot(catalogSnapshot(stats), expectedSnapshot)
+  ) {
+    throw catalogChangedConcurrently();
+  }
+}
+
+async function assertCatalogStillCurrent(
+  destination,
+  expectedContents,
+  expectedSnapshot,
+) {
+  let handle;
+  try {
+    const before = await lstat(destination);
+    assertComparableCatalog(before, expectedSnapshot);
+    handle = await open(destination, CATALOG_COMPARE_FLAGS);
+    const opened = await handle.stat();
+    const openedPath = await lstat(destination);
+    assertComparableCatalog(opened, expectedSnapshot);
+    assertComparableCatalog(openedPath, expectedSnapshot);
+    if (opened.size !== expectedContents.length) {
+      throw catalogChangedConcurrently();
+    }
+    const contents = await handle.readFile();
+    const after = await handle.stat();
+    const afterPath = await lstat(destination);
+    assertComparableCatalog(after, expectedSnapshot);
+    assertComparableCatalog(afterPath, expectedSnapshot);
+    if (!contents.equals(expectedContents)) throw catalogChangedConcurrently();
+  } catch (error) {
+    if (error?.code === "CATALOG_CHANGED_CONCURRENTLY") throw error;
+    throw catalogChangedConcurrently();
+  } finally {
+    await handle?.close().catch(() => {});
+  }
+}
+
+async function writeCatalog({
+  catalogPath,
+  catalog,
+  beforeCommit,
+}) {
   if (typeof catalogPath !== "string" || !catalogPath.trim()) {
     throw new Error("Catalog path must not be empty");
   }
-  validateCodexCatalog(catalog);
+  if (beforeCommit !== undefined && typeof beforeCommit !== "function") {
+    throw new TypeError("Catalog beforeCommit must be a function");
+  }
 
   const destination = path.resolve(catalogPath);
   const directory = path.dirname(destination);
@@ -560,10 +662,11 @@ export async function writeCatalogAtomic(catalogPath, catalog) {
     directory,
     `.${path.basename(destination)}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`,
   );
-  const serialized = `${JSON.stringify(catalog, null, 2)}\n`;
+  const serialized = serializedCatalog(catalog);
 
   await mkdir(directory, { recursive: true, mode: 0o700 });
   let handle;
+  let stagedSnapshot;
   try {
     handle = await open(temporary, "wx", 0o600);
     await handle.writeFile(serialized, "utf8");
@@ -571,6 +674,8 @@ export async function writeCatalogAtomic(catalogPath, catalog) {
     await handle.close();
     handle = undefined;
     await chmod(temporary, 0o600);
+    stagedSnapshot = catalogSnapshot(await lstat(temporary));
+    await beforeCommit?.();
     await rename(temporary, destination);
 
     // Syncing the directory makes the rename durable where the platform permits it.
@@ -587,6 +692,7 @@ export async function writeCatalogAtomic(catalogPath, catalog) {
   } catch (error) {
     await handle?.close().catch(() => {});
     await unlink(temporary).catch(() => {});
+    if (error?.code === "CATALOG_CHANGED_CONCURRENTLY") throw error;
     throw new Error(`Failed to atomically write catalog ${destination}`, {
       cause: error,
     });
@@ -596,7 +702,57 @@ export async function writeCatalogAtomic(catalogPath, catalog) {
   if ((written.mode & 0o777) !== 0o600) {
     throw new Error(`Catalog permissions are not 0600: ${destination}`);
   }
-  return destination;
+  const writtenSnapshot = catalogSnapshot(written);
+  if (!sameStagedCatalogIdentity(writtenSnapshot, stagedSnapshot)) {
+    throw new Error(`Catalog changed immediately after publication: ${destination}`);
+  }
+  return Object.freeze({
+    path: destination,
+    snapshot: writtenSnapshot,
+  });
+}
+
+/**
+ * Durably publish a private catalog through a same-directory atomic rename.
+ */
+export async function writeCatalogAtomic(catalogPath, catalog) {
+  return (await writeCatalog({ catalogPath, catalog })).path;
+}
+
+/** Publish a catalog and return its exact filesystem identity for guarded rollback. */
+export async function writeCatalogAtomicWithReceipt(catalogPath, catalog) {
+  return writeCatalog({ catalogPath, catalog });
+}
+
+/**
+ * Restore a catalog only while the destination is still the exact publication
+ * identified by the caller. Observable drift fails closed before replacement;
+ * the same-user final-pathname-syscall boundary documented in SECURITY.md still
+ * applies.
+ */
+export async function replaceCatalogAtomicIfCurrent(
+  catalogPath,
+  replacementCatalog,
+  {
+    expectedCatalog,
+    expectedSnapshot,
+  } = {},
+) {
+  const destination = path.resolve(catalogPath);
+  const expectedContents = Buffer.from(
+    serializedCatalog(expectedCatalog),
+    "utf8",
+  );
+  const result = await writeCatalog({
+    catalogPath: destination,
+    catalog: replacementCatalog,
+    beforeCommit: () => assertCatalogStillCurrent(
+      destination,
+      expectedContents,
+      expectedSnapshot,
+    ),
+  });
+  return result.path;
 }
 
 /** Read back a generated catalog for callers that need post-write validation. */

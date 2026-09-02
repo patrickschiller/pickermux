@@ -24,6 +24,51 @@ function check(name, ok, detail) {
   return { name, status: ok ? "pass" : "fail", detail };
 }
 
+const TEXT_ONLY_CONTEXT_OUTCOMES = new Set(["compacted", "unchanged"]);
+const TEXT_ONLY_CONTEXT_STOP_REASONS = new Set([
+  "ambiguous",
+  "conversation",
+  "none",
+]);
+
+function textOnlyContextCheck(telemetry) {
+  const last = telemetry?.last;
+  const counters = [
+    telemetry?.requests,
+    last?.sourceBytes,
+    last?.forwardedBytes,
+    last?.sourceRequestBytes,
+    last?.forwardedRequestBytes,
+    last?.omittedParts,
+    last?.omittedBytes,
+    last?.retainedBootstrapParts,
+    last?.retainedBootstrapBytes,
+  ];
+  if (
+    telemetry?.schemaVersion !== 1 ||
+    telemetry === null ||
+    Array.isArray(telemetry) ||
+    typeof telemetry !== "object" ||
+    last === null ||
+    Array.isArray(last) ||
+    typeof last !== "object" ||
+    !TEXT_ONLY_CONTEXT_OUTCOMES.has(last.outcome) ||
+    !TEXT_ONLY_CONTEXT_STOP_REASONS.has(last.stopReason) ||
+    counters.some((value) => !Number.isSafeInteger(value) || value < 0)
+  ) {
+    return check(
+      "text-only-context",
+      false,
+      "bridge context telemetry is invalid",
+    );
+  }
+  return check(
+    "text-only-context",
+    true,
+    `${telemetry.requests} request(s); input ${last.sourceBytes} -> ${last.forwardedBytes} bytes; request ${last.sourceRequestBytes} -> ${last.forwardedRequestBytes} bytes; omitted ${last.omittedParts} part(s)/${last.omittedBytes} bytes; retained bootstrap ${last.retainedBootstrapParts} part(s)/${last.retainedBootstrapBytes} bytes; stop=${last.stopReason}`,
+  );
+}
+
 export function assertNativeCatalogSnapshot({
   mixedCatalog,
   nativeCatalog,
@@ -221,6 +266,9 @@ export async function runBridgeDoctor({
         serviceStatus.status,
       ),
     );
+    if (serviceStatus.health?.textOnlyContext !== undefined) {
+      checks.push(textOnlyContextCheck(serviceStatus.health.textOnlyContext));
+    }
   }
 
   const configStatus = await statusImpl({

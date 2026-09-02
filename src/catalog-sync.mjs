@@ -1,7 +1,8 @@
 import { discoverBridgeModels } from "./bridge-discovery.mjs";
 import {
   buildMixedCodexCatalog,
-  writeCatalogAtomic,
+  replaceCatalogAtomicIfCurrent,
+  writeCatalogAtomicWithReceipt,
 } from "./catalog.mjs";
 import {
   buildProviderRegistry,
@@ -40,12 +41,20 @@ export async function syncBridgeCatalog({
   catalogPath,
   registryController,
   discoverImpl = discoverBridgeModels,
-  writeImpl = writeCatalogAtomic,
+  writeImpl = writeCatalogAtomicWithReceipt,
+  rollbackWriteImpl = replaceCatalogAtomicIfCurrent,
   reconcileSelectionImpl = async () => ({ changed: false }),
   certificationResolver = async () => [],
+  assertPublishAllowed = async () => {},
 } = {}) {
   if (!registryController || typeof registryController.replace !== "function") {
     throw new TypeError("A reloadable registry controller is required");
+  }
+  if (typeof assertPublishAllowed !== "function") {
+    throw new TypeError("Catalog publication guard must be a function");
+  }
+  if (typeof writeImpl !== "function" || typeof rollbackWriteImpl !== "function") {
+    throw new TypeError("Catalog publication dependencies must be functions");
   }
   const { nativeCatalog } = splitMixedCatalog(currentCatalog, config);
   const discovery = await discoverImpl({ config });
@@ -63,33 +72,54 @@ export async function syncBridgeCatalog({
   });
   assertMatchingRegistry(nextCatalog, nextRegistry);
 
-  const selection = await reconcileSelectionImpl({
-    config,
-    currentCatalog,
-    nextCatalog,
-  });
-
   const changed = JSON.stringify(nextCatalog) !== JSON.stringify(currentCatalog);
-  if (changed) {
-    try {
-      await writeImpl(catalogPath, nextCatalog);
-    } catch (error) {
-      if (selection?.changed && typeof selection.rollback === "function") {
-        try {
-          await selection.rollback();
-        } catch (rollbackError) {
-          throw new AggregateError(
-            [error, rollbackError],
-            "Catalog write failed and picker selection rollback also failed",
-          );
-        }
-      }
-      throw error;
+  let selection;
+  let catalogPublished = false;
+  let catalogReceipt;
+  try {
+    await assertPublishAllowed();
+    selection = await reconcileSelectionImpl({
+      config,
+      currentCatalog,
+      nextCatalog,
+    });
+    await assertPublishAllowed();
+    if (changed) {
+      catalogReceipt = await writeImpl(catalogPath, nextCatalog);
+      catalogPublished = true;
     }
+    await assertPublishAllowed();
+    // No await is permitted between the final guard and registry publication.
+    registryController.replace(nextRegistry);
+  } catch (error) {
+    const rollbackErrors = [];
+    if (catalogPublished) {
+      try {
+        await rollbackWriteImpl(catalogPath, currentCatalog, {
+          expectedCatalog: nextCatalog,
+          expectedSnapshot: catalogReceipt?.snapshot,
+        });
+      } catch (rollbackError) {
+        rollbackErrors.push(rollbackError);
+      }
+    }
+    if (selection?.changed && typeof selection.rollback === "function") {
+      try {
+        await selection.rollback();
+      } catch (rollbackError) {
+        rollbackErrors.push(rollbackError);
+      }
+    }
+    if (rollbackErrors.length > 0) {
+      throw new AggregateError(
+        [error, ...rollbackErrors],
+        "Catalog publication failed and rollback also failed",
+      );
+    }
+    throw error;
   }
   // A successful discovery can update non-catalog routing metadata such as a
   // wire-safe LM Studio reasoning profile even when the picker is unchanged.
-  registryController.replace(nextRegistry);
   return {
     changed,
     catalog: nextCatalog,
@@ -113,6 +143,7 @@ export function createCatalogSynchronizer({
   discoverImpl = discoverBridgeModels,
   reconcileSelectionImpl = async () => ({ changed: false }),
   certificationResolver = async () => [],
+  assertPublishAllowed = async () => {},
   onUpdate = () => {},
   onError = () => {},
   onDesktopStateChange = () => {},
@@ -146,6 +177,7 @@ export function createCatalogSynchronizer({
         reconcileSelectionImpl,
         certificationResolver,
         discoverImpl,
+        assertPublishAllowed,
       });
       currentCatalog = result.catalog;
       if (result.changed) onUpdate(result);

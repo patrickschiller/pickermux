@@ -21,15 +21,15 @@ reload the model with a larger supported context, then fully quit Codex, run
 PickerMux 0.4.1 and later remove optional function-tool catalogs from
 uncertified text-only requests. Version 0.4.0 could forward those schemas even
 though the catalog disabled tool use, making a small active context fail before
-ordinary chat text was processed. PickerMux 0.5.0 also replaces the donor
+ordinary chat text was processed. PickerMux 0.5.1 also replaces the donor
 coding-agent profile with a latency-first text-only profile for uncertified LM
 Studio models. It excludes verified app, cross-thread-memory, tool, and
-agent-mode bootstrap only when the annotation, role, exact shape, and per-kind
-envelope or pinned-template verifier match the Codex contract. Upgrade before
-diagnosing the remaining prompt size. If a structurally recognized pinned or
-template payload differs from the verified bytes, PickerMux keeps that payload
-but continues removing later bootstrap that independently passes its own
-contract; an envelope or structural mismatch still stops compaction.
+agent-mode bootstrap only when the private annotation, role, exact shape, and
+any per-kind envelope or placement rule match the Codex contract. Memory and
+multi-agent wording is not pinned to one Desktop version. Generic developer
+context is retained, but it no longer prevents later independently verified
+bootstrap from being removed. Upgrade before diagnosing the remaining prompt
+size; malformed envelopes or unknown structural context still stop compaction.
 
 ## LM Studio takes minutes before the first token
 
@@ -39,7 +39,7 @@ instructions and relevant conversation context. In the LM Studio server log,
 long gaps during `Prompt processing progress` are model prefill time, not
 PickerMux network latency.
 
-After upgrading to PickerMux 0.5.0, fully quit Codex Desktop, run
+After upgrading to PickerMux 0.5.1, fully quit Codex Desktop, run
 `pickermux refresh`, and reopen Codex so the generated catalog is reloaded. An
 uncertified LM Studio model should then report substantially fewer uncached
 prompt tokens for a new short conversation. PickerMux preserves user messages,
@@ -53,10 +53,15 @@ prior context needed for the answer into the conversation. A certified
 tool-capable model deliberately receives the full coding-agent prompt and
 context instead.
 
-These signatures are deliberately version-bound. If a later Codex Desktop
-changes a generated bootstrap payload, PickerMux retains it rather than using a
-fuzzy match; a renewed prompt-size increase then requires a PickerMux
-compatibility update.
+After one text-only request, run `pickermux doctor`. Its `text-only-context`
+check compares source and forwarded byte counts and reports omitted/retained
+part counts plus a fixed stop reason. This data is held only in bridge memory;
+it contains no prompt text, model/provider name, path, hash, or request and
+conversation identifier. A high retained-byte count means required project,
+environment, generic developer, selected-skill, or conversation context—not a
+network delay. If LM Studio's uncached count remains much larger than the
+reported forwarded input, capture only these counters and the PickerMux/LM
+Studio versions when filing an issue.
 
 Select an uncertified text-only model when low first-token latency matters more
 than workspace tools and cross-thread memory. Do not post an unredacted request
@@ -98,7 +103,11 @@ configuration.
 ## `update-required`
 
 The installed runtime no longer matches the verified Codex client and bundled
-catalog contract. Rerun the latest-release installer. Setup checks the Codex
+catalog contract. PickerMux 0.5.1 also detects a Codex executable replacement
+while the service is already running. It quarantines `/models` and Responses
+traffic with HTTP 503 while keeping its capability-scoped health endpoint
+available, so `status` and `doctor` can report `update-required` without a
+LaunchAgent restart loop. Rerun the latest-release installer. Setup checks the Codex
 account cache before staging the downloaded CLI, checks it again under the
 lifecycle lock before committing CLI controls, and checks it once more
 immediately before integration activation. A missing, malformed, or
@@ -166,6 +175,14 @@ Studio's model status and resource usage if a request appears idle.
 PickerMux uses ownership markers and compare-and-swap checks to avoid
 overwriting manual changes. Inspect `~/.codex/config.toml` and the managed state
 before deciding what should win.
+
+Status `installed-marker-recovered` is healthy and specific: only the managed
+provider end marker is absent, and virtually reinserting that exact line at the
+next TOML table or end of file reproduces the private installation receipt's
+digest. PickerMux deliberately leaves the file byte-for-byte unchanged while
+allowing refresh, picker selection changes, and uninstall. Any provider edit,
+second marker, missing begin/root boundary, or hash mismatch remains
+`inconsistent` and requires manual review.
 
 Use `uninstall --force` only when you have reviewed the conflict and explicitly
 want PickerMux to remove its owned block. The command still targets managed

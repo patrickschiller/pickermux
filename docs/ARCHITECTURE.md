@@ -1,6 +1,6 @@
 # PickerMux Architecture
 
-This document describes the public v0.5.0 bridge contract. It is intended for
+This document describes the public v0.5.1 bridge contract. It is intended for
 contributors, security reviewers, and users who want to understand what runs on
 their Mac.
 
@@ -120,23 +120,19 @@ The LM Studio adapter therefore performs bounded, explicit normalization:
   context;
 - maps supported reasoning levels and omits only known synthetic defaults;
 - removes unsupported cache and encrypted-reasoning fields;
-- for an uncertified LM Studio route, removes verified generated desktop-app,
+- for an uncertified LM Studio route, removes allowlisted generated
   cross-thread-memory, skill-catalog, permission, app/plugin/environment usage,
   collaboration/multi-agent, deferred-tool, and plugin-recommendation bootstrap
   before the first conversation item. Each removal requires its private Codex
-  annotation, expected incoming role, exact message/content shape, and a
-  per-kind verifier. Wrapped fragments require one complete exact envelope;
-  the desktop-app payload, unwrapped thread-coordination payload, and unwrapped
-  multi-agent policy payloads additionally require a pinned full-payload hash.
-  Memory path and summary values are
-  canonicalized, and the remaining complete Codex 0.151 template must match
-  its pinned hash. A recognized hash/template payload whose expected role,
-  exact input-text shape, and standalone placement still match is retained when
-  only the verifier differs; later fragments remain independently eligible for
-  removal. Unknown kinds, wrong roles, malformed envelopes or template
-  structure, and mixed annotations retain the item and stop further
-  compaction. Unknown structural fields are rejected before forwarding instead
-  of being guessed or silently discarded;
+  annotation, expected incoming role, exact message/content shape, and any
+  per-kind placement or complete-envelope constraint. Memory and multi-agent
+  kinds use their private semantic provenance instead of release-specific
+  wording hashes. Generic developer/app/thread context is always retained, but
+  does not stop later independently verified generated fragments from being
+  removed. Unknown kinds, wrong roles, malformed envelopes, and mixed
+  annotations retain the item and stop further compaction. Unknown structural
+  fields are rejected before forwarding instead of being guessed or silently
+  discarded;
 - preserves user messages, images and audio, current environment facts,
   AGENTS/project and managed instructions, selected skill instructions, and
   conversation history. The latency-first text-only route deliberately omits
@@ -160,6 +156,13 @@ Request decompression supports gzip, deflate, Brotli, and Zstandard. Decoded
 body size, response header size, header wait, stream idle time, and total
 upstream duration are all bounded.
 
+For each compacted text-only request, the service keeps only an in-memory
+telemetry snapshot and saturating aggregate counters. The schema consists of
+fixed status enums, booleans, and byte/part counts; it cannot contain prompt
+text, raw annotation kinds, model or provider names, IDs, hashes, URLs, or
+paths. The capability-scoped health endpoint lets `doctor` report how much
+context was omitted or retained without parsing request logs.
+
 ## Discovery and synchronization
 
 The default LM Studio provider uses `loaded` discovery. It prefers
@@ -177,8 +180,11 @@ The persistent service observes Codex Desktop through LaunchServices:
 - malformed data, timeouts, HTTP failures, and other transient errors retain the
   last known good state.
 
-Catalog and route-registry publication is staged. If catalog publication or
-selection reconciliation fails, the new route registry is not exposed.
+Catalog and route-registry publication is staged. The running compatibility
+gate is checked before selection reconciliation, catalog publication, and
+route-registry replacement. If compatibility changes or any publication step
+fails, PickerMux rolls back the affected selection/catalog state and does not
+expose the new registry.
 
 ## Tool certification
 
@@ -212,6 +218,15 @@ contain prompts, responses, or credentials.
 The integration installer owns only marked Codex configuration fields and
 explicit files under `~/.codex/model-bridge`, plus its named LaunchAgent. It
 creates a verified backup before changing Codex configuration.
+
+The ownership receipt also permits one narrow, write-free recovery: if only the
+managed provider end marker is missing, PickerMux derives the boundary at the
+next TOML table or end of file and virtually reinserts that exact marker. The
+block is accepted only when the reconstructed bytes reproduce the receipt's
+SHA-256 digest. Status exposes `installed-marker-recovered`; refresh, selection
+changes, and uninstall can then proceed without silently rewriting the config.
+Missing begin/root markers, duplicate boundaries, content changes, and every
+ambiguous candidate remain inconsistent.
 
 Install and refresh stage the runtime, catalog, compatibility manifest, service
 configuration, and selection update. The previous runtime package remains
@@ -305,9 +320,14 @@ recursive deletion.
 
 The installed `compatibility.json` binds the bridge contract to the Codex client
 version and a canonical fingerprint of the bundled catalog. `status`, `doctor`,
-and bridge startup all validate this contract. An unknown or changed contract
-produces `update-required` and stops the bridge rather than silently adapting to
-an unverified client update.
+bridge startup, and the running service validate this contract. The service
+checks the Codex executable identity cheaply before model requests and on a
+short background interval; an identity change triggers an atomic full version
+and bundled-catalog recheck. An unknown, changed, or temporarily unverifiable
+contract quarantines model and catalog publication traffic with a stable 503.
+The private health endpoint remains available with fixed safe status/reason
+enums so the LaunchAgent does not enter a restart loop and diagnostics can
+direct the user to refresh.
 
 `doctor` also runs the account-cache inspection as an independent check. It can
 therefore report whether the signed-in account cache matches the current Codex

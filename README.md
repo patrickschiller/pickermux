@@ -71,7 +71,7 @@ or another shell file automatically. Until then, use the absolute command path.
 For a reproducible installation, replace `latest` with an exact release:
 
 ```bash
-/usr/bin/curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://github.com/patrickschiller/pickermux/releases/download/v0.5.0/install.sh | /bin/sh
+/usr/bin/curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://github.com/patrickschiller/pickermux/releases/download/v0.5.1/install.sh | /bin/sh
 ```
 
 Both one-line forms execute code downloaded from GitHub. The archive checksum
@@ -99,7 +99,7 @@ and follow the managed setup procedure in
 ~/.local/bin/pickermux discover
 ```
 
-For this release, the first command must print `pickermux 0.5.0`. `status`
+For this release, the first command must print `pickermux 0.5.1`. `status`
 checks the managed configuration, catalog, compatibility contract, and bridge;
 `discover` lists the LLMs currently loaded in LM Studio. `doctor` is
 deterministic and does not submit a model prompt. Its independent
@@ -118,19 +118,22 @@ LM Studio inference check. Once `~/.local/bin` is in `PATH`, the shorter
 
 ## Text-only performance
 
-PickerMux 0.5.0 reduces prompt-prefill work for newly discovered, uncertified
+PickerMux 0.5.1 reduces prompt-prefill work for newly discovered, uncertified
 LM Studio models. Codex Desktop can attach a large generated coding-agent
 bootstrap even to a short question. On a text-only route, PickerMux replaces
 the donor coding-agent profile with a compact assistant prompt, removes
-optional tool schemas, and omits only generated bootstrap fragments that match
-the verified Codex contract.
+optional tool schemas, and omits only generated bootstrap fragments that prove
+their private semantic kind, expected role, exact shape, and any required
+complete envelope.
 
 This optimization does not discard the conversation. User messages,
 attachments, conversation history, current environment facts, AGENTS/project
 and managed instructions, and explicitly selected skill instructions still go
-to the model. Verified generated cross-thread memory and
-collaboration/multi-agent policy are omitted; changed or unrecognized payloads
-are retained. A tool-certified model deliberately receives the full coding-agent
+to the model. Generated cross-thread memory and collaboration/multi-agent
+policy carry dedicated private kinds and can be omitted without pinning their
+wording to one Codex release. Generic developer context is retained, but no
+longer prevents later independently verified generated fragments from being
+compacted. A tool-certified model deliberately receives the full coding-agent
 prompt and context instead.
 
 The improvement targets time spent processing the input; it does not make the
@@ -141,6 +144,11 @@ server log. Project context, retained history, model loading, quantization, and
 hardware can still dominate latency. See
 [Troubleshooting](docs/TROUBLESHOOTING.md#lm-studio-takes-minutes-before-the-first-token)
 if a new short turn still sends an unexpectedly large prompt.
+
+`pickermux doctor` can report privacy-safe counters from the most recent
+text-only request, including input and forwarded bytes plus omitted and retained
+part counts. These counters stay in memory and never contain prompt text,
+model/provider names, paths, hashes, or request and conversation identifiers.
 
 ## Upgrade
 
@@ -214,15 +222,20 @@ deliberately conservative:
 - **Safe model defaults.** Newly discovered external models start in text-only
   mode. The bridge enforces the text-only boundary, reduces verified generated
   bootstrap for faster prompt prefill, and rejects forced tool turns until that
-  exact model and configuration pass a live certification matrix. Unknown or
-  changed context is retained conservatively rather than removed by a fuzzy
-  match. See [Text-only performance](#text-only-performance).
+  exact model and configuration pass a live certification matrix. Dedicated
+  memory and multi-agent bootstrap remain removable across wording changes,
+  while unknown kinds, wrong roles, malformed shapes, and unrecognized
+  envelopes are retained conservatively. See
+  [Text-only performance](#text-only-performance).
 - **Credential isolation.** Native Codex authentication and metadata are never
   forwarded to LM Studio or another external provider, including Codex client
   metadata carried inside a Responses request body.
 - **Transactional lifecycle.** Install, refresh, rollback, diagnostics, and
   uninstall are designed as one managed workflow rather than a collection of
   manual edits to `~/.codex`.
+- **Live compatibility quarantine.** The service rechecks Codex when the
+  executable changes and refuses model traffic until PickerMux is refreshed if
+  the installed client/catalog contract no longer matches.
 - **Small supply-chain surface.** The runtime has no third-party npm
   dependencies.
 
@@ -331,6 +344,9 @@ proxy.
   closed.
 - Configuration changes, catalogs, compatibility data, service files, and
   rollback state are written privately and transactionally.
+- A missing managed provider end marker is accepted only when one virtual
+  reinsertion recreates the receipt-recorded block digest at a safe TOML
+  boundary; ambiguous or edited state remains blocked.
 - Release payloads are versioned, checksum-verified, and extracted only after
   unsafe paths and file types have been rejected.
 - Uninstall inventories and revalidates exact owned paths before removal. Full
@@ -372,8 +388,10 @@ redaction guidance.
   quantization, context size, hardware, and LM Studio configuration.
 - `doctor --live` and certification perform real local inference and can take
   several minutes on large models.
-- Codex and LM Studio updates can change compatibility. The bridge intentionally
-  stops when its installed contract is no longer verified.
+- Codex and LM Studio updates can change compatibility. The running bridge
+  quarantines model traffic when its installed contract is no longer verified;
+  its private health endpoint remains available so `status` and `doctor` can
+  explain the required refresh without a LaunchAgent restart loop.
 
 ## Development
 

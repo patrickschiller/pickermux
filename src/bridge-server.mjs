@@ -5,6 +5,39 @@ import { createResponsesProxy } from "./responses-proxy.mjs";
 
 const LOOPBACK_HOST = "127.0.0.1";
 const CAPABILITY_PATTERN = /^[A-Za-z0-9_-]{32,256}$/u;
+const SAFE_COMPATIBILITY_STATUSES = new Set([
+  "checking",
+  "check-failed",
+  "compatible",
+  "update-required",
+]);
+const SAFE_COMPATIBILITY_REASONS = new Set([
+  "bridge-contract",
+  "bundled-catalog",
+  "codex-client-version",
+  "manifest-invalid",
+  "manifest-missing",
+]);
+const TEXT_ONLY_CONTEXT_OUTCOMES = new Set(["compacted", "unchanged"]);
+const TEXT_ONLY_CONTEXT_STOP_REASONS = new Set([
+  "ambiguous",
+  "conversation",
+  "none",
+]);
+const TEXT_ONLY_CONTEXT_COUNTERS = Object.freeze([
+  "sourceItems",
+  "forwardedItems",
+  "sourceParts",
+  "retainedParts",
+  "retainedBootstrapParts",
+  "retainedBootstrapBytes",
+  "omittedParts",
+  "sourceBytes",
+  "forwardedBytes",
+  "sourceRequestBytes",
+  "forwardedRequestBytes",
+  "omittedBytes",
+]);
 
 function writeJson(response, statusCode, value, extraHeaders = {}) {
   if (response.destroyed || response.writableEnded) return;
@@ -21,6 +54,116 @@ function writeJson(response, statusCode, value, extraHeaders = {}) {
 
 function writeRouteError(response, statusCode, code, message) {
   writeJson(response, statusCode, { error: { code, message } });
+}
+
+function publicCompatibilityState(compatibilityGate) {
+  if (!compatibilityGate) return null;
+  try {
+    const current = compatibilityGate.snapshot();
+    const status = SAFE_COMPATIBILITY_STATUSES.has(current?.status)
+      ? current.status
+      : "check-failed";
+    const reasons = Array.isArray(current?.reasons)
+      ? [...new Set(current.reasons.filter((reason) =>
+          SAFE_COMPATIBILITY_REASONS.has(reason)))]
+      : [];
+    return { status, reasons };
+  } catch {
+    return { status: "check-failed", reasons: [] };
+  }
+}
+
+async function admitModelRequest(compatibilityGate, response) {
+  if (!compatibilityGate) return true;
+  try {
+    await compatibilityGate.assertReady();
+    return true;
+  } catch (error) {
+    const updateRequired =
+      error?.code === "DESKTOP_COMPATIBILITY_UPDATE_REQUIRED";
+    writeRouteError(
+      response,
+      503,
+      updateRequired
+        ? "DESKTOP_COMPATIBILITY_UPDATE_REQUIRED"
+        : "DESKTOP_COMPATIBILITY_UNAVAILABLE",
+      updateRequired
+        ? "PickerMux must be updated for this Codex Desktop version"
+        : "Codex Desktop compatibility could not be verified",
+    );
+    return false;
+  }
+}
+
+function safeTextOnlyContextEvent(event) {
+  if (
+    event === null ||
+    Array.isArray(event) ||
+    typeof event !== "object" ||
+    event.event !== "lmstudio_text_only_compaction" ||
+    event.schemaVersion !== 1 ||
+    !TEXT_ONLY_CONTEXT_OUTCOMES.has(event.outcome) ||
+    !TEXT_ONLY_CONTEXT_STOP_REASONS.has(event.stopReason) ||
+    typeof event.changed !== "boolean" ||
+    typeof event.stopped !== "boolean"
+  ) {
+    return null;
+  }
+  const counters = {};
+  for (const name of TEXT_ONLY_CONTEXT_COUNTERS) {
+    const value = event[name];
+    if (!Number.isSafeInteger(value) || value < 0) return null;
+    counters[name] = value;
+  }
+  if (
+    counters.retainedParts + counters.omittedParts !== counters.sourceParts ||
+    counters.retainedBootstrapParts > counters.retainedParts ||
+    event.changed !== (counters.omittedParts > 0) ||
+    event.outcome !== (event.changed ? "compacted" : "unchanged") ||
+    event.stopped !== (event.stopReason !== "none")
+  ) {
+    return null;
+  }
+  return Object.freeze({
+    outcome: event.outcome,
+    stopReason: event.stopReason,
+    changed: event.changed,
+    stopped: event.stopped,
+    ...counters,
+  });
+}
+
+function saturatingAdd(left, right) {
+  return Math.min(Number.MAX_SAFE_INTEGER, left + right);
+}
+
+function createTextOnlyContextTelemetry() {
+  let requests = 0;
+  let last;
+  const totals = Object.fromEntries(
+    TEXT_ONLY_CONTEXT_COUNTERS.map((name) => [name, 0]),
+  );
+  return Object.freeze({
+    record(event) {
+      const safe = safeTextOnlyContextEvent(event);
+      if (!safe) return false;
+      requests = saturatingAdd(requests, 1);
+      for (const name of TEXT_ONLY_CONTEXT_COUNTERS) {
+        totals[name] = saturatingAdd(totals[name], safe[name]);
+      }
+      last = safe;
+      return true;
+    },
+    snapshot() {
+      if (!last) return null;
+      return {
+        schemaVersion: 1,
+        requests,
+        totals: { ...totals },
+        last: { ...last },
+      };
+    },
+  });
 }
 
 function publicModelDescriptor(model) {
@@ -102,6 +245,8 @@ export function createBridgeServer({
   dnsLookup,
   requestHeaderBytes = 32 * 1024,
   instanceId = null,
+  compatibilityGate,
+  onTextOnlyCompaction,
 } = {}) {
   if (!registry || typeof registry.resolve !== "function" || typeof registry.listModels !== "function") {
     throw new TypeError("A model registry with resolve() and listModels() is required");
@@ -112,6 +257,26 @@ export function createBridgeServer({
   if (instanceId !== null && (typeof instanceId !== "string" || !instanceId)) {
     throw new TypeError("instanceId must be a non-empty string or null");
   }
+  if (
+    compatibilityGate !== undefined &&
+    (
+      typeof compatibilityGate?.assertReady !== "function" ||
+      typeof compatibilityGate?.snapshot !== "function"
+    )
+  ) {
+    throw new TypeError("compatibilityGate must provide assertReady() and snapshot()");
+  }
+  if (
+    onTextOnlyCompaction !== undefined &&
+    typeof onTextOnlyCompaction !== "function"
+  ) {
+    throw new TypeError("onTextOnlyCompaction must be a function");
+  }
+  const textOnlyContextTelemetry = createTextOnlyContextTelemetry();
+  const captureTextOnlyCompaction = (event) => {
+    textOnlyContextTelemetry.record(event);
+    return onTextOnlyCompaction?.(event);
+  };
   const basePath = capabilityBasePath(capabilityToken);
   const handleResponses = createResponsesProxy({
     registry,
@@ -123,6 +288,7 @@ export function createBridgeServer({
     httpsTransport,
     dnsLookup,
     certificationToken: instanceId,
+    onTextOnlyCompaction: captureTextOnlyCompaction,
   });
 
   const server = http.createServer({ maxHeaderSize: requestHeaderBytes }, async (request, response) => {
@@ -158,10 +324,18 @@ export function createBridgeServer({
     const path = url.pathname.slice(basePath.length);
 
     if (request.method === "GET" && path === "/health") {
-      writeJson(response, 200, { ok: true, instanceId });
+      const compatibility = publicCompatibilityState(compatibilityGate);
+      const textOnlyContext = textOnlyContextTelemetry.snapshot();
+      writeJson(response, 200, {
+        ok: compatibility === null || compatibility.status === "compatible",
+        instanceId,
+        ...(compatibility === null ? {} : { compatibility }),
+        ...(textOnlyContext === null ? {} : { textOnlyContext }),
+      });
       return;
     }
     if (request.method === "GET" && path === "/v1/models") {
+      if (!(await admitModelRequest(compatibilityGate, response))) return;
       try {
         const listed = await registry.listModels();
         const models = (Array.isArray(listed) ? listed : [])
@@ -177,6 +351,7 @@ export function createBridgeServer({
       request.method === "POST" &&
       (path === "/v1/responses" || path === "/v1/responses/compact")
     ) {
+      if (!(await admitModelRequest(compatibilityGate, response))) return;
       await handleResponses(request, response, path);
       return;
     }

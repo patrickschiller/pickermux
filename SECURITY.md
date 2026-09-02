@@ -80,18 +80,36 @@ session, thread, window, or turn identifiers.
 Uncertified LM Studio text-only routes additionally omit only explicitly
 allowlisted Codex-generated bootstrap context before the first conversation
 item. Every omission is bound to the expected private annotation, role, exact
-message/content shape, and either an exact envelope or a pinned full-template
-verifier. The dynamic memory path and summary are canonicalized before the
-complete template hash is checked. A recognized hash/template payload with the
-expected role, exact input-text structure, and required standalone placement is
-retained when only its verifier differs; later context must still independently
-prove its own omission contract. Malformed envelopes, wrong roles, mixed or
-unknown annotations, and unrecognized template structure retain the item and
-stop further compaction. Unknown structural fields are rejected before
-forwarding. This latency-first boundary deliberately keeps generated
+message/content shape, and any required standalone placement or complete exact
+envelope. Dedicated memory and multi-agent annotations provide the semantic
+contract across prompt-wording changes; generic developer/app/thread content is
+never inferred to be disposable and is retained. A retained generic fragment
+does not prevent later independently verified generated context from being
+removed. Malformed envelopes, wrong roles, mixed or unknown annotations retain
+the item and stop further compaction. Unknown structural fields are rejected
+before forwarding. This latency-first boundary deliberately keeps generated
 cross-thread memory out of the local provider request while preserving direct
 user content, attachments, current environment facts, AGENTS/project and
 managed instructions, selected skills, and history.
+
+Text-only context telemetry is in-memory only and is projected through an
+explicit schema of fixed enums, booleans, and non-negative byte/part counters.
+It excludes prompt text, raw annotation kinds, roles, hashes, model/provider
+names, URLs, paths, and request, message, turn, or conversation identifiers.
+Telemetry sink failures cannot change request routing or upstream bytes.
+
+The service watches the Codex executable identity before model requests and on
+a background interval. A changed identity is fully revalidated against the
+private compatibility manifest before more traffic or synchronized catalog
+state can be published. Incompatible or unverifiable state fails closed with
+fixed public status codes; raw verifier errors, versions, and paths are not
+returned by the bridge health endpoint.
+
+Managed configuration recovery is limited to a missing provider end marker
+whose one virtual reinsertion at the next TOML table or end of file exactly
+recreates the receipt-recorded block digest. It does not write the recovered
+marker. Missing root/begin markers, duplicate or foreign boundaries, provider
+content changes, unsafe table scope, and receipt mismatch remain blocked.
 
 ## Uninstall and purge boundary
 

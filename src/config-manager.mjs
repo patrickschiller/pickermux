@@ -508,9 +508,17 @@ export async function uninstallConfig(options) {
     );
   }
 
+  const pristineCandidate = located.provider.recoveredEnd
+    ? Buffer.from(
+        current.text.slice(0, located.provider.start) +
+          located.provider.text +
+          current.text.slice(located.provider.end),
+        "utf8",
+      )
+    : current.bytes;
   const pristineInstall =
     typeof state.installedSha256 === "string" &&
-    sha256(current.bytes) === state.installedSha256;
+    sha256(pristineCandidate) === state.installedSha256;
   let restoredContents;
 
   if (pristineInstall && state.configExisted !== false) {
@@ -673,10 +681,16 @@ export async function getConfigStatus(options) {
     if (!hasSafeProviderScopeTail(current.text, located.provider.end)) {
       modifiedBlocks.push("provider-scope-tail");
     }
+    const healthy = modifiedBlocks.length === 0;
+    const recoveredMarkers = located.recoveredMarkers;
     return {
       installed: true,
-      healthy: modifiedBlocks.length === 0,
-      status: modifiedBlocks.length === 0 ? "installed" : "modified",
+      healthy,
+      status: healthy
+        ? recoveredMarkers.length > 0
+          ? "installed-marker-recovered"
+          : "installed"
+        : "modified",
       configPath,
       statePath,
       backupPath: state.backupPath,
@@ -690,6 +704,7 @@ export async function getConfigStatus(options) {
       providerId: state.providerId,
       metadataPreservation: state.metadataPreservation,
       modifiedBlocks,
+      recoveredMarkers,
     };
   } catch (error) {
     return {
@@ -1179,9 +1194,19 @@ function renderPickerSelectionRoot(block, model, modelReasoningEffort) {
 }
 
 function locateOwnedBlocks(source, state) {
+  const provider = locateBlock(
+    source,
+    state.blocks.provider,
+    "provider",
+    {
+      recoverMissingProviderEnd: true,
+      providerId: state.providerId,
+    },
+  );
   return {
     root: locateBlock(source, state.blocks.root, "root"),
-    provider: locateBlock(source, state.blocks.provider, "provider"),
+    provider,
+    recoveredMarkers: provider.recoveredEnd ? ["provider-end"] : [],
   };
 }
 
@@ -1195,24 +1220,107 @@ function hasSafeProviderScopeTail(source, providerEnd) {
   return true;
 }
 
-function locateBlock(source, definition, name) {
+function locateBlock(
+  source,
+  definition,
+  name,
+  {
+    recoverMissingProviderEnd = false,
+    providerId = undefined,
+  } = {},
+) {
   const lines = splitLines(source);
   const begins = lines.filter((line) => line.raw === definition.begin);
   const ends = lines.filter((line) => line.raw === definition.end);
-  if (begins.length !== 1 || ends.length !== 1 || begins[0].start >= ends[0].start) {
-    throw failure(
-      "MANAGED_BLOCK_BOUNDARY_INVALID",
-      `Managed ${name} block boundaries are missing, duplicated, or out of order.`,
-      { name, begins: begins.length, ends: ends.length },
-    );
+  if (
+    begins.length === 1 &&
+    ends.length === 1 &&
+    begins[0].start < ends[0].start
+  ) {
+    const start = begins[0].start;
+    const end = ends[0].end;
+    return {
+      start,
+      end,
+      text: source.slice(start, end),
+      eol: begins[0].eol || detectEol(lines),
+      recoveredEnd: false,
+    };
   }
-  const start = begins[0].start;
-  const end = ends[0].end;
+  if (
+    recoverMissingProviderEnd &&
+    begins.length === 1 &&
+    ends.length === 0
+  ) {
+    const recovered = recoverMissingProviderEndBlock({
+      source,
+      lines,
+      begin: begins[0],
+      definition,
+      providerId,
+    });
+    if (recovered) return recovered;
+  }
+  throw failure(
+    "MANAGED_BLOCK_BOUNDARY_INVALID",
+    `Managed ${name} block boundaries are missing, duplicated, or out of order.`,
+    { name, begins: begins.length, ends: ends.length },
+  );
+}
+
+function recoverMissingProviderEndBlock({
+  source,
+  lines,
+  begin,
+  definition,
+  providerId,
+}) {
+  if (
+    definition.begin !== CONFIG_MARKERS.providerBegin ||
+    definition.end !== CONFIG_MARKERS.providerEnd ||
+    typeof definition.sha256 !== "string" ||
+    !/^[0-9a-f]{64}$/u.test(definition.sha256) ||
+    typeof providerId !== "string" ||
+    !/^[A-Za-z0-9_-]+$/u.test(providerId)
+  ) {
+    return null;
+  }
+
+  const beginIndex = lines.indexOf(begin);
+  let providerHeaderIndex = -1;
+  for (let index = beginIndex + 1; index < lines.length; index += 1) {
+    const code = stripTomlComment(lines[index].raw).trim();
+    if (code === "") continue;
+    providerHeaderIndex = index;
+    break;
+  }
+  if (
+    providerHeaderIndex === -1 ||
+    stripTomlComment(lines[providerHeaderIndex].raw).trim() !==
+      `[model_providers.${providerId}]`
+  ) {
+    return null;
+  }
+
+  const nextTable = lines.find(
+    (line, index) =>
+      index > providerHeaderIndex && isTableHeader(line.raw),
+  );
+  const start = begin.start;
+  const end = nextTable?.start ?? source.length;
+  const actualText = source.slice(start, end);
+  const eol = begin.eol || detectEol(lines);
+  const markerPrefix = endsWithNewline(actualText) ? "" : eol;
+  const recoveredText =
+    `${actualText}${markerPrefix}${definition.end}${eol}`;
+  if (sha256(recoveredText) !== definition.sha256) return null;
+
   return {
     start,
     end,
-    text: source.slice(start, end),
-    eol: begins[0].eol || detectEol(lines),
+    text: recoveredText,
+    eol,
+    recoveredEnd: true,
   };
 }
 
