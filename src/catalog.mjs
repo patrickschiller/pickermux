@@ -20,7 +20,6 @@ const execFile = promisify(execFileCallback);
 const DEFAULT_CODEX_PATH = "/Applications/ChatGPT.app/Contents/Resources/codex";
 const MAX_BUNDLED_CATALOG_BYTES = 32 * 1024 * 1024;
 const MAX_ACCOUNT_CACHE_FUTURE_SKEW_MS = 5 * 60 * 1_000;
-const ACCOUNT_CACHE_STALE_AFTER_MS = 15 * 60 * 1_000;
 const CATALOG_COMPARE_FLAGS =
   fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0);
 const PREFERRED_DONORS = ["gpt-5.4-mini", "gpt-5.4"];
@@ -175,7 +174,8 @@ export async function loadCodexClientVersion({
 /**
  * Load the last account-scoped catalog fetched by Codex. A new Codex process
  * using the bridge's static catalog does not refresh this cache; an already-running
- * dynamic model manager still can. Callers therefore surface its age.
+ * dynamic model manager still can. Age is diagnostic metadata only: an exact
+ * client-version match remains valid regardless of when Codex fetched it.
  */
 export async function loadCachedNativeCatalog({
   codexHome,
@@ -218,9 +218,6 @@ export async function loadCachedNativeCatalog({
     throw new Error("Codex account model cache fetched_at timestamp is in the future");
   }
   const ageMs = Math.max(0, now - fetchedAt);
-  const warning = ageMs > ACCOUNT_CACHE_STALE_AFTER_MS
-    ? `Codex account model cache is ${Math.floor(ageMs / 60_000)} minute(s) old; run pickermux uninstall, fully quit and reopen Codex once, then install again to refresh account visibility`
-    : undefined;
   const catalog = validateCodexCatalog({ models: cloneJson(parsed.models) });
   return {
     catalog,
@@ -228,7 +225,7 @@ export async function loadCachedNativeCatalog({
     cachePath,
     clientVersion: parsed.client_version,
     fetchedAt: parsed.fetched_at,
-    ...(warning ? { warning } : {}),
+    ageMs,
   };
 }
 

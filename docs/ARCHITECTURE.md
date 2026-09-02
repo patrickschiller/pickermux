@@ -1,6 +1,6 @@
 # PickerMux Architecture
 
-This document describes the public v0.5.3 bridge contract. It is intended for
+This document describes the public v0.5.4 bridge contract. It is intended for
 contributors, security reviewers, and users who want to understand what runs on
 their Mac.
 
@@ -73,7 +73,10 @@ PickerMux builds the catalog in the following order:
 The account snapshot is the source of truth for native model visibility. The
 bundled catalog is not used to invent account access. The preview-only `build`
 command can use the bundle as a diagnostic fallback, but persistent installation
-cannot.
+cannot. Once the snapshot is structurally valid and matches the exact installed
+Codex client version, elapsed time alone does not make it stale. Its
+`fetched_at` value and derived age are diagnostic metadata; missing, malformed,
+unsafe, future-dated, or version-mismatched snapshots still fail closed.
 
 External slugs must begin with their provider namespace, such as
 `lmstudio/qwen/qwen3.8-27b`. An unknown, differently cased, or prefix-only slug
@@ -238,6 +241,43 @@ configuration, and selection update. The previous runtime package remains
 available until catalog validation, bridge restart, Codex schema checks, and
 the doctor all pass. A failure restores the previous files and service state.
 
+### Full account-cache refresh
+
+`refresh --full` is a separate, explicitly confirmed recovery transaction. It
+is not an age-triggered variant of ordinary `refresh`, and it rejects structured
+`--json` execution because the confirmation and application handoff are part of
+its safety contract.
+
+Before Codex is asked to quit, PickerMux creates a private checkpoint with
+operation metadata and the initial phase while holding the same lifecycle lock
+used by the receipt-bound one-time helper. The helper waits for that bounded
+lock handoff before continuing outside the Desktop process. Its cache-related
+fields are limited to the expected client version and `fetched_at` timestamps;
+it stores neither catalog contents nor account identity. The helper:
+
+1. requests a normal Apple-event quit and waits for stable LaunchServices
+   confirmation that Codex is stopped;
+2. suspends the managed PickerMux integration without purging the installed
+   configuration, certification receipts, verified backups, distribution, or
+   provider credentials;
+3. opens Codex by bundle identifier with a narrow macOS session environment and
+   waits for a structurally valid account cache whose client version is exact;
+   if a valid baseline existed, the new fetch timestamp must be later;
+4. requests and verifies a second graceful quit before any integration write;
+5. reactivates the preserved configuration through the normal transactional
+   refresh gates, then opens Codex so the new mixed catalog is loaded.
+
+All application-state and lock-handoff waits are bounded. A rejected or
+timed-out quit is never converted into `SIGKILL` or another forced termination.
+After suspension begins, the helper preserves a private checkpoint through
+receipt-bound artifact cleanup so an interrupted run can resume from its last
+recorded phase while each lifecycle callback revalidates live Codex,
+distribution, configuration, and service state. Concurrent lifecycle commands
+cannot reuse the checkpoint, plist, or log paths during that cleanup. An
+indeterminate `launchctl` result or unreadable checkpoint fails closed and
+retains recovery state. A failed reactivation is never reported as a completed
+full refresh.
+
 Release setup validates the account-scoped Codex cache before staging a new
 distribution, repeats the same read-only preflight under the lifecycle lock
 before changing active CLI controls, and performs it once more immediately
@@ -297,6 +337,17 @@ rejects foreign or modified LaunchAgents, unexpected backup contents, unsafe
 paths, and invalid ownership state. Native Codex credentials and unrecognized
 files are always outside its scope; `~/.codex/auth.json` is never read,
 modified, or removed.
+
+The canonical `model_bridge` full-purge configuration restoration atomically
+appends its marker-bounded historical compatibility provider table. It is
+credential-free, loopback-only at port zero, and has no retries, so it
+satisfies Codex's provider lookup for old chats without reviving a route. During
+a later installation, PickerMux removes only the byte-exact table at the end of
+the config before taking the new backup; any changed or foreign table remains a
+provider-table conflict. The marker carries only a config-file retention bit.
+It is false only when the path was absent before installation and no user bytes
+survive restoration, so a later ordinary uninstall preserves absence, an empty
+existing config, or surviving user content without storing that content.
 
 Runtime, backup, and registry quarantines are separate from the distribution
 quarantine. If one of their exact cleanups remains pending, purge fails and the
@@ -364,4 +415,8 @@ The LaunchAgent is stored at
 
 Release-distribution metadata is stored separately below
 `~/Library/Application Support/PickerMux` so CLI version management cannot be
-confused with Codex configuration ownership.
+confused with Codex configuration ownership. The bounded full-refresh helper,
+its private checkpoint, and its diagnostic log live in the dedicated
+`full-refresh/` subdirectory rather than in Codex authentication state. The
+subdirectory is removed after success and retained for an explicitly resumable
+failure.

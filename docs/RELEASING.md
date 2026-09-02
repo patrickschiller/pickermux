@@ -116,6 +116,30 @@ At minimum, record:
   safe picker selection, uninstall, and refusal after any provider-byte change;
 - independent `codex-account-cache` doctor output with the runtime and mixed
   catalog absent;
+- an exact-client-version account cache well beyond the former 15-minute
+  threshold, confirming that normal `refresh` succeeds without an age warning
+  while `doctor` reports its timestamp and age neutrally;
+- `refresh --full` cancellation without the exact `FULL` response and rejection
+  of `--json`, `--config`, and a non-receipt-active checkout, confirming zero
+  lifecycle mutation in each case;
+- a complete live `refresh --full` on macOS, confirming the first graceful
+  quit, temporary PickerMux suspension, native Codex launch, acceptance only of
+  a valid exact-client-version account cache with a later timestamp than any
+  valid baseline, the second graceful quit, transactional reactivation, and
+  final mixed-catalog Codex launch; run this from a separate interactive
+  Terminal after saving active Codex work so the task performing release
+  coordination is not the only observer;
+- full-refresh preservation of the installed custom provider configuration,
+  certification receipts, verified backups, registered Keychain credentials,
+  and receipt-owned CLI distribution;
+- a refused or timed-out Codex quit, confirming that no forced kill is sent and
+  that the operation fails closed with actionable recovery output;
+- unchanged, malformed, future-dated, and wrong-client account-cache candidates
+  during full refresh, confirming that none can authorize reactivation;
+- interruption at each full-refresh checkpoint phase plus a reactivation
+  failure, confirming checkpoint removal before suspension, retention from
+  suspension onward, bounded resume/recovery behavior, private checkpoint and
+  log permissions, and no false success report;
 - local model visibility after a full Codex restart;
 - same-version rerun and upgrade from the preceding release;
 - cache mismatch before staging, under the lifecycle lock, and immediately
@@ -152,7 +176,9 @@ At minimum, record:
 
 CI cannot prove current Codex Desktop, LM Studio, LaunchServices, or real model
 behavior. Those checks remain a release-blocking manual gate whenever the
-installer, bridge lifecycle, discovery, or compatibility contract changes.
+installer, bridge lifecycle, discovery, or compatibility contract changes. In
+particular, simulated state-machine coverage does not replace the live macOS
+`refresh --full` acceptance sequence for v0.5.4.
 
 ## Announcement gate
 

@@ -7,6 +7,47 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [0.5.4] - 2026-09-02
+
+### Fixed
+
+- A successful canonical `pickermux uninstall --purge` now leaves a
+  marker-bounded, credential-free, loopback-port-zero `model_bridge`
+  compatibility table so Codex can open historical PickerMux chats without
+  reviving an external route. Later installation removes only that exact table;
+  modified or foreign provider definitions still fail closed. The table retains
+  only config-file retention provenance so a later ordinary uninstall preserves
+  an absent path, an empty existing file, or surviving user content.
+
+### Added
+
+- An explicit, interactive `pickermux refresh --full` recovery mode can refresh
+  native account visibility without discarding the installed provider
+  configuration, certifications, verified backups, or Keychain credentials. It
+  gracefully quits Codex, temporarily suspends PickerMux, opens Codex natively,
+  waits for a newly valid account cache for the exact installed client (and a
+  later fetch timestamp when a valid baseline existed), quits Codex again,
+  transactionally reactivates PickerMux, and reopens Codex with the mixed
+  catalog.
+
+### Changed
+
+- A structurally valid account cache for the exact Codex client version no
+  longer produces a warning merely because of its age. `doctor` retains its
+  fetch timestamp and reports age only as neutral diagnostic metadata; missing,
+  malformed, unsafe, future-dated, or version-mismatched caches still fail
+  closed.
+
+### Security
+
+- Full refresh requires an explicit terminal confirmation, rejects `--json`,
+  never escalates to a forced process kill, and records a private checkpoint so
+  interrupted operations have bounded recovery instructions instead of being
+  reported as complete. Reactivation retains the existing transactional
+  lifecycle and ownership checks. Scheduler dispatch, worker execution, and
+  helper cleanup share the lifecycle lock; indeterminate `launchctl` or
+  checkpoint reads fail closed without deleting recovery state.
+
 ## [0.5.3] - 2026-09-02
 
 ### Fixed
@@ -163,7 +204,8 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
   paths and file types, refuses root execution and foreign launchers, and
   restores the previous distribution state when activation fails.
 
-[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.5.3...HEAD
+[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.5.4...HEAD
+[0.5.4]: https://github.com/patrickschiller/pickermux/releases/tag/v0.5.4
 [0.5.3]: https://github.com/patrickschiller/pickermux/releases/tag/v0.5.3
 [0.5.2]: https://github.com/patrickschiller/pickermux/releases/tag/v0.5.2
 [0.5.1]: https://github.com/patrickschiller/pickermux/releases/tag/v0.5.1

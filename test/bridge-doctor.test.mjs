@@ -132,6 +132,7 @@ test("mixed doctor verifies service, config, discovery, file and Codex catalog",
       cacheClientVersion: codexClientVersion,
       catalog: { models: [catalog.models[0]] },
       fetchedAt: "2026-08-28T16:06:00Z",
+      ageMs: 559 * 60_000,
       warning: null,
       source: "codex-account-cache",
     }),
@@ -207,6 +208,7 @@ test("doctor inspects the Codex account cache without an installed bridge", asyn
         codexClientVersion: options.codexClientVersion,
         cacheClientVersion: "0.151.0",
         fetchedAt: "2026-08-30T10:00:00.000Z",
+        ageMs: 559 * 60_000,
         warning: null,
         source: "codex-account-cache",
         catalog: { models: [NATIVE_MODEL] },
@@ -232,7 +234,7 @@ test("doctor inspects the Codex account cache without an installed bridge", asyn
     {
       name: "codex-account-cache",
       status: "pass",
-      detail: "0.151.0, 1 account model(s), fetched 2026-08-30T10:00:00.000Z",
+      detail: "0.151.0, 1 account model(s), fetched 2026-08-30T10:00:00.000Z, age 559 minute(s)",
     },
   );
   assert.equal(

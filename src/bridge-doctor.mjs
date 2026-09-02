@@ -24,6 +24,11 @@ function check(name, ok, detail) {
   return { name, status: ok ? "pass" : "fail", detail };
 }
 
+function accountCacheAgeDetail(ageMs) {
+  if (!Number.isFinite(ageMs) || ageMs < 0) return "";
+  return `, age ${Math.floor(ageMs / 60_000)} minute(s)`;
+}
+
 const TEXT_ONLY_CONTEXT_OUTCOMES = new Set(["compacted", "unchanged"]);
 const TEXT_ONLY_CONTEXT_STOP_REASONS = new Set([
   "ambiguous",
@@ -230,14 +235,15 @@ export async function runBridgeDoctor({
     });
     codexClientVersion ??= accountCache.codexClientVersion;
     const modelCount = accountCache.catalog.models.length;
-    const staleWarning = accountCache.warning
+    const cacheWarning = accountCache.warning
       ? `; WARNING: ${accountCache.warning}`
       : "";
+    const ageDetail = accountCacheAgeDetail(accountCache.ageMs);
     checks.push(
       check(
         "codex-account-cache",
         true,
-        `${accountCache.cacheClientVersion}, ${modelCount} account model(s), fetched ${accountCache.fetchedAt}${staleWarning}`,
+        `${accountCache.cacheClientVersion}, ${modelCount} account model(s), fetched ${accountCache.fetchedAt}${ageDetail}${cacheWarning}`,
       ),
     );
   } catch (error) {

@@ -44,7 +44,7 @@ test("account cache inspection binds the cache to the observed Codex client", as
         source: "codex-account-cache",
         clientVersion: "0.151.0",
         fetchedAt: "2026-08-30T10:00:00.000Z",
-        warning: "cache is old",
+        ageMs: 60 * 60 * 1_000,
       };
     },
   });
@@ -65,7 +65,8 @@ test("account cache inspection binds the cache to the observed Codex client", as
     codexClientVersion: "0.151.0",
     cacheClientVersion: "0.151.0",
     fetchedAt: "2026-08-30T10:00:00.000Z",
-    warning: "cache is old",
+    ageMs: 60 * 60 * 1_000,
+    warning: null,
     source: "codex-account-cache",
     catalog: ACCOUNT_CATALOG,
   });
@@ -86,11 +87,13 @@ test("account cache inspection reuses an injected client version", async () => {
       source: "codex-account-cache",
       clientVersion: expectedClientVersion,
       fetchedAt: "2026-08-30T10:00:00.000Z",
+      ageMs: 60_000,
     }),
   });
 
   assert.equal(clientVersionRead, false);
   assert.equal(result.codexClientVersion, "0.151.0");
+  assert.equal(result.ageMs, 60_000);
   assert.equal(result.warning, null);
 });
 
@@ -141,10 +144,10 @@ test("Codex client inspection failures remain operational errors", async () => {
   );
 });
 
-test("account cache loading reads only models_cache.json", async () => {
+test("account cache loading reads only models_cache.json and reports neutral age", async () => {
   const codexHome = "/private/isolated-codex-home";
   const reads = [];
-  await loadCachedNativeCatalog({
+  const result = await loadCachedNativeCatalog({
     codexHome,
     expectedClientVersion: "0.151.0",
     now: Date.parse("2026-08-30T10:01:00.000Z"),
@@ -161,6 +164,8 @@ test("account cache loading reads only models_cache.json", async () => {
   assert.deepEqual(reads, [
     [path.join(codexHome, "models_cache.json"), "utf8"],
   ]);
+  assert.equal(result.ageMs, 60_000);
+  assert.equal(result.warning, undefined);
 });
 
 test("default account cache reader accepts one exact private cache file", async (t) => {
@@ -185,6 +190,9 @@ test("default account cache reader accepts one exact private cache file", async 
   });
   assert.equal(result.source, "codex-account-cache");
   assert.equal(result.clientVersion, "0.151.0");
+  assert.equal(result.fetchedAt, "2026-08-30T10:00:00.000Z");
+  assert.equal(result.ageMs, 60_000);
+  assert.equal(result.warning, undefined);
   assert.deepEqual(result.catalog.models, ACCOUNT_CATALOG.models);
 });
 

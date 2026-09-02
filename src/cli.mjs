@@ -1,6 +1,8 @@
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { readdir, rmdir, unlink } from "node:fs/promises";
+import { createInterface } from "node:readline/promises";
+import { setTimeout as sleep } from "node:timers/promises";
 
 import { inspectCodexAccountCache } from "./account-cache.mjs";
 import { assertRuntimeCompressionSupport } from "./body-codec.mjs";
@@ -77,9 +79,17 @@ import {
   withInstallationLock,
 } from "./distribution-installer.mjs";
 import {
+  armFullRefreshLaunchAgent,
+  cleanupFullRefreshArtifacts,
+  prepareFullRefreshCheckpoint,
+  readFullRefreshCheckpoint,
+  runFullRefreshWorkflow,
+} from "./full-refresh.mjs";
+import {
   projectRoot,
   resolveCodexBinary,
   resolveDistributionPaths,
+  resolveFullRefreshPaths,
   resolveInstallPaths,
   resolveProjectConfig,
 } from "./paths.mjs";
@@ -147,6 +157,7 @@ Usage:
   pickermux setup [--config PATH]
   pickermux install [--config PATH] [--json]
   pickermux refresh [--config PATH] [--json]
+  pickermux refresh --full
   pickermux doctor [--config PATH] [--live] [--json]
   pickermux status [--config PATH] [--json]
   pickermux uninstall [--force] [--remove-cli | --purge] [--json]
@@ -176,25 +187,31 @@ function parseArguments(argv) {
     force: false,
     removeCli: false,
     purge: false,
+    full: false,
+    fullWorker: false,
     json: false,
     live: false,
     all: false,
     model: undefined,
     providerId: undefined,
+    checkpointPath: undefined,
   };
   for (let index = 1; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === "--force") options.force = true;
     else if (argument === "--remove-cli") options.removeCli = true;
     else if (argument === "--purge") options.purge = true;
+    else if (argument === "--full") options.full = true;
+    else if (argument === "--full-worker") options.fullWorker = true;
     else if (argument === "--all") options.all = true;
     else if (argument === "--json") options.json = true;
     else if (argument === "--live") options.live = true;
-    else if (["--config", "--distribution-root", "--output", "--runtime", "--model"].includes(argument)) {
+    else if (["--checkpoint", "--config", "--distribution-root", "--output", "--runtime", "--model"].includes(argument)) {
       const value = argv[index + 1];
       if (!value || value.startsWith("--")) throw new Error(`${argument} requires a path`);
       index += 1;
-      if (argument === "--config") options.configPath = value;
+      if (argument === "--checkpoint") options.checkpointPath = path.resolve(value);
+      else if (argument === "--config") options.configPath = value;
       else if (argument === "--distribution-root") options.distributionRoot = value;
       else if (argument === "--output") options.outputPath = value;
       else if (argument === "--runtime") options.runtimePath = value;
@@ -212,6 +229,24 @@ function parseArguments(argv) {
   if (options.purge && command !== "uninstall") throw new Error("--purge is supported only by uninstall");
   if (options.purge && options.removeCli) {
     throw new Error("--purge already includes --remove-cli");
+  }
+  if (options.full && command !== "refresh") {
+    throw new Error("--full is supported only by refresh");
+  }
+  if (options.fullWorker && command !== "refresh") {
+    throw new Error("--full-worker is supported only by refresh");
+  }
+  if (options.full && options.fullWorker) {
+    throw new Error("--full and --full-worker cannot be combined");
+  }
+  if (options.fullWorker !== Boolean(options.checkpointPath)) {
+    throw new Error("--full-worker and --checkpoint must be supplied together");
+  }
+  if ((options.full || options.fullWorker) && options.json) {
+    throw new Error("Full refresh is interactive and does not support --json");
+  }
+  if ((options.full || options.fullWorker) && options.configPath) {
+    throw new Error("Full refresh always reuses the installed service configuration");
   }
   if (options.distributionRoot && command !== "setup") {
     throw new Error("--distribution-root is supported only by setup");
@@ -1183,9 +1218,241 @@ function managedLaunchAgentOptions(paths) {
   };
 }
 
+async function restoreFullRefreshBridgeService({
+  config,
+  paths,
+  runtime,
+  nodePath,
+  serviceStatusImpl = getBridgeServiceStatus,
+  startServiceImpl = startBridgeService,
+}) {
+  const service = await serviceStatusImpl({
+    config,
+    runtimePath: paths.runtimePath,
+    launchAgentLabel: paths.launchAgentLabel,
+  });
+  if (service.loaded && service.healthy) return service;
+  if (service.loaded) {
+    throw new Error(
+      `Bridge service rollback found a loaded but unhealthy service (${service.status})`,
+    );
+  }
+  return startServiceImpl({
+    config,
+    configPath: paths.serviceConfigPath,
+    runtimePath: paths.runtimePath,
+    launchAgentPath: paths.launchAgentPath,
+    launchAgentLabel: paths.launchAgentLabel,
+    logPath: paths.logPath,
+    binPath: path.join(paths.serviceDirectory, "bin", "lmstudio-picker.mjs"),
+    workingDirectory: paths.serviceDirectory,
+    nodePath,
+    runtime,
+  });
+}
+
+/**
+ * Restore native Codex configuration without deleting the installed catalog,
+ * service package, service configuration, certifications, or CLI receipt.
+ * The service is stopped first so a configuration failure can restore it
+ * without ever exposing native Codex traffic to a half-removed bridge.
+ */
+export async function suspendPickerMuxForFullRefresh({
+  config,
+  paths,
+  sourceRoot,
+  configStatusImpl = getConfigStatus,
+  runtimeImpl = readRuntime,
+  validateLaunchAgentImpl = assertManagedLaunchAgent,
+  inventoryRuntimeImpl = inventoryManagedServicePackage,
+  inventoryConfigImpl = inventoryManagedConfigOwnership,
+  revalidateConfigImpl = revalidateManagedConfigOwnership,
+  uninstallConfigImpl = uninstallConfig,
+  stopServiceImpl = stopBridgeService,
+  serviceStatusImpl = getBridgeServiceStatus,
+  startServiceImpl = startBridgeService,
+} = {}) {
+  if (!config || !paths || typeof sourceRoot !== "string") {
+    throw new TypeError("Full refresh suspension requires config, paths, and sourceRoot");
+  }
+  const status = await configStatusImpl({
+    configPath: paths.configPath,
+    statePath: paths.statePath,
+  });
+  if (status.healthy !== true) {
+    throw new Error(
+      `PickerMux full refresh refuses inconsistent integration state (${status.status ?? "unknown"})`,
+    );
+  }
+
+  if (!status.installed) {
+    const service = await stopServiceImpl({
+      runtimePath: paths.runtimePath,
+      launchAgentPath: paths.launchAgentPath,
+      launchAgentLabel: paths.launchAgentLabel,
+      expectedLaunchAgent: expectedManagedLaunchAgent(paths),
+      removeRuntime: true,
+    });
+    return {
+      suspended: true,
+      alreadySuspended: true,
+      removedConfig: { changed: false, installed: false },
+      service,
+    };
+  }
+
+  const runtime = await runtimeImpl(paths.runtimePath);
+  const expected = installationOptions({ config, paths, runtime });
+  if (
+    status.provider !== expected.modelProvider ||
+    status.providerName !== expected.provider.name ||
+    status.catalog !== expected.modelCatalogJson ||
+    status.baseUrl !== expected.provider.baseUrl
+  ) {
+    throw new Error(
+      "Installed PickerMux configuration differs from its preserved service configuration",
+    );
+  }
+
+  const launchAgent = await validateLaunchAgentImpl(
+    managedLaunchAgentOptions(paths),
+  );
+  if (!launchAgent.present || typeof launchAgent.nodePath !== "string") {
+    throw new Error("PickerMux full refresh requires its managed bridge service");
+  }
+  await inventoryRuntimeImpl({
+    serviceDirectory: paths.serviceDirectory,
+    sourceRoot,
+  });
+  const configOwnership = await inventoryConfigImpl({
+    configPath: paths.configPath,
+    statePath: paths.statePath,
+    backupDirectory: paths.backupDirectory,
+  });
+
+  let serviceStopped = false;
+  try {
+    const service = await stopServiceImpl({
+      runtimePath: paths.runtimePath,
+      launchAgentPath: paths.launchAgentPath,
+      launchAgentLabel: paths.launchAgentLabel,
+      expectedLaunchAgent: expectedManagedLaunchAgent(paths),
+      removeRuntime: true,
+    });
+    serviceStopped = true;
+    await inventoryRuntimeImpl({
+      serviceDirectory: paths.serviceDirectory,
+      sourceRoot,
+    });
+    await revalidateConfigImpl(configOwnership);
+    const removedConfig = await uninstallConfigImpl({
+      configPath: paths.configPath,
+      statePath: paths.statePath,
+      backupDirectory: paths.backupDirectory,
+      ownershipReceipt: configOwnership,
+    });
+    const suspendedStatus = await configStatusImpl({
+      configPath: paths.configPath,
+      statePath: paths.statePath,
+    });
+    if (suspendedStatus.installed || suspendedStatus.healthy !== true) {
+      throw new Error("Native Codex configuration was not restored cleanly");
+    }
+    return {
+      suspended: true,
+      alreadySuspended: false,
+      removedConfig,
+      service,
+    };
+  } catch (cause) {
+    if (!serviceStopped) throw cause;
+    try {
+      const rollbackStatus = await configStatusImpl({
+        configPath: paths.configPath,
+        statePath: paths.statePath,
+      });
+      if (!rollbackStatus.installed || rollbackStatus.healthy !== true) {
+        throw new Error(
+          `Managed configuration could not be proven intact (${rollbackStatus.status ?? "unknown"})`,
+        );
+      }
+      await inventoryRuntimeImpl({
+        serviceDirectory: paths.serviceDirectory,
+        sourceRoot,
+      });
+      await restoreFullRefreshBridgeService({
+        config,
+        paths,
+        runtime,
+        nodePath: launchAgent.nodePath,
+        serviceStatusImpl,
+        startServiceImpl,
+      });
+    } catch (rollbackError) {
+      throw new Error(
+        `PickerMux full refresh suspension failed and service rollback was incomplete. Original: ${cause.message}; rollback: ${rollbackError.message}`,
+        { cause: new AggregateError([cause, rollbackError]) },
+      );
+    }
+    throw new Error(
+      `PickerMux full refresh suspension failed; the managed bridge service was restored: ${cause.message}`,
+      { cause },
+    );
+  }
+}
+
+export async function reactivatePickerMuxAfterFullRefresh({
+  config,
+  paths,
+  codexPath,
+  sourceRoot,
+  configStatusImpl = getConfigStatus,
+  installImpl = install,
+  doctorImpl = runBridgeDoctor,
+} = {}) {
+  if (!config || !paths || typeof sourceRoot !== "string") {
+    throw new TypeError("Full refresh reactivation requires config, paths, and sourceRoot");
+  }
+  const status = await configStatusImpl({
+    configPath: paths.configPath,
+    statePath: paths.statePath,
+  });
+  if (status.healthy !== true) {
+    throw new Error(
+      `PickerMux full refresh refuses inconsistent integration state (${status.status ?? "unknown"})`,
+    );
+  }
+  if (!status.installed) {
+    return installImpl({
+      config,
+      configPath: paths.serviceConfigPath,
+      paths,
+      codexPath,
+      sourceRoot,
+    });
+  }
+
+  const doctor = await doctorImpl({ config, paths, codexPath });
+  if (!doctor.ok) {
+    throw new Error(
+      doctor.checks
+        .filter((entry) => entry.status === "fail")
+        .map((entry) => `${entry.name}: ${entry.detail}`)
+        .join("; "),
+    );
+  }
+  return {
+    installed: true,
+    alreadyActive: true,
+    doctor,
+    restartRequired: true,
+  };
+}
+
 export async function uninstallIntegration({
   paths,
   force,
+  preserveHistoricalModelBridge = false,
   servicePackageInventory,
   runtimePreflightCompleted = false,
   installDirectoryInventory,
@@ -1206,6 +1473,9 @@ export async function uninstallIntegration({
 }) {
   if (typeof runtimePreflightCompleted !== "boolean") {
     throw new TypeError("runtimePreflightCompleted must be a boolean");
+  }
+  if (typeof preserveHistoricalModelBridge !== "boolean") {
+    throw new TypeError("preserveHistoricalModelBridge must be a boolean");
   }
   if (runtimePreflightCompleted && servicePackageInventory === undefined) {
     throw new TypeError(
@@ -1255,6 +1525,7 @@ export async function uninstallIntegration({
     ownershipReceipt: configOwnership,
     readBackupImpl,
     force,
+    preserveHistoricalModelBridge,
   });
   const service = await stopServiceImpl({
     runtimePath: paths.runtimePath,
@@ -1407,6 +1678,7 @@ export async function purgePickerMux({
   purgeBackupsImpl = purgePickerMuxBackups,
   purgeRegistryImpl = purgeKeychainProviderRegistry,
   rmdirImpl = rmdir,
+  assertNoPendingFullRefreshImpl = async () => null,
 } = {}) {
   await assertCodexDesktopClosed(desktopRunningImpl);
   const distribution = await validateDistributionImpl({
@@ -1443,6 +1715,7 @@ export async function purgePickerMux({
     paths: distributionPaths,
     requireExclusiveApplicationDirectory: true,
     async beforeRemove(confirmedDistribution) {
+      await assertNoPendingFullRefreshImpl();
       assertSameDistributionOwnership(distribution, confirmedDistribution);
       await assertCodexDesktopClosed(desktopRunningImpl);
       await validateLaunchAgentImpl(managedLaunchAgentOptions(paths));
@@ -1506,6 +1779,7 @@ export async function purgePickerMux({
                   configOwnershipReceipt: configOwnership,
                   readBackupImpl: readBackup,
                   sourceRoot: distribution.activeDirectory,
+                  preserveHistoricalModelBridge: true,
                 });
               } catch (cause) {
                 const error = new Error(
@@ -1569,6 +1843,447 @@ export async function purgePickerMux({
   );
 }
 
+const FULL_REFRESH_CONFIRMATION = "FULL";
+
+export async function assertNoPendingFullRefresh({
+  fullRefreshPaths = resolveFullRefreshPaths(),
+  readCheckpointImpl = readFullRefreshCheckpoint,
+} = {}) {
+  let checkpoint;
+  try {
+    checkpoint = await readCheckpointImpl({
+      installDirectory: fullRefreshPaths.installDirectory,
+      checkpointPath: fullRefreshPaths.checkpointPath,
+      allowMissing: true,
+    });
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  }
+  if (checkpoint !== null) {
+    throw new Error(
+      `PickerMux full refresh is incomplete at ${checkpoint.phase}; rerun pickermux refresh --full to resume before another lifecycle change`,
+    );
+  }
+  return null;
+}
+
+export async function confirmFullRefresh({
+  input = process.stdin,
+  output = process.stderr,
+  questionImpl,
+} = {}) {
+  const prompt = [
+    "PickerMux full refresh will gracefully quit Codex twice.",
+    "Active Codex tasks may be interrupted. PickerMux will be temporarily suspended,",
+    "Codex will reopen natively to refresh the account model cache, and PickerMux",
+    `will then be reactivated. Type ${FULL_REFRESH_CONFIRMATION} to continue: `,
+  ].join("\n");
+  if (questionImpl !== undefined) {
+    if (typeof questionImpl !== "function") {
+      throw new TypeError("questionImpl must be a function");
+    }
+    return (await questionImpl(prompt)).trim() === FULL_REFRESH_CONFIRMATION;
+  }
+  if (input?.isTTY !== true || output?.isTTY !== true) {
+    throw new Error(
+      "pickermux refresh --full requires an interactive terminal confirmation",
+    );
+  }
+  const terminal = createInterface({ input, output });
+  try {
+    return (await terminal.question(prompt)).trim() === FULL_REFRESH_CONFIRMATION;
+  } finally {
+    terminal.close();
+  }
+}
+
+function assertActiveFullRefreshDistribution(distribution, sourceRoot) {
+  if (
+    distribution?.installed !== true ||
+    typeof distribution.activeDirectory !== "string"
+  ) {
+    throw new Error(
+      "PickerMux full refresh requires a receipt-validated CLI installation",
+    );
+  }
+  if (path.resolve(distribution.activeDirectory) !== path.resolve(sourceRoot)) {
+    throw new Error(
+      "Run pickermux refresh --full from the receipt-active installed PickerMux CLI",
+    );
+  }
+  return distribution;
+}
+
+function fullRefreshArtifactOptions({ fullRefreshPaths, workerPath, nodePath }) {
+  return {
+    installDirectory: fullRefreshPaths.installDirectory,
+    label: fullRefreshPaths.launchAgentLabel,
+    nodePath,
+    workerPath,
+    checkpointPath: fullRefreshPaths.checkpointPath,
+    launchAgentPath: fullRefreshPaths.launchAgentPath,
+    logPath: fullRefreshPaths.logPath,
+  };
+}
+
+async function scheduleFullRefreshLocked({
+  paths = resolveInstallPaths(),
+  distributionPaths = resolveDistributionPaths(),
+  fullRefreshPaths = resolveFullRefreshPaths(),
+  codexPath = resolveCodexBinary(),
+  sourceRoot = projectRoot,
+  validateDistributionImpl = validateDistributionInstallation,
+  configStatusImpl = getConfigStatus,
+  loadConfigImpl = loadBridgeConfig,
+  runtimeImpl = readRuntime,
+  validateLaunchAgentImpl = assertManagedLaunchAgent,
+  inventoryRuntimeImpl = inventoryManagedServicePackage,
+  prepareCheckpointImpl = prepareFullRefreshCheckpoint,
+  armImpl = armFullRefreshLaunchAgent,
+  cleanupImpl = cleanupFullRefreshArtifacts,
+  nodePath = process.execPath,
+} = {}) {
+  const distribution = assertActiveFullRefreshDistribution(
+    await validateDistributionImpl({ paths: distributionPaths }),
+    sourceRoot,
+  );
+  const config = await loadConfigImpl(paths.serviceConfigPath);
+  assertPersistentCredentialSupport(config);
+  const status = await configStatusImpl({
+    configPath: paths.configPath,
+    statePath: paths.statePath,
+  });
+  if (status.healthy !== true) {
+    throw new Error(
+      `PickerMux full refresh refuses inconsistent integration state (${status.status ?? "unknown"})`,
+    );
+  }
+  const runtimeInventory = await inventoryRuntimeImpl({
+    serviceDirectory: paths.serviceDirectory,
+    sourceRoot: distribution.activeDirectory,
+  });
+  if (runtimeInventory?.exists !== true) {
+    throw new Error("PickerMux full refresh requires its receipt-bound runtime package");
+  }
+
+  const prepared = await prepareCheckpointImpl({
+    installDirectory: fullRefreshPaths.installDirectory,
+    checkpointPath: fullRefreshPaths.checkpointPath,
+    codexHome: paths.codexHome,
+    codexPath,
+  });
+  if (!prepared.resumed) {
+    if (!status.installed) {
+      await cleanupImpl({
+        successful: true,
+        ...fullRefreshArtifactOptions({
+          fullRefreshPaths,
+          workerPath: path.join(
+            distribution.activeDirectory,
+            "bin",
+            "pickermux.mjs",
+          ),
+          nodePath,
+        }),
+      });
+      throw new Error("PickerMux must be healthily installed before full refresh");
+    }
+    const runtime = await runtimeImpl(paths.runtimePath);
+    const expected = installationOptions({ config, paths, runtime });
+    if (
+      status.provider !== expected.modelProvider ||
+      status.providerName !== expected.provider.name ||
+      status.catalog !== expected.modelCatalogJson ||
+      status.baseUrl !== expected.provider.baseUrl
+    ) {
+      await cleanupImpl({
+        successful: true,
+        ...fullRefreshArtifactOptions({
+          fullRefreshPaths,
+          workerPath: path.join(
+            distribution.activeDirectory,
+            "bin",
+            "pickermux.mjs",
+          ),
+          nodePath,
+        }),
+      });
+      throw new Error(
+        "Installed PickerMux configuration differs from its preserved service configuration",
+      );
+    }
+    const launchAgent = await validateLaunchAgentImpl(
+      managedLaunchAgentOptions(paths),
+    );
+    if (!launchAgent.present) {
+      await cleanupImpl({
+        successful: true,
+        ...fullRefreshArtifactOptions({
+          fullRefreshPaths,
+          workerPath: path.join(
+            distribution.activeDirectory,
+            "bin",
+            "pickermux.mjs",
+          ),
+          nodePath,
+        }),
+      });
+      throw new Error("PickerMux full refresh requires its managed bridge service");
+    }
+  }
+
+  const workerPath = path.join(
+    distribution.activeDirectory,
+    "bin",
+    "pickermux.mjs",
+  );
+  try {
+    const armed = await armImpl({
+      ...fullRefreshArtifactOptions({ fullRefreshPaths, workerPath, nodePath }),
+      receiptPath: fullRefreshPaths.receiptPath,
+    });
+    return Object.freeze({
+      started: true,
+      resumed: prepared.resumed,
+      operationId: prepared.checkpoint.operationId,
+      workerPath: armed.workerPath,
+    });
+  } catch (error) {
+    if (!prepared.resumed) {
+      try {
+        await cleanupImpl({
+          successful: true,
+          ...fullRefreshArtifactOptions({
+            fullRefreshPaths,
+            workerPath,
+            nodePath,
+          }),
+        });
+      } catch (cleanupError) {
+        throw new Error(
+          `Full refresh could not start and prepared-state cleanup failed. Original: ${error.message}; cleanup: ${cleanupError.message}`,
+          { cause: new AggregateError([error, cleanupError]) },
+        );
+      }
+    }
+    throw error;
+  }
+}
+
+export async function scheduleFullRefresh(options = {}) {
+  const {
+    distributionPaths = resolveDistributionPaths(),
+    withLockImpl = withInstallationLock,
+  } = options;
+  if (typeof withLockImpl !== "function") {
+    throw new TypeError("withLockImpl must be a function");
+  }
+  return withLockImpl(distributionPaths, () => scheduleFullRefreshLocked({
+    ...options,
+    distributionPaths,
+  }));
+}
+
+const FULL_REFRESH_LOCK_RETRY_ATTEMPTS = 200;
+const FULL_REFRESH_LOCK_RETRY_INTERVAL_MS = 100;
+const FULL_REFRESH_RETRYABLE_LOCK_ERRORS = new Set([
+  "ENOENT",
+  "PICKERMUX_INSTALLATION_LOCK_BUSY",
+]);
+
+async function withFullRefreshWorkerLock({
+  distributionPaths,
+  operation,
+  withLockImpl,
+  lockSleepImpl,
+}) {
+  for (
+    let attempt = 0;
+    attempt < FULL_REFRESH_LOCK_RETRY_ATTEMPTS;
+    attempt += 1
+  ) {
+    let operationStarted = false;
+    try {
+      return await withLockImpl(distributionPaths, async () => {
+        operationStarted = true;
+        return operation();
+      });
+    } catch (error) {
+      if (
+        operationStarted ||
+        !FULL_REFRESH_RETRYABLE_LOCK_ERRORS.has(error?.code) ||
+        attempt + 1 === FULL_REFRESH_LOCK_RETRY_ATTEMPTS
+      ) {
+        throw error;
+      }
+      await lockSleepImpl(FULL_REFRESH_LOCK_RETRY_INTERVAL_MS);
+    }
+  }
+  throw new Error("Full-refresh worker lock retry limit was exhausted");
+}
+
+export async function executeFullRefreshWorker({
+  checkpointPath,
+  paths = resolveInstallPaths(),
+  distributionPaths = resolveDistributionPaths(),
+  fullRefreshPaths = resolveFullRefreshPaths(),
+  codexPath = resolveCodexBinary(),
+  sourceRoot = projectRoot,
+  validateDistributionImpl = validateDistributionInstallation,
+  loadConfigImpl = loadBridgeConfig,
+  desktopRunningImpl = isCodexDesktopRunning,
+  workflowImpl = runFullRefreshWorkflow,
+  suspendImpl = suspendPickerMuxForFullRefresh,
+  reactivateImpl = reactivatePickerMuxAfterFullRefresh,
+  cleanupImpl = cleanupFullRefreshArtifacts,
+  readCheckpointImpl = readFullRefreshCheckpoint,
+  withLockImpl = withInstallationLock,
+  lockSleepImpl = sleep,
+  reportImpl = (message) => process.stdout.write(`${message}\n`),
+} = {}) {
+  if (path.resolve(checkpointPath ?? "") !== fullRefreshPaths.checkpointPath) {
+    throw new Error("Full-refresh worker checkpoint path is not the managed path");
+  }
+  if (
+    typeof reportImpl !== "function" ||
+    typeof withLockImpl !== "function" ||
+    typeof lockSleepImpl !== "function"
+  ) {
+    throw new TypeError("Full-refresh worker dependencies must be functions");
+  }
+  const initialDistribution = assertActiveFullRefreshDistribution(
+    await validateDistributionImpl({ paths: distributionPaths }),
+    sourceRoot,
+  );
+  const workerPath = path.join(
+    initialDistribution.activeDirectory,
+    "bin",
+    "pickermux.mjs",
+  );
+  const artifactOptions = fullRefreshArtifactOptions({
+    fullRefreshPaths,
+    workerPath,
+    nodePath: process.execPath,
+  });
+  return withFullRefreshWorkerLock({
+    distributionPaths,
+    withLockImpl,
+    lockSleepImpl,
+    operation: async () => {
+      let workflowStarted = false;
+      let result;
+      try {
+        const distribution = assertActiveFullRefreshDistribution(
+          await validateDistributionImpl({ paths: distributionPaths }),
+          sourceRoot,
+        );
+        assertSameDistributionOwnership(initialDistribution, distribution);
+        workflowStarted = true;
+        result = await workflowImpl({
+          installDirectory: fullRefreshPaths.installDirectory,
+          checkpointPath: fullRefreshPaths.checkpointPath,
+          codexHome: paths.codexHome,
+          codexPath,
+          async temporarySuspendImpl() {
+            if (await desktopRunningImpl()) {
+              throw new Error(
+                "Codex Desktop restarted before PickerMux suspension",
+              );
+            }
+            const confirmed = await validateDistributionImpl({
+              paths: distributionPaths,
+            });
+            assertSameDistributionOwnership(distribution, confirmed);
+            const config = await loadConfigImpl(paths.serviceConfigPath);
+            return suspendImpl({
+              config,
+              paths,
+              sourceRoot: distribution.activeDirectory,
+            });
+          },
+          async reactivateAndDoctorImpl() {
+            if (await desktopRunningImpl()) {
+              throw new Error(
+                "Codex Desktop restarted before PickerMux reactivation",
+              );
+            }
+            const confirmed = await validateDistributionImpl({
+              paths: distributionPaths,
+            });
+            assertSameDistributionOwnership(distribution, confirmed);
+            const config = await loadConfigImpl(paths.serviceConfigPath);
+            return reactivateImpl({
+              config,
+              paths,
+              codexPath,
+              sourceRoot: distribution.activeDirectory,
+            });
+          },
+          progressImpl(context) {
+            reportImpl(`PickerMux full refresh: ${context.phase}`);
+          },
+        });
+      } catch (error) {
+        let checkpoint = null;
+        if (workflowStarted) {
+          try {
+            checkpoint = await readCheckpointImpl({
+              installDirectory: fullRefreshPaths.installDirectory,
+              checkpointPath: fullRefreshPaths.checkpointPath,
+              allowMissing: true,
+            });
+          } catch (checkpointError) {
+            reportImpl(
+              "PickerMux full refresh paused with unreadable recovery state; managed recovery artifacts were retained.",
+            );
+            const failures = [error, checkpointError];
+            try {
+              await cleanupImpl({ successful: false, ...artifactOptions });
+            } catch (cleanupError) {
+              failures.push(cleanupError);
+            }
+            throw new Error(
+              `Full refresh failed and its recovery checkpoint could not be read. Original: ${error.message}; checkpoint: ${checkpointError.message}`,
+              { cause: new AggregateError(failures) },
+            );
+          }
+        }
+        const resumable = checkpoint !== null;
+        reportImpl(
+          resumable
+            ? `PickerMux full refresh paused at ${checkpoint.phase}; rerun pickermux refresh --full to resume.`
+            : `PickerMux full refresh stopped before integration mutation: ${error.message}`,
+        );
+        try {
+          await cleanupImpl({ successful: !resumable, ...artifactOptions });
+        } catch (cleanupError) {
+          throw new Error(
+            `Full refresh failed and helper cleanup was incomplete. Original: ${error.message}; cleanup: ${cleanupError.message}`,
+            { cause: new AggregateError([error, cleanupError]) },
+          );
+        }
+        throw error;
+      }
+      reportImpl(
+        "PickerMux full refresh completed; Codex reopened with PickerMux active.",
+      );
+      try {
+        await cleanupImpl({ successful: true, ...artifactOptions });
+      } catch (cleanupError) {
+        reportImpl(
+          "PickerMux full refresh completed, but receipt-bound helper cleanup is incomplete; rerun refresh --full to finish cleanup.",
+        );
+        throw new Error(
+          `Full refresh completed but helper cleanup was incomplete: ${cleanupError.message}`,
+          { cause: cleanupError },
+        );
+      }
+      return result;
+    },
+  });
+}
+
 export async function setupPickerMux({
   sourceRoot = projectRoot,
   setupConfigPath,
@@ -1584,6 +2299,7 @@ export async function setupPickerMux({
   discoverImpl = discoverBridgeModels,
   installImpl = install,
   refreshImpl = refresh,
+  assertNoPendingFullRefreshImpl = async () => null,
 } = {}) {
   const initialStatus = await configStatusImpl({
     configPath: paths.configPath,
@@ -1616,6 +2332,7 @@ export async function setupPickerMux({
         const repair = await withInstallationLock(
           distributionPaths,
           async () => {
+            await assertNoPendingFullRefreshImpl();
             if (await desktopRunningImpl()) {
               throw new Error(
                 "PickerMux setup requires Codex Desktop to remain fully quit with Command-Q",
@@ -1673,6 +2390,7 @@ export async function setupPickerMux({
     sourceRoot,
     paths: distributionPaths,
     async beforeControlCommit() {
+      await assertNoPendingFullRefreshImpl();
       const status = await configStatusImpl({
         configPath: paths.configPath,
         statePath: paths.statePath,
@@ -1733,6 +2451,10 @@ export async function setupPickerMux({
 
 export async function runCli(argv, {
   purgeImpl = purgePickerMux,
+  scheduleFullRefreshImpl = scheduleFullRefresh,
+  executeFullRefreshWorkerImpl = executeFullRefreshWorker,
+  confirmFullRefreshImpl = confirmFullRefresh,
+  assertNoPendingFullRefreshImpl = assertNoPendingFullRefresh,
 } = {}) {
   const options = parseArguments(argv);
   if (options.command === "help") {
@@ -1747,6 +2469,51 @@ export async function runCli(argv, {
   }
   const paths = resolveInstallPaths();
   const distributionPaths = resolveDistributionPaths();
+  const fullRefreshPaths = resolveFullRefreshPaths();
+  const assertNoPendingFullRefreshLocked = () =>
+    assertNoPendingFullRefreshImpl({ fullRefreshPaths });
+  if (options.command === "refresh" && options.fullWorker) {
+    return executeFullRefreshWorkerImpl({
+      checkpointPath: options.checkpointPath,
+      paths,
+      distributionPaths,
+      fullRefreshPaths,
+    });
+  }
+  if (options.command === "refresh" && options.full) {
+    if (!(await confirmFullRefreshImpl())) {
+      const result = { started: false, cancelled: true };
+      process.stdout.write("PickerMux full refresh cancelled; no state was changed.\n");
+      return result;
+    }
+    process.stdout.write(
+      "Preparing PickerMux full refresh. Codex will quit momentarily; rerun this command if recovery output asks you to resume.\n",
+    );
+    const result = await scheduleFullRefreshImpl({
+      paths,
+      distributionPaths,
+      fullRefreshPaths,
+    });
+    process.stdout.write(
+      result.resumed
+        ? "Resumable PickerMux full refresh worker armed.\n"
+        : "PickerMux full refresh worker armed.\n",
+    );
+    return result;
+  }
+  if (
+    new Set([
+      "certify",
+      "credential-delete",
+      "credential-set",
+      "install",
+      "refresh",
+      "setup",
+      "uninstall",
+    ]).has(options.command)
+  ) {
+    await assertNoPendingFullRefreshLocked();
+  }
   if (options.command === "setup") {
     const result = await setupPickerMux({
       sourceRoot: options.distributionRoot
@@ -1758,6 +2525,7 @@ export async function runCli(argv, {
           : undefined,
       paths,
       distributionPaths,
+      assertNoPendingFullRefreshImpl: assertNoPendingFullRefreshLocked,
     });
     if (options.json) printJson(result);
     else {
@@ -1784,6 +2552,7 @@ export async function runCli(argv, {
         paths,
         distributionPaths,
         force: options.force,
+        assertNoPendingFullRefreshImpl: assertNoPendingFullRefreshLocked,
       });
       assertFullPurgeCompleted(
         result,
@@ -1807,6 +2576,7 @@ export async function runCli(argv, {
       result = await removeManagedDistribution({
         paths: distributionPaths,
         beforeRemove: async (confirmedDistribution) => {
+          await assertNoPendingFullRefreshLocked();
           assertSameDistributionOwnership(distribution, confirmedDistribution);
           await assertCodexDesktopClosed(isCodexDesktopRunning);
           return uninstallIntegration({
@@ -1821,6 +2591,7 @@ export async function runCli(argv, {
       result = await withInstallationLock(
         distributionPaths,
         async () => {
+          await assertNoPendingFullRefreshLocked();
           await assertCodexDesktopClosed(isCodexDesktopRunning);
           const servicePackageInventory = await inventoryManagedServicePackage({
             serviceDirectory: paths.serviceDirectory,
@@ -1839,7 +2610,9 @@ export async function runCli(argv, {
     else {
       process.stdout.write(
         options.purge
-          ? "PickerMux integration, receipt-validated CLI, verified backups, and registered provider Keychain credentials were removed.\n"
+          ? result.beforeResult?.integration?.removedConfig?.historicalCompatibility
+            ? "PickerMux integration, receipt-validated CLI, verified backups, and registered provider Keychain credentials were removed. An inert model_bridge compatibility table remains only so historical chats parse; new turns through it fail locally.\n"
+            : "PickerMux integration, receipt-validated CLI, verified backups, and registered provider Keychain credentials were removed.\n"
           : options.removeCli
             ? "Model bridge and receipt-validated PickerMux CLI removed; backups and Keychain credentials were preserved.\n"
             : result.removedConfig.changed
@@ -1872,7 +2645,10 @@ export async function runCli(argv, {
     const result = new Set(["credential-set", "credential-delete"]).has(
       options.command,
     )
-      ? await withInstallationLock(distributionPaths, executeCredentialCommand)
+      ? await withInstallationLock(distributionPaths, async () => {
+          await assertNoPendingFullRefreshLocked();
+          return executeCredentialCommand();
+        })
       : await executeCredentialCommand();
     if (options.json) printJson(result);
     else if (options.command === "credential-status") {
@@ -1944,7 +2720,10 @@ export async function runCli(argv, {
   if (options.command === "install") {
     const result = await withInstallationLock(
       distributionPaths,
-      async () => install({ config, configPath, paths, codexPath }),
+      async () => {
+        await assertNoPendingFullRefreshLocked();
+        return install({ config, configPath, paths, codexPath });
+      },
     );
     if (options.json) printJson(result);
     else {
@@ -1958,7 +2737,10 @@ export async function runCli(argv, {
   if (options.command === "refresh") {
     const result = await withInstallationLock(
       distributionPaths,
-      async () => refresh({ config, paths, codexPath }),
+      async () => {
+        await assertNoPendingFullRefreshLocked();
+        return refresh({ config, paths, codexPath });
+      },
     );
     if (options.json) printJson(result);
     else {
@@ -1970,13 +2752,16 @@ export async function runCli(argv, {
   if (options.command === "certify") {
     const result = await withInstallationLock(
       distributionPaths,
-      async () => certify({
-        config,
-        paths,
-        codexPath,
-        model: options.model,
-        all: options.all,
-      }),
+      async () => {
+        await assertNoPendingFullRefreshLocked();
+        return certify({
+          config,
+          paths,
+          codexPath,
+          model: options.model,
+          all: options.all,
+        });
+      },
     );
     if (options.json) printJson(result);
     else {
@@ -1997,7 +2782,13 @@ export async function runCli(argv, {
     return result;
   }
   if (options.command === "status") {
-    const [managedConfig, service, bundledCatalog, codexClientVersion] = await Promise.all([
+    const [
+      managedConfig,
+      service,
+      bundledCatalog,
+      codexClientVersion,
+      fullRefreshCheckpoint,
+    ] = await Promise.all([
       getConfigStatus({ configPath: paths.configPath, statePath: paths.statePath }),
       getBridgeServiceStatus({
         config,
@@ -2006,16 +2797,24 @@ export async function runCli(argv, {
       }),
       loadBundledCatalog({ codexPath }),
       loadCodexClientVersion({ codexPath }),
+      readFullRefreshCheckpoint({
+        installDirectory: resolveFullRefreshPaths().installDirectory,
+        checkpointPath: resolveFullRefreshPaths().checkpointPath,
+        allowMissing: true,
+      }),
     ]);
     const compatibility = await checkCurrentCompatibility({
       manifestPath: paths.compatibilityPath,
       bundledCatalog,
       codexClientVersion,
     });
-    const result = { managedConfig, service, compatibility };
+    const fullRefresh = fullRefreshCheckpoint
+      ? { status: "pending", phase: fullRefreshCheckpoint.phase }
+      : { status: "idle", phase: null };
+    const result = { managedConfig, service, compatibility, fullRefresh };
     if (options.json) printJson(result);
     else process.stdout.write(
-      `config=${managedConfig.status} bridge=${service.status} compatibility=${compatibility.status}\n`,
+      `config=${managedConfig.status} bridge=${service.status} compatibility=${compatibility.status} full-refresh=${fullRefresh.phase ?? fullRefresh.status}\n`,
     );
     return result;
   }

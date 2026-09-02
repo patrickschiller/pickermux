@@ -96,3 +96,21 @@ export function resolveDistributionPaths(environment = process.env) {
     ),
   };
 }
+
+export function resolveFullRefreshPaths(environment = process.env) {
+  const distribution = resolveDistributionPaths(environment);
+  const operationDirectory = path.join(
+    distribution.applicationDirectory,
+    "full-refresh",
+  );
+  const launchAgentLabel = "com.local.pickermux-full-refresh";
+  return {
+    installDirectory: distribution.applicationDirectory,
+    operationDirectory,
+    checkpointPath: path.join(operationDirectory, "full-refresh-state.json"),
+    launchAgentPath: path.join(operationDirectory, `${launchAgentLabel}.plist`),
+    logPath: path.join(operationDirectory, "full-refresh.log"),
+    launchAgentLabel,
+    receiptPath: distribution.receiptPath,
+  };
+}
