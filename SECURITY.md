@@ -106,10 +106,12 @@ fixed public status codes; raw verifier errors, versions, and paths are not
 returned by the bridge health endpoint.
 
 Managed configuration recovery is limited to a missing provider end marker
-whose one virtual reinsertion at the next TOML table or end of file exactly
-recreates the receipt-recorded block digest. It does not write the recovered
-marker. Missing root/begin markers, duplicate or foreign boundaries, provider
-content changes, unsafe table scope, and receipt mismatch remain blocked.
+whose virtual reinsertion at exactly one safe line boundary before the next
+TOML table or end of file recreates the receipt-recorded block digest. Blank or
+comment-only tail lines remain outside the owned block and are preserved. The
+recovery does not write the marker. Missing root/begin markers, duplicate or
+foreign boundaries, provider content changes, unsafe table scope, ambiguous
+candidates, and receipt mismatch remain blocked.
 
 ## Uninstall and purge boundary
 

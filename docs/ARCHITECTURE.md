@@ -1,6 +1,6 @@
 # PickerMux Architecture
 
-This document describes the public v0.5.1 bridge contract. It is intended for
+This document describes the public v0.5.2 bridge contract. It is intended for
 contributors, security reviewers, and users who want to understand what runs on
 their Mac.
 
@@ -220,13 +220,14 @@ explicit files under `~/.codex/model-bridge`, plus its named LaunchAgent. It
 creates a verified backup before changing Codex configuration.
 
 The ownership receipt also permits one narrow, write-free recovery: if only the
-managed provider end marker is missing, PickerMux derives the boundary at the
-next TOML table or end of file and virtually reinserts that exact marker. The
-block is accepted only when the reconstructed bytes reproduce the receipt's
-SHA-256 digest. Status exposes `installed-marker-recovered`; refresh, selection
-changes, and uninstall can then proceed without silently rewriting the config.
-Missing begin/root markers, duplicate boundaries, content changes, and every
-ambiguous candidate remain inconsistent.
+managed provider end marker is missing, PickerMux tests the safe line boundaries
+between the provider table and the next TOML table or end of file. It virtually
+reinserts the exact marker only when one unique candidate reproduces the
+receipt's SHA-256 block digest and every preserved tail line is blank or a
+comment. Status exposes `installed-marker-recovered`; refresh, selection changes,
+and uninstall can then proceed without silently rewriting the config. Missing
+begin/root markers, duplicate boundaries, provider-scoped content changes, and
+every ambiguous candidate remain inconsistent.
 
 Install and refresh stage the runtime, catalog, compatibility manifest, service
 configuration, and selection update. The previous runtime package remains

@@ -71,7 +71,7 @@ or another shell file automatically. Until then, use the absolute command path.
 For a reproducible installation, replace `latest` with an exact release:
 
 ```bash
-/usr/bin/curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://github.com/patrickschiller/pickermux/releases/download/v0.5.1/install.sh | /bin/sh
+/usr/bin/curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://github.com/patrickschiller/pickermux/releases/download/v0.5.2/install.sh | /bin/sh
 ```
 
 Both one-line forms execute code downloaded from GitHub. The archive checksum
@@ -99,7 +99,7 @@ and follow the managed setup procedure in
 ~/.local/bin/pickermux discover
 ```
 
-For this release, the first command must print `pickermux 0.5.1`. `status`
+For this release, the first command must print `pickermux 0.5.2`. `status`
 checks the managed configuration, catalog, compatibility contract, and bridge;
 `discover` lists the LLMs currently loaded in LM Studio. `doctor` is
 deterministic and does not submit a model prompt. Its independent
@@ -118,7 +118,7 @@ LM Studio inference check. Once `~/.local/bin` is in `PATH`, the shorter
 
 ## Text-only performance
 
-PickerMux 0.5.1 reduces prompt-prefill work for newly discovered, uncertified
+PickerMux 0.5.2 reduces prompt-prefill work for newly discovered, uncertified
 LM Studio models. Codex Desktop can attach a large generated coding-agent
 bootstrap even to a short question. On a text-only route, PickerMux replaces
 the donor coding-agent profile with a compact assistant prompt, removes
@@ -344,9 +344,10 @@ proxy.
   closed.
 - Configuration changes, catalogs, compatibility data, service files, and
   rollback state are written privately and transactionally.
-- A missing managed provider end marker is accepted only when one virtual
-  reinsertion recreates the receipt-recorded block digest at a safe TOML
-  boundary; ambiguous or edited state remains blocked.
+- A missing managed provider end marker is accepted only when one unique
+  virtual reinsertion recreates the receipt-recorded block digest at a safe
+  line boundary before the next TOML table; blank or comment-only tail lines
+  are preserved, while ambiguous or edited state remains blocked.
 - Release payloads are versioned, checksum-verified, and extracted only after
   unsafe paths and file types have been rejected.
 - Uninstall inventories and revalidates exact owned paths before removal. Full

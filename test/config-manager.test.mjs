@@ -224,6 +224,38 @@ test("an exact missing provider end marker is recovered without rewriting config
   );
 });
 
+test("missing provider end recovery finds a unique receipted boundary before preserved whitespace", async (t) => {
+  const fixture = await makeFixture(t);
+  const original = [
+    'model = "gpt-5.6-sol"',
+    "[features]",
+    "web_search = true",
+    "",
+  ].join("\n");
+  await writeFile(fixture.configPath, original);
+  await installConfig(fixture.options());
+
+  const installed = await readFile(fixture.configPath, "utf8");
+  const markerPlaceholder = installed.replace(CONFIG_MARKERS.providerEnd, "");
+  assert.notEqual(markerPlaceholder, installed);
+  await writeFile(fixture.configPath, markerPlaceholder);
+
+  const status = await getConfigStatus(fixture.paths());
+  assert.deepEqual(pickStatus(status), {
+    installed: true,
+    healthy: true,
+    status: "installed-marker-recovered",
+  });
+  assert.deepEqual(status.recoveredMarkers, ["provider-end"]);
+  assert.equal(await readFile(fixture.configPath, "utf8"), markerPlaceholder);
+
+  await uninstallConfig(fixture.paths());
+  assert.equal(
+    await readFile(fixture.configPath, "utf8"),
+    original.replace("[features]", "\n[features]"),
+  );
+});
+
 test("missing provider end recovery supports CRLF at end of file", async (t) => {
   const fixture = await makeFixture(t);
   const original =
