@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import { validateBridgeConfig } from "../src/bridge-config.mjs";
@@ -16,6 +19,16 @@ import {
   buildProviderRegistry,
   createReloadableProviderRegistry,
 } from "../src/provider-registry.mjs";
+import {
+  certificationSubjectForModel,
+  resolveModelCapabilitySlugs,
+} from "../src/certification-runner.mjs";
+import {
+  REQUIRED_CERTIFICATION_GATES,
+  assertNoPendingModelCertification,
+  recordPassedCertification,
+  stageModelCertificationDeactivation,
+} from "../src/model-certification.mjs";
 
 const donor = {
   slug: "gpt-5.4-mini",
@@ -534,6 +547,77 @@ test("compatibility guard blocks publication before picker mutation", async () =
     /compatibility changed/u,
   );
   assert.deepEqual(events, ["guard"]);
+});
+
+test("pending certification blocks a loaded-sync snapshot resolved before staging", async (t) => {
+  const directory = await mkdtemp(path.join(tmpdir(), "catalog-sync-certification-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const storePath = path.join(directory, "certifications.json");
+  const inputConfig = config();
+  const nativeCatalog = { models: [donor] };
+  const liveModel = discovered(
+    "lmstudio/qwen/local",
+    "qwen/local",
+    "Qwen Override",
+    32_768,
+    {
+      reasoningEffort: "xhigh",
+      reasoningEfforts: ["none", "xhigh"],
+    },
+  );
+  const currentCatalog = buildMixedCodexCatalog({
+    bundledCatalog: nativeCatalog,
+    nativeCatalog,
+    discoveredModels: [liveModel],
+  });
+  const controller = createReloadableProviderRegistry(
+    buildProviderRegistry({
+      mixedCatalog: currentCatalog,
+      config: inputConfig,
+      discoveredModels: [liveModel],
+    }),
+  );
+  const subject = certificationSubjectForModel({
+    config: inputConfig,
+    model: liveModel,
+    codexClientVersion: "0.116.0",
+  });
+  await recordPassedCertification(
+    storePath,
+    subject,
+    Object.fromEntries(REQUIRED_CERTIFICATION_GATES.map((gate) => [gate, true])),
+  );
+
+  let catalogWrites = 0;
+  await assert.rejects(
+    syncBridgeCatalog({
+      config: inputConfig,
+      currentCatalog,
+      catalogPath: path.join(directory, "models.json"),
+      registryController: controller,
+      discoverImpl: async () => ({ models: [liveModel], providers: [] }),
+      certificationResolver: async (models) => {
+        const resolved = await resolveModelCapabilitySlugs({
+          storePath,
+          config: inputConfig,
+          models,
+          codexClientVersion: "0.116.0",
+        });
+        assert.deepEqual(resolved.certifiedModelSlugs, [liveModel.id]);
+        await stageModelCertificationDeactivation(storePath, [liveModel.id]);
+        return resolved;
+      },
+      assertPublishAllowed: () =>
+        assertNoPendingModelCertification(storePath),
+      writeImpl: async () => {
+        catalogWrites += 1;
+      },
+    }),
+    /synchronization is paused/u,
+  );
+  assert.equal(catalogWrites, 0);
+  assert.equal(controller.resolve(liveModel.id).toolsEnabled, false);
+  assert.equal(controller.resolve(liveModel.id).clientToolSearchEnabled, false);
 });
 
 test("compatibility guard rolls back a picker change before catalog write", async () => {

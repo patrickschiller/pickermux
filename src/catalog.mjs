@@ -344,24 +344,36 @@ function validateDiscoveredModel(model, index, seen) {
   };
 }
 
-function catalogEntry(donor, model, priority, certifiedForTools = false) {
+function catalogEntry(
+  donor,
+  model,
+  priority,
+  certifiedForTools = false,
+  certifiedForEfficientFidelity = false,
+) {
   const entry = cloneJson(donor);
   const compactTextOnlyPrompt =
     !certifiedForTools && LM_STUDIO_MODEL_SOURCES.has(model.source);
+  const efficientFidelity =
+    certifiedForTools &&
+    certifiedForEfficientFidelity &&
+    LM_STUDIO_MODEL_SOURCES.has(model.source);
   const contextPresentation = contextPickerPresentation(model.contextWindow, {
     source: model.source,
   });
   const compHash = createHash("sha256")
     .update(
       [
-        "model-bridge-p5-v2",
+        "model-bridge-p6-v1",
         model.id,
         model.contextWindow,
         model.reasoningEffort,
         model.reasoningEfforts.join(","),
         model.reasoningOmitEfforts.join(","),
         certifiedForTools
-          ? "tools-certified"
+          ? efficientFidelity
+            ? "tools-efficient-fidelity"
+            : "tools-direct"
           : compactTextOnlyPrompt
             ? "text-only-latency"
             : "text-only-full",
@@ -380,7 +392,7 @@ function catalogEntry(donor, model, priority, certifiedForTools = false) {
   entry.context_window = model.contextWindow;
   entry.max_context_window = model.contextWindow;
   entry.effective_context_window_percent = 90;
-  entry.comp_hash = `model-bridge-p5-${compHash}`;
+  entry.comp_hash = `model-bridge-p6-${compHash}`;
 
   // A loaded model remains usable for text before certification. Only a
   // receipt bound to this exact provider/model/context/client contract enables
@@ -389,7 +401,10 @@ function catalogEntry(donor, model, priority, certifiedForTools = false) {
   entry.shell_type = certifiedForTools ? "unified_exec" : "disabled";
   entry.input_modalities = ["text"];
   entry.supports_image_detail_original = false;
-  entry.supports_search_tool = false;
+  // Codex keeps ownership of search, execution and approval. This flag is
+  // granted only by the additional model-bound Tool Search probe; a legacy
+  // direct-tool receipt intentionally leaves it disabled.
+  entry.supports_search_tool = efficientFidelity;
   entry.web_search_tool_type = "text";
   entry.apply_patch_tool_type = null;
   entry.multi_agent_version = null;
@@ -449,6 +464,7 @@ export function buildCodexCatalog({
   bundledCatalog,
   donorSlug,
   certifiedModelSlugs = [],
+  efficientFidelityModelSlugs = [],
 } = {}) {
   if (!Array.isArray(discoveredModels) || discoveredModels.length === 0) {
     throw new Error("At least one discovered LM Studio model is required");
@@ -456,6 +472,14 @@ export function buildCodexCatalog({
 
   const donor = selectDonor(bundledCatalog, donorSlug);
   const certified = new Set(certifiedModelSlugs);
+  const efficientFidelity = new Set(efficientFidelityModelSlugs);
+  for (const slug of efficientFidelity) {
+    if (!certified.has(slug)) {
+      throw new Error(
+        `Efficient Fidelity requires direct tool certification for ${slug}`,
+      );
+    }
+  }
   const seen = new Set();
   const models = discoveredModels.map((model, index) =>
     catalogEntry(
@@ -463,6 +487,7 @@ export function buildCodexCatalog({
       validateDiscoveredModel(model, index, seen),
       index + 1,
       certified.has(model.id),
+      efficientFidelity.has(model.id),
     ),
   );
 
@@ -480,6 +505,7 @@ export function buildMixedCodexCatalog({
   nativeCatalog = bundledCatalog,
   donorSlug,
   certifiedModelSlugs = [],
+  efficientFidelityModelSlugs = [],
 } = {}) {
   if (!isPlainObject(nativeCatalog) || !Array.isArray(nativeCatalog.models)) {
     throw new Error("nativeCatalog must contain a models array");
@@ -502,6 +528,7 @@ export function buildMixedCodexCatalog({
     bundledCatalog,
     donorSlug,
     certifiedModelSlugs,
+    efficientFidelityModelSlugs,
   });
   const maximumPriority = nativeCatalog.models.reduce(
     (maximum, model) =>

@@ -18,6 +18,10 @@ a fast local-model workflow with accurate context information, model-specific
 reasoning levels, and a strict routing boundary between native and external
 providers.
 
+Version 0.6.0 introduces **Efficient Fidelity**: certified LM Studio models can
+keep the complete Codex coding harness while deferring large tool schemas until
+the model asks Codex to find the relevant tools.
+
 ![PickerMux model picker showing local LM Studio models alongside existing Codex models](assets/screenshots/pickermux-model-picker.png)
 
 *Load models in LM Studio, refresh PickerMux, and select them directly in Codex
@@ -74,7 +78,7 @@ or another shell file automatically. Until then, use the absolute command path.
 For a reproducible installation, replace `latest` with an exact release:
 
 ```bash
-/usr/bin/curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://github.com/patrickschiller/pickermux/releases/download/v0.5.4/install.sh | /bin/sh
+/usr/bin/curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://github.com/patrickschiller/pickermux/releases/download/v0.6.0/install.sh | /bin/sh
 ```
 
 Both one-line forms execute code downloaded from GitHub. The archive checksum
@@ -102,7 +106,7 @@ and follow the managed setup procedure in
 ~/.local/bin/pickermux discover
 ```
 
-For this release, the first command must print `pickermux 0.5.4`. `status`
+For this release, the first command must print `pickermux 0.6.0`. `status`
 checks the managed configuration, catalog, compatibility contract, and bridge.
 It also reports `full-refresh=idle` normally or the current recovery phase;
 `status --json` exposes the same state as `fullRefresh.status` and
@@ -181,6 +185,12 @@ longer prevents later independently verified generated fragments from being
 compacted. A tool-certified model deliberately receives the full coding-agent
 prompt and context instead.
 
+For an Efficient Fidelity-certified LM Studio model, the full coding-agent
+prompt and context are still retained. Only deferred tool definitions are kept
+out of the initial LM Studio request and supplied later through Codex's
+client-executed tool search. This reduces schema-prefill work without replacing
+or trimming the Codex harness.
+
 The improvement targets time spent processing the input; it does not make the
 model generate tokens faster. For a meaningful comparison with LM Studio's
 chat UI, start a new short Codex conversation, use an uncertified model, and
@@ -194,6 +204,40 @@ if a new short turn still sends an unexpectedly large prompt.
 text-only request, including input and forwarded bytes plus omitted and retained
 part counts. These counters stay in memory and never contain prompt text,
 model/provider names, paths, hashes, or request and conversation identifiers.
+
+## Efficient Fidelity
+
+Efficient Fidelity is the low-overhead tool path for an exact, independently
+certified LM Studio model. Codex remains the agent: it keeps the complete
+instructions and conversation, searches its own deferred tool inventory,
+executes the selected tools, and retains its normal sandbox and approval
+controls. PickerMux only translates the public client-executed `tool_search`
+round trip to and from LM Studio's supported function-call shape.
+
+On the first model request, deferred function schemas are replaced by one
+bounded search function. When the model requests a tool search, Codex performs
+that search locally and returns the selected public tool definitions. PickerMux
+then exposes only those selected deferred functions to LM Studio for the next
+inference; functions that Codex did not defer remain advertised throughout. It
+does not choose tools, execute them, approve actions, or act as a separate agent
+or broker.
+
+The optimization is additive to direct tool certification and is granted only
+to the exact LM Studio model configuration that passes its own live tool-search
+probe. If that additional evidence is missing, stale, or fails, the model keeps
+the existing Direct fidelity path when its base tool receipt is still valid.
+New or base-uncertified models remain text-only. There is no provider-wide
+configuration switch that can bypass these model-bound receipts.
+
+Version 0.6.0 deliberately uses Codex's full public replay for the tool-search
+round trip and does not use `previous_response_id` as a history-compression or
+session mechanism. Stateful continuation optimization remains future work.
+Remote compaction can consume completed tool history but cannot create a new
+executable call. Native Codex routes are unchanged and byte preserving.
+
+The rejected broader Fast Agent design and the evidence behind this narrower
+architecture are recorded in the
+[Fast Agent feasibility report](docs/FAST_AGENT_FEASIBILITY.md).
 
 ## Upgrade
 
@@ -286,6 +330,10 @@ deliberately conservative:
   while unknown kinds, wrong roles, malformed shapes, and unrecognized
   envelopes are retained conservatively. See
   [Text-only performance](#text-only-performance).
+- **Efficient Fidelity.** An additionally certified LM Studio model keeps the
+  full Codex harness while Codex supplies deferred tool schemas only when the
+  model searches for them. A missing or stale additive receipt falls back to
+  Direct fidelity rather than creating a reduced chatbot or a second agent.
 - **Credential isolation.** Native Codex authentication and metadata are never
   forwarded to LM Studio or another external provider, including Codex client
   metadata carried inside a Responses request body.
@@ -336,8 +384,8 @@ catalog lifecycle, request normalization, and certification design.
 | `pickermux status` | Show managed configuration, service, and compatibility status. |
 | `pickermux doctor` | Run deterministic installation and routing checks. |
 | `pickermux doctor --live` | Add a real LM Studio inference check. |
-| `pickermux certify --model SLUG` | Run the live tool-use matrix for one external model. |
-| `pickermux certify --all` | Certify every external model currently discovered. |
+| `pickermux certify --model SLUG` | Run the base live tool-use matrix and the LM Studio Efficient Fidelity probe for one model. |
+| `pickermux certify --all` | Run the applicable model-bound certification probes for every discovered external model. |
 | `pickermux credential-set PROVIDER` | Store a provider credential interactively in the macOS Keychain. |
 | `pickermux credential-status PROVIDER` | Report only whether a provider credential is available. |
 | `pickermux credential-delete PROVIDER` | Delete the named provider's Keychain item. |
@@ -371,18 +419,30 @@ silently erasing models.
 ## Tool certification
 
 Every new external model starts conservatively with no Codex tool surface. A
-live certification run verifies text, streaming, direct functions,
+live certification run first verifies text, streaming, direct functions,
 parameterless functions, namespaced functions, tool results, and long-context
-behavior. A pass receipt is bound to the provider, model, context, capability
-metadata, and Codex client version.
+behavior. A base pass grants Direct fidelity. For LM Studio, PickerMux then
+runs a separate client-executed tool-search probe; its pass is recorded as an
+additive Efficient Fidelity gate. Both forms of evidence are bound to the
+provider, model, context, capability metadata, and Codex client version.
 
 ```bash
 pickermux certify --model lmstudio/qwen/qwen3.8-27b
 ```
 
 If any bound property changes, the receipt becomes stale and the model falls
-back to text-only mode. Certification sends real prompts to the selected model;
-do not run it in parallel with an active local-model turn.
+back to text-only mode. If only the additive tool-search probe is unavailable
+or fails while the base receipt remains valid, the model uses Direct fidelity
+with the full tool schemas. Certification sends real prompts to the selected
+model; do not run it in parallel with an active local-model turn.
+
+Re-certification uses a persistent deactivation barrier. Once the running
+service observes it, every new ordinary request to the target is blocked even
+when that process has an older registry; a request already admitted before the
+barrier may finish. PickerMux then publishes a verified text-only catalog
+before allowing the private probe transport. If that transition is
+interrupted, the model remains quarantined; correct the reported problem and
+rerun the same `pickermux certify` command to recover safely.
 
 ## Security model
 
@@ -457,6 +517,10 @@ redaction guidance.
   is entitled to them.
 - Local quality, tool reliability, and latency depend on the selected model,
   quantization, context size, hardware, and LM Studio configuration.
+- Efficient Fidelity reduces the initial deferred-tool schema payload; it does
+  not compact project instructions, conversation history, selected skills, or
+  other Codex harness context, and v0.6.0 does not reuse provider-side response
+  state through `previous_response_id`.
 - `doctor --live` and certification perform real local inference and can take
   several minutes on large models.
 - Codex and LM Studio updates can change compatibility. The running bridge

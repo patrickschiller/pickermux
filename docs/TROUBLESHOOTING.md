@@ -51,7 +51,10 @@ The latency-first text-only route does not forward Codex's generated
 cross-thread memory bootstrap or collaboration/multi-agent policy. Paste any
 prior context needed for the answer into the conversation. A certified
 tool-capable model deliberately receives the full coding-agent prompt and
-context instead.
+context instead. In v0.6.0, an additionally Efficient Fidelity-certified LM
+Studio model can reduce the deferred-tool schema portion of its first request,
+but project instructions, history, selected skills, and the rest of the Codex
+harness are intentionally retained.
 
 After one text-only request, run `pickermux doctor`. Its `text-only-context`
 check compares source and forwarded byte counts and reports omitted/retained
@@ -206,9 +209,67 @@ certification only when LM Studio and the target model are ready:
 pickermux certify --model lmstudio/OWNER/MODEL
 ```
 
-Certification removes any previous pass before probing. If a gate fails or the
-run is interrupted, the model remains text-only. Context, provider, capability,
-reasoning, or Codex client changes also make an old pass stale.
+Certification first places the target behind a persistent request-time
+deactivation barrier, publishes a verified text-only catalog, and only then
+removes the previous pass and opens the private probe transport. If a base gate
+fails or that phase is interrupted, ordinary requests remain blocked or the
+model remains text-only; stale authority is not revived. Rerun the same
+`pickermux certify` command after correcting the underlying refresh or model
+problem. A successful retry safely resumes from the persisted barrier. After a
+full base pass, PickerMux records Direct fidelity before it probes Efficient
+Fidelity; failure of only that additive probe retains the Direct fallback.
+Context, provider, capability, reasoning, or Codex client changes also make an
+old pass stale.
+
+If an interrupted loaded-model target is no longer discovered, rerun its same
+`certify --model` command, or use `certify --all` to recover every absent
+pending target. PickerMux first refreshes the gated service and confirms that
+the route is absent from both discovery and the live catalog; only then does it
+remove that model's pending barrier without fabricating a receipt. The
+`tool-certifications` doctor detail reports how many recovery operations remain
+pending.
+
+## Efficient Fidelity is not active
+
+Efficient Fidelity requires both a valid Direct receipt and the additive
+model-bound tool-search gate. Run `pickermux doctor` first, then certify the
+exact loaded LM Studio model and fully quit and reopen Codex so it loads the
+new catalog:
+
+```bash
+pickermux certify --model lmstudio/OWNER/MODEL
+```
+
+The `tool-certifications` doctor check summarizes how many discovered models
+are in Efficient Fidelity, Direct, or conservative text-only mode without
+printing model identifiers or private prompt data.
+
+If certification reports that conservative recovery is pending, do not edit
+`certifications.json` or try to force-enable catalog flags. Keep LM Studio and
+the exact target model available, run `pickermux doctor`, then rerun the same
+certification command. The persistent barrier intentionally rejects ordinary
+requests to that model until PickerMux can verify a safe catalog transition.
+
+If the Direct matrix passes but the additional search probe cannot be verified,
+PickerMux deliberately keeps Direct fidelity. The model still receives the
+full Codex harness and can use tools, but LM Studio receives the complete tool
+schemas instead of deferred delivery. The command reports the stable
+`additive-probe-failed` reason without echoing provider response content; check
+LM Studio's local server diagnostics before retrying. A failed Direct matrix
+leaves the model text-only.
+
+Efficient Fidelity optimizes deferred tool definitions, not ordinary context.
+A large project instruction set, long conversation, attachment, explicit
+skill, model load, or cold prompt cache can therefore still dominate time to
+first output. Version 0.6.0 also sends a complete public replay for the search
+round trip; it does not use `previous_response_id` for provider-side history
+reuse.
+
+If a previously active gate disappears, check whether LM Studio's endpoint,
+loaded model ID, active context size, reasoning metadata, or Codex Desktop
+version changed. Refresh, recertify the exact route, restart Codex, and retry.
+Do not add an unsupported configuration flag or publish an unredacted Responses
+request to force the feature.
 
 ## Live checks are slow
 

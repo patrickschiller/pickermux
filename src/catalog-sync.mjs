@@ -31,6 +31,24 @@ function assertMatchingRegistry(catalog, registry) {
   }
 }
 
+function normalizeCertificationCapabilities(value) {
+  if (Array.isArray(value)) {
+    return {
+      certifiedModelSlugs: value,
+      efficientFidelityModelSlugs: [],
+    };
+  }
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    !Array.isArray(value.certifiedModelSlugs) ||
+    !Array.isArray(value.efficientFidelityModelSlugs)
+  ) {
+    throw new Error("Certification resolver returned an invalid capability set");
+  }
+  return value;
+}
+
 /**
  * Build and validate the complete next catalog/registry pair before publishing
  * either of them. The current mixed catalog is the last-known-good native base.
@@ -58,12 +76,18 @@ export async function syncBridgeCatalog({
   }
   const { nativeCatalog } = splitMixedCatalog(currentCatalog, config);
   const discovery = await discoverImpl({ config });
-  const certifiedModelSlugs = await certificationResolver(discovery.models);
+  const {
+    certifiedModelSlugs,
+    efficientFidelityModelSlugs,
+  } = normalizeCertificationCapabilities(
+    await certificationResolver(discovery.models),
+  );
   const nextCatalog = buildMixedCodexCatalog({
     discoveredModels: discovery.models,
     bundledCatalog: nativeCatalog,
     nativeCatalog,
     certifiedModelSlugs,
+    efficientFidelityModelSlugs,
   });
   const nextRegistry = buildProviderRegistry({
     mixedCatalog: nextCatalog,

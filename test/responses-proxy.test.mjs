@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import {
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import http from "node:http";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { promisify } from "node:util";
 import * as zlib from "node:zlib";
 import test from "node:test";
@@ -11,6 +18,14 @@ import {
   runtimeSupportsZstd,
 } from "../src/body-codec.mjs";
 import { createResponsesProxy } from "../src/responses-proxy.mjs";
+import {
+  REQUIRED_CERTIFICATION_GATES,
+  assertModelCertificationRequestAllowed,
+  clearModelCertificationDeactivation,
+  commitModelCertificationDeactivation,
+  recordPassedCertification,
+  stageModelCertificationDeactivation,
+} from "../src/model-certification.mjs";
 
 async function readContextFixture(name) {
   return (await readFile(new URL(`./fixtures/${name}`, import.meta.url), "utf8")).trim();
@@ -61,6 +76,55 @@ function httpRequest({ port, path = "/v1/responses", headers = {}, body = Buffer
   });
 }
 
+function httpRequestUntilClose({
+  port,
+  path = "/v1/responses",
+  body = Buffer.alloc(0),
+}) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+    const request = http.request(
+      {
+        hostname: "127.0.0.1",
+        port,
+        path,
+        method: "POST",
+        headers: { "content-length": String(body.length) },
+      },
+      (response) => {
+        const chunks = [];
+        response.on("data", (chunk) => chunks.push(chunk));
+        response.once("end", () => finish({
+          aborted: false,
+          body: Buffer.concat(chunks),
+          statusCode: response.statusCode,
+        }));
+        response.once("aborted", () => finish({
+          aborted: true,
+          body: Buffer.concat(chunks),
+          statusCode: response.statusCode,
+        }));
+        response.once("error", () => finish({
+          aborted: true,
+          body: Buffer.concat(chunks),
+          statusCode: response.statusCode,
+        }));
+      },
+    );
+    request.once("error", () => finish({
+      aborted: true,
+      body: Buffer.alloc(0),
+      statusCode: null,
+    }));
+    request.end(body);
+  });
+}
+
 async function createProxyHarness({
   registry,
   nativeBaseUrl,
@@ -68,6 +132,7 @@ async function createProxyHarness({
   limits,
   credentialResolver,
   certificationToken,
+  externalRequestGate,
   onTextOnlyCompaction,
 }) {
   const handle = createResponsesProxy({
@@ -77,6 +142,7 @@ async function createProxyHarness({
     limits,
     credentialResolver,
     certificationToken,
+    externalRequestGate,
     onTextOnlyCompaction,
   });
   const server = http.createServer((request, response) => {
@@ -139,6 +205,9 @@ test("native route relays compressed request bytes, approved headers and SSE byt
   const proxy = await createProxyHarness({
     registry,
     nativeBaseUrl: `http://127.0.0.1:${upstreamPort}/backend-api/codex`,
+    externalRequestGate: async () => {
+      throw new Error("external gate must not run for native requests");
+    },
   });
   t.after(() => close(proxy.server));
 
@@ -294,7 +363,8 @@ test("generic external route preserves caller reasoning and annotated context", 
     request.on("data", (chunk) => chunks.push(chunk));
     request.on("end", () => {
       observed = JSON.parse(Buffer.concat(chunks).toString());
-      response.end("ok");
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end('{"output":[]}');
     });
   });
   const upstreamPort = await listen(upstream);
@@ -341,6 +411,337 @@ test("generic external route preserves caller reasoning and annotated context", 
     JSON.stringify(observed.input),
     /internal_chat_message_metadata_passthrough/u,
   );
+});
+
+test("generic text-only routes reject secondary tool inventories before credentials", async (t) => {
+  let upstreamRequests = 0;
+  let credentialResolutions = 0;
+  const upstream = http.createServer((_request, response) => {
+    upstreamRequests += 1;
+    response.end('{"output":[]}');
+  });
+  const upstreamPort = await listen(upstream);
+  t.after(() => close(upstream));
+  const proxy = await createProxyHarness({
+    registry: {
+      resolve: () => ({
+        kind: "external",
+        providerKind: "openai-responses",
+        baseUrl: `http://127.0.0.1:${upstreamPort}/v1`,
+        allowPrivateNetwork: true,
+        upstreamModel: "vendor-model",
+        toolsEnabled: false,
+      }),
+    },
+    credentialResolver: async () => {
+      credentialResolutions += 1;
+      return undefined;
+    },
+  });
+  t.after(() => close(proxy.server));
+
+  const result = await httpRequest({
+    port: proxy.port,
+    body: Buffer.from(JSON.stringify({
+      model: "vendor/public",
+      input: [{
+        type: "additional_tools",
+        tools: [{ type: "function", name: "hidden", parameters: {} }],
+      }],
+    })),
+  });
+  assert.equal(result.statusCode, 400);
+  assert.equal(JSON.parse(result.body).error.code, "UNSUPPORTED_TOOL_TYPE");
+  assert.equal(credentialResolutions, 0);
+  assert.equal(upstreamRequests, 0);
+});
+
+test("text-only response authority rejects fabricated JSON and SSE tool calls", async (t) => {
+  let upstreamRequests = 0;
+  const upstream = http.createServer((request, response) => {
+    const chunks = [];
+    request.on("data", (chunk) => chunks.push(chunk));
+    request.once("end", () => {
+      upstreamRequests += 1;
+      const { input } = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      if (input === "json-call") {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({
+          status: "completed",
+          output: [{
+            type: "function_call",
+            name: "shell",
+            call_id: "call_text_only_json",
+            arguments: "{}",
+          }],
+        }));
+        return;
+      }
+      response.writeHead(200, { "content-type": "text/event-stream" });
+      const event = input === "sse-added"
+        ? {
+            type: "response.output_item.added",
+            output_index: 0,
+            item: {
+              type: "function_call",
+              name: "shell",
+              call_id: "call_text_only_added",
+              arguments: "",
+            },
+          }
+        : input === "sse-orphan"
+          ? {
+              type: "response.function_call_arguments.done",
+              output_index: 0,
+              item_id: "item_text_only_orphan",
+              arguments: "{}",
+            }
+          : {
+              type: "response.completed",
+              response: {
+                status: "completed",
+                output: [{
+                  type: "function_call",
+                  name: "shell",
+                  call_id: "call_text_only_terminal",
+                  arguments: "{}",
+                }],
+              },
+            };
+      response.end(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+    });
+  });
+  const upstreamPort = await listen(upstream);
+  t.after(() => close(upstream));
+  const proxy = await createProxyHarness({
+    registry: {
+      resolve: () => ({
+        kind: "external",
+        providerKind: "lmstudio-responses",
+        providerId: "lmstudio",
+        baseUrl: `http://127.0.0.1:${upstreamPort}/v1`,
+        allowPrivateNetwork: true,
+        upstreamModel: "loaded-model",
+        toolsEnabled: false,
+      }),
+    },
+    credentialResolver: async () => undefined,
+  });
+  t.after(() => close(proxy.server));
+
+  for (const input of [
+    "json-call",
+    "sse-added",
+    "sse-orphan",
+    "sse-terminal",
+  ]) {
+    const result = await httpRequestUntilClose({
+      port: proxy.port,
+      body: Buffer.from(JSON.stringify({
+        model: "lmstudio/loaded-model",
+        input,
+      })),
+    });
+    assert.equal(result.aborted, true, input);
+    assert.doesNotMatch(result.body.toString("utf8"), /call_text_only/u);
+  }
+  assert.equal(upstreamRequests, 4);
+});
+
+test("LM Studio routes reject a non-array tools container before credentials", async (t) => {
+  let upstreamRequests = 0;
+  let credentialResolutions = 0;
+  const upstream = http.createServer((_request, response) => {
+    upstreamRequests += 1;
+    response.end('{"output":[]}');
+  });
+  const upstreamPort = await listen(upstream);
+  t.after(() => close(upstream));
+  const proxy = await createProxyHarness({
+    registry: {
+      resolve: () => ({
+        kind: "external",
+        providerKind: "lmstudio-responses",
+        providerId: "lmstudio",
+        baseUrl: `http://127.0.0.1:${upstreamPort}/v1`,
+        allowPrivateNetwork: true,
+        upstreamModel: "loaded-model",
+        toolsEnabled: true,
+        clientToolSearchEnabled: false,
+      }),
+    },
+    credentialResolver: async () => {
+      credentialResolutions += 1;
+      return undefined;
+    },
+  });
+  t.after(() => close(proxy.server));
+
+  const result = await httpRequest({
+    port: proxy.port,
+    body: Buffer.from(JSON.stringify({
+      model: "lmstudio/loaded-model",
+      input: "test",
+      tools: {
+        type: "tool_search",
+        execution: "server",
+        parameters: {},
+      },
+    })),
+  });
+
+  assert.equal(result.statusCode, 400);
+  assert.equal(JSON.parse(result.body).error.code, "INVALID_TOOL_SEARCH");
+  assert.equal(credentialResolutions, 0);
+  assert.equal(upstreamRequests, 0);
+});
+
+test("Direct fallback validates Tool Search semantics before credentials", async (t) => {
+  let upstreamRequests = 0;
+  let credentialResolutions = 0;
+  const upstream = http.createServer((_request, response) => {
+    upstreamRequests += 1;
+    response.end('{"output":[]}');
+  });
+  const upstreamPort = await listen(upstream);
+  t.after(() => close(upstream));
+  const proxy = await createProxyHarness({
+    registry: {
+      resolve: () => ({
+        kind: "external",
+        providerKind: "lmstudio-responses",
+        providerId: "lmstudio",
+        baseUrl: `http://127.0.0.1:${upstreamPort}/v1`,
+        allowPrivateNetwork: true,
+        upstreamModel: "loaded-model",
+        toolsEnabled: true,
+        clientToolSearchEnabled: false,
+      }),
+    },
+    credentialResolver: async () => {
+      credentialResolutions += 1;
+      return undefined;
+    },
+  });
+  t.after(() => close(proxy.server));
+
+  const result = await httpRequest({
+    port: proxy.port,
+    body: Buffer.from(JSON.stringify({
+      model: "lmstudio/loaded-model",
+      input: "test",
+      tool_choice: "auto",
+      tools: [{
+        type: "tool_search",
+        execution: "server",
+        description: "Find only the tool needed for this turn.",
+        parameters: {
+          type: "object",
+          properties: {
+            query: { type: "string" },
+            limit: { type: "integer", minimum: 1 },
+          },
+          required: ["query"],
+          additionalProperties: false,
+        },
+      }],
+    })),
+  });
+
+  assert.equal(result.statusCode, 400);
+  assert.equal(
+    JSON.parse(result.body).error.code,
+    "UNSUPPORTED_TOOL_SEARCH_EXECUTION",
+  );
+  assert.equal(credentialResolutions, 0);
+  assert.equal(upstreamRequests, 0);
+});
+
+test("LM Studio response authority is bound to advertised Direct functions", async (t) => {
+  const upstreamTools = [];
+  const upstream = http.createServer((request, response) => {
+    const chunks = [];
+    request.on("data", (chunk) => chunks.push(chunk));
+    request.once("end", () => {
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      upstreamTools.push(body.tools);
+      const item = body.input === "custom"
+        ? {
+            type: "custom_tool_call",
+            name: "freeform",
+            call_id: "call_custom",
+            input: "unsafe",
+          }
+        : {
+            type: "function_call",
+            name: body.input === "unknown" ? "not_advertised" : "known",
+            call_id: `call_${body.input}`,
+            arguments: "{}",
+            status: "completed",
+          };
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ status: "completed", output: [item] }));
+    });
+  });
+  const upstreamPort = await listen(upstream);
+  t.after(() => close(upstream));
+  const proxy = await createProxyHarness({
+    registry: {
+      resolve: () => ({
+        kind: "external",
+        providerKind: "lmstudio-responses",
+        providerId: "lmstudio",
+        baseUrl: `http://127.0.0.1:${upstreamPort}/v1`,
+        allowPrivateNetwork: true,
+        upstreamModel: "loaded-model",
+        toolsEnabled: true,
+        clientToolSearchEnabled: false,
+      }),
+    },
+    credentialResolver: async () => undefined,
+  });
+  t.after(() => close(proxy.server));
+  const tools = [
+    {
+      type: "function",
+      name: "known",
+      description: "Known function",
+      parameters: { type: "object", properties: {} },
+    },
+    { type: "custom", name: "freeform", description: "Dropped custom tool" },
+    { type: "web_search" },
+  ];
+  const requestBody = (input, toolChoice = "auto") => Buffer.from(JSON.stringify({
+    model: "lmstudio/loaded-model",
+    input,
+    tool_choice: toolChoice,
+    tools,
+  }));
+
+  const valid = await httpRequest({
+    port: proxy.port,
+    body: requestBody("valid"),
+  });
+  assert.equal(valid.statusCode, 200);
+  assert.equal(JSON.parse(valid.body).output[0].name, "known");
+
+  for (const [input, toolChoice] of [
+    ["custom", "auto"],
+    ["unknown", "auto"],
+    ["none", "none"],
+  ]) {
+    const blocked = await httpRequestUntilClose({
+      port: proxy.port,
+      body: requestBody(input, toolChoice),
+    });
+    assert.equal(blocked.aborted, true, input);
+    assert.equal(blocked.body.length, 0, input);
+  }
+
+  assert.equal(upstreamTools.length, 4);
+  assert.ok(upstreamTools.every(
+    (sent) => sent.length === 1 && sent[0].name === "known",
+  ));
 });
 
 test("external route strips internal metadata canaries without changing other input fields", async (t) => {
@@ -2281,6 +2682,27 @@ test("text-only routes reject forced tool choices and tool-call history", async 
       input: [{ type: "function_call_output", call_id: "call-1", output: "done" }],
       tool_choice: "none",
     },
+    {
+      model: "lmstudio/microsoft/phi-4-mini-reasoning",
+      input: [{
+        type: "tool_search_call",
+        execution: "client",
+        call_id: "search-1",
+        arguments: { query: "workspace" },
+      }],
+      tool_choice: "none",
+    },
+    {
+      model: "lmstudio/microsoft/phi-4-mini-reasoning",
+      input: [{
+        type: "tool_search_output",
+        execution: "client",
+        call_id: "search-1",
+        status: "completed",
+        tools: [],
+      }],
+      tool_choice: "none",
+    },
   ]) {
     const result = await httpRequest({
       port: proxy.port,
@@ -2368,6 +2790,258 @@ test("only the private certification marker bypasses text-only tool stripping", 
   assert.equal(observed.body.instructions, "certification-instructions-stay");
   assert.match(JSON.stringify(observed.body.input), /certification-context-stays/u);
   assert.equal(observed.headers["x-pickermux-certification"], undefined);
+});
+
+test("SIGINT-equivalent pending state blocks stale routes before credentials and probe commit", async (t) => {
+  const directory = await mkdtemp(
+    path.join(tmpdir(), "responses-proxy-certification-"),
+  );
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const storePath = path.join(directory, "certifications.json");
+  const publicModelId = "lmstudio/publisher/model";
+  const certificationToken = "runtime-instance-certification-0123456789";
+  const certificationSubject = {
+    providerId: "lmstudio",
+    providerKind: "lmstudio-responses",
+    baseUrl: "http://127.0.0.1:1234/v1",
+    publicModelId,
+    upstreamModelId: "publisher/model",
+    contextWindow: 32_768,
+    reasoning: {},
+    capabilities: {},
+    codexClientVersion: "0.116.0",
+  };
+  await recordPassedCertification(
+    storePath,
+    certificationSubject,
+    Object.fromEntries(REQUIRED_CERTIFICATION_GATES.map((gate) => [gate, true])),
+  );
+
+  let credentialResolutions = 0;
+  let upstreamRequests = 0;
+  const upstream = http.createServer((request, response) => {
+    upstreamRequests += 1;
+    request.resume();
+    request.once("end", () => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end('{"ok":true}');
+    });
+  });
+  const upstreamPort = await listen(upstream);
+  t.after(() => close(upstream));
+  const proxy = await createProxyHarness({
+    certificationToken,
+    credentialResolver: async () => {
+      credentialResolutions += 1;
+      return undefined;
+    },
+    externalRequestGate: ({ publicModelId: requested, certificationRequest }) =>
+      assertModelCertificationRequestAllowed(storePath, requested, {
+        certificationRequest,
+      }),
+    registry: {
+      resolve: () => ({
+        kind: "external",
+        providerKind: "lmstudio-responses",
+        baseUrl: `http://127.0.0.1:${upstreamPort}/v1`,
+        allowPrivateNetwork: true,
+        upstreamModel: "publisher/model",
+        toolsEnabled: true,
+      }),
+    },
+  });
+  t.after(() => close(proxy.server));
+  const requestBody = Buffer.from(
+    JSON.stringify({ model: publicModelId, input: "hello" }),
+  );
+
+  const probeBeforeStaging = await httpRequest({
+    port: proxy.port,
+    headers: { "x-pickermux-certification": certificationToken },
+    body: requestBody,
+  });
+  assert.equal(probeBeforeStaging.statusCode, 503);
+  assert.equal(
+    JSON.parse(probeBeforeStaging.body).error.code,
+    "MODEL_CERTIFICATION_PENDING",
+  );
+  assert.equal(credentialResolutions, 0);
+  assert.equal(upstreamRequests, 0);
+
+  await stageModelCertificationDeactivation(storePath, [publicModelId]);
+
+  for (const headers of [
+    {},
+    { "x-pickermux-certification": certificationToken },
+  ]) {
+    const blocked = await httpRequest({
+      port: proxy.port,
+      headers,
+      body: requestBody,
+    });
+    assert.equal(blocked.statusCode, 503);
+    assert.equal(
+      JSON.parse(blocked.body).error.code,
+      "MODEL_CERTIFICATION_PENDING",
+    );
+  }
+  assert.equal(credentialResolutions, 0);
+  assert.equal(upstreamRequests, 0);
+
+  await commitModelCertificationDeactivation(storePath, [publicModelId]);
+  const normalStillBlocked = await httpRequest({
+    port: proxy.port,
+    body: requestBody,
+  });
+  assert.equal(normalStillBlocked.statusCode, 503);
+  assert.equal(credentialResolutions, 0);
+  assert.equal(upstreamRequests, 0);
+
+  const authorizedProbe = await httpRequest({
+    port: proxy.port,
+    headers: { "x-pickermux-certification": certificationToken },
+    body: requestBody,
+  });
+  assert.equal(authorizedProbe.statusCode, 200);
+  assert.equal(credentialResolutions, 1);
+  assert.equal(upstreamRequests, 1);
+
+  await clearModelCertificationDeactivation(storePath, [publicModelId]);
+  const probeAfterRecovery = await httpRequest({
+    port: proxy.port,
+    headers: { "x-pickermux-certification": certificationToken },
+    body: requestBody,
+  });
+  assert.equal(probeAfterRecovery.statusCode, 503);
+  assert.equal(
+    JSON.parse(probeAfterRecovery.body).error.code,
+    "MODEL_CERTIFICATION_PENDING",
+  );
+  assert.equal(credentialResolutions, 1);
+  assert.equal(upstreamRequests, 1);
+
+  const normalAfterRecovery = await httpRequest({
+    port: proxy.port,
+    body: requestBody,
+  });
+  assert.equal(normalAfterRecovery.statusCode, 200);
+  assert.equal(credentialResolutions, 2);
+  assert.equal(upstreamRequests, 2);
+
+  await writeFile(storePath, "{invalid-json\n", { mode: 0o600 });
+  const corruptStoreBlocked = await httpRequest({
+    port: proxy.port,
+    body: requestBody,
+  });
+  assert.equal(corruptStoreBlocked.statusCode, 503);
+  assert.equal(
+    JSON.parse(corruptStoreBlocked.body).error.code,
+    "MODEL_CERTIFICATION_PENDING",
+  );
+  assert.equal(credentialResolutions, 2);
+  assert.equal(upstreamRequests, 2);
+});
+
+test("stale route capability claims require live receipts before credentials", async (t) => {
+  const directory = await mkdtemp(
+    path.join(tmpdir(), "responses-proxy-receipt-gate-"),
+  );
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const storePath = path.join(directory, "certifications.json");
+  const directModelId = "lmstudio/publisher/direct";
+  const efficientModelId = "lmstudio/publisher/efficient";
+  const certificationSubject = (publicModelId) => ({
+    providerId: "lmstudio",
+    providerKind: "lmstudio-responses",
+    baseUrl: "http://127.0.0.1:1234/v1",
+    publicModelId,
+    upstreamModelId: publicModelId.slice("lmstudio/".length),
+    contextWindow: 32_768,
+    reasoning: {},
+    capabilities: {},
+    codexClientVersion: "0.116.0",
+  });
+  for (const publicModelId of [directModelId, efficientModelId]) {
+    await recordPassedCertification(
+      storePath,
+      certificationSubject(publicModelId),
+      Object.fromEntries(
+        REQUIRED_CERTIFICATION_GATES.map((gate) => [gate, true]),
+      ),
+    );
+  }
+
+  let credentialResolutions = 0;
+  let upstreamRequests = 0;
+  const upstream = http.createServer((request, response) => {
+    upstreamRequests += 1;
+    request.resume();
+    request.once("end", () => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end('{"ok":true}');
+    });
+  });
+  const upstreamPort = await listen(upstream);
+  t.after(() => close(upstream));
+  const proxy = await createProxyHarness({
+    credentialResolver: async () => {
+      credentialResolutions += 1;
+      return undefined;
+    },
+    externalRequestGate: ({
+      publicModelId,
+      certificationRequest,
+      requiresDirectReceipt,
+      requiresEfficientFidelityReceipt,
+    }) => assertModelCertificationRequestAllowed(storePath, publicModelId, {
+      certificationRequest,
+      requiresDirectReceipt,
+      requiresEfficientFidelityReceipt,
+    }),
+    registry: {
+      resolve: (publicModelId) => ({
+        kind: "external",
+        providerKind: "lmstudio-responses",
+        baseUrl: `http://127.0.0.1:${upstreamPort}/v1`,
+        allowPrivateNetwork: true,
+        upstreamModel: publicModelId.slice("lmstudio/".length),
+        toolsEnabled: publicModelId !== "lmstudio/publisher/text",
+        clientToolSearchEnabled: publicModelId === efficientModelId,
+      }),
+    },
+  });
+  t.after(() => close(proxy.server));
+  const request = (model) => httpRequest({
+    port: proxy.port,
+    body: Buffer.from(JSON.stringify({ model, input: "hello" })),
+  });
+
+  const missingEfficientReceipt = await request(efficientModelId);
+  assert.equal(missingEfficientReceipt.statusCode, 503);
+  assert.equal(
+    JSON.parse(missingEfficientReceipt.body).error.code,
+    "MODEL_CERTIFICATION_PENDING",
+  );
+  assert.equal(credentialResolutions, 0);
+  assert.equal(upstreamRequests, 0);
+
+  assert.equal((await request(directModelId)).statusCode, 200);
+  assert.equal(credentialResolutions, 1);
+  assert.equal(upstreamRequests, 1);
+
+  await rm(storePath);
+  const deletedDirectReceipt = await request(directModelId);
+  assert.equal(deletedDirectReceipt.statusCode, 503);
+  assert.equal(
+    JSON.parse(deletedDirectReceipt.body).error.code,
+    "MODEL_CERTIFICATION_PENDING",
+  );
+  assert.equal(credentialResolutions, 1);
+  assert.equal(upstreamRequests, 1);
+
+  assert.equal((await request("lmstudio/publisher/text")).statusCode, 200);
+  assert.equal(credentialResolutions, 2);
+  assert.equal(upstreamRequests, 2);
 });
 
 test("LM Studio route normalizes legacy on/off maps to the Responses enum", async (t) => {

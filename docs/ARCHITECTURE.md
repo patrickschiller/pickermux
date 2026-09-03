@@ -1,6 +1,6 @@
 # PickerMux Architecture
 
-This document describes the public v0.5.4 bridge contract. It is intended for
+This document describes the public v0.6.0 bridge contract. It is intended for
 contributors, security reviewers, and users who want to understand what runs on
 their Mac.
 
@@ -65,7 +65,7 @@ PickerMux builds the catalog in the following order:
 4. Discover external provider models under the configured policy.
 5. Build conservative catalog records from the donor schema and measured
    provider metadata.
-6. Apply valid model-specific certification receipts.
+6. Apply valid model-specific base and additive certification receipts.
 7. Validate the default selection and every expected catalog slug through the
    Codex client.
 8. Atomically publish the catalog and compatibility manifest.
@@ -151,6 +151,25 @@ The LM Studio adapter therefore performs bounded, explicit normalization:
 - restores public namespace names in JSON and streaming responses;
 - normalizes empty function parameter schemas.
 
+For an Efficient Fidelity-authorized LM Studio route, the adapter also
+projects a canonical client-executed `tool_search` into one bounded temporary
+function, withholds only functions explicitly marked for deferred loading, and
+maps the completed search call back to Codex's public response item. On the
+next full replay, it validates the matching `tool_search_output` and exposes
+only its selected deferred public functions to LM Studio. Functions that were
+not marked for deferred loading remain advertised on both requests. The
+ordinary namespace mapper continues to handle the selected function call and
+result.
+
+Codex remote compaction has no `tool_choice` field and may trim the schemas
+from older search outputs while retaining their later function-call history.
+On the exact `/responses/compact` path, PickerMux therefore treats the missing
+choice as Codex's canonical automatic mode and deterministically maps an
+otherwise unknown historical namespace name without adding a tool definition.
+This keeps the transcript compactable but cannot make the historical tool
+callable or grant a new capability. The compact response has zero call
+authority: any new invocation emitted by the provider is rejected.
+
 Successful tool certification restores the full donor coding-agent prompt and
 preserves its annotated context because those models can use the corresponding
 Codex tool surface. Certification traffic itself receives the same treatment.
@@ -165,6 +184,63 @@ fixed status enums, booleans, and byte/part counts; it cannot contain prompt
 text, raw annotation kinds, model or provider names, IDs, hashes, URLs, or
 paths. The capability-scoped health endpoint lets `doctor` report how much
 context was omitted or retained without parsing request logs.
+
+## Efficient Fidelity
+
+Efficient Fidelity reduces the tool-definition portion of LM Studio prompt
+prefill without reducing the Codex harness. It does not replace Codex with a
+PickerMux agent, broker, planner, or tool executor. Codex remains responsible
+for its complete instruction stack and conversation, deferred-tool search,
+sandbox and approval policy, tool execution, and result delivery.
+
+```mermaid
+sequenceDiagram
+    participant C as Codex
+    participant P as PickerMux
+    participant L as LM Studio
+    C->>P: full harness + client tool_search + deferred functions
+    P->>L: full harness + one bounded search function
+    L-->>P: search function call
+    P-->>C: tool_search_call
+    Note over C: Codex searches its local deferred inventory
+    C->>P: full replay + tool_search_output with selected functions
+    P->>L: full replay + selected function schemas
+    L-->>P: selected function call
+    P-->>C: public namespaced function call
+    Note over C: Codex applies approval, sandbox, and execution policy
+```
+
+The managed publisher makes the efficient projection eligible only when all of
+these conditions hold:
+
+- the immutable route is an exact LM Studio model route;
+- its base Direct receipt is valid for the current model configuration and
+  Codex client;
+- the same receipt carries the additive `toolSearch` gate;
+- the current catalog entry belongs to the v0.6 bridge contract and advertises
+  client tool search;
+- the request contains the canonical client-executed search definition and an
+  automatic tool choice.
+
+Unknown search variants, server-executed search, custom loaded-tool types,
+duplicate or mismatched call IDs, invalid search arguments, excessive selected
+tools or schema size, secondary `additional_tools` inventories, and incomplete
+or unterminated streams fail closed. They are never treated as ordinary
+provider functions. Repeated searches may return the same canonically
+equivalent tool definition; PickerMux counts the original input against its
+limits, deduplicates the exposed schema, and rejects identity-preserving schema
+drift. The v0.6 flow requires the complete public request replay and rejects
+`previous_response_id`; it does not maintain private continuation state or
+infer missing history.
+Streaming function completion items are held until a matching
+`response.completed` terminal commits the response. A failed, incomplete,
+mismatched, or missing terminal cannot trigger Codex's local tool-search
+dispatcher before the stream is rejected.
+
+If the additive gate is absent or stale, a base-certified model uses the
+existing Direct fidelity path with its full Codex harness and tool definitions.
+If the base receipt is also invalid, the existing text-only boundary applies.
+Native routing never enters this adapter and remains byte preserving.
 
 ## Discovery and synchronization
 
@@ -192,8 +268,8 @@ expose the new registry.
 ## Tool certification
 
 New external models are published with `tool_mode = null` and shell access
-disabled. Certification runs seven serial Responses requests covering eight
-required gates:
+disabled. Base certification runs seven serial Responses requests covering
+eight required gates:
 
 - `text`;
 - `stream`;
@@ -204,14 +280,57 @@ required gates:
 - `toolResult`;
 - `longContext`.
 
-Before probing, PickerMux invalidates the previous receipt and publishes a
-text-only catalog. An interrupted or failed run therefore cannot preserve an
-old tool grant. Certification requests carry a private per-runtime marker so
-the bridge can exercise its tool adapter without reopening tools to ordinary
-Codex traffic; the marker is removed by the external header allowlist. A
-successful receipt is bound to the provider kind and ID, base URL, public and
-upstream model IDs, active context size, reasoning metadata, capability
-metadata, and Codex client version.
+Before base probing, PickerMux first refreshes the service and requires its
+health response to prove support for the pending-request gate. It then persists
+a pending-deactivation barrier for the target model. The running service checks
+that private store before credential resolution or upstream I/O on every new
+external request, so new ordinary admissions are blocked even if the process
+still holds an older tool-enabled registry. An already admitted request may
+finish, so certification is not a concurrent-turn operation. Private
+certification traffic is blocked too until a second transactional refresh has
+published and verified a conservative text-only catalog. Only then does one
+atomic store commit remove the previous receipt and authorize the
+instance-bound probe
+transport while retaining the barrier for ordinary traffic. The marker is
+removed by the external header allowlist.
+
+The request-time gate also requires the target model ID to retain a Direct
+receipt whenever the immutable route claims Direct authority, plus the
+additive `toolSearch` gate whenever it claims Efficient Fidelity. A missing
+store therefore blocks stale in-memory tool routes while leaving genuinely
+text-only routes usable. Exact subject/fingerprint evaluation remains at the
+managed catalog-publication boundary, where the complete discovery and Codex
+client metadata are available.
+
+The barrier remains persisted until the exact model subjects have been
+revalidated, their new receipts have been written, and the certified catalog is
+ready to be published. An interruption before conservative publication leaves
+the target quarantined for a later `certify` retry; a failure after publication
+recovers through the conservative catalog rather than reviving stale authority.
+A successful base receipt grants Direct fidelity and is bound to the provider
+kind and ID, base URL, public and upstream model IDs, active context size,
+reasoning metadata, capability metadata, and Codex client version. The subject
+is rebuilt from the route discovered by the conservative refresh, not from the
+pre-refresh snapshot, and is revalidated before and after probes, before each
+receipt, and before final publication. Pending state also blocks loaded-model
+synchronization from replacing that route during the probe matrix.
+
+On retry, an already-pending route follows the same gated refresh before its
+probe authorization is reset and reissued. If a pending loaded model has
+disappeared, recovery clears only that model's barrier after the refreshed
+service and catalog both confirm its absence. A retained last-known-good
+receipt remains dormant while the route is absent and is usable only if the
+identical bound route returns; a receipt removed before interruption remains
+missing.
+
+For an LM Studio route, PickerMux records that base receipt before starting a
+separate two-leg live search probe. The probe verifies a canonical
+client-executed search call, a matching full-replay `tool_search_output`, and a
+call to the selected function. It deliberately does not use
+`previous_response_id`. A pass appends the `toolSearch` gate to the same
+model-bound evidence. A search-probe failure retains the newly valid Direct
+receipt as the safe fallback; it does not silently claim Efficient Fidelity or
+demote a model that just passed the full base matrix.
 
 Receipts contain only the fingerprint, timestamp, and gate outcome. They do not
 contain prompts, responses, or credentials.
@@ -388,6 +507,11 @@ contract quarantines model and catalog publication traffic with a stable 503.
 The private health endpoint remains available with fixed safe status/reason
 enums so the LaunchAgent does not enter a restart loop and diagnostics can
 direct the user to refresh.
+
+Version 0.6.0 uses bridge contract `codex-responses-bridge/p6-v1`. The managed
+publisher emits the search claim only from valid model-bound evidence, and the
+runtime accepts it only on entries generated under that exact contract. Older
+or non-p6 catalog claims cannot grant the route capability.
 
 `doctor` also runs the account-cache inspection as an independent check. It can
 therefore report whether the signed-in account cache matches the current Codex

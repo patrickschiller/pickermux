@@ -114,6 +114,7 @@ test("capability-scoped health and model catalog expose only safe diagnostics", 
     registry,
     capabilityToken: CAPABILITY,
     instanceId: "instance-test-1",
+    externalRequestGate: async () => {},
   });
   t.after(() => close(server));
   const port = server.address().port;
@@ -128,7 +129,11 @@ test("capability-scoped health and model catalog expose only safe diagnostics", 
 
   const health = await request({ port, path: `${base}/health` });
   assert.equal(health.statusCode, 200);
-  assert.deepEqual(JSON.parse(health.body), { ok: true, instanceId: "instance-test-1" });
+  assert.deepEqual(JSON.parse(health.body), {
+    ok: true,
+    instanceId: "instance-test-1",
+    certificationPendingGateVersion: 1,
+  });
   assert.equal(health.headers["cache-control"], "no-store");
 
   const models = await request({ port, path: `${base}/v1/models` });

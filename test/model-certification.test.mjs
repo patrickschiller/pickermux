@@ -14,15 +14,23 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  EFFICIENT_FIDELITY_CERTIFICATION_GATE,
   MODEL_CERTIFICATION_CONTRACT_VERSION,
   REQUIRED_CERTIFICATION_GATES,
+  assertModelCertificationRequestAllowed,
+  assertNoPendingModelCertification,
+  clearModelCertificationDeactivation,
+  commitModelCertificationDeactivation,
   computeCertificationFingerprint,
   createCertificationSubject,
+  evaluateEfficientFidelityCertification,
   evaluateModelCertification,
   getModelCertificationStatus,
   invalidateModelCertification,
   readCertificationStore,
+  recordPassedEfficientFidelityCertification,
   recordPassedCertification,
+  stageModelCertificationDeactivation,
   validateCertificationStore,
 } from "../src/model-certification.mjs";
 
@@ -189,7 +197,7 @@ test("a pass receipt requires exactly all P3 gates", async (t) => {
   delete missing.namespaceStream;
   await assert.rejects(
     recordPassedCertification(storePath, subject(), missing),
-    /must contain exactly/u,
+    /must contain exactly the direct gates/u,
   );
   await assert.rejects(
     recordPassedCertification(storePath, subject(), allGates({ toolResult: false })),
@@ -201,9 +209,87 @@ test("a pass receipt requires exactly all P3 gates", async (t) => {
       subject(),
       { ...allGates(), unexpected: true },
     ),
-    /must contain exactly/u,
+    /must contain exactly the direct gates/u,
   );
   await assert.rejects(access(storePath), (error) => error?.code === "ENOENT");
+});
+
+test("Efficient Fidelity extends a valid legacy direct receipt additively", async (t) => {
+  const { storePath } = await fixture(t);
+  const efficientGates = {
+    ...allGates(),
+    [EFFICIENT_FIDELITY_CERTIFICATION_GATE]: true,
+  };
+  const additiveGates = {
+    [EFFICIENT_FIDELITY_CERTIFICATION_GATE]: true,
+  };
+  await assert.rejects(
+    recordPassedEfficientFidelityCertification(
+      storePath,
+      subject(),
+      additiveGates,
+    ),
+    /requires a valid direct certification receipt/u,
+  );
+  await recordPassedCertification(storePath, subject(), allGates());
+  assert.equal(
+    (await getModelCertificationStatus(storePath, subject())).status,
+    "valid",
+  );
+  assert.equal(
+    evaluateEfficientFidelityCertification(
+      await readCertificationStore(storePath),
+      subject(),
+    ).status,
+    "missing",
+  );
+  await assert.rejects(
+    recordPassedCertification(storePath, subject(), efficientGates),
+    /only after a valid direct certification/u,
+  );
+  await assert.rejects(
+    recordPassedEfficientFidelityCertification(storePath, subject(), {}),
+    /must contain exactly toolSearch=true/u,
+  );
+  await recordPassedEfficientFidelityCertification(
+    storePath,
+    subject(),
+    additiveGates,
+  );
+  const store = await readCertificationStore(storePath);
+  assert.equal(
+    evaluateModelCertification(store, subject()).status,
+    "valid",
+  );
+  assert.equal(
+    evaluateEfficientFidelityCertification(store, subject()).status,
+    "valid",
+  );
+  assert.deepEqual(store.receipts[subject().publicModelId].gates, efficientGates);
+
+  const vendor = subject({
+    providerId: "vendor",
+    providerKind: "openai-responses",
+    baseUrl: "https://api.vendor.example/v1",
+    publicModelId: "vendor/model",
+    upstreamModelId: "model",
+  });
+  await recordPassedCertification(storePath, vendor, allGates());
+  await assert.rejects(
+    recordPassedEfficientFidelityCertification(
+      storePath,
+      vendor,
+      additiveGates,
+    ),
+    /only for LM Studio routes/u,
+  );
+  assert.equal(
+    evaluateEfficientFidelityCertification(
+      await readCertificationStore(storePath),
+      vendor,
+    ).status,
+    "missing",
+  );
 });
 
 test("invalidation removes an old pass before a new live run", async (t) => {
@@ -220,6 +306,234 @@ test("invalidation removes an old pass before a new live run", async (t) => {
     "missing",
   );
   assert.equal(await invalidateModelCertification(storePath, subject()), false);
+});
+
+test("pending deactivation atomically suppresses legacy receipts until commit", async (t) => {
+  const { storePath } = await fixture(t);
+  await recordPassedCertification(storePath, subject(), allGates());
+  const legacyStore = await readCertificationStore(storePath);
+  assert.equal("pendingDeactivations" in legacyStore, false);
+  assert.equal(evaluateModelCertification(legacyStore, subject()).status, "valid");
+  await assert.doesNotReject(
+    assertModelCertificationRequestAllowed(
+      storePath,
+      subject().publicModelId,
+    ),
+  );
+  await assert.rejects(
+    assertModelCertificationRequestAllowed(
+      storePath,
+      subject().publicModelId,
+      { certificationRequest: true },
+    ),
+    /blocked outside an authorized conservative publication window/u,
+  );
+
+  await stageModelCertificationDeactivation(storePath, [
+    subject().publicModelId,
+  ]);
+  let store = await readCertificationStore(storePath);
+  assert.deepEqual(store.pendingDeactivations, [subject().publicModelId]);
+  assert.equal(
+    Object.hasOwn(store.receipts, subject().publicModelId),
+    true,
+    "staging keeps the rollback receipt",
+  );
+  assert.equal(evaluateModelCertification(store, subject()).status, "pending");
+  assert.equal(
+    evaluateEfficientFidelityCertification(store, subject()).status,
+    "pending",
+  );
+  await assert.rejects(
+    assertNoPendingModelCertification(storePath),
+    /synchronization is paused/u,
+  );
+  await assert.rejects(
+    assertModelCertificationRequestAllowed(
+      storePath,
+      subject().publicModelId,
+    ),
+    /unavailable while certification recovery is pending/u,
+  );
+  await assert.rejects(
+    assertModelCertificationRequestAllowed(
+      storePath,
+      subject().publicModelId,
+      { certificationRequest: true },
+    ),
+    /blocked outside an authorized conservative publication window/u,
+  );
+  assert.equal((await stat(storePath)).mode & 0o777, 0o600);
+  assert.deepEqual(
+    (await readdir(path.dirname(storePath))).filter((name) => name.endsWith(".tmp")),
+    [],
+  );
+
+  await commitModelCertificationDeactivation(storePath, [
+    subject().publicModelId,
+  ]);
+  store = await readCertificationStore(storePath);
+  assert.deepEqual(store.pendingDeactivations, [subject().publicModelId]);
+  assert.deepEqual(store.probeAuthorizations, [subject().publicModelId]);
+  assert.equal(
+    Object.hasOwn(store.receipts, subject().publicModelId),
+    false,
+    "commit revokes only after conservative publication is confirmed",
+  );
+  assert.equal(evaluateModelCertification(store, subject()).status, "pending");
+  await assert.rejects(
+    assertModelCertificationRequestAllowed(
+      storePath,
+      subject().publicModelId,
+    ),
+    /unavailable while certification recovery is pending/u,
+  );
+  await assert.doesNotReject(
+    assertModelCertificationRequestAllowed(
+      storePath,
+      subject().publicModelId,
+      { certificationRequest: true },
+    ),
+  );
+
+  await recordPassedCertification(storePath, subject(), allGates());
+  await recordPassedEfficientFidelityCertification(
+    storePath,
+    subject(),
+    { [EFFICIENT_FIDELITY_CERTIFICATION_GATE]: true },
+  );
+  store = await readCertificationStore(storePath);
+  assert.equal(evaluateModelCertification(store, subject()).status, "pending");
+  assert.equal(
+    evaluateEfficientFidelityCertification(store, subject()).status,
+    "pending",
+  );
+
+  await clearModelCertificationDeactivation(storePath, [
+    subject().publicModelId,
+  ]);
+  store = await readCertificationStore(storePath);
+  assert.equal("pendingDeactivations" in store, false);
+  assert.equal("probeAuthorizations" in store, false);
+  assert.equal(evaluateModelCertification(store, subject()).status, "valid");
+  assert.equal(
+    evaluateEfficientFidelityCertification(store, subject()).status,
+    "valid",
+  );
+  await assert.doesNotReject(assertNoPendingModelCertification(storePath));
+  await assert.doesNotReject(
+    assertModelCertificationRequestAllowed(
+      storePath,
+      subject().publicModelId,
+    ),
+  );
+  await assert.rejects(
+    assertModelCertificationRequestAllowed(
+      storePath,
+      subject().publicModelId,
+      { certificationRequest: true },
+    ),
+    /blocked outside an authorized conservative publication window/u,
+  );
+});
+
+test("request authority requires the receipt claimed by the active route", async (t) => {
+  const { storePath } = await fixture(t);
+  const publicModelId = subject().publicModelId;
+
+  await assert.doesNotReject(
+    assertModelCertificationRequestAllowed(storePath, publicModelId),
+  );
+  await assert.rejects(
+    assertModelCertificationRequestAllowed(storePath, publicModelId, {
+      requiresDirectReceipt: true,
+    }),
+    /no active direct certification receipt/u,
+  );
+  await assert.rejects(
+    assertModelCertificationRequestAllowed(storePath, publicModelId, {
+      requiresEfficientFidelityReceipt: true,
+    }),
+    /requires requiresDirectReceipt/u,
+  );
+
+  await recordPassedCertification(storePath, subject(), allGates());
+  await assert.doesNotReject(
+    assertModelCertificationRequestAllowed(storePath, publicModelId, {
+      requiresDirectReceipt: true,
+    }),
+  );
+  await assert.rejects(
+    assertModelCertificationRequestAllowed(storePath, publicModelId, {
+      requiresDirectReceipt: true,
+      requiresEfficientFidelityReceipt: true,
+    }),
+    /no active Efficient Fidelity certification receipt/u,
+  );
+
+  await recordPassedEfficientFidelityCertification(
+    storePath,
+    subject(),
+    { [EFFICIENT_FIDELITY_CERTIFICATION_GATE]: true },
+  );
+  await assert.doesNotReject(
+    assertModelCertificationRequestAllowed(storePath, publicModelId, {
+      requiresDirectReceipt: true,
+      requiresEfficientFidelityReceipt: true,
+    }),
+  );
+
+  await rm(storePath);
+  await assert.doesNotReject(
+    assertModelCertificationRequestAllowed(storePath, publicModelId),
+  );
+  await assert.rejects(
+    assertModelCertificationRequestAllowed(storePath, publicModelId, {
+      requiresDirectReceipt: true,
+    }),
+    /no active direct certification receipt/u,
+  );
+});
+
+test("pending deactivation validation is strict and commit requires staging", async (t) => {
+  const { storePath } = await fixture(t);
+  assert.deepEqual(
+    validateCertificationStore({ contractVersion: 1, receipts: {} }),
+    { contractVersion: 1, receipts: {} },
+    "the pre-pending schema remains readable without migration",
+  );
+  assert.throws(
+    () =>
+      validateCertificationStore({
+        contractVersion: 1,
+        pendingDeactivations: ["lmstudio/model", "lmstudio/model"],
+        receipts: {},
+      }),
+    /must not contain duplicates/u,
+  );
+  assert.throws(
+    () =>
+      validateCertificationStore({
+        contractVersion: 1,
+        pendingDeactivations: "lmstudio/model",
+        receipts: {},
+      }),
+    /must be an array/u,
+  );
+  assert.throws(
+    () =>
+      validateCertificationStore({
+        contractVersion: 1,
+        probeAuthorizations: ["lmstudio/model"],
+        receipts: {},
+      }),
+    /must be pending deactivations/u,
+  );
+  await assert.rejects(
+    commitModelCertificationDeactivation(storePath, [subject().publicModelId]),
+    /was not staged/u,
+  );
+  await assert.rejects(access(storePath), (error) => error?.code === "ENOENT");
 });
 
 test("store publication is atomic, private, and contains no probe material", async (t) => {

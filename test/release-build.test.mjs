@@ -729,6 +729,7 @@ test("the repository itself produces a smoke-testable release archive", async (t
   assert.equal(archivePaths.has("src/account-cache.mjs"), true);
   assert.equal(archivePaths.has("src/codex-account-cache-file.mjs"), true);
   assert.equal(archivePaths.has("src/certification-transport.mjs"), true);
+  assert.equal(archivePaths.has("src/efficient-fidelity.mjs"), true);
   assert.equal(archivePaths.has("src/provider-id.mjs"), true);
   assert.equal(archivePaths.has("src/purge-data.mjs"), true);
   assert.equal(archivePaths.has("src/runtime-compatibility.mjs"), true);

@@ -1,6 +1,6 @@
 {
   "name": "pickermux",
-  "version": "0.5.4",
+  "version": "0.6.0",
   "private": true,
   "description": "Use loaded LM Studio models directly from the Codex Desktop model picker",
   "license": "MIT",

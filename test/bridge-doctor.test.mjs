@@ -145,6 +145,7 @@ test("mixed doctor verifies service, config, discovery, file and Codex catalog",
       reasons: [],
     }),
     certificationStatusesImpl: async () => [],
+    pendingModelIdsImpl: async () => ["lmstudio/disappeared"],
     fetchImpl: async (url, options) => {
       assert.equal(url, `${baseUrl}/models`);
       assert.equal(options.method, "GET");
@@ -180,6 +181,10 @@ test("mixed doctor verifies service, config, discovery, file and Codex catalog",
       detail:
         "2 request(s); input 12000 -> 4000 bytes; request 12500 -> 4250 bytes; omitted 8 part(s)/7500 bytes; retained bootstrap 2 part(s)/1000 bytes; stop=conversation",
     },
+  );
+  assert.match(
+    result.checks.find((entry) => entry.name === "tool-certifications").detail,
+    /1 certification recovery operation\(s\) pending/u,
   );
 });
 

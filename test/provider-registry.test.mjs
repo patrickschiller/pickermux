@@ -112,6 +112,50 @@ test("keeps the external picker slug separate from the upstream model id", () =>
   assert.equal(vendor.credentialEnv, "VENDOR_TOKEN");
 });
 
+test("derives the client Tool Search grant only from a current managed catalog", () => {
+  const makeCatalog = (compHash) => ({
+    models: [
+      ...bundledCatalog().models,
+      {
+        slug: "lmstudio/qwen/qwen3.8-27b",
+        display_name: "Qwen 3.8 27B",
+        context_window: 42_496,
+        comp_hash: compHash,
+        supported_reasoning_levels: [{ effort: "xhigh" }],
+        tool_mode: "direct",
+        shell_type: "unified_exec",
+        supports_search_tool: true,
+      },
+      {
+        slug: "vendor/public-slug",
+        display_name: "Vendor Public Model",
+        context_window: 64_000,
+        comp_hash: "foreign-catalog-entry",
+        supported_reasoning_levels: [{ effort: "medium" }],
+        tool_mode: "default",
+        supports_search_tool: false,
+      },
+    ],
+  });
+  const granted = buildProviderRegistry({
+    mixedCatalog: makeCatalog("model-bridge-p6-0123456789abcdef"),
+    config: config(),
+  });
+  assert.equal(
+    granted.resolve("lmstudio/qwen/qwen3.8-27b").clientToolSearchEnabled,
+    true,
+  );
+
+  const foreign = buildProviderRegistry({
+    mixedCatalog: makeCatalog("foreign-catalog-entry"),
+    config: config(),
+  });
+  assert.equal(
+    foreign.resolve("lmstudio/qwen/qwen3.8-27b").clientToolSearchEnabled,
+    false,
+  );
+});
+
 test("routes carry only a Keychain credential reference", () => {
   const input = config();
   delete input.providers[1].credentialEnv;
@@ -200,7 +244,7 @@ test("loaded discovery claims only its provider namespace and reconstructs exact
       slug: "lmstudio/microsoft/phi-reasoning",
       display_name: "Phi Reasoning – LM Studio",
       context_window: 8_192,
-      comp_hash: "model-bridge-p5-0123456789abcdef",
+      comp_hash: "model-bridge-p6-0123456789abcdef",
       default_reasoning_level: "xhigh",
       supported_reasoning_levels: [
         {

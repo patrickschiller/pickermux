@@ -120,9 +120,7 @@ function catalogReasoning(model) {
         .map((level) => level?.effort)
         .filter((effort) => typeof effort === "string" && effort)
     : [];
-  const bridgeGenerated =
-    typeof model?.comp_hash === "string" &&
-    /^model-bridge-p[2345]-[0-9a-f]{16}$/u.test(model.comp_hash);
+  const bridgeGenerated = isCurrentBridgeCatalogModel(model);
   const reasoningOmitEfforts = bridgeGenerated
     ? reasoningLevels
         .filter(
@@ -143,6 +141,13 @@ function catalogReasoning(model) {
     ...(reasoningEfforts.length > 0 ? { reasoningEfforts } : {}),
     ...(reasoningOmitEfforts.length > 0 ? { reasoningOmitEfforts } : {}),
   };
+}
+
+function isCurrentBridgeCatalogModel(model) {
+  return (
+    typeof model?.comp_hash === "string" &&
+    /^model-bridge-p6-[0-9a-f]{16}$/u.test(model.comp_hash)
+  );
 }
 
 function fallbackLmStudioReasoningMap(reasoningEfforts) {
@@ -212,6 +217,12 @@ function mixedExternalRoutes(config, assignments, discoveredModels) {
       toolsEnabled:
         catalogModel.tool_mode === "direct" &&
         catalogModel.shell_type === "unified_exec",
+      clientToolSearchEnabled:
+        provider.kind === "lmstudio-responses" &&
+        catalogModel.tool_mode === "direct" &&
+        catalogModel.shell_type === "unified_exec" &&
+        catalogModel.supports_search_tool === true &&
+        isCurrentBridgeCatalogModel(catalogModel),
       model,
       ...(reasoningEffort ? { reasoningEffort } : {}),
       ...(reasoningEfforts?.length ? { reasoningEfforts: [...reasoningEfforts] } : {}),
