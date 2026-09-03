@@ -641,7 +641,7 @@ test("builds complete conservative entries without mutating the donor", () => {
     /Legacy donor instructions|Donor instructions|Donor tool|Donor approval|Donor collaboration|Donor review|Donor permission|Donor multi-agent|Donor budget|Donor confirmation|Donor guardian/u,
   );
   assert.ok(TEXT_ONLY_MODEL_INSTRUCTIONS.length < 256);
-  assert.match(model.comp_hash, /^model-bridge-p5-[0-9a-f]{16}$/u);
+  assert.match(model.comp_hash, /^model-bridge-p6-[0-9a-f]{16}$/u);
   assert.equal(model.context_window, 42_496);
   assert.equal(model.max_context_window, 42_496);
   assert.equal(model.supports_search_tool, false);
@@ -704,6 +704,38 @@ test("enables only direct unified-exec after an exact model certification", () =
   assert.notEqual(certified.comp_hash, textOnly.comp_hash);
 });
 
+test("enables Efficient Fidelity only after its additive LM Studio certification", () => {
+  const model = {
+    id: "lmstudio/qwen/efficient",
+    displayName: "Efficient Qwen",
+    type: "llm",
+    contextWindow: 32_768,
+    source: "lmstudio-rest",
+  };
+  const [efficient] = buildCodexCatalog({
+    bundledCatalog: { models: [donor] },
+    discoveredModels: [model],
+    certifiedModelSlugs: [model.id],
+    efficientFidelityModelSlugs: [model.id],
+  }).models;
+
+  assert.equal(efficient.tool_mode, "direct");
+  assert.equal(efficient.shell_type, "unified_exec");
+  assert.equal(efficient.supports_search_tool, true);
+  assert.equal(efficient.base_instructions, donor.base_instructions);
+  assert.deepEqual(efficient.model_messages, donor.model_messages);
+
+  assert.throws(
+    () =>
+      buildCodexCatalog({
+        bundledCatalog: { models: [donor] },
+        discoveredModels: [model],
+        efficientFidelityModelSlugs: [model.id],
+      }),
+    /requires direct tool certification/u,
+  );
+});
+
 test("keeps the donor prompt for generic Responses-compatible providers", () => {
   const catalog = buildCodexCatalog({
     bundledCatalog: { models: [donor] },
@@ -722,7 +754,7 @@ test("keeps the donor prompt for generic Responses-compatible providers", () => 
   assert.equal(model.tool_mode, null);
   assert.equal(model.base_instructions, donor.base_instructions);
   assert.deepEqual(model.model_messages, donor.model_messages);
-  assert.match(model.comp_hash, /^model-bridge-p5-[0-9a-f]{16}$/u);
+  assert.match(model.comp_hash, /^model-bridge-p6-[0-9a-f]{16}$/u);
 });
 
 test("persists model-defined reasoning efforts in supported catalog metadata", () => {

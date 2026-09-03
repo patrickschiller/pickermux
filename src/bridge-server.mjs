@@ -4,6 +4,7 @@ import { hasDisallowedOrigin, isExpectedHost } from "./header-policy.mjs";
 import { createResponsesProxy } from "./responses-proxy.mjs";
 
 const LOOPBACK_HOST = "127.0.0.1";
+export const CERTIFICATION_PENDING_GATE_VERSION = 1;
 const CAPABILITY_PATTERN = /^[A-Za-z0-9_-]{32,256}$/u;
 const SAFE_COMPATIBILITY_STATUSES = new Set([
   "checking",
@@ -246,6 +247,7 @@ export function createBridgeServer({
   requestHeaderBytes = 32 * 1024,
   instanceId = null,
   compatibilityGate,
+  externalRequestGate,
   onTextOnlyCompaction,
 } = {}) {
   if (!registry || typeof registry.resolve !== "function" || typeof registry.listModels !== "function") {
@@ -273,6 +275,8 @@ export function createBridgeServer({
     throw new TypeError("onTextOnlyCompaction must be a function");
   }
   const textOnlyContextTelemetry = createTextOnlyContextTelemetry();
+  const certificationPendingGateActive =
+    typeof externalRequestGate === "function";
   const captureTextOnlyCompaction = (event) => {
     textOnlyContextTelemetry.record(event);
     return onTextOnlyCompaction?.(event);
@@ -288,6 +292,7 @@ export function createBridgeServer({
     httpsTransport,
     dnsLookup,
     certificationToken: instanceId,
+    externalRequestGate,
     onTextOnlyCompaction: captureTextOnlyCompaction,
   });
 
@@ -329,6 +334,12 @@ export function createBridgeServer({
       writeJson(response, 200, {
         ok: compatibility === null || compatibility.status === "compatible",
         instanceId,
+        ...(certificationPendingGateActive
+          ? {
+              certificationPendingGateVersion:
+                CERTIFICATION_PENDING_GATE_VERSION,
+            }
+          : {}),
         ...(compatibility === null ? {} : { compatibility }),
         ...(textOnlyContext === null ? {} : { textOnlyContext }),
       });

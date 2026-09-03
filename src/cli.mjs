@@ -16,8 +16,9 @@ import {
 } from "./compatibility-manifest.mjs";
 import {
   certificationSubjectForModel,
+  resolveModelCapabilitySlugs,
   resolveCertificationStatuses,
-  resolveCertifiedModelSlugs,
+  runEfficientFidelityCertification,
   runModelCertification,
 } from "./certification-runner.mjs";
 import {
@@ -31,7 +32,10 @@ import {
   startBridgeService,
   stopBridgeService,
 } from "./bridge-runtime.mjs";
-import { listenBridgeServer } from "./bridge-server.mjs";
+import {
+  CERTIFICATION_PENDING_GATE_VERSION,
+  listenBridgeServer,
+} from "./bridge-server.mjs";
 import {
   buildMixedCodexCatalog,
   loadBundledCatalog,
@@ -69,8 +73,15 @@ import {
   unregisterKeychainProvider,
 } from "./keychain-credentials.mjs";
 import {
-  invalidateModelCertification,
+  assertModelCertificationRequestAllowed,
+  assertNoPendingModelCertification,
+  clearModelCertificationDeactivation,
+  commitModelCertificationDeactivation,
+  computeCertificationFingerprint,
+  listPendingModelCertificationIds,
   recordPassedCertification,
+  recordPassedEfficientFidelityCertification,
+  stageModelCertificationDeactivation,
 } from "./model-certification.mjs";
 import {
   removeManagedDistribution,
@@ -356,19 +367,21 @@ async function buildCatalog({
     expectedClientVersion: codexClientVersion,
     allowBundledFallback,
   });
-  const certifiedModelSlugs = certificationPath
-    ? await resolveCertifiedModelSlugs({
+  const capabilities = certificationPath
+    ? await resolveModelCapabilitySlugs({
         storePath: certificationPath,
         config,
         models: discovery.models,
         codexClientVersion,
       })
-    : [];
+    : { certifiedModelSlugs: [], efficientFidelityModelSlugs: [] };
+  const { certifiedModelSlugs, efficientFidelityModelSlugs } = capabilities;
   const catalog = buildMixedCodexCatalog({
     discoveredModels: discovery.models,
     bundledCatalog,
     nativeCatalog: nativeCatalog.catalog,
     certifiedModelSlugs,
+    efficientFidelityModelSlugs,
   });
   const writtenPath = await writeCatalogAtomic(outputPath, catalog);
   return {
@@ -377,6 +390,7 @@ async function buildCatalog({
     nativeCatalog,
     codexClientVersion,
     certifiedModelSlugs,
+    efficientFidelityModelSlugs,
     catalog,
     writtenPath,
   };
@@ -768,11 +782,19 @@ async function refresh({ config, paths, codexPath, sourceRoot = projectRoot }) {
           bundledCatalog: built.bundledCatalog,
         }),
       );
-      await restartBridgeService({
+      const restarted = await restartBridgeService({
         config,
         runtimePath: paths.runtimePath,
         launchAgentLabel: paths.launchAgentLabel,
       });
+      if (
+        restarted.health?.certificationPendingGateVersion !==
+        CERTIFICATION_PENDING_GATE_VERSION
+      ) {
+        throw new Error(
+          "The restarted bridge did not confirm its certification request gate",
+        );
+      }
       const parsed = await debugModels({ codexPath });
       assertCatalogSlugs(parsed, built.catalog.models.map((model) => model.slug));
       const doctor = await runBridgeDoctor({ config, paths, codexPath });
@@ -848,6 +870,7 @@ async function refresh({ config, paths, codexPath, sourceRoot = projectRoot }) {
       nativeCatalogFetchedAt: built.nativeCatalog.fetchedAt ?? null,
       nativeCatalogWarning: built.nativeCatalog.warning ?? null,
       runtimeUpdated: true,
+      certificationPendingGateVersion: CERTIFICATION_PENDING_GATE_VERSION,
       selectionReset: selection.changed,
       restartRequired: true,
     };
@@ -922,15 +945,16 @@ async function serve({
           return discoverBridgeModels({ ...args, credentialResolver });
         },
         certificationResolver(models) {
-          return resolveCertifiedModelSlugs({
+          return resolveModelCapabilitySlugs({
             storePath: certificationPath,
             config,
             models,
             codexClientVersion,
           });
         },
-        assertPublishAllowed() {
-          return compatibilityGate.assertReady();
+        async assertPublishAllowed() {
+          await compatibilityGate.assertReady();
+          await assertNoPendingModelCertification(certificationPath);
         },
         reconcileSelectionImpl(args) {
           return reconcileSelectedCatalogModel({
@@ -974,6 +998,22 @@ async function serve({
     credentialResolver,
     port: config.bridge.port,
     compatibilityGate,
+    externalRequestGate({
+      publicModelId,
+      certificationRequest,
+      requiresDirectReceipt,
+      requiresEfficientFidelityReceipt,
+    }) {
+      return assertModelCertificationRequestAllowed(
+        certificationPath,
+        publicModelId,
+        {
+          certificationRequest,
+          requiresDirectReceipt,
+          requiresEfficientFidelityReceipt,
+        },
+      );
+    },
   });
   process.stdout.write(
     `model bridge ready on 127.0.0.1:${config.bridge.port}; ${registry.nativeModels.length} native and ${registry.externalModels.length} external route(s)\n`,
@@ -1087,36 +1127,42 @@ export async function credentialCommand({
   return credentialStatusImpl(provider);
 }
 
-async function certify({ config, paths, codexPath, model, all }) {
-  const [managedConfig, service, runtime, codexClientVersion] = await Promise.all([
-    getConfigStatus({ configPath: paths.configPath, statePath: paths.statePath }),
-    getBridgeServiceStatus({
-      config,
-      runtimePath: paths.runtimePath,
-      launchAgentLabel: paths.launchAgentLabel,
-    }),
-    readRuntime(paths.runtimePath),
-    loadCodexClientVersion({ codexPath }),
-  ]);
-  if (!managedConfig.installed || !managedConfig.healthy || !service.healthy) {
-    throw new Error("PickerMux model certification requires a healthy installed bridge");
+function selectCertificationModels(models, targetModelIds, {
+  exactSet = false,
+  label = "Certification discovery",
+} = {}) {
+  if (!Array.isArray(models)) {
+    throw new Error(`${label} returned no model array`);
   }
-
-  const credentialResolver = createCredentialResolver();
-  const discovery = await discoverBridgeModels({ config, credentialResolver });
-  const supported = discovery.models;
-  const candidates = all
-    ? supported
-    : supported.filter((entry) => entry.id === model);
-  if (candidates.length === 0) {
+  const byId = new Map();
+  for (const candidate of models) {
+    if (typeof candidate?.id !== "string" || !candidate.id || byId.has(candidate.id)) {
+      throw new Error(`${label} returned invalid or duplicate model ids`);
+    }
+    byId.set(candidate.id, candidate);
+  }
+  const requested = new Set(targetModelIds);
+  if (
+    exactSet &&
+    (byId.size !== requested.size || [...byId.keys()].some((id) => !requested.has(id)))
+  ) {
     throw new Error(
-      all
-        ? "No external model is available for certification"
-        : `External model ${model} was not discovered`,
+      "The discovered model set changed during certification deactivation; retry certification",
     );
   }
+  return targetModelIds.map((id) => {
+    const candidate = byId.get(id);
+    if (!candidate) {
+      throw new Error(
+        `External model ${id} changed or disappeared during certification deactivation`,
+      );
+    }
+    return candidate;
+  });
+}
 
-  const candidatesWithSubjects = candidates.map((candidate) => ({
+function certificationSubjects({ config, models, codexClientVersion }) {
+  return models.map((candidate) => ({
     candidate,
     subject: certificationSubjectForModel({
       config,
@@ -1124,54 +1170,456 @@ async function certify({ config, paths, codexPath, model, all }) {
       codexClientVersion,
     }),
   }));
+}
 
-  // Re-certification is fail-closed: remove every previous receipt first and
-  // publish the conservative text-only catalog before sending a probe. If the
-  // process is interrupted mid-matrix, no stale tool grant remains active.
-  for (const { subject } of candidatesWithSubjects) {
-    await invalidateModelCertification(paths.certificationPath, subject);
+function assertMatchingCertificationSubjects(expected, current) {
+  const currentById = new Map(
+    current.map((entry) => [entry.subject.publicModelId, entry.subject]),
+  );
+  for (const entry of expected) {
+    const currentSubject = currentById.get(entry.subject.publicModelId);
+    if (
+      !currentSubject ||
+      computeCertificationFingerprint(currentSubject) !==
+        computeCertificationFingerprint(entry.subject)
+    ) {
+      throw new Error(
+        `External model ${entry.subject.publicModelId} changed during certification; no receipt was published`,
+      );
+    }
   }
-  await refresh({ config, paths, codexPath });
+}
 
-  const completed = [];
-  for (const { candidate, subject } of candidatesWithSubjects) {
-    try {
-      const gates = await runModelCertification({
+function assertCertificationModelsDeactivated(catalog, targetModelIds) {
+  for (const modelId of targetModelIds) {
+    const catalogModel = catalog.models.find((entry) => entry.slug === modelId);
+    if (!catalogModel) {
+      throw new Error(
+        `The conservative catalog is missing certification model ${modelId}`,
+      );
+    }
+    if (
+      catalogModel.tool_mode !== null ||
+      catalogModel.shell_type !== "disabled" ||
+      catalogModel.supports_search_tool !== false
+    ) {
+      throw new Error(
+        `Certification model ${modelId} was not published conservatively`,
+      );
+    }
+  }
+}
+
+function assertCertificationModelsAbsent(catalog, externalModels, modelIds) {
+  for (const modelId of modelIds) {
+    if (
+      externalModels.some((entry) => entry.id === modelId) ||
+      catalog.models.some((entry) => entry.slug === modelId)
+    ) {
+      throw new Error(
+        `Pending certification model ${modelId} is available again; retry certification so it can be probed`,
+      );
+    }
+  }
+}
+
+function assertCertificationPendingGate(refreshResult, label) {
+  if (
+    refreshResult?.certificationPendingGateVersion !==
+    CERTIFICATION_PENDING_GATE_VERSION
+  ) {
+    throw new Error(
+      `${label} did not confirm the certification request gate`,
+    );
+  }
+  return refreshResult;
+}
+
+async function currentCertificationSubjects({
+  config,
+  codexPath,
+  credentialResolver,
+  targetModelIds,
+  exactSet,
+  discoverImpl,
+  clientVersionImpl,
+}) {
+  const [discovery, codexClientVersion] = await Promise.all([
+    discoverImpl({ config, credentialResolver }),
+    clientVersionImpl({ codexPath }),
+  ]);
+  const models = selectCertificationModels(discovery.models, targetModelIds, {
+    exactSet,
+    label: "Certification revalidation",
+  });
+  return certificationSubjects({ config, models, codexClientVersion });
+}
+
+export async function runCertificationTransaction({
+  config,
+  paths,
+  codexPath,
+  runtime,
+  credentialResolver,
+  targetModelIds,
+  recoveryModelIds = [],
+  exactModelSet = false,
+}, {
+  refreshImpl = refresh,
+  discoverImpl = discoverBridgeModels,
+  clientVersionImpl = loadCodexClientVersion,
+  readCatalogImpl = readCodexCatalog,
+  stageDeactivationImpl = stageModelCertificationDeactivation,
+  commitDeactivationImpl = commitModelCertificationDeactivation,
+  clearDeactivationImpl = clearModelCertificationDeactivation,
+  listPendingImpl = listPendingModelCertificationIds,
+  runModelCertificationImpl = runModelCertification,
+  runEfficientFidelityCertificationImpl = runEfficientFidelityCertification,
+  recordPassedCertificationImpl = recordPassedCertification,
+  recordPassedEfficientFidelityCertificationImpl =
+    recordPassedEfficientFidelityCertification,
+} = {}) {
+  if (!Array.isArray(targetModelIds) || !Array.isArray(recoveryModelIds)) {
+    throw new TypeError("Certification and recovery model ids must be arrays");
+  }
+  const allIds = [...targetModelIds, ...recoveryModelIds];
+  if (
+    allIds.some((modelId) => typeof modelId !== "string" || !modelId) ||
+    new Set(allIds).size !== allIds.length
+  ) {
+    throw new Error("Certification and recovery model ids must be unique strings");
+  }
+  if (allIds.length === 0) {
+    throw new Error("Certification requires a model or pending recovery target");
+  }
+  const recoveryAttempted = recoveryModelIds.length > 0;
+  let recoveryCleared = recoveryModelIds.length === 0;
+  let targetPendingAtStart = false;
+  let deactivationAttempted = false;
+  let deactivationStaged = false;
+  let conservativePublicationConfirmed = false;
+  let deactivationCleared = false;
+  let currentModelId;
+  try {
+    const pendingAtStart = await listPendingImpl(paths.certificationPath);
+    targetPendingAtStart = targetModelIds.some((modelId) =>
+      pendingAtStart.includes(modelId),
+    );
+    const authorityRefresh = assertCertificationPendingGate(
+      await refreshImpl({ config, paths, codexPath }),
+      "Certification authority refresh",
+    );
+    if (targetModelIds.length > 0) {
+      selectCertificationModels(authorityRefresh.externalModels, targetModelIds, {
+        exactSet: exactModelSet,
+        label: "Certification authority refresh",
+      });
+    }
+    if (recoveryModelIds.length > 0) {
+      const authorityCatalog = await readCatalogImpl(paths.catalogPath);
+      assertCertificationModelsAbsent(
+        authorityCatalog,
+        authorityRefresh.externalModels,
+        recoveryModelIds,
+      );
+      await clearDeactivationImpl(
+        paths.certificationPath,
+        recoveryModelIds,
+      );
+      recoveryCleared = true;
+    }
+    if (targetModelIds.length === 0) {
+      return {
+        certified: [],
+        recoveredPending: [...recoveryModelIds],
+        refreshed: authorityRefresh,
+        restartRequired: true,
+      };
+    }
+
+    deactivationAttempted = true;
+    await stageDeactivationImpl(paths.certificationPath, targetModelIds);
+    deactivationStaged = true;
+
+    const deactivated = assertCertificationPendingGate(
+      await refreshImpl({ config, paths, codexPath }),
+      "Conservative certification refresh",
+    );
+    const reboundModels = selectCertificationModels(
+      deactivated.externalModels,
+      targetModelIds,
+      {
+        exactSet: exactModelSet,
+        label: "Conservative certification refresh",
+      },
+    );
+    const [codexClientVersion, conservativeCatalog] = await Promise.all([
+      clientVersionImpl({ codexPath }),
+      readCatalogImpl(paths.catalogPath),
+    ]);
+    assertCertificationModelsDeactivated(conservativeCatalog, targetModelIds);
+    const rebound = certificationSubjects({
+      config,
+      models: reboundModels,
+      codexClientVersion,
+    });
+    conservativePublicationConfirmed = true;
+
+    const currentBeforeInvalidation = await currentCertificationSubjects({
+      config,
+      codexPath,
+      credentialResolver,
+      targetModelIds,
+      exactSet: exactModelSet,
+      discoverImpl,
+      clientVersionImpl,
+    });
+    assertMatchingCertificationSubjects(rebound, currentBeforeInvalidation);
+    await commitDeactivationImpl(paths.certificationPath, targetModelIds);
+
+    const completed = [];
+    for (const entry of rebound) {
+      const { candidate, subject } = entry;
+      currentModelId = candidate.id;
+      assertMatchingCertificationSubjects(
+        [entry],
+        await currentCertificationSubjects({
+          config,
+          codexPath,
+          credentialResolver,
+          targetModelIds: [candidate.id],
+          exactSet: false,
+          discoverImpl,
+          clientVersionImpl,
+        }),
+      );
+
+      const gates = await runModelCertificationImpl({
         baseUrl: bridgeBaseUrl(config, runtime),
         model: candidate,
         certificationToken: runtime.instanceId,
       });
-      const receipt = await recordPassedCertification(
+      assertMatchingCertificationSubjects(
+        [entry],
+        await currentCertificationSubjects({
+          config,
+          codexPath,
+          credentialResolver,
+          targetModelIds: [candidate.id],
+          exactSet: false,
+          discoverImpl,
+          clientVersionImpl,
+        }),
+      );
+      const receipt = await recordPassedCertificationImpl(
         paths.certificationPath,
         subject,
         gates,
       );
+
+      const supportsEfficientFidelity =
+        subject.providerKind === "lmstudio-responses";
+      let efficientFidelity = supportsEfficientFidelity
+        ? "direct-fallback"
+        : "not-applicable";
+      let efficientFidelityFailure;
+      let efficientFidelityPassedAt;
+      let efficientFidelityGates;
+      if (supportsEfficientFidelity) {
+        assertMatchingCertificationSubjects(
+          [entry],
+          await currentCertificationSubjects({
+            config,
+            codexPath,
+            credentialResolver,
+            targetModelIds: [candidate.id],
+            exactSet: false,
+            discoverImpl,
+            clientVersionImpl,
+          }),
+        );
+        try {
+          efficientFidelityGates =
+            await runEfficientFidelityCertificationImpl({
+              baseUrl: bridgeBaseUrl(config, runtime),
+              model: candidate,
+              certificationToken: runtime.instanceId,
+            });
+        } catch {
+          // Efficient Fidelity is additive. The independently revalidated
+          // Direct receipt remains the safe fallback. Expose only a stable
+          // diagnostic code; provider errors can contain prompt fragments.
+          efficientFidelityFailure = "additive-probe-failed";
+        }
+      }
+      if (efficientFidelityGates) {
+        assertMatchingCertificationSubjects(
+          [entry],
+          await currentCertificationSubjects({
+            config,
+            codexPath,
+            credentialResolver,
+            targetModelIds: [candidate.id],
+            exactSet: false,
+            discoverImpl,
+            clientVersionImpl,
+          }),
+        );
+        const efficientReceipt =
+          await recordPassedEfficientFidelityCertificationImpl(
+            paths.certificationPath,
+            subject,
+            efficientFidelityGates,
+          );
+        efficientFidelity = "enabled";
+        efficientFidelityPassedAt = efficientReceipt.passedAt;
+      }
       completed.push({
         model: candidate.id,
         status: "valid",
         passedAt: receipt.passedAt,
-      });
-    } catch (error) {
-      let refreshError;
-      try {
-        await refresh({ config, paths, codexPath });
-      } catch (candidateRefreshError) {
-        refreshError = candidateRefreshError;
-      }
-      if (refreshError) {
-        throw new AggregateError(
-          [error, refreshError],
-          `Certification failed for ${candidate.id}; deactivation refresh also failed`,
-        );
-      }
-      throw new Error(`Certification failed for ${candidate.id}: ${error.message}`, {
-        cause: error,
+        efficientFidelity,
+        ...(efficientFidelityFailure
+          ? { efficientFidelityFailure }
+          : {}),
+        ...(efficientFidelityPassedAt
+          ? { efficientFidelityPassedAt }
+          : {}),
       });
     }
+
+    assertMatchingCertificationSubjects(
+      rebound,
+      await currentCertificationSubjects({
+        config,
+        codexPath,
+        credentialResolver,
+        targetModelIds,
+        exactSet: exactModelSet,
+        discoverImpl,
+        clientVersionImpl,
+      }),
+    );
+    await clearDeactivationImpl(paths.certificationPath, targetModelIds);
+    deactivationCleared = true;
+    const refreshed = assertCertificationPendingGate(
+      await refreshImpl({ config, paths, codexPath }),
+      "Certified catalog refresh",
+    );
+    const finalModels = selectCertificationModels(
+      refreshed.externalModels,
+      targetModelIds,
+      {
+        exactSet: exactModelSet,
+        label: "Certified catalog refresh",
+      },
+    );
+    const finalVersion = await clientVersionImpl({ codexPath });
+    assertMatchingCertificationSubjects(
+      rebound,
+      certificationSubjects({
+        config,
+        models: finalModels,
+        codexClientVersion: finalVersion,
+      }),
+    );
+    return {
+      certified: completed,
+      recoveredPending: [...recoveryModelIds],
+      refreshed,
+      restartRequired: true,
+    };
+  } catch (error) {
+    const recoveryErrors = [];
+    if (
+      deactivationStaged &&
+      conservativePublicationConfirmed &&
+      !deactivationCleared
+    ) {
+      try {
+        assertCertificationPendingGate(
+          await refreshImpl({ config, paths, codexPath }),
+          "Conservative recovery refresh",
+        );
+      } catch (recoveryError) {
+        recoveryErrors.push(recoveryError);
+      }
+      if (recoveryErrors.length === 0) {
+        try {
+          await clearDeactivationImpl(paths.certificationPath, targetModelIds);
+          deactivationCleared = true;
+        } catch (recoveryError) {
+          recoveryErrors.push(recoveryError);
+        }
+      }
+    }
+    const baseMessage = currentModelId
+      ? `Certification failed for ${currentModelId}: ${error.message}`
+      : `Certification deactivation failed: ${error.message}`;
+    const pendingHint =
+      (deactivationAttempted && !deactivationCleared) ||
+      (recoveryAttempted && !recoveryCleared) ||
+      (targetPendingAtStart && !deactivationCleared)
+        ? "; certification remains blocked pending recovery; retry the same certify command"
+        : "";
+    const message = `${baseMessage}${pendingHint}`;
+    if (recoveryErrors.length > 0) {
+      throw new AggregateError(
+        [error, ...recoveryErrors],
+        `${message}; conservative recovery was incomplete`,
+      );
+    }
+    throw new Error(message, { cause: error });
+  }
+}
+
+export async function certify({ config, paths, codexPath, model, all }) {
+  const [managedConfig, service, runtime] = await Promise.all([
+    getConfigStatus({ configPath: paths.configPath, statePath: paths.statePath }),
+    getBridgeServiceStatus({
+      config,
+      runtimePath: paths.runtimePath,
+      launchAgentLabel: paths.launchAgentLabel,
+    }),
+    readRuntime(paths.runtimePath),
+  ]);
+  if (!managedConfig.installed || !managedConfig.healthy || !service.healthy) {
+    throw new Error("PickerMux model certification requires a healthy installed bridge");
   }
 
-  const refreshed = await refresh({ config, paths, codexPath });
-  return { certified: completed, refreshed, restartRequired: true };
+  const credentialResolver = createCredentialResolver();
+  const [discovery, pendingModelIds] = await Promise.all([
+    discoverBridgeModels({ config, credentialResolver }),
+    listPendingModelCertificationIds(paths.certificationPath),
+  ]);
+  const supported = discovery.models;
+  const supportedIds = new Set(supported.map((entry) => entry.id));
+  const candidates = all
+    ? supported
+    : supported.filter((entry) => entry.id === model);
+  const recoveryModelIds = all
+    ? pendingModelIds.filter((modelId) => !supportedIds.has(modelId))
+    : pendingModelIds.includes(model) && candidates.length === 0
+      ? [model]
+      : [];
+  if (candidates.length === 0 && recoveryModelIds.length === 0) {
+    throw new Error(
+      all
+        ? "No external model is available for certification"
+        : `External model ${model} was not discovered`,
+    );
+  }
+
+  return runCertificationTransaction({
+    config,
+    paths,
+    codexPath,
+    runtime,
+    credentialResolver,
+    targetModelIds: candidates.map((candidate) => candidate.id),
+    recoveryModelIds,
+    exactModelSet: all,
+  });
 }
 
 async function managedRuntimeDirectories(paths) {
@@ -2765,11 +3213,25 @@ export async function runCli(argv, {
     );
     if (options.json) printJson(result);
     else {
+      for (const modelId of result.recoveredPending ?? []) {
+        process.stdout.write(
+          `RECOVERED  pending certification: ${modelId}\n`,
+        );
+      }
       for (const entry of result.certified) {
         process.stdout.write(`PASS  certification: ${entry.model}\n`);
+        if (entry.efficientFidelity !== "not-applicable") {
+          process.stdout.write(
+            entry.efficientFidelity === "enabled"
+              ? `PASS  Efficient Fidelity: ${entry.model}\n`
+              : `FALLBACK  Efficient Fidelity probe failed; Direct tools retained: ${entry.model}\n`,
+          );
+        }
       }
       process.stdout.write(
-        "Tool-certified catalog published. Fully quit and reopen Codex Desktop.\n",
+        result.certified.length > 0
+          ? "Certified catalog published. Fully quit and reopen Codex Desktop.\n"
+          : "Certification recovery completed. Fully quit and reopen Codex Desktop.\n",
       );
     }
     return result;

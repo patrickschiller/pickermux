@@ -61,6 +61,9 @@ Reports involving any of the following are particularly important:
 - command execution, path traversal, decompression abuse, or resource
   exhaustion through untrusted requests;
 - certification records enabling tools for a different model or configuration;
+- Efficient Fidelity activating without its exact additive receipt, accepting
+  malformed search correlation, or exposing tools outside the completed
+  client-executed search output;
 - uncertified or stale external routes receiving function schemas, forced tool
   choices, or tool-call history;
 - secrets or sensitive prompts being persisted unexpectedly.
@@ -77,6 +80,21 @@ Native Codex request bodies remain byte preserving. Treat request logs produced
 by older PickerMux releases as sensitive because they may contain installation,
 session, thread, window, or turn identifiers.
 
+Model re-certification uses a private, atomically persisted pending barrier.
+The active service reads it before external credential resolution or upstream
+I/O for each new request. A malformed or unreadable existing store blocks that
+request; an absent store is the initial empty state, so any in-memory route that
+claims Direct or Efficient Fidelity authority is blocked for lack of its
+receipt. Ordinary traffic newly admitted for a pending model is rejected even
+if the in-memory registry still contains an older tool grant. The same gate
+requires a Direct receipt for a Direct route and the additive `toolSearch` gate
+for an Efficient Fidelity route; exact subject/fingerprint evaluation remains
+part of managed catalog publication. A request admitted before the barrier was
+persisted may finish. The private certification transport remains blocked until
+a health-attested service refresh has published the target as text-only and the
+same atomic commit has removed its previous receipt. Native routes do not enter
+this gate.
+
 Uncertified LM Studio text-only routes additionally omit only explicitly
 allowlisted Codex-generated bootstrap context before the first conversation
 item. Every omission is bound to the expected private annotation, role, exact
@@ -92,11 +110,61 @@ cross-thread memory out of the local provider request while preserving direct
 user content, attachments, current environment facts, AGENTS/project and
 managed instructions, selected skills, and history.
 
+Efficient Fidelity is a separate boundary for base-certified LM Studio models.
+It retains the full Codex harness and changes only delivery of functions marked
+for deferred loading. Managed publication requires a current model-bound Direct
+receipt and additive `toolSearch` gate before it emits the current v0.6 catalog
+claim; runtime activation additionally requires that claim and the canonical
+client-executed request shape. PickerMux translates protocol shapes but does
+not search Codex's inventory, choose or execute a tool, interpret approval, or
+replace Codex's sandbox. Only deferred functions returned in a completed,
+exactly correlated `tool_search_output` become newly eligible for the LM Studio
+replay; functions not marked as deferred remain in the request-local advertised
+inventory.
+
+The adapter rejects unknown execution modes and tool types, malformed or
+duplicate call IDs, invalid arguments, excess inventory or schema size,
+secondary input tool inventories, incomplete or unterminated streaming calls,
+and `previous_response_id` on this v0.6 path. Identical tools selected by
+multiple searches are exposed once, while the same identity with changed
+schema fails closed. It does not infer continuation state, approval, or the
+current user turn. A missing additive receipt selects the pre-existing Direct
+fidelity path; a missing base receipt selects the text-only boundary. Native
+request and response bytes never enter Efficient Fidelity and remain unchanged.
+Every LM Studio response call is bound to the exact function inventory that
+PickerMux advertised upstream. All external text-only and compact requests have
+an empty response-call authority. Unknown LM Studio call types, names, IDs, or
+lifecycle events fail closed. For LM Studio streaming responses, function
+completion items are released only with a matching `response.completed`
+terminal, so Codex cannot execute a call from a response that later proves
+incomplete or inconsistent. Other configured Responses-compatible providers
+retain their native response contract.
+
+Certification transitions use a private persistent deactivation barrier. A
+running bridge checks it before credential resolution or upstream I/O for each
+new request and rejects new ordinary admissions for the target even when that
+process still holds an older tool-enabled registry. Already admitted work can
+finish, which is why certification must not run alongside an active model turn.
+The instance-bound certification transport opens only after a transactional
+refresh has published and verified the conservative catalog. Background
+catalog publication and route-registry replacement remain blocked while the
+barrier is present, and an interrupted pre-publication transition leaves the
+model quarantined for explicit retry instead of restoring stale authority.
+
+For Codex's exact remote-compaction endpoint, a namespaced call whose older
+selected schema was trimmed may receive a deterministic history-only wire
+name. That mapping adds no tool definition and conveys no execution authority;
+it exists only so LM Studio can compact the already completed transcript. Any
+new invocation in the compact response is rejected.
+
 Text-only context telemetry is in-memory only and is projected through an
 explicit schema of fixed enums, booleans, and non-negative byte/part counters.
 It excludes prompt text, raw annotation kinds, roles, hashes, model/provider
 names, URLs, paths, and request, message, turn, or conversation identifiers.
 Telemetry sink failures cannot change request routing or upstream bytes.
+Every external text-only route also rejects secondary `additional_tools`
+inventory items before credential resolution; schemas cannot bypass the
+top-level tool stripping boundary through conversation input.
 
 The service watches the Codex executable identity before model requests and on
 a background interval. A changed identity is fully revalidated against the

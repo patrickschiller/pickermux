@@ -7,6 +7,61 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-03
+
+### Added
+
+- **Efficient Fidelity** for exact, additionally certified LM Studio models.
+  Codex's client-executed `tool_search` and deferred tool delivery now keep
+  large deferred function schemas out of the initial LM Studio request while
+  retaining the complete coding harness, project instructions, conversation,
+  selected skills, sandbox, approvals, and Codex-owned tool execution.
+- An additive, model-bound `toolSearch` certification gate. The base live
+  matrix is committed first as Direct fidelity, then a separate full-replay
+  search probe can authorize Efficient Fidelity for the same provider, model,
+  context, capabilities, and Codex client version.
+
+### Changed
+
+- LM Studio search calls are projected into a bounded temporary function and
+  mapped back to public `tool_search_call` items. On the Codex replay, only the
+  exactly correlated deferred tools in the completed `tool_search_output` are
+  added through the existing namespace adapter; functions that were not
+  deferred remain advertised normally.
+- Remote Codex compaction keeps working after a search, including when Codex
+  trims older selected schemas: historical namespace names are mapped for the
+  compact request without re-advertising or re-authorizing those tools.
+- A missing, stale, failed, or inapplicable additive gate now uses Direct
+  fidelity when the base tool receipt remains valid. Base-uncertified models
+  continue to use the conservative text-only path. PickerMux does not add a
+  Fast Agent route, tool broker, or provider-wide capability switch. Failed
+  additive probes report a fixed diagnostic reason without exposing provider
+  response content.
+- The bridge compatibility contract advances to `codex-responses-bridge/p6-v1`
+  so older or non-p6 catalog entries cannot activate the new delivery mode.
+
+### Security
+
+- Efficient Fidelity fails closed for non-client execution, unknown search or
+  loaded-tool types, malformed arguments, duplicate or mismatched call IDs,
+  secondary tool inventories, incomplete or unterminated streaming calls, and
+  bounded-inventory violations. Repeated identical search results are safely
+  deduplicated, while schema drift under the same identity is rejected. Version
+  0.6.0 requires full public replay and rejects `previous_response_id` on this
+  path instead of inferring continuation state.
+- Re-certification now uses a persisted request-time deactivation barrier. It
+  blocks stale ordinary tool authority in an already-running service, opens the
+  private probe transport only after conservative publication, and remains in
+  place across interrupted pre-publication transitions until an explicit retry
+  can recover safely. The same gate rejects Direct or Efficient Fidelity route
+  claims when their required receipt grant has disappeared.
+- LM Studio response calls are bound to the exact request-local advertised
+  function inventory. All external text-only and compaction responses have no
+  call authority, and LM Studio streaming calls remain held until a consistent
+  successful terminal commits them.
+- Native Codex request and response paths remain byte preserving and never
+  enter the Efficient Fidelity adapter.
+
 ## [0.5.4] - 2026-09-02
 
 ### Fixed
@@ -204,7 +259,8 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
   paths and file types, refuses root execution and foreign launchers, and
   restores the previous distribution state when activation fails.
 
-[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.5.4...HEAD
+[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.6.0
 [0.5.4]: https://github.com/patrickschiller/pickermux/releases/tag/v0.5.4
 [0.5.3]: https://github.com/patrickschiller/pickermux/releases/tag/v0.5.3
 [0.5.2]: https://github.com/patrickschiller/pickermux/releases/tag/v0.5.2

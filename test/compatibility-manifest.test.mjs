@@ -78,6 +78,16 @@ test("current compatibility reports compatible or exact update reasons", async (
   assert.equal(compatible.updateRequired, false);
   assert.deepEqual(compatible.reasons, []);
 
+  const previousBridge = await checkCurrentCompatibility({
+    manifest: {
+      ...current,
+      bridgeContract: "codex-responses-bridge/p5-v2",
+    },
+    codexClientVersion: "0.150.0",
+    bundledCatalog,
+  });
+  assert.deepEqual(previousBridge.reasons, ["bridge-contract"]);
+
   const changedCatalog = {
     models: [{ ...bundledCatalog.models[0], display_name: "Changed" }],
   };

@@ -7,6 +7,20 @@ const UNSUPPORTED_TOOL_TYPES = new Set([
   "tool_search",
   "web_search",
 ]);
+const FUNCTION_CALL_STREAM_EVENTS = new Set([
+  "response.function_call_arguments.delta",
+  "response.function_call_arguments.done",
+]);
+const OUTPUT_ITEM_STREAM_EVENTS = new Set([
+  "response.output_item.added",
+  "response.output_item.done",
+]);
+const TERMINAL_RESPONSE_STREAM_EVENTS = new Set([
+  "response.completed",
+  "response.failed",
+  "response.incomplete",
+]);
+const MAX_RESPONSE_FUNCTION_CALLS = 4_096;
 
 export class ToolNormalizationError extends Error {
   constructor(message, { code = "UNSUPPORTED_TOOL_TYPE" } = {}) {
@@ -37,6 +51,29 @@ function requireToolName(value, label) {
   return value;
 }
 
+function requireIdentifier(value, label) {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    Buffer.byteLength(value, "utf8") > 256 ||
+    /[\u0000-\u001f\u007f]/u.test(value)
+  ) {
+    throw new ToolNormalizationError(`${label} is invalid`);
+  }
+  return value;
+}
+
+function isUnsupportedInvocationType(type) {
+  return (
+    typeof type === "string" &&
+    type !== "function_call" &&
+    type !== "function_call_output" &&
+    (type.endsWith("_call") ||
+      type.endsWith("_call_output") ||
+      type.startsWith("mcp_"))
+  );
+}
+
 function normalizedParameters(value) {
   if (value === undefined || value === null) {
     return { type: "object", properties: {} };
@@ -57,11 +94,22 @@ function normalizedFunction(tool, label) {
   if (!isPlainObject(tool) || tool.type !== "function") {
     throw new ToolNormalizationError(`${label} is not a function tool`);
   }
-  return {
+  if (
+    Object.hasOwn(tool, "defer_loading") &&
+    typeof tool.defer_loading !== "boolean"
+  ) {
+    throw new ToolNormalizationError(`${label}.defer_loading must be a boolean`);
+  }
+  const normalized = {
     ...tool,
     name: requireToolName(tool.name, label),
     parameters: normalizedParameters(tool.parameters),
   };
+  // defer_loading is a Codex delivery hint, not part of LM Studio's function
+  // schema. Direct fallback still sends the function, but never leaks the hint
+  // onto the provider wire.
+  delete normalized.defer_loading;
+  return normalized;
 }
 
 function wireNameFor(namespace, name, occupied) {
@@ -102,7 +150,22 @@ function choiceTarget(choice) {
  * Studio. The returned maps are request-local and contain no arguments or
  * provider data.
  */
-export function normalizeLmStudioToolRequest(rewritten, source) {
+export function normalizeLmStudioToolRequest(
+  rewritten,
+  source,
+  { allowHistoryOnlyNamespaces = false } = {},
+) {
+  if (typeof allowHistoryOnlyNamespaces !== "boolean") {
+    throw new TypeError("allowHistoryOnlyNamespaces must be a boolean");
+  }
+  if (
+    source.parallel_tool_calls !== undefined &&
+    typeof source.parallel_tool_calls !== "boolean"
+  ) {
+    throw new ToolNormalizationError(
+      "parallel_tool_calls must be a boolean when present",
+    );
+  }
   const directNames = new Set();
   for (const tool of Array.isArray(source.tools) ? source.tools : []) {
     if (isPlainObject(tool) && tool.type === "function") {
@@ -114,6 +177,9 @@ export function normalizeLmStudioToolRequest(rewritten, source) {
   const usedWireNames = new Set();
   const forward = new Map();
   const reverse = new Map();
+  const historyOnlyWireNames = new Set();
+  const reservedCallIds = new Set();
+  const reservedItemIds = new Set();
   const tools = [];
   const keys = new Set();
   const droppedTypes = new Set();
@@ -181,13 +247,51 @@ export function normalizeLmStudioToolRequest(rewritten, source) {
 
   if (Array.isArray(source.input)) {
     rewritten.input = rewritten.input.map((item) => {
+      if (isPlainObject(item) && isUnsupportedInvocationType(item.type)) {
+        throw new ToolNormalizationError(
+          "LM Studio does not accept unadvertised invocation history",
+        );
+      }
+      if (
+        isPlainObject(item) &&
+        (item.type === "function_call" ||
+          item.type === "function_call_output")
+      ) {
+        if (item.call_id !== undefined) {
+          reservedCallIds.add(
+            requireIdentifier(item.call_id, "Function history call_id"),
+          );
+        }
+        if (item.id !== undefined) {
+          reservedItemIds.add(
+            requireIdentifier(item.id, "Function history item id"),
+          );
+        }
+      }
       if (!isPlainObject(item) || item.type !== "function_call") return item;
       const normalized = { ...item };
       if (typeof item.namespace === "string") {
         if (item.namespace === DEFAULT_NAMESPACE) {
           delete normalized.namespace;
         } else {
-          const mapping = forward.get(`${item.namespace}\0${item.name}`);
+          const namespace = requireToolName(
+            item.namespace,
+            "Function history namespace",
+          );
+          const name = requireToolName(item.name, "Function history tool");
+          const semanticKey = `${namespace}\0${name}`;
+          let mapping = forward.get(semanticKey);
+          if (!mapping && allowHistoryOnlyNamespaces) {
+            const wireName = wireNameFor(namespace, name, occupied);
+            mapping = Object.freeze({ namespace, name, wireName });
+            forward.set(semanticKey, mapping);
+            // This mapping exists only to encode completed request history for
+            // remote compaction. Without an advertised schema it conveys no
+            // response-side call authority.
+            historyOnlyWireNames.add(wireName);
+            occupied.add(wireName);
+            usedWireNames.add(wireName);
+          }
           if (!mapping) {
             throw new ToolNormalizationError(
               `Function history references unknown namespace tool ${item.namespace}/${String(item.name)}`,
@@ -233,30 +337,155 @@ export function normalizeLmStudioToolRequest(rewritten, source) {
     delete rewritten.tool_choice;
   }
 
+  const allowedWireNames = new Set(
+    source.tool_choice !== "none" && Array.isArray(rewritten.tools)
+      ? rewritten.tools.map((tool) => tool.name)
+      : [],
+  );
+  const maxAuthorizedCalls = source.tool_choice === "none"
+    ? 0
+    : target || source.parallel_tool_calls === false
+      ? 1
+      : MAX_RESPONSE_FUNCTION_CALLS;
   return Object.freeze({
+    allowedWireNames,
     forward,
+    historyOnlyWireNames,
+    maxAuthorizedCalls,
+    reservedCallIds,
+    reservedItemIds,
     reverse,
     droppedTypes: Object.freeze([...droppedTypes].sort()),
   });
 }
 
-export function rewriteResponseFunctionCalls(value, codec) {
-  if (!codec?.reverse || codec.reverse.size === 0) return value;
+/** Build a response-only authority codec for an external text-only route. */
+export function createTextOnlyToolResponseCodec() {
+  return Object.freeze({
+    allowedWireNames: new Set(),
+    forward: new Map(),
+    historyOnlyWireNames: new Set(),
+    maxAuthorizedCalls: 0,
+    reservedCallIds: new Set(),
+    reservedItemIds: new Set(),
+    reverse: new Map(),
+    droppedTypes: Object.freeze([]),
+  });
+}
+
+function rewriteAuthorizedWireName(value, codec, { addNamespace }) {
+  if (Object.hasOwn(value, "namespace")) {
+    throw new ToolNormalizationError(
+      "Upstream function calls must not supply a namespace",
+    );
+  }
+  const wireName = requireToolName(value.name, "Upstream function call");
+  if (codec.historyOnlyWireNames?.has(wireName)) {
+    throw new ToolNormalizationError(
+      "Upstream invoked a history-only namespace tool",
+    );
+  }
+  if (codec.allowedWireNames && !codec.allowedWireNames.has(wireName)) {
+    throw new ToolNormalizationError(
+      "Upstream invoked a function that was not advertised",
+    );
+  }
+  const mapping = codec.reverse?.get(wireName);
+  if (mapping) {
+    value.name = mapping.name;
+    if (addNamespace) value.namespace = mapping.namespace;
+  }
+}
+
+export function rewriteResponseFunctionCalls(
+  value,
+  codec,
+  { mode = "json" } = {},
+) {
+  if (mode !== "json" && mode !== "sse") {
+    throw new TypeError("response function-call rewrite mode is invalid");
+  }
+  if (
+    !codec?.allowedWireNames &&
+    (!codec?.reverse || codec.reverse.size === 0) &&
+    (!codec?.historyOnlyWireNames || codec.historyOnlyWireNames.size === 0)
+  ) {
+    return value;
+  }
+  const canonicalItems = new Set();
+  if (isPlainObject(value)) {
+    if (mode === "json" && Array.isArray(value.output)) {
+      for (const item of value.output) {
+        if (item !== null && typeof item === "object") canonicalItems.add(item);
+      }
+    }
+    if (
+      mode === "sse" &&
+      OUTPUT_ITEM_STREAM_EVENTS.has(value.type) &&
+      value.item !== null &&
+      typeof value.item === "object"
+    ) {
+      canonicalItems.add(value.item);
+    }
+    if (
+      mode === "sse" &&
+      TERMINAL_RESPONSE_STREAM_EVENTS.has(value.type) &&
+      isPlainObject(value.response) &&
+      Array.isArray(value.response.output)
+    ) {
+      for (const item of value.response.output) {
+        if (item !== null && typeof item === "object") canonicalItems.add(item);
+      }
+    }
+  }
+
   const pending = [value];
+  const seen = new WeakSet();
   let visited = 0;
   while (pending.length > 0) {
     const current = pending.pop();
     if (current === null || typeof current !== "object") continue;
+    if (seen.has(current)) continue;
+    seen.add(current);
     visited += 1;
     if (visited > 1_000_000) {
       throw new ToolNormalizationError("Upstream response is too structurally complex");
     }
-    if (!Array.isArray(current) && current.type === "function_call") {
-      const mapping = codec.reverse.get(current.name);
-      if (mapping) {
-        current.name = mapping.name;
-        current.namespace = mapping.namespace;
+    if (!Array.isArray(current) && typeof current.type === "string") {
+      if (
+        current.type.startsWith("response.") &&
+        (current.type.includes("_call") ||
+          current.type.includes("mcp_")) &&
+        (
+          current !== value ||
+          codec.allowedWireNames?.size === 0 ||
+          !FUNCTION_CALL_STREAM_EVENTS.has(current.type)
+        )
+      ) {
+        throw new ToolNormalizationError(
+          "Upstream emitted an unauthorized tool-call lifecycle event",
+        );
       }
+      if (isUnsupportedInvocationType(current.type)) {
+        throw new ToolNormalizationError(
+          "Upstream emitted an unsupported tool invocation",
+        );
+      }
+      if (
+        current === value &&
+        FUNCTION_CALL_STREAM_EVENTS.has(current.type) &&
+        current.name !== undefined
+      ) {
+        rewriteAuthorizedWireName(current, codec, { addNamespace: false });
+      }
+    }
+    if (!Array.isArray(current) && current.type === "function_call") {
+      if (!canonicalItems.has(current)) {
+        throw new ToolNormalizationError(
+          "Upstream emitted a function call outside a canonical response output path",
+        );
+      }
+      rewriteAuthorizedWireName(current, codec, { addNamespace: true });
     }
     for (const child of Array.isArray(current) ? current : Object.values(current)) {
       if (child !== null && typeof child === "object") pending.push(child);

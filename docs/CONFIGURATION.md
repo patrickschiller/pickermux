@@ -235,6 +235,26 @@ symbolic links, special files, or a leftover `runtime-app.previous-*` package
 stop removal for explicit review; no unrecognized runtime directory is deleted
 recursively.
 
+## Efficient Fidelity is not a provider setting
+
+Version 0.6.0 does not add an `agent`, `toolDelivery`, or similar provider-wide
+configuration field. Efficient Fidelity is an additive, model-bound capability
+for `lmstudio-responses` routes. It becomes available only after the exact model
+configuration first passes Direct tool certification and then passes the live
+client-executed tool-search probe.
+
+This separation prevents one successful model or endpoint from granting
+deferred tool delivery to another. Provider ID and kind, base URL, public and
+upstream model IDs, active context, reasoning and capability metadata, and the
+Codex client version remain part of the receipt binding. A change to any bound
+property requires certification again.
+
+When the additive gate is absent or stale, a still-valid Direct-certified model
+continues with the full tool definitions. A model without a valid base receipt
+remains text-only. There is no Fast Agent route or PickerMux tool broker, and
+the v0.6 Efficient Fidelity flow does not use `previous_response_id` to shorten
+conversation history. Native Codex routing and configuration are unaffected.
+
 ## Applying configuration changes
 
 If the provider identity and managed bridge contract remain compatible, apply

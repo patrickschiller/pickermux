@@ -11,6 +11,11 @@ import {
 import { BodyCodecError, decodeJsonBody, readLimitedBody } from "./body-codec.mjs";
 import { createCredentialResolver } from "./keychain-credentials.mjs";
 import {
+  projectClientToolSearch,
+  rewriteClientToolSearchInput,
+} from "./efficient-fidelity.mjs";
+import {
+  createTextOnlyToolResponseCodec,
   normalizeLmStudioToolRequest,
 } from "./tool-normalization.mjs";
 import { isCertificationRequest } from "./certification-transport.mjs";
@@ -222,13 +227,20 @@ const PUBLIC_ERROR_CODES = new Set([
   "INVALID_ROUTE",
   "INVALID_ROUTE_PROTOCOL",
   "INVALID_ROUTE_URL",
+  "INVALID_TOOL_SEARCH",
   "INVALID_UPSTREAM_MODEL",
   "MISSING_MODEL",
+  "MISSING_TOOL_SEARCH_OUTPUT",
+  "MODEL_CERTIFICATION_PENDING",
   "NOT_FOUND",
   "PROVIDER_CREDENTIAL_UNAVAILABLE",
+  "TOOL_SEARCH_LIMIT_EXCEEDED",
   "UNKNOWN_MODEL",
+  "UNKNOWN_TOOL_SEARCH_CALL",
   "UNSUPPORTED_CONTENT_ENCODING",
+  "UNSUPPORTED_LOADED_TOOL_TYPE",
   "UNSUPPORTED_TOOL_CHOICE",
+  "UNSUPPORTED_TOOL_SEARCH_EXECUTION",
   "UNSUPPORTED_TOOL_TYPE",
   "UPSTREAM_ABORTED",
   "UPSTREAM_ADDRESS_NOT_ALLOWED",
@@ -237,6 +249,7 @@ const PUBLIC_ERROR_CODES = new Set([
   "UPSTREAM_HEADERS_TOO_LARGE",
   "UPSTREAM_IDLE_TIMEOUT",
   "UPSTREAM_RESPONSE_ERROR",
+  "UPSTREAM_TOOL_SEARCH_ERROR",
   "UPSTREAM_TOTAL_TIMEOUT",
 ]);
 
@@ -753,12 +766,65 @@ function hasFunctionHistory(input) {
         item !== null &&
         !Array.isArray(item) &&
         typeof item === "object" &&
-        (item.type === "function_call" || item.type === "function_call_output"),
+        (
+          item.type === "function_call" ||
+          item.type === "function_call_output" ||
+          item.type === "tool_search_call" ||
+          item.type === "tool_search_output" ||
+          (typeof item.type === "string" && item.type.startsWith("tool_search"))
+        ),
+    )
+  );
+}
+
+function hasToolSearchDefinition(tools) {
+  return (
+    Array.isArray(tools) &&
+    tools.some(
+      (tool) =>
+        tool !== null &&
+        !Array.isArray(tool) &&
+        typeof tool === "object" &&
+        typeof tool.type === "string" &&
+        tool.type.startsWith("tool_search"),
+    )
+  );
+}
+
+function hasToolSearchHistory(input) {
+  return (
+    Array.isArray(input) &&
+    input.some(
+      (item) =>
+        item !== null &&
+        !Array.isArray(item) &&
+        typeof item === "object" &&
+        typeof item.type === "string" &&
+        item.type.startsWith("tool_search"),
+    )
+  );
+}
+
+function hasAdditionalToolsInventory(input) {
+  return (
+    Array.isArray(input) &&
+    input.some(
+      (item) =>
+        item !== null &&
+        !Array.isArray(item) &&
+        typeof item === "object" &&
+        item.type === "additional_tools",
     )
   );
 }
 
 function enforceTextOnlyRequest(rewritten, source) {
+  if (hasAdditionalToolsInventory(source.input)) {
+    throw new ResponsesProxyError(
+      "Text-only routes do not accept secondary tool inventories",
+      { statusCode: 400, code: "UNSUPPORTED_TOOL_TYPE" },
+    );
+  }
   const choice = source.tool_choice;
   if (
     (choice !== undefined && choice !== "auto" && choice !== "none") ||
@@ -776,6 +842,7 @@ function enforceTextOnlyRequest(rewritten, source) {
 
 function externalBody(body, route, maxBytes, {
   certificationRequest = false,
+  compactRequest = false,
   onTextOnlyCompaction,
 } = {}) {
   if (typeof route.upstreamModel !== "string" || !route.upstreamModel) {
@@ -867,8 +934,23 @@ function externalBody(body, route, maxBytes, {
   }
 
   let toolCodec;
-  if (!toolsEnabled) enforceTextOnlyRequest(rewritten, body);
+  if (!toolsEnabled) {
+    enforceTextOnlyRequest(rewritten, body);
+    toolCodec = createTextOnlyToolResponseCodec();
+  }
   if (route.providerKind === "lmstudio-responses") {
+    if (Object.hasOwn(body, "tools") && !Array.isArray(body.tools)) {
+      throw new ResponsesProxyError(
+        "LM Studio tools must be a JSON array",
+        { statusCode: 400, code: "INVALID_TOOL_SEARCH" },
+      );
+    }
+    if (hasAdditionalToolsInventory(body.input)) {
+      throw new ResponsesProxyError(
+        "LM Studio routes do not accept secondary tool inventories",
+        { statusCode: 400, code: "UNSUPPORTED_TOOL_TYPE" },
+      );
+    }
     delete rewritten.prompt_cache_key;
     if (Array.isArray(body.include)) {
       const include = body.include.filter(
@@ -878,7 +960,68 @@ function externalBody(body, route, maxBytes, {
       else rewritten.include = include;
     }
     if (toolsEnabled) {
-      toolCodec = normalizeLmStudioToolRequest(rewritten, body);
+      const toolSearchDefinition = hasToolSearchDefinition(body.tools);
+      const toolSearchHistory = hasToolSearchHistory(body.input);
+      const efficientFidelityAuthorized =
+        route.clientToolSearchEnabled === true || certificationRequest;
+      const validatedToolSearchProjection = toolSearchDefinition
+        ? projectClientToolSearch(body.tools, {
+          parallelToolCalls: body.parallel_tool_calls,
+          // Codex's compact schema omits tool_choice. A supplied field must
+          // not turn an authorized but malformed search into Direct mode.
+          toolChoice: compactRequest && body.tool_choice === undefined
+            ? "auto"
+            : body.tool_choice,
+        })
+        : undefined;
+      const efficientFidelityProjection = efficientFidelityAuthorized
+        ? validatedToolSearchProjection
+        : undefined;
+      const efficientFidelityEnabled = efficientFidelityProjection !== undefined;
+      if (toolSearchHistory && !efficientFidelityEnabled) {
+        throw new ResponsesProxyError(
+          "Tool Search history requires an Efficient Fidelity route",
+          { statusCode: 400, code: "INVALID_TOOL_SEARCH" },
+        );
+      }
+
+      let normalizationSource = body;
+      let efficientFidelityCodec;
+      if (efficientFidelityEnabled) {
+        if (Object.hasOwn(body, "previous_response_id")) {
+          throw new ResponsesProxyError(
+            "Efficient Fidelity requires stateless full replay",
+            { statusCode: 400, code: "INVALID_TOOL_SEARCH" },
+          );
+        }
+        const projection = efficientFidelityProjection;
+        const searchInput = Array.isArray(rewritten.input)
+          ? rewriteClientToolSearchInput(rewritten.input, projection.codec)
+          : { input: rewritten.input, loadedTools: [] };
+        rewritten.input = searchInput.input;
+        rewritten.tools = [...projection.tools, ...searchInput.loadedTools];
+        normalizationSource = {
+          ...body,
+          input: rewritten.input,
+          tools: rewritten.tools,
+        };
+        efficientFidelityCodec = projection.codec;
+      }
+      const namespaceCodec = normalizeLmStudioToolRequest(
+        rewritten,
+        normalizationSource,
+        {
+          // Codex may trim selected schemas from older tool_search_output
+          // items before remote compaction while retaining the namespaced
+          // calls. Map those history names only; never advertise a schema or
+          // make the historical tool callable again.
+          allowHistoryOnlyNamespaces:
+            compactRequest && efficientFidelityCodec !== undefined,
+        },
+      );
+      toolCodec = efficientFidelityCodec
+        ? Object.freeze({ namespaceCodec, efficientFidelityCodec })
+        : namespaceCodec;
     }
   }
 
@@ -910,6 +1053,12 @@ function externalBody(body, route, maxBytes, {
           : route.reasoningEffort;
       rewritten.reasoning = reasoning;
     }
+  }
+
+  if (compactRequest) {
+    // Tool schemas in a compaction request describe transcript history. They
+    // never grant the compactor authority to create a new executable call.
+    toolCodec = createTextOnlyToolResponseCodec();
   }
 
   const encoded = Buffer.from(JSON.stringify(rewritten), "utf8");
@@ -1191,6 +1340,7 @@ export function createResponsesProxy({
   httpsTransport = https,
   dnsLookup = dns.lookup,
   certificationToken,
+  externalRequestGate = async () => {},
   onTextOnlyCompaction,
 } = {}) {
   if (!registry || typeof registry.resolve !== "function") {
@@ -1201,6 +1351,9 @@ export function createResponsesProxy({
     typeof onTextOnlyCompaction !== "function"
   ) {
     throw new TypeError("onTextOnlyCompaction must be a function");
+  }
+  if (typeof externalRequestGate !== "function") {
+    throw new TypeError("externalRequestGate must be a function");
   }
   const limits = normalizeLimits(configuredLimits);
   const nativeBase = assertApiBaseUrl(nativeBaseUrl);
@@ -1235,6 +1388,10 @@ export function createResponsesProxy({
 
       const route = await registry.resolve(decoded.model);
       const kind = routeKind(route);
+      const certificationRequest = isCertificationRequest(
+        request.headers,
+        certificationToken,
+      );
       let target;
       let outboundBody;
       let headers;
@@ -1246,16 +1403,25 @@ export function createResponsesProxy({
         outboundBody = rawBody;
         headers = buildNativeRequestHeaders(request.headers, outboundBody.length);
       } else {
-        let credential;
         try {
-          credential = await resolveCredential(route);
-        } catch {
-          throw new ResponsesProxyError("The external provider credential is unavailable", {
-            statusCode: 503,
-            code: "PROVIDER_CREDENTIAL_UNAVAILABLE",
+          await externalRequestGate({
+            publicModelId: decoded.model,
+            certificationRequest,
+            requiresDirectReceipt: route.toolsEnabled === true,
+            requiresEfficientFidelityReceipt:
+              route.clientToolSearchEnabled === true,
           });
+        } catch (error) {
+          throw new ResponsesProxyError(
+            "The selected model is temporarily unavailable during certification",
+            {
+              statusCode: 503,
+              code: "MODEL_CERTIFICATION_PENDING",
+              cause: error,
+            },
+          );
         }
-        const base = assertApiBaseUrl(route.baseUrl, { credential: Boolean(credential) });
+        const base = assertApiBaseUrl(route.baseUrl);
         if (route.allowPrivateNetwork !== true) {
           if (isIP(base.hostname) && isNonPublicAddress(base.hostname)) {
             throw new ResponsesProxyError("The upstream address is not allowed", {
@@ -1267,14 +1433,25 @@ export function createResponsesProxy({
         }
         target = upstreamUrl(base, path);
         const external = externalBody(decoded, route, limits.requestBodyBytes, {
-          certificationRequest: isCertificationRequest(
-            request.headers,
-            certificationToken,
-          ),
+          certificationRequest,
+          compactRequest: path === "/v1/responses/compact",
           onTextOnlyCompaction,
         });
         outboundBody = external.encoded;
         responseCodec = external.toolCodec;
+        let credential;
+        try {
+          credential = await resolveCredential(route);
+        } catch {
+          throw new ResponsesProxyError("The external provider credential is unavailable", {
+            statusCode: 503,
+            code: "PROVIDER_CREDENTIAL_UNAVAILABLE",
+          });
+        }
+        // Validate the credential transport only after the complete request
+        // projection has passed. Malformed Tool Search input never triggers a
+        // Keychain or environment credential lookup.
+        assertApiBaseUrl(route.baseUrl, { credential: Boolean(credential) });
         headers = buildExternalRequestHeaders(request.headers, outboundBody.length, {
           credential,
         });

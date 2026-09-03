@@ -141,6 +141,47 @@ At minimum, record:
   suspension onward, bounded resume/recovery behavior, private checkpoint and
   log permissions, and no false success report;
 - local model visibility after a full Codex restart;
+- an exact base-certified LM Studio model without the additive `toolSearch`
+  gate, confirming Direct fidelity remains available and the catalog does not
+  advertise client tool search;
+- the v0.6.0 Efficient Fidelity certification round trip, confirming the base
+  receipt is committed before the additive probe, the probe uses a full public
+  replay without `previous_response_id`, and only an exact pass adds the
+  catalog capability;
+- a new Codex task with full harness canaries and a large deferred tool
+  inventory, confirming LM Studio initially receives the canaries plus the
+  single bounded search function rather than the deferred schemas, Codex
+  performs the local search, only the returned deferred tools are added on the
+  replay, non-deferred functions remain advertised, and the selected call still
+  passes through Codex approval, sandbox, execution, and result handling;
+- JSON and streaming Efficient Fidelity calls, plus negative cases for
+  server-executed or unknown search variants, non-automatic tool choice,
+  malformed arguments, duplicate or mismatched call IDs, unknown loaded-tool
+  types, secondary input tool inventories, oversized selected inventories,
+  incomplete or unterminated streams, and `previous_response_id`, confirming
+  fail-closed handling, no subsequent upstream continuation after an invalid
+  round trip, and no silent downgrade inside an authorized search flow;
+- repeated searches returning the same tool, confirming its unchanged schema
+  is exposed once while the same identity with a changed schema is rejected;
+- remote `/responses/compact` after a search, both with selected schemas and
+  with Codex's trimmed `tool_search_output.tools: []` history, confirming that
+  historical namespace calls remain compactable without making their schemas
+  visible or callable again and that a new JSON or streaming response call is
+  rejected;
+- a failed additive probe after a successful base matrix, confirming Direct
+  fidelity remains active, followed by a bound model, context, endpoint, and
+  Codex-version change confirming the stale evidence cannot activate Efficient
+  Fidelity;
+- an interrupted certification after the base receipt is written, confirming
+  the pending barrier keeps that receipt dormant until an explicit retry
+  completes recovery;
+- interruption and injected refresh failure at every certification
+  deactivation phase, confirming the persistent request-time barrier blocks
+  ordinary traffic in the still-running old process, private probes open only
+  after conservative publication, background catalog and route publication is
+  blocked, and a retry can recover without reviving an old receipt;
+- native JSON and streaming canaries across the same scenarios, confirming the
+  request and event bytes remain unchanged;
 - same-version rerun and upgrade from the preceding release;
 - cache mismatch before staging, under the lifecycle lock, and immediately
   before activation, confirming that active CLI and bridge state remain
@@ -177,8 +218,10 @@ At minimum, record:
 CI cannot prove current Codex Desktop, LM Studio, LaunchServices, or real model
 behavior. Those checks remain a release-blocking manual gate whenever the
 installer, bridge lifecycle, discovery, or compatibility contract changes. In
-particular, simulated state-machine coverage does not replace the live macOS
-`refresh --full` acceptance sequence for v0.5.4.
+particular, simulated protocol coverage does not replace the live macOS
+Efficient Fidelity round trip for v0.6.0, and simulated state-machine coverage
+does not replace the live `refresh --full` acceptance sequence introduced in
+v0.5.4.
 
 ## Announcement gate
 

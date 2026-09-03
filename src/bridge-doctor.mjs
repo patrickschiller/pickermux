@@ -10,6 +10,7 @@ import {
 } from "./catalog.mjs";
 import { checkCurrentCompatibility } from "./compatibility-manifest.mjs";
 import { resolveCertificationStatuses } from "./certification-runner.mjs";
+import { listPendingModelCertificationIds } from "./model-certification.mjs";
 import { assertCatalogSlugs, debugModels } from "./codex.mjs";
 import { getConfigStatus } from "./config-manager.mjs";
 import { discoverBridgeModels } from "./bridge-discovery.mjs";
@@ -184,6 +185,7 @@ export async function runBridgeDoctor({
   clientVersionImpl = loadCodexClientVersion,
   compatibilityImpl = checkCurrentCompatibility,
   certificationStatusesImpl = resolveCertificationStatuses,
+  pendingModelIdsImpl = listPendingModelCertificationIds,
 }) {
   const installDirectory = path.dirname(paths.runtimePath);
   const compatibilityPath =
@@ -422,13 +424,17 @@ export async function runBridgeDoctor({
 
   if (catalog && discovery && codexClientVersion) {
     try {
-      const statuses = await certificationStatusesImpl({
-        storePath: certificationPath,
-        config,
-        models: discovery.models,
-        codexClientVersion,
-      });
-      let valid = 0;
+      const [statuses, pendingModelIds] = await Promise.all([
+        certificationStatusesImpl({
+          storePath: certificationPath,
+          config,
+          models: discovery.models,
+          codexClientVersion,
+        }),
+        pendingModelIdsImpl(certificationPath),
+      ]);
+      let efficientFidelity = 0;
+      let direct = 0;
       let textOnly = 0;
       for (const entry of statuses) {
         const catalogModel = catalog.models.find(
@@ -446,14 +452,23 @@ export async function runBridgeDoctor({
             `tool capability drift for ${entry.model.id}: certification=${entry.certification.status}, catalog=${enabled ? "enabled" : "disabled"}`,
           );
         }
-        if (shouldEnable) valid += 1;
+        const searchEnabled = catalogModel.supports_search_tool === true;
+        const shouldEnableSearch =
+          entry.efficientFidelityCertification?.status === "valid";
+        if (searchEnabled !== shouldEnableSearch) {
+          throw new Error(
+            `tool search capability drift for ${entry.model.id}: certification=${entry.efficientFidelityCertification?.status ?? "missing"}, catalog=${searchEnabled ? "enabled" : "disabled"}`,
+          );
+        }
+        if (shouldEnableSearch) efficientFidelity += 1;
+        else if (shouldEnable) direct += 1;
         else textOnly += 1;
       }
       checks.push(
         check(
           "tool-certifications",
           true,
-          `${valid} valid, ${textOnly} conservative text-only model(s)`,
+          `${efficientFidelity} Efficient Fidelity, ${direct} direct, ${textOnly} conservative text-only model(s); ${pendingModelIds.length} certification recovery operation(s) pending`,
         ),
       );
     } catch (error) {
