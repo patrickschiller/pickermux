@@ -1,6 +1,6 @@
 # PickerMux Architecture
 
-This document describes the public v0.6.0 bridge contract. It is intended for
+This document describes the public v0.6.1 bridge behavior. It is intended for
 contributors, security reviewers, and users who want to understand what runs on
 their Mac.
 
@@ -150,6 +150,17 @@ The LM Studio adapter therefore performs bounded, explicit normalization:
 - maps arbitrary Codex tool namespaces to collision-resistant function names;
 - restores public namespace names in JSON and streaming responses;
 - normalizes empty function parameter schemas.
+
+Since v0.6.1, when a request contains both top-level
+`instructions` and system/developer input, the LM Studio adapter places the
+instructions first in the single leading system message, followed by the
+merged system/developer content in its existing order. It removes the separate
+`instructions` field only after incorporating that content. Instructions-only
+requests keep their existing shape. This prevents LM Studio from creating a
+second system message that strict prompt templates reject with
+`System message must be at the beginning.` The normalization applies only to
+LM Studio routes; other provider contracts and native request bytes remain
+unchanged.
 
 For an Efficient Fidelity-authorized LM Studio route, the adapter also
 projects a canonical client-executed `tool_search` into one bounded temporary
@@ -508,10 +519,10 @@ The private health endpoint remains available with fixed safe status/reason
 enums so the LaunchAgent does not enter a restart loop and diagnostics can
 direct the user to refresh.
 
-Version 0.6.0 uses bridge contract `codex-responses-bridge/p6-v1`. The managed
-publisher emits the search claim only from valid model-bound evidence, and the
-runtime accepts it only on entries generated under that exact contract. Older
-or non-p6 catalog claims cannot grant the route capability.
+Versions 0.6.0 and 0.6.1 use bridge contract `codex-responses-bridge/p6-v1`.
+The managed publisher emits the search claim only from valid model-bound
+evidence, and the runtime accepts it only on entries generated under that exact
+contract. Older or non-p6 catalog claims cannot grant the route capability.
 
 `doctor` also runs the account-cache inspection as an independent check. It can
 therefore report whether the signed-in account cache matches the current Codex

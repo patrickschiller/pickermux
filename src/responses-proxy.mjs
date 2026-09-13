@@ -445,9 +445,18 @@ function mergeLmStudioSystemMessages(input) {
   const conversation = [];
   for (const item of input) {
     if (
-      item?.type === "message" &&
+      item !== null &&
+      !Array.isArray(item) &&
+      typeof item === "object" &&
+      (item.type === "message" || item.type === undefined) &&
       (item.role === "system" || item.role === "developer")
     ) {
+      if (!Array.isArray(item.content) && typeof item.content !== "string") {
+        throw new ResponsesProxyError("The request context schema is unsupported", {
+          statusCode: 400,
+          code: "INVALID_BODY",
+        });
+      }
       if (systemContent.length > 0) {
         systemContent.push({ type: "input_text", text: "\n\n" });
       }
@@ -907,6 +916,17 @@ function externalBody(body, route, maxBytes, {
   const toolsEnabled = route.toolsEnabled === true || certificationRequest;
   const rewritten = { ...body, model: route.upstreamModel };
   delete rewritten.client_metadata;
+  if (
+    route.providerKind === "lmstudio-responses" &&
+    body.instructions !== undefined &&
+    body.instructions !== null &&
+    typeof body.instructions !== "string"
+  ) {
+    throw new ResponsesProxyError("The request instructions must be text or null", {
+      statusCode: 400,
+      code: "INVALID_BODY",
+    });
+  }
   let textOnlyCompaction;
   if (Array.isArray(body.input)) {
     if (route.providerKind === "lmstudio-responses" && !toolsEnabled) {
@@ -931,6 +951,20 @@ function externalBody(body, route, maxBytes, {
     rewritten.input = route.providerKind === "lmstudio-responses"
       ? mergeLmStudioSystemMessages(sanitizedInput)
       : sanitizedInput;
+    if (
+      route.providerKind === "lmstudio-responses" &&
+      typeof rewritten.instructions === "string" &&
+      rewritten.input[0]?.type === "message" &&
+      rewritten.input[0]?.role === "system"
+    ) {
+      // LM Studio turns `instructions` into another system message. Qwen's
+      // template (including through LM Link) accepts only one leading block.
+      rewritten.input[0].content.unshift(
+        { type: "input_text", text: rewritten.instructions },
+        { type: "input_text", text: "\n\n" },
+      );
+      delete rewritten.instructions;
+    }
   }
 
   let toolCodec;

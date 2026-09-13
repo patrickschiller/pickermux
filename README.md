@@ -78,7 +78,7 @@ or another shell file automatically. Until then, use the absolute command path.
 For a reproducible installation, replace `latest` with an exact release:
 
 ```bash
-/usr/bin/curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://github.com/patrickschiller/pickermux/releases/download/v0.6.0/install.sh | /bin/sh
+/usr/bin/curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://github.com/patrickschiller/pickermux/releases/download/v0.6.1/install.sh | /bin/sh
 ```
 
 Both one-line forms execute code downloaded from GitHub. The archive checksum
@@ -97,6 +97,10 @@ another Responses-compatible provider, create the custom configuration first
 and follow the managed setup procedure in
 [Configuration](docs/CONFIGURATION.md).
 
+With LM Link, keep that local LM Studio URL: LM Studio forwards inference to
+the linked device internally. See LM Studio's
+[LM Link API documentation](https://lmstudio.ai/docs/developer/core/lmlink).
+
 ## Verify the installation
 
 ```bash
@@ -106,7 +110,7 @@ and follow the managed setup procedure in
 ~/.local/bin/pickermux discover
 ```
 
-For this release, the first command must print `pickermux 0.6.0`. `status`
+For this release, the first command must print `pickermux 0.6.1`. `status`
 checks the managed configuration, catalog, compatibility contract, and bridge.
 It also reports `full-refresh=idle` normally or the current recovery phase;
 `status --json` exposes the same state as `fullRefresh.status` and
@@ -517,6 +521,12 @@ redaction guidance.
   is entitled to them.
 - Local quality, tool reliability, and latency depend on the selected model,
   quantization, context size, hardware, and LM Studio configuration.
+- If LM Link chat works but a Codex request reports `Channel Error`, inspect
+  the nested error. PickerMux 0.6.1 fixes the strict prompt-template failure
+  `System message must be at the beginning` caused by separate top-level
+  instructions and system/developer input; [upgrade](#upgrade) from 0.6.0 to
+  receive the fix. Other nested errors require their own diagnosis; see the
+  [troubleshooting guide](docs/TROUBLESHOOTING.md#lm-studio-reports-channel-error-or-a-context-length-failure).
 - Efficient Fidelity reduces the initial deferred-tool schema payload; it does
   not compact project instructions, conversation history, selected skills, or
   other Codex harness context, and v0.6.0 does not reuse provider-side response

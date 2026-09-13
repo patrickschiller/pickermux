@@ -7,6 +7,19 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-09-13
+
+### Fixed
+
+- LM Studio requests with both top-level `instructions` and system/developer
+  input now combine them into one leading system message, with instructions
+  first and the existing input order preserved. The separate `instructions`
+  field is removed only when merged; instructions-only requests keep their
+  existing shape. This fixes the Jinja `System message must be at the beginning`
+  failure that can appear as `Channel Error`, including when LM Link chat works
+  but the Codex API request fails. Native requests and other provider contracts
+  are unchanged.
+
 ## [0.6.0] - 2026-09-03
 
 ### Added
@@ -259,7 +272,8 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
   paths and file types, refuses root execution and foreign launchers, and
   restores the previous distribution state when activation fails.
 
-[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/patrickschiller/pickermux/releases/tag/v0.6.1
 [0.6.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.6.0
 [0.5.4]: https://github.com/patrickschiller/pickermux/releases/tag/v0.5.4
 [0.5.3]: https://github.com/patrickschiller/pickermux/releases/tag/v0.5.3
