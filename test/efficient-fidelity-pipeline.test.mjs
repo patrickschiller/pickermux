@@ -234,6 +234,23 @@ function efficientRequest(overrides = {}) {
   };
 }
 
+function assertFullHarnessPreserved(body) {
+  assert.equal(Object.hasOwn(body, "instructions"), false);
+  assert.deepEqual(body.input.slice(0, 2), [
+    {
+      type: "message",
+      role: "system",
+      content: [
+        { type: "input_text", text: "complete-codex-instructions-canary" },
+        { type: "input_text", text: "\n\n" },
+        { type: "input_text", text: "developer-harness-canary" },
+        { type: "input_text", text: "sandbox-and-approval-canary" },
+      ],
+    },
+    fullHarnessInput()[1],
+  ]);
+}
+
 function jsonResponse(response, value) {
   response.writeHead(200, { "content-type": "application/json" });
   response.end(JSON.stringify(value));
@@ -286,18 +303,8 @@ test("Efficient Fidelity hides deferred schemas while preserving the complete Co
   assert.equal(harness.requests.length, 1);
   const upstream = harness.requests[0].body;
   assert.equal(upstream.model, UPSTREAM_MODEL);
-  assert.equal(upstream.instructions, "complete-codex-instructions-canary");
-  assert.deepEqual(upstream.input, [
-    {
-      type: "message",
-      role: "system",
-      content: [
-        { type: "input_text", text: "developer-harness-canary" },
-        { type: "input_text", text: "sandbox-and-approval-canary" },
-      ],
-    },
-    fullHarnessInput()[1],
-  ]);
+  assertFullHarnessPreserved(upstream);
+  assert.equal(upstream.input.length, 2);
   assert.ok(syntheticName);
   assert.deepEqual(upstream.tools.map((tool) => tool.name), [syntheticName]);
   assert.doesNotMatch(JSON.stringify(upstream), /read_file|write_file|defer_loading/u);
@@ -396,7 +403,7 @@ test("Efficient Fidelity full replay injects only the selected namespace tool an
   assert.equal(harness.requests.length, 2);
   const upstream = harness.requests[1].body;
   assert.equal(Object.hasOwn(upstream, "previous_response_id"), false);
-  assert.equal(upstream.instructions, "complete-codex-instructions-canary");
+  assertFullHarnessPreserved(upstream);
   assert.match(JSON.stringify(upstream.input), /developer-harness-canary/u);
   assert.match(JSON.stringify(upstream.input), /sandbox-and-approval-canary/u);
   assert.match(JSON.stringify(upstream.input), /user-task-canary/u);
@@ -763,7 +770,7 @@ test("Efficient Fidelity preserves Codex remote compaction after a tool search",
   assert.equal(upstream.path, "/v1/responses/compact");
   assert.equal(Object.hasOwn(upstream.body, "tool_choice"), false);
   assert.equal(Object.hasOwn(upstream.body, "previous_response_id"), false);
-  assert.equal(upstream.body.instructions, "complete-codex-instructions-canary");
+  assertFullHarnessPreserved(upstream.body);
   assert.equal(upstream.body.tools.length, 1);
   assert.match(upstream.body.tools[0].name, /^mbts_[0-9a-f]{56}$/u);
   const compactHistory = upstream.body.input.slice(-4);

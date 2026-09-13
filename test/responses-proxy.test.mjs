@@ -214,6 +214,7 @@ test("native route relays compressed request bytes, approved headers and SSE byt
   const plain = Buffer.from(
     JSON.stringify({
       model: "gpt-5.6-sol",
+      instructions: "native-instructions-stay",
       reasoning: { effort: "ultra" },
       prompt_cache_key: "native-cache-key-must-remain",
       client_metadata: {
@@ -385,6 +386,7 @@ test("generic external route preserves caller reasoning and annotated context", 
   const body = Buffer.from(
     JSON.stringify({
       model: "vendor/public",
+      instructions: "generic-provider-instructions-stay",
       reasoning: { effort: "medium" },
       input: [
         {
@@ -405,6 +407,8 @@ test("generic external route preserves caller reasoning and annotated context", 
   );
   const result = await httpRequest({ port: proxy.port, body });
   assert.equal(result.statusCode, 200);
+  assert.equal(observed.instructions, "generic-provider-instructions-stay");
+  assert.equal(observed.input[0].role, "developer");
   assert.deepEqual(observed.reasoning, { effort: "medium" });
   assert.match(JSON.stringify(observed.input), /generic-provider-context-stays/u);
   assert.doesNotMatch(
@@ -941,6 +945,254 @@ test("LM Studio route removes unsupported Codex fields without touching supporte
   assert.equal(observed.tool_choice, "required");
   assert.equal(observed.parallel_tool_calls, false);
   assert.deepEqual(observed.metadata, { preserved: true });
+});
+
+test("LM Studio folds instructions into one leading system block for strict chat templates", async (t) => {
+  const observed = [];
+  const upstream = http.createServer((request, response) => {
+    const chunks = [];
+    request.on("data", (chunk) => chunks.push(chunk));
+    request.once("end", () => {
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      observed.push(body);
+      // LM Studio turns top-level instructions into another effective system
+      // message, which strict Qwen templates reject after the first block.
+      const messages = [
+        ...(typeof body.instructions === "string"
+          ? [{ role: "system", content: body.instructions }]
+          : []),
+        ...body.input.filter((item) =>
+          item && (item.type === undefined || item.type === "message")),
+      ];
+      const invalid = messages.some((item, index) =>
+        (item.role === "system" || item.role === "developer") && index !== 0);
+      response.writeHead(invalid ? 400 : 200, { "content-type": "application/json" });
+      response.end(invalid
+        ? '{"error":{"message":"System message must be at the beginning"}}'
+        : '{"output":[]}');
+    });
+  });
+  const upstreamPort = await listen(upstream);
+  t.after(() => close(upstream));
+  const systemAttachment = {
+    type: "input_image",
+    image_url: "data:image/png;base64,c3lzdGVtLWltYWdl",
+  };
+
+  for (const toolsEnabled of [false, true]) {
+    await t.test(toolsEnabled ? "Direct" : "text-only", async (subtest) => {
+      const proxy = await createProxyHarness({
+        registry: {
+          resolve: () => ({
+            kind: "external",
+            providerKind: "lmstudio-responses",
+            baseUrl: `http://127.0.0.1:${upstreamPort}/v1`,
+            allowPrivateNetwork: true,
+            upstreamModel: "qwen/local",
+            toolsEnabled,
+          }),
+        },
+      });
+      subtest.after(() => close(proxy.server));
+      const conversation = [
+        {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "User text stays in its own role" }],
+        },
+        {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "Assistant history stays" }],
+        },
+        ...(toolsEnabled ? [
+          {
+            type: "function_call",
+            name: "inspect",
+            call_id: "call_system_regression",
+            arguments: "{}",
+          },
+          {
+            type: "function_call_output",
+            role: "system",
+            call_id: "call_system_regression",
+            output: "Tool text must not become system instructions",
+          },
+        ] : []),
+        { role: "user", content: "Final question stays last" },
+      ];
+      const source = {
+        model: "lmstudio/qwen/local",
+        instructions: "Top-level instructions come first",
+        input: [
+          {
+            type: "message",
+            role: "system",
+            content: [{ type: "input_text", text: "First system content" }, systemAttachment],
+          },
+          { role: "developer", content: "Developer content follows" },
+          ...conversation.slice(0, 1),
+          { type: "message", role: "developer", content: "Later developer content" },
+          ...conversation.slice(1),
+          {
+            role: "system",
+            content: [{ type: "input_text", text: "Last system content" }],
+          },
+        ],
+        ...(toolsEnabled ? {
+          tools: [{ type: "function", name: "inspect", parameters: {} }],
+        } : {}),
+      };
+      const body = Buffer.from(JSON.stringify(source));
+      const unadapted = await httpRequest({ port: upstreamPort, body });
+      assert.equal(unadapted.statusCode, 400);
+      assert.match(unadapted.body.toString(), /System message must be at the beginning/u);
+
+      const result = await httpRequest({ port: proxy.port, body });
+      assert.equal(result.statusCode, 200);
+      const forwarded = observed.at(-1);
+      assert.equal(Object.hasOwn(forwarded, "instructions"), false);
+      assert.deepEqual(forwarded.input, [
+        {
+          type: "message",
+          role: "system",
+          content: [
+            { type: "input_text", text: "Top-level instructions come first" },
+            { type: "input_text", text: "\n\n" },
+            { type: "input_text", text: "First system content" },
+            systemAttachment,
+            { type: "input_text", text: "\n\n" },
+            { type: "input_text", text: "Developer content follows" },
+            { type: "input_text", text: "\n\n" },
+            { type: "input_text", text: "Later developer content" },
+            { type: "input_text", text: "\n\n" },
+            { type: "input_text", text: "Last system content" },
+          ],
+        },
+        ...conversation,
+      ]);
+    });
+  }
+});
+
+test("LM Studio preserves instructions-only requests and nullable instructions", async (t) => {
+  let observed;
+  const upstream = http.createServer((request, response) => {
+    const chunks = [];
+    request.on("data", (chunk) => chunks.push(chunk));
+    request.once("end", () => {
+      observed = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end('{"output":[]}');
+    });
+  });
+  const upstreamPort = await listen(upstream);
+  t.after(() => close(upstream));
+  const proxy = await createProxyHarness({
+    registry: {
+      resolve: () => ({
+        kind: "external",
+        providerKind: "lmstudio-responses",
+        baseUrl: `http://127.0.0.1:${upstreamPort}/v1`,
+        allowPrivateNetwork: true,
+        upstreamModel: "qwen/local",
+        toolsEnabled: true,
+      }),
+    },
+  });
+  t.after(() => close(proxy.server));
+  const userInput = [{ type: "message", role: "user", content: "Question" }];
+  const systemInput = [
+    { type: "message", role: "system", content: "System content" },
+    ...userInput,
+  ];
+  const cases = [
+    { instructions: "Instructions stay", input: "Question" },
+    { instructions: "Instructions stay", input: userInput },
+    { instructions: "", input: userInput },
+    { instructions: null, input: userInput },
+    { input: userInput },
+    { instructions: null, input: systemInput },
+    { input: systemInput },
+    { instructions: "", input: systemInput },
+  ];
+  for (const source of cases) {
+    const result = await httpRequest({
+      port: proxy.port,
+      body: Buffer.from(JSON.stringify({ model: "lmstudio/qwen/local", ...source })),
+    });
+    assert.equal(result.statusCode, 200);
+    const folded = source.input === systemInput && source.instructions === "";
+    assert.equal(Object.hasOwn(observed, "instructions"),
+      Object.hasOwn(source, "instructions") && !folded);
+    assert.equal(observed.instructions, folded ? undefined : source.instructions);
+    assert.deepEqual(observed.input, source.input === systemInput ? [
+      {
+        type: "message",
+        role: "system",
+        content: [
+          ...(folded ? [
+            { type: "input_text", text: "" },
+            { type: "input_text", text: "\n\n" },
+          ] : []),
+          { type: "input_text", text: "System content" },
+        ],
+      },
+      ...userInput,
+    ] : source.input);
+  }
+});
+
+test("LM Studio rejects malformed instructions and system content before credentials or I/O", async (t) => {
+  let credentialResolutions = 0;
+  let upstreamRequests = 0;
+  const upstream = http.createServer((_request, response) => {
+    upstreamRequests += 1;
+    response.end('{"output":[]}');
+  });
+  const upstreamPort = await listen(upstream);
+  t.after(() => close(upstream));
+  const proxy = await createProxyHarness({
+    registry: {
+      resolve: () => ({
+        kind: "external",
+        providerKind: "lmstudio-responses",
+        baseUrl: `http://127.0.0.1:${upstreamPort}/v1`,
+        allowPrivateNetwork: true,
+        upstreamModel: "qwen/local",
+        toolsEnabled: true,
+      }),
+    },
+    credentialResolver: async () => {
+      credentialResolutions += 1;
+      return "provider-credential-canary";
+    },
+  });
+  t.after(() => close(proxy.server));
+  const privateCanary = "private-instruction-canary";
+  const invalidInstructions = [false, 42, [privateCanary], { text: privateCanary }];
+  const invalidContent = [undefined, null, false, 42, { text: privateCanary }];
+  const cases = [
+    ...invalidInstructions.flatMap((instructions) => [
+      { instructions, input: "Question" },
+      { instructions, input: [{ role: "system", content: "System" }] },
+    ]),
+    ...invalidContent.flatMap((content) => ["system", "developer"].map((role) => ({
+      instructions: privateCanary,
+      input: [{ type: "message", role, content }],
+    }))),
+  ];
+  for (const source of cases) {
+    const result = await httpRequest({
+      port: proxy.port,
+      body: Buffer.from(JSON.stringify({ model: "lmstudio/qwen/local", ...source })),
+    });
+    assert.equal(result.statusCode, 400);
+    assert.equal(JSON.parse(result.body).error.code, "INVALID_BODY");
+    assert.doesNotMatch(result.body.toString(), /private-instruction-canary|provider-credential-canary/u);
+  }
+  assert.equal(credentialResolutions, 0);
+  assert.equal(upstreamRequests, 0);
 });
 
 test("LM Studio namespace calls are mapped on request and restored in JSON responses", async (t) => {
@@ -1506,7 +1758,7 @@ test("LM Studio text-only routes compact only annotated bootstrap context", asyn
   const result = await httpRequest({ port: proxy.port, body: sourceBytes });
 
   assert.equal(result.statusCode, 200);
-  assert.equal(observed.instructions, "compact-text-only-instructions-stay");
+  assert.equal(Object.hasOwn(observed, "instructions"), false);
   assert.deepEqual(observed.reasoning, { effort: "low", summary: "detailed" });
   assert.deepEqual(observed.metadata, { caller_value: "preserved" });
   assert.equal(observed.client_metadata, undefined);
@@ -1517,6 +1769,8 @@ test("LM Studio text-only routes compact only annotated bootstrap context", asyn
   assert.deepEqual(
     observed.input[0].content.map((part) => part.text),
     [
+      "compact-text-only-instructions-stay",
+      "\n\n",
       appContext,
       threadCoordination,
       "managed-config-instructions-stay",
@@ -2787,7 +3041,11 @@ test("only the private certification marker bypasses text-only tool stripping", 
   assert.equal(accepted.statusCode, 200);
   assert.equal(observed.body.tools[0].name, "probe");
   assert.equal(observed.body.tool_choice, "required");
-  assert.equal(observed.body.instructions, "certification-instructions-stay");
+  assert.equal(Object.hasOwn(observed.body, "instructions"), false);
+  assert.deepEqual(observed.body.input[0].content.slice(0, 2), [
+    { type: "input_text", text: "certification-instructions-stay" },
+    { type: "input_text", text: "\n\n" },
+  ]);
   assert.match(JSON.stringify(observed.body.input), /certification-context-stays/u);
   assert.equal(observed.headers["x-pickermux-certification"], undefined);
 });

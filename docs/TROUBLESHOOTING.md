@@ -12,7 +12,41 @@ is needed.
 
 ## LM Studio reports `Channel Error` or a context-length failure
 
-Read the nested LM Studio error first. If it says that the initial prompt tokens
+`Channel Error` can wrap different inference failures. Read the nested error
+in LM Studio's diagnostics before changing configuration. For an LM Link
+model, the detailed error may also be on the device running the model. Share
+only the relevant redacted error, not the full request or log.
+
+### `System message must be at the beginning`
+
+An inner error such as `Engine protocol predict request returned 500` followed
+by `Jinja Exception: System message must be at the beginning.` identifies a
+prompt-template failure. Strict Qwen templates can reject a second system
+message. PickerMux 0.6.0 merges system/developer input but still forwards
+top-level `instructions` separately, so a request containing both can produce
+two system messages in LM Studio. Multiple system/developer messages are also
+covered by an [LM Studio error report](https://github.com/lmstudio-ai/lmstudio-bug-tracker/issues/2298).
+
+This explains why a short question can work in LM Studio's chat UI while its
+Codex Responses API request fails: the API request carries a different
+instruction structure. With LM Link, `http://127.0.0.1:1234/v1` remains the
+correct target for the local LM Studio server, which forwards inference to
+the linked device. See [LM Studio's API guidance](https://lmstudio.ai/docs/developer/core/lmlink).
+Increasing context or changing reasoning levels does not address this Jinja
+error.
+
+This is fixed in [PickerMux 0.6.1](../CHANGELOG.md#061---2026-09-13).
+It incorporates top-level instructions into the existing leading system
+message and removes the separate field only when merged; instructions-only
+requests keep their existing shape. Fully quit Codex Desktop, follow the
+[regular upgrade procedure](../README.md#upgrade), and verify that
+`pickermux --version` reports `pickermux 0.6.1` before reopening Codex. Editing
+this source checkout does not update an installed runtime; do not patch the
+managed runtime directly.
+
+### Initial prompt exceeds the loaded context
+
+If the nested error says that the initial prompt tokens
 to keep exceed the context length, compare the active value reported by
 `pickermux discover` with the model's load settings in LM Studio. Unload and
 reload the model with a larger supported context, then fully quit Codex, run
