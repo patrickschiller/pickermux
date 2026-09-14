@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
@@ -16,6 +17,83 @@ function functionTool(name, parameters) {
     ...(parameters === undefined ? {} : { parameters }),
   };
 }
+
+test("compacts the reviewed web.run wire description without changing schema, history, or call identity", async () => {
+  const description = await readFile(
+    new URL("./fixtures/web-search-tool-description/web_run_description.md", import.meta.url),
+    "utf8",
+  );
+  const parameters = {
+    type: "object",
+    properties: {
+      search_query: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: { q: { type: "string" } },
+          required: ["q"],
+          additionalProperties: false,
+        },
+      },
+      response_length: { type: "string", enum: ["short", "medium", "long"] },
+    },
+    additionalProperties: false,
+  };
+  const source = {
+    tools: [{
+      type: "namespace",
+      name: "web",
+      tools: [{ type: "function", name: "run", description, parameters }],
+    }],
+    input: [{
+      type: "function_call",
+      namespace: "web",
+      name: "run",
+      call_id: "call_previous_search",
+      arguments: '{"search_query":[{"q":"official tournament venue"}]}',
+    }, {
+      type: "function_call_output",
+      call_id: "call_previous_search",
+      output: "Verified source text with https://example.org/venue",
+    }],
+  };
+  const original = structuredClone(source);
+  const rewritten = structuredClone(source);
+  const codec = normalizeLmStudioToolRequest(rewritten, source);
+  const [wireTool] = JSON.parse(JSON.stringify(rewritten)).tools;
+
+  assert.ok(Buffer.byteLength(wireTool.description) < Buffer.byteLength(description) / 2);
+  assert.deepEqual(wireTool.parameters, parameters);
+  assert.deepEqual(source, original);
+  assert.deepEqual(rewritten.input[1], source.input[1]);
+  assert.equal(rewritten.input[0].arguments, source.input[0].arguments);
+  assert.equal(rewritten.input[0].name, wireTool.name);
+  const result = {
+    output: [{
+      type: "function_call",
+      name: wireTool.name,
+      call_id: "call_next_search",
+      arguments: '{"open":[{"ref_id":"https://example.org/venue"}]}',
+    }],
+  };
+  rewriteResponseFunctionCalls(result, codec);
+  assert.deepEqual(result.output[0], {
+    type: "function_call",
+    namespace: "web",
+    name: "run",
+    call_id: "call_next_search",
+    arguments: '{"open":[{"ref_id":"https://example.org/venue"}]}',
+  });
+
+  for (const editedDescription of [description.replace("25 words", "99 words"), "A custom web tool."]) {
+    const changed = structuredClone(source);
+    changed.tools[0].tools[0].description = editedDescription;
+    const changedWire = structuredClone(changed);
+    normalizeLmStudioToolRequest(changedWire, changed);
+    assert.equal(changedWire.tools[0].description, editedDescription);
+    assert.deepEqual(changedWire.tools[0].parameters, parameters);
+  }
+});
 
 test("normalizes parameterless functions and a named choice to LM Studio's wire shape", () => {
   const source = {

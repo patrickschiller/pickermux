@@ -1,8 +1,8 @@
 # PickerMux Architecture
 
-This document describes the public v0.6.1 bridge behavior. It is intended for
-contributors, security reviewers, and users who want to understand what runs on
-their Mac.
+This document describes PickerMux v0.7.5.
+It is intended for contributors, security reviewers, and users who want to
+understand what runs on their Mac.
 
 ## Design goals
 
@@ -110,6 +110,116 @@ providers can use a provider-scoped macOS Keychain item. Successful lookups are
 coalesced and held in memory for no more than 30 seconds; values are not written
 to logs, status output, configuration, or certification records.
 
+### Standalone web search
+
+The capability-scoped `POST /v1/alpha/search` endpoint implements Codex's
+client-executed `web.run` contract. It resolves the exact selected model before
+opening an upstream connection. A native selection preserves the accepted
+request bytes and response body. An external selection requires its tool grant,
+current Direct receipt, any claimed Efficient Fidelity receipt, and the same
+persistent pending-state gate used by inference.
+
+After external-model authorization, the configured `bridge.webSearchModel`, or
+`bridge.defaultModel` when omitted, must resolve to a native registry entry.
+Only the search request's `model` is replaced with that explicit native
+selection. Its session ID, supplied input, commands, reasoning, settings,
+filters, and budgets remain intact. The independent `/responses` route still
+uses the selected external model. The search parameter does not establish
+which internal models the native backend uses or how it bills requests.
+
+Search always targets the fixed native `/alpha/search` destination. Incoming
+native credentials pass through the native header policy, never through an
+external provider connection or credential resolver. No authentication file is
+read. Codex chooses and executes search calls; PickerMux does not create a
+research agent, generate queries, or make another LM Studio inference call.
+
+The request boundary accepts only the reviewed public request shape and uses
+the existing body, decompression, header, and timeout bounds. External-model
+search responses are buffered within the response limit and must have the
+reviewed `output`/optional `results`/optional `encrypted_output` envelope;
+upstream errors are replaced by fixed redacted errors. Structured result
+variants remain opaque to match the client contract. Codex returns only
+`output` to the selected model; the separate result array serves the UI. The
+bridge does not cache, summarize, truncate, or duplicate search output.
+
+One public `web.run` description is compacted only when namespace, name, text
+length, and SHA-256 match the reviewed fixture. The replacement preserves all
+search obligations, citation rules, source limits, and exceptions while
+reducing 7,507 UTF-8 bytes to 3,475. Unknown or edited text remains unchanged;
+tool parameters and loading policy are never inferred from this match.
+
+The protocol is experimental. Native search/open smoke checks, full model
+certification, and external-model search with a correct sourced answer have
+passed. See the [acceptance record and procedure](WEB_SEARCH_ACCEPTANCE.md). Public client
+source and offline fixtures prove
+the implemented request/response contract, not backend availability or the
+meaning of internal search-model selection. See the
+[official guidance](https://learn.chatgpt.com/docs/web-search?surface=app#app-search-with-a-custom-model-provider)
+and [public Codex search client](https://github.com/openai/codex/blob/36f0dbe796d9bb1a18a0fc0640ed08b3e1d54564/codex-rs/codex-api/src/endpoint/search.rs).
+
+## LM Studio context compaction
+
+Codex's remote compaction V2 uses the normal Responses endpoint with one bare
+`compaction_trigger` at the end of full replay. It expects exactly one completed
+`compaction` output item, not an ordinary assistant answer. The shared OpenAI
+provider classification selects that protocol for external models too. See the
+[reviewed request builder](https://github.com/openai/codex/blob/36f0dbe796d9bb1a18a0fc0640ed08b3e1d54564/codex-rs/core/src/compact_remote_v2_attempt.rs#L79)
+and [response collector](https://github.com/openai/codex/blob/36f0dbe796d9bb1a18a0fc0640ed08b3e1d54564/codex-rs/core/src/compact_remote_v2.rs#L425).
+
+`lmstudio-compaction.mjs` validates this control and prepares one nonstreaming
+summary request after normal external request sanitization and tool-history
+validation. On this V2 path only, `externalBody` validates then omits the raw
+top-level `instructions` before merging messages. Codex stores those current
+base instructions outside compacted history and resends them for every ordinary
+request; see [session state](https://github.com/openai/codex/blob/36f0dbe796d9bb1a18a0fc0640ed08b3e1d54564/codex-rs/core/src/session/mod.rs#L1401)
+and [request construction](https://github.com/openai/codex/blob/36f0dbe796d9bb1a18a0fc0640ed08b3e1d54564/codex-rs/core/src/client.rs#L837).
+The adapter preserves all historical system/developer/user input, even if its
+text equals the omitted field. A role-wide filter or text subtraction would
+lose that provenance boundary. Ordinary and legacy-compact requests retain
+their instructions. The summary includes supported text history as JSON data under a fixed
+summary instruction, preserving public function identities, results, and URLs.
+Tool definitions are omitted; the summary has no tool authority. Its output
+budget is bounded by the loaded context, and an advertised `none` reasoning
+option is used only for this summary operation. Existing transport deadlines,
+credential isolation, and response bounds remain active; no retries are added.
+
+The response is buffered and validated before any successful caller output.
+Only a complete, nonempty text summary can produce one compaction item and a
+completed response. Provider usage is projected from actual numeric counts.
+Calls, refusals, incomplete output, invalid UTF-8, and oversized responses fail
+without installing compacted history. Ordinary inference adds no summary call.
+
+`compaction-envelope.mjs` encrypts the summary with AES-256-GCM and a
+purpose-separated HKDF key derived from the private installation capability.
+Version, installation key, exact provider/model/context, and catalog model hash
+bind the state. A fresh nonce and authenticated padding maintain the reviewed
+Codex opaque-item size estimate conservatively. No plaintext summary database or
+credential-derived key is created. On replay, authenticated state becomes an
+assistant message at the same position. Native or unknown compaction state and
+noncanonical aliases are rejected before LM Studio or credential lookup.
+
+For ordinary `/responses` inference ending in a restored compaction item, the
+adapter appends one fixed user-role instruction to resume the current task.
+LM Studio's prompt builder interprets a final assistant message as prefill
+(`continue_final_message=true`, `add_generation_prompt=false`), irrespective of
+message status. The resume boundary prevents continuation of the summary text.
+It does not promote model text, add tool authority, or trigger another inference.
+Later conversation input and a new compaction do not receive this instruction.
+
+Native and other provider routes refuse the entire PickerMux envelope family,
+including retyped input items, so model switching cannot forward private bridge
+state into another trust domain. All other native request bytes stay unchanged.
+Restart, ordinary refresh, and normal upgrades retain the key; full refresh and
+reinstallation replace it. These limits and the lossy nature of model summaries
+are documented in [configuration](CONFIGURATION.md#lm-studio-context-compaction).
+The legacy compact endpoint and non-LM provider protocols retain their existing
+behavior. The summary prompt distinguishes completed tool work from pending
+actions, and the resume instruction asks for repeat lookups only when needed.
+Neither instruction grants tool authority or enforces a model decision. Search
+and final-answer acceptance passed on 0.7.5. The user reported about eight
+minutes for the first question and a faster follow-up; this is an individual
+observation rather than a controlled performance benchmark.
+
 ## LM Studio adaptation
 
 Codex and local models do not always expose identical Responses API behavior.
@@ -187,7 +297,20 @@ Codex tool surface. Certification traffic itself receives the same treatment.
 
 Request decompression supports gzip, deflate, Brotli, and Zstandard. Decoded
 body size, response header size, header wait, stream idle time, and total
-upstream duration are all bounded.
+upstream duration are all bounded. The 0.7.2 candidate defers transformed
+external response headers until it has validated output to send, preserving a
+structured error response when validation or a timeout fails first. Native
+response handling remains byte preserving. Once transformed external SSE
+output has begun, upstream or validation failures use a minimal
+`response.failed` event while the client remains connected. It contains only
+failed status, the fixed code, and its fixed message, followed by normal HTTP
+end-of-response. PickerMux stops the upstream request and never fabricates
+completion or tool results. Native late-failure handling remains unchanged.
+This changes error reporting, not processing speed, timeout limits, or the
+number of model requests. The failure envelope follows the reviewed
+[public Codex SSE handler](https://github.com/openai/codex/blob/6f39a47bb3b04de4c804187bfbf55edc56939aab/codex-rs/codex-api/src/sse/responses.rs#L417-L471);
+display in the installed client remains a live acceptance check. PickerMux adds
+no retries, and the managed provider keeps `stream_max_retries = 0`.
 
 For each compacted text-only request, the service keeps only an in-memory
 telemetry snapshot and saturating aggregate counters. The schema consists of
@@ -291,6 +414,16 @@ eight required gates:
 - `toolResult`;
 - `longContext`.
 
+Version 0.7.1 introduced bounded Node HTTP transport for these local bridge
+requests instead of global `fetch`. Its probe deadline remains authoritative
+without Undici's separate default header/body timers shortening it. Failure
+diagnostics expose a fixed probe label and redacted transport code; raw URLs,
+request bodies, and nested transport messages are not returned. The transport
+change does not alter reasoning defaults, probes, required gates, or receipt
+authority. The full eight-gate base matrix and additive tool-search probe have since
+passed live on the tested LM Link model. This does not establish that a larger
+Codex task will finish prompt processing within its stream idle limit.
+
 Before base probing, PickerMux first refreshes the service and requires its
 health response to prove support for the pending-request gate. It then persists
 a pending-deactivation barrier for the target model. The running service checks
@@ -358,9 +491,12 @@ between the provider table and the next TOML table or end of file. It virtually
 reinserts the exact marker only when one unique candidate reproduces the
 receipt's SHA-256 block digest and every preserved tail line is blank or a
 comment. Status exposes `installed-marker-recovered`; refresh, selection changes,
-and uninstall can then proceed without silently rewriting the config. One
-narrow setup-recovery exception materializes the exact marker when this state
-coincides with a failed initial account-cache preflight: the downloaded payload
+and uninstall remain recoverable. Read-only inspection retains the original
+bytes. When an old provider requires the standalone-search migration, refresh
+materializes that same uniquely verified end marker as part of the owned
+provider replacement. One narrow setup-recovery exception materializes the
+exact marker when this state coincides with a failed initial account-cache
+preflight: the downloaded payload
 uses the lifecycle lock, revalidates configuration ownership and status, and
 atomically inserts only the receipt-proven line so an older installed CLI can
 uninstall. Missing begin/root markers, duplicate boundaries, provider-scoped
@@ -370,6 +506,14 @@ Install and refresh stage the runtime, catalog, compatibility manifest, service
 configuration, and selection update. The previous runtime package remains
 available until catalog validation, bridge restart, Codex schema checks, and
 the doctor all pass. A failure restores the previous files and service state.
+
+Standalone-search migration joins this transaction. The managed provider opts
+in, and an absent `features.standalone_web_search` receives a separately marked,
+receipt-hashed feature setting. An existing explicit feature value and the
+user's search mode remain unchanged. Compare-and-swap checks protect both TOML
+and ownership state; activation requires health `webSearchContractVersion = 1`
+and failure restores the prior state. Uninstall removes the additional feature
+block only when PickerMux owns it, preserving pre-existing feature settings.
 
 ### Full account-cache refresh
 
@@ -519,7 +663,8 @@ The private health endpoint remains available with fixed safe status/reason
 enums so the LaunchAgent does not enter a restart loop and diagnostics can
 direct the user to refresh.
 
-Versions 0.6.0 and 0.6.1 use bridge contract `codex-responses-bridge/p6-v1`.
+Versions 0.6.0 through 0.7.5 use bridge contract
+`codex-responses-bridge/p6-v1`.
 The managed publisher emits the search claim only from valid model-bound
 evidence, and the runtime accepts it only on entries generated under that exact
 contract. Older or non-p6 catalog claims cannot grant the route capability.

@@ -133,8 +133,15 @@ test("external compact JSON responses cannot create executable calls", async (t)
 
   const result = await requestUntilClose({ port, body: compactRequestBody() });
 
-  assert.equal(result.aborted, true);
-  assert.doesNotMatch(result.body.toString("utf8"), /function_call|read_file/u);
+  assert.equal(result.aborted, false);
+  assert.equal(result.statusCode, 502);
+  assert.deepEqual(JSON.parse(result.body), {
+    error: {
+      code: "UPSTREAM_RESPONSE_ERROR",
+      message: "The upstream response could not be read or validated",
+    },
+  });
+  assert.doesNotMatch(result.body.toString("utf8"), /function_call|read_file|call-compact/u);
 });
 
 test("external compact SSE responses cannot create executable calls", async (t) => {
@@ -153,8 +160,15 @@ test("external compact SSE responses cannot create executable calls", async (t) 
 
   const result = await requestUntilClose({ port, body: compactRequestBody() });
 
-  assert.equal(result.aborted, true);
-  assert.doesNotMatch(result.body.toString("utf8"), /function_call|read_file/u);
+  assert.equal(result.aborted, false);
+  assert.equal(result.statusCode, 502);
+  assert.deepEqual(JSON.parse(result.body), {
+    error: {
+      code: "UPSTREAM_RESPONSE_ERROR",
+      message: "The upstream response could not be read or validated",
+    },
+  });
+  assert.doesNotMatch(result.body.toString("utf8"), /function_call|read_file|call-compact/u);
 });
 
 test("external compact responses still relay ordinary compacted text", async (t) => {

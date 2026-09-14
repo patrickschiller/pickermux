@@ -77,6 +77,18 @@ test("normalizes a strict schema-v2 bridge config without secrets", () => {
   assert.equal(JSON.stringify(normalized).includes("Bearer "), false);
 });
 
+test("web search model is an optional exact native slug independent from external inference", () => {
+  const input = validConfig();
+  input.bridge.webSearchModel = "gpt-5.4-mini";
+  const result = validateBridgeConfig(input);
+  assert.equal(result.bridge.webSearchModel, "gpt-5.4-mini");
+  assert.equal(result.bridge.defaultModel, "gpt-5.6-sol");
+  for (const invalid of ["lmstudio/model", "lmstudio/", "", null, 17, "gpt-model\n", "https://example.com"]) {
+    input.bridge.webSearchModel = invalid;
+    assert.throws(() => validateBridgeConfig(input), /webSearchModel must be a native model id/u);
+  }
+});
+
 test("accepts a Keychain reference and rejects ambiguous credential sources", () => {
   const keychain = validConfig();
   delete keychain.providers[1].credentialEnv;

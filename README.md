@@ -7,6 +7,11 @@
 
 **Use local LM Studio models directly from the Codex Desktop picker.**
 
+**New in 0.7.5: web search is available as a tool for certified external
+models.** Your selected model can use Codex's `web.run` tool to search the web,
+read sources, and answer with links. See [Web search](#web-search-tool) and the
+[complete release notes](docs/RELEASE_NOTES_0.7.5.md).
+
 PickerMux makes local models feel like a first-class part of Codex Desktop. Load
 a model in LM Studio, refresh PickerMux, and select it from the same familiar
 model picker—without maintaining separate Codex profiles, repeatedly editing
@@ -18,9 +23,19 @@ a fast local-model workflow with accurate context information, model-specific
 reasoning levels, and a strict routing boundary between native and external
 providers.
 
-Version 0.6.0 introduces **Efficient Fidelity**: certified LM Studio models can
+Version 0.6.0 introduced **Efficient Fidelity**: certified LM Studio models can
 keep the complete Codex coding harness while deferring large tool schemas until
 the model asks Codex to find the relevant tools.
+
+Version 0.7.5 reduces LM Studio summary requests by excluding the
+separately supplied base instructions that Codex sends again when answering.
+It retains conversation messages, source results, and encrypted continuation
+state. Summary instructions distinguish completed research from remaining work. See
+[context compaction](docs/CONFIGURATION.md#lm-studio-context-compaction) for
+model-switch and recovery limits. A user reported a correct sourced answer in
+about eight minutes with 0.7.5, compared with about seventeen minutes before;
+a subsequent request was faster. This is one setup's observation, not a general
+benchmark. Large initial Codex prompts can still be slow on local hardware.
 
 ![PickerMux model picker showing local LM Studio models alongside existing Codex models](assets/screenshots/pickermux-model-picker.png)
 
@@ -75,10 +90,10 @@ If `~/.local/bin` is not already in `PATH`, the installer prints the exact
 one-time shell configuration needed. It does not change `.zprofile`, `.zshrc`,
 or another shell file automatically. Until then, use the absolute command path.
 
-For a reproducible installation, replace `latest` with an exact release:
+Use the exact version for a reproducible installation:
 
 ```bash
-/usr/bin/curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://github.com/patrickschiller/pickermux/releases/download/v0.6.1/install.sh | /bin/sh
+/usr/bin/curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://github.com/patrickschiller/pickermux/releases/download/v0.7.5/install.sh | /bin/sh
 ```
 
 Both one-line forms execute code downloaded from GitHub. The archive checksum
@@ -110,7 +125,7 @@ the linked device internally. See LM Studio's
 ~/.local/bin/pickermux discover
 ```
 
-For this release, the first command must print `pickermux 0.6.1`. `status`
+For this release, the first command must print `pickermux 0.7.5`. `status`
 checks the managed configuration, catalog, compatibility contract, and bridge.
 It also reports `full-refresh=idle` normally or the current recovery phase;
 `status --json` exposes the same state as `fullRefresh.status` and
@@ -243,7 +258,68 @@ The rejected broader Fast Agent design and the evidence behind this narrower
 architecture are recorded in the
 [Fast Agent feasibility report](docs/FAST_AGENT_FEASIBILITY.md).
 
+<a id="shared-web-search"></a>
+
+## Web search tool
+
+Version 0.7.5 includes support for Codex's
+client-executed `web.run` tool across registered, tool-certified external
+models. Codex performs the search through the native search service and returns
+the source text to the selected model. LM Studio continues to write the answer;
+PickerMux makes no extra LM Studio inference request to execute the search.
+This is separate from Efficient Fidelity's search for available tools.
+
+Select a certified external model and ask, for example:
+
+> Use web search to find the official venue of the Solheim Cup 2026. Answer
+> with the venue, country, and an official source link in one sentence.
+
+Codex should show an executed web search before the answer. You can then ask
+the model to open the source and check a detail. An answer containing a link
+alone does not prove that a search ran. Search requires Codex's native search
+access and a valid tool certification for the exact external model; it is not
+limited to a particular model family. Uncertified models remain text-only.
+
+Search uses `bridge.webSearchModel`, or the existing native
+`bridge.defaultModel` when that optional field is absent, as its native service
+request parameter. It does not change the selected answer model or establish
+which internal models the search backend uses or how it bills requests. Search
+reuses the native credentials supplied by Codex; they stay on the native search
+path and never reach LM Studio. No additional provider API key is configured.
+
+PickerMux preserves Codex's search context, filters, and requested result
+budgets. It does not cache or truncate results. For one reviewed, exact version
+of the `web.run` description, it removes repeated explanations while retaining
+the search and citation rules: 7,507 becomes 3,475 UTF-8 bytes, a 53.7% reduction
+in that description. Tool schemas, conversation history, and returned source
+text remain intact. Other description versions pass through unchanged.
+
+Upgrade with the normal installer and fully restart Codex. If refreshing an
+existing installation, use normal `refresh`. Install and refresh enable the standalone-search feature
+only when no explicit feature setting exists; an existing `false` and
+`web_search = "disabled"` remain respected. Uncertified models stay text-only;
+run the usual [certification](#tool-certification) only when the model is ready
+and no local-model task is active, then restart Codex again.
+
+The endpoint is experimental. Its contract is covered by public Codex source
+fixtures and offline tests. Native search and follow-up opening have passed
+live smoke checks; external-model search, context compaction, and a correct
+sourced answer were confirmed on 0.7.5. The
+[acceptance record and procedure](docs/WEB_SEARCH_ACCEPTANCE.md) distinguish
+observed checks from remaining coverage. Tool availability cannot
+guarantee that every model chooses to search or interprets results correctly.
+See [Configuration](docs/CONFIGURATION.md#shared-web-search) and
+[Troubleshooting](docs/TROUBLESHOOTING.md#web-search-is-missing-or-fails).
+
 ## Upgrade
+
+Version 0.7.5 adds shared web search, LM Studio context compaction, clearer
+stream errors, and a smaller summary request. Upgrade from 0.6.1 or a local
+0.7.x development build using the normal installer below. Do not replace
+immutable package files or bypass a same-version checksum mismatch. See
+[compaction failure recovery](docs/TROUBLESHOOTING.md#lm-studio-reports-invalid-type-for-input-after-a-tool-call).
+Keep an existing valid model certification; an upgrade alone does not require
+recertification.
 
 PickerMux never updates silently. Run the same latest-release installer again
 to stage and activate a newer version. A healthy installation is refreshed
@@ -456,7 +532,8 @@ proxy.
 - It never reads `~/.codex/auth.json`.
 - ChatGPT tokens, cookies, account identifiers, attestation data, and Codex
   metadata are stripped before every external request.
-- Native credentials are forwarded only for exact native model routes.
+- Native credentials are forwarded only to native inference or standalone
+  search destinations; external models never receive them.
 - External requests receive a fresh allowlisted header set.
 - Uncertified external routes are transport-enforced as text-only even if the
   client submits function schemas; the private certification marker is never

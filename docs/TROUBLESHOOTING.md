@@ -40,7 +40,7 @@ It incorporates top-level instructions into the existing leading system
 message and removes the separate field only when merged; instructions-only
 requests keep their existing shape. Fully quit Codex Desktop, follow the
 [regular upgrade procedure](../README.md#upgrade), and verify that
-`pickermux --version` reports `pickermux 0.6.1` before reopening Codex. Editing
+`pickermux --version` reports 0.6.1 or later before reopening Codex. Editing
 this source checkout does not update an installed runtime; do not patch the
 managed runtime directly.
 
@@ -72,6 +72,9 @@ UI can send only the visible question, while Codex also supplies its model
 instructions and relevant conversation context. In the LM Studio server log,
 long gaps during `Prompt processing progress` are model prefill time, not
 PickerMux network latency.
+
+If Codex disconnects during that phase, see
+[stream timeouts during prompt processing](#stream-disconnects-during-prompt-processing).
 
 After upgrading to PickerMux 0.5.2, fully quit Codex Desktop, run
 `pickermux refresh`, and reopen Codex so the generated catalog is reloaded. An
@@ -305,6 +308,200 @@ version changed. Refresh, recertify the exact route, restart Codex, and retry.
 Do not add an unsupported configuration flag or publish an unredacted Responses
 request to force the feature.
 
+## Web search is missing or fails
+
+Standalone web search was added in 0.7.0 and is included in the prepared,
+0.7.5 release.
+For candidate testing, follow [the acceptance procedure](WEB_SEARCH_ACCEPTANCE.md).
+After publication, upgrade first, fully quit Codex, run normal `pickermux refresh`, and
+reopen Codex. The refresh must activate a bridge that reports the new search
+contract; copying a source file into the installed runtime is not an upgrade.
+
+Check the model's certification with `pickermux doctor`. Newly discovered or
+stale models remain text-only. If necessary, run the normal `certify --model`
+procedure only when the exact model is ready and no local-model task is active,
+then restart Codex. Do not force-enable tool flags. Efficient Fidelity's
+tool-inventory search is a different capability; a valid Direct-certified
+model can use `web.run` without passing its optional deferred-tool probe.
+
+An existing `features.standalone_web_search = false`, `web_search = "disabled"`,
+or managed search restriction is respected. Check user-owned settings without
+changing PickerMux's marked blocks. `WEB_SEARCH_CONFIG_CONFLICT` can indicate
+duplicate or non-boolean feature definitions, or an inline `features` table
+that needs an explicit `standalone_web_search` boolean. Resolve the reported
+TOML conflict and rerun refresh.
+
+| Error | Next step |
+| --- | --- |
+| `MODEL_NOT_CERTIFIED` | Certify the exact external model when it is ready. |
+| `MODEL_CERTIFICATION_PENDING` | Complete the regular certification recovery; do not edit its receipt. |
+| `SEARCH_MODEL_UNAVAILABLE` | Check that `bridge.webSearchModel`, or `bridge.defaultModel` when omitted, names an account-visible native model; apply configuration changes through refresh. |
+| `SEARCH_SERVICE_ERROR` | The native search service rejected the request. Check native Codex sign-in, account availability, and runtime support; do not add an LM Studio API key. |
+| `INVALID_WEB_SEARCH` or `UPSTREAM_RESPONSE_ERROR` | The request or reply does not match the reviewed protocol; update PickerMux and retain only the fixed error code for a report. |
+
+Native `web.run` search and follow-up source opening passed live smoke checks.
+Full external-model search acceptance remains pending. A source/fixture test
+passing does not establish service availability in every installation, and a
+404 may indicate missing endpoint support. PickerMux does not retry through
+LM Studio or substitute an answer without sources. Do not share raw search
+requests or upstream error bodies: they can contain conversation or account
+context.
+
+An available tool does not guarantee a correct answer. Ask the model to search
+and cite current sources and inspect whether `web.run` actually ran. A model
+that answers from memory can still invent facts. PickerMux does not add a
+separate research agent for text-only models.
+
+## LM Studio reports `Invalid type for 'input'` after a tool call
+
+The error `invalid_union` alone does not identify a bad text field. In the
+observed 0.7.2 failure, the selected model successfully issued a web call and
+Codex's next request was remote compaction V2. Its final `compaction_trigger`
+item is unsupported by LM Studio 0.4.24+1, even though that version accepts the
+accompanying text-array tool output and reasoning content.
+
+The prepared 0.7.4 adapter translates the compaction operation into one bounded
+LM Studio summary and returns authenticated encrypted continuation state to
+Codex. Upgrade through normal setup and restart Codex; a still-valid model
+certification need not be repeated. Use a new task for the acceptance test and
+require both actual web activity and a sourced final answer. Do not simply
+delete the trigger: Codex expects a compaction result and would reject a normal
+answer instead. [Compaction behavior and limits](CONFIGURATION.md#lm-studio-context-compaction).
+
+| Adapter error | Next step |
+| --- | --- |
+| `INVALID_COMPACTION_REQUEST` | The control or transcript is unsupported, including nontext media. Start a text-only test task and report only the fixed code. |
+| `COMPACTION_FAILED` | The model did not return a complete valid summary. Prior history remains; check the local server condition and context limits without repeated long retries. |
+| `COMPACTION_UNAVAILABLE` | Update PickerMux with normal setup and its catalog. |
+| `INVALID_COMPACTION_STATE` | Restore the original installation/model configuration or start a new task. Full refresh and reinstallation invalidate previous state. |
+| `COMPACTION_STATE_ROUTE_MISMATCH` | Continue on the original external model or start a new task for the different provider. |
+
+## Only a sentence fragment appears after automatic compaction
+
+Version 0.7.3 restored the compacted context as an assistant message. If that
+message ended the request, LM Studio continued its text as response prefill
+instead of starting a new answer. The observed live search and summary both
+contained the correct fact and official source; only 14 new tokens followed.
+This was a response-boundary bug, not a missing search result or timeout.
+
+The prepared 0.7.4 build adds one short fixed user-role instruction after an
+authenticated terminal summary. The dynamic summary remains assistant context.
+Upgrade through normal setup, retain the valid certification, and restart
+Codex. The v1 state format is compatible; do not use full refresh or modify
+encrypted history. Require a complete sourced answer in the next new-task test.
+
+In this run, the three prompt evaluations processed 26,195, 19,556, and 26,268
+tokens in approximately 13 minutes 43 seconds combined. Codex reintroduced its
+system context, tools, and retained messages after compaction. A successful
+summary therefore did not make the next ordinary prompt smaller. The boundary
+fix adds no inference and does not claim to remove this prefill cost. Do not
+increase timeouts, repeat certification, or run long retries to diagnose this
+specific fragment symptom.
+
+## A correct web answer takes many minutes
+
+Separate initial prompt processing from repeated tool/compaction cycles. The
+successful 0.7.4 run took 16 minutes 56 seconds, including three summaries
+totalling roughly 10 minutes 50 seconds. Ordinary continuation requests already
+reused more than 26,000 cached input tokens. This does not support disabling the
+cache, increasing parallel slots, or raising timeouts as a solution.
+
+The 0.7.5 build omits separately supplied current base instructions
+from V2 summaries, while retaining all conversation input and the ordinary
+Codex harness. An offline reconstruction reduced the first summary's JSON body
+by 29.6%; that is not a measured token or latency reduction. It also asks the
+model to preserve completed tool work and avoid repeating completed lookups
+unless evidence or existing instructions require another check. The tools
+remain available and model adherence is not guaranteed.
+
+Use normal setup and keep the certified model configuration unchanged. In one
+new task, repeat the short venue search and record elapsed time, search count,
+compaction count, and numeric cached/input token counts if available. Require
+the same correct sourced answer. Do not reload the model just to run the test;
+compare cold and cached runs separately. A large initial Codex prompt still
+costs minutes on this setup. See the [acceptance procedure](WEB_SEARCH_ACCEPTANCE.md).
+
+## Certification reports `fetch failed`
+
+Version 0.7.1 replaces certification's default Node `fetch`
+with bounded local HTTP transport. Its existing ten-minute probe deadline
+covers receipt of both headers and the response body. Undici has separate
+five-minute header and body-inactivity defaults, so a longer abort deadline
+alone does not remove those limits. This is a possible explanation for a slow
+0.7.0 probe ending with generic `fetch failed`; it has not been established as
+the cause of the reported LM Link failure. See
+[Undici's client timeout options](https://github.com/nodejs/undici/blob/840b4e774851f19b52ecee1f75bd3a7776e8416d/docs/docs/api/Client.md).
+
+With LM Link, `http://127.0.0.1:1234/v1` remains the local API target even when
+the model runs on a linked Windows computer. LM Studio forwards the request;
+see [its LM Link API documentation](https://lmstudio.ai/docs/developer/core/lmlink).
+A short bridge-to-LM-Link request succeeded during investigation, but it used
+reasoning `none` and does not establish that the complete certification matrix
+passes with the configured reasoning level. The fix does not change reasoning
+defaults, probe budgets, or capability gates.
+
+Follow the [current candidate procedure](WEB_SEARCH_ACCEPTANCE.md) to upgrade an
+installed 0.7.0 package through normal setup. Do not replace immutable runtime
+files or bypass same-version checksum checks. With Codex fully quit and the
+exact model loaded, resume the same certification command after upgrade.
+Record only its fixed probe label and transport code if it fails again:
+
+| Diagnostic | Meaning and next step |
+| --- | --- |
+| `CERTIFICATION_TIMEOUT` | The probe's deadline expired; inspect model loading and processing progress before retrying. |
+| `CERTIFICATION_CONNECTION_FAILED` | Check the local LM Studio server and linked-device connection. |
+| `CERTIFICATION_BODY_FAILED` | The response body was interrupted or could not be read; inspect local server diagnostics. |
+| Other `CERTIFICATION_*` code | Retain the fixed code and probe label for a report; do not share raw request or error bodies. |
+| `MODEL_CERTIFICATION_PENDING` | Ordinary inference is blocked while certification is pending or unavailable; complete regular certification recovery. |
+| `PROVIDER_CREDENTIAL_UNAVAILABLE` | Ordinary inference could not resolve the selected provider's credential; inspect its configured credential reference. |
+
+A failed or interrupted certification keeps its recovery barrier. Do not edit
+receipts, force-enable shell or tool capabilities, or repeatedly launch long
+probes to hide the failure. A full live retry with 0.7.1 passed the eight base
+gates and additive tool-search gate on the tested LM Link model. Preserve a
+still-valid pass when upgrading; a later task timeout does not by itself
+require recertification.
+
+## Stream disconnects during prompt processing
+
+A stream or decoding error in Codex does not by itself identify an encoding
+failure. In the investigated case, LM Studio was still processing the prompt:
+progress reached 29% after roughly eight minutes, and the connection ended at
+ten minutes, matching the configured `streamIdleTimeoutMs` of 600,000 ms.
+Certification had already passed. This establishes the idle-timeout boundary;
+it does not explain why prefill was slow or prove a Windows GPU problem.
+
+The prepared 0.7.2 candidate delays transformed external response headers until
+validated output is ready. A failure before that point can return its actual
+structured HTTP error. If transformed external SSE output has already started,
+PickerMux reports an upstream or validation failure with a minimal
+`response.failed` event while the client remains connected, then ends the
+response so Codex can display the fixed code and message. A client-side
+disconnect cannot receive that event and remains a network failure. The
+upstream request is stopped. Timeout diagnostics distinguish these conditions:
+
+| Error | Meaning |
+| --- | --- |
+| `UPSTREAM_HEADERS_TIMEOUT` | The provider did not return response headers within the configured limit. |
+| `UPSTREAM_IDLE_TIMEOUT` | No response bytes arrived within the configured idle limit, including while the model was processing its prompt. |
+| `UPSTREAM_TOTAL_TIMEOUT` | The entire upstream request exceeded its configured duration. |
+
+The fix does not increase timeouts, fabricate completion, or make model
+processing faster. Lower reasoning can reduce generated reasoning work after
+prefill; it does not make the same input prompt process faster. Inspect the
+model's actual processing progress and hardware utilization before choosing
+load-setting changes. Model weights, KV cache, and working buffers all need
+memory; an enabled GPU option alone does not prove the entire workload fits in
+VRAM. Measure GPU memory and utilization on the machine running the model.
+Batch size and parallelism affect memory demand, so compare one deliberate
+load-setting change at a time. PickerMux does not automatically change GPU
+placement, batch size, parallelism, or retained context.
+
+Upgrade through the [candidate procedure](WEB_SEARCH_ACCEPTANCE.md) and keep an
+existing valid certification. Record only the fixed error code, elapsed time,
+and numeric progress for diagnosis. Live timeout-reporting acceptance and
+external-model web search are still pending.
+
 ## Live checks are slow
 
 `doctor --live` and `certify` perform real inference. Large prompts, long
@@ -324,9 +521,11 @@ Status `installed-marker-recovered` is healthy and specific: only the managed
 provider end marker is absent, and virtually reinserting that exact line at one
 unique safe boundary before the next TOML table or end of file reproduces the
 private installation receipt's digest. Blank and comment-only tail lines are
-preserved. PickerMux deliberately leaves the file byte-for-byte unchanged while
-allowing refresh, picker selection changes, and uninstall. Any provider-scoped
-edit, second marker, missing begin/root boundary, ambiguous candidate, or hash
+preserved. Inspection leaves the file byte-for-byte unchanged while allowing
+refresh, picker selection changes, and uninstall. If the old provider needs the
+standalone-search migration, refresh materializes the same verified marker
+within that transaction. Any provider-scoped edit, second marker, missing
+begin/root boundary, ambiguous candidate, or hash
 mismatch remains `inconsistent` and requires manual review.
 
 Use `uninstall --force` only when you have reviewed the conflict and explicitly

@@ -99,6 +99,14 @@ head or replace already published release assets.
 
 ## Manual acceptance matrix
 
+For the 0.7.5 compaction adapter, earlier timeout fixes, and shared search,
+first run the concise
+[local web-search acceptance test](WEB_SEARCH_ACCEPTANCE.md) against the built,
+extracted candidate. It verifies actual installed-version activation, a
+certified external search and follow-up source open, and native text/search.
+It is a functional smoke test; the lifecycle and failure-path checks below
+remain required before release.
+
 At minimum, record:
 
 - macOS version and architecture;
@@ -175,6 +183,32 @@ At minimum, record:
 - an interrupted certification after the base receipt is written, confirming
   the pending barrier keeps that receipt dormant until an explicit retry
   completes recovery;
+- the 0.7.1 bounded certification transport with a slow or interrupted probe,
+  confirming that its deadline covers headers and body, failures expose only
+  fixed probe labels and transport codes, and ordinary inference distinguishes
+  pending certification from unavailable provider credentials;
+- the 0.7.2 transformed response path failing before validated output,
+  confirming a structured timeout error without early success headers, raw
+  provider details, fabricated completion, or changes to the native path; also
+  fail after transformed SSE output begins and confirm a minimal
+  `response.failed` with the fixed code/message, upstream cancellation, normal
+  HTTP end-of-response, and the actual reason visible in Codex;
+- the 0.7.5 local compaction operation after a web result, confirming one bounded
+  model summary with no tool schemas, one authenticated compaction item, and a
+  successful same-model continuation with source URLs retained; restart and
+  ordinary refresh must preserve replay, while malformed state and provider
+  switching fail before credentials or upstream requests;
+- a terminal restored summary with no later user/tool input, confirming that
+  LM Studio starts a complete new answer rather than continuing the summary;
+  a fixed resume instruction must not appear during another compaction or when
+  later conversation input already supplies the continuation;
+- 0.7.5 summary input reduction, confirming that only the original top-level
+  instructions are omitted and all conversation messages remain. Compare
+  elapsed time, cache state, and repeated search/compaction count with 0.7.4;
+  byte reduction alone is not live performance acceptance;
+- a failed, truncated, or tool-calling summary, confirming no successful
+  compaction and no history replacement; use offline injection for these failure
+  cases rather than spending real model calls repeatedly;
 - interruption and injected refresh failure at every certification
   deactivation phase, confirming the persistent request-time barrier blocks
   ordinary traffic in the still-running old process, private probes open only
@@ -182,7 +216,20 @@ At minimum, record:
   blocked, and a retry can recover without reviving an old receipt;
 - native JSON and streaming canaries across the same scenarios, confirming the
   request and event bytes remain unchanged;
-- same-version rerun and upgrade from the preceding release;
+- the 0.7.0 standalone search path with native and exact tool-certified external
+  selections, confirming successful backend responses, follow-up reference
+  resolution, the configured native search model parameter, and unchanged
+  external answer-model routing;
+- migration from a healthy pre-0.7.0 installation, confirming that the running
+  service attests search contract 1 before configuration publication, existing
+  custom provider settings and explicit search disables survive, and a failed
+  activation restores the prior configuration receipt and service;
+- missing or edited standalone-search markers, orphaned markers, and markers
+  placed inside TOML strings, confirming fail-closed ownership checks rather
+  than a silent grant or removal of user content;
+- same-version rerun and upgrade from the preceding release, including an
+  immutable installed 0.7.4 package to 0.7.5 without bypassing content checks or
+  rerunning still-valid model certification;
 - cache mismatch before staging, under the lifecycle lock, and immediately
   before activation, confirming that active CLI and bridge state remain
   unchanged in every case;

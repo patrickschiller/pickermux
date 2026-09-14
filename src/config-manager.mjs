@@ -40,6 +40,8 @@ export const CONFIG_MARKERS = Object.freeze({
   rootEnd: "# <<< lm-studio-model-router:p2 root <<<",
   providerBegin: "# >>> lm-studio-model-router:p2 provider >>>",
   providerEnd: "# <<< lm-studio-model-router:p2 provider <<<",
+  webSearchBegin: "# >>> pickermux:standalone-web-search >>>",
+  webSearchEnd: "# <<< pickermux:standalone-web-search <<<",
 });
 
 const HISTORICAL_MODEL_BRIDGE_PROVIDER_ID = "model_bridge";
@@ -104,12 +106,16 @@ export async function installConfig(options) {
   const eol = analysis.eol;
   const rootBlock = renderRootBlock(settings, eol);
   const providerBlock = renderProviderBlock(settings.provider, eol);
-  const installedText = installBlocks(
+  const baseText = installBlocks(
     analysis,
     rootBlock,
     providerBlock,
     eol,
   );
+  const webSearch = settings.provider.supportsStandaloneWebSearch
+    ? addStandaloneWebSearchFeature(baseText)
+    : { text: baseText };
+  const installedText = webSearch.text;
 
   const backupPath = await allocateBackupPath(
     configPath,
@@ -153,6 +159,7 @@ export async function installConfig(options) {
         end: CONFIG_MARKERS.providerEnd,
         sha256: sha256(providerBlock),
       },
+      ...(webSearch.block ? { webSearch: webSearch.block } : {}),
     },
   };
 
@@ -277,6 +284,9 @@ export async function setManagedPickerSelection(options = {}) {
   if (sha256(located.provider.text) !== state.blocks.provider.sha256) {
     modified.push("provider");
   }
+  if (located.webSearch && sha256(located.webSearch.text) !== state.blocks.webSearch.sha256) {
+    modified.push("webSearch");
+  }
   if (!hasSafeProviderScopeTail(current.text, located.provider.end)) {
     modified.push("provider-scope-tail");
   }
@@ -362,6 +372,104 @@ export async function restoreManagedPickerDefaults(options = {}) {
     expectedInstallModel: options.defaultModel,
     expectedInstallModelReasoningEffort: options.defaultModelReasoningEffort,
   });
+}
+
+/** Upgrade only receipt-owned search settings, retaining the original backup. */
+export async function enableManagedStandaloneWebSearch(options = {}) {
+  const settings = normalizeOwnershipOptions(options);
+  const ownership = await inventoryManagedConfigOwnership(settings);
+  await revalidateManagedConfigOwnership(ownership);
+  const stateFile = ownershipDetails(ownership, settings).stateFile;
+  if (!stateFile) throw failure("STATE_MISSING", "Managed search settings require an installed configuration.");
+  const state = parseState(stateFile.contents, settings.statePath);
+  assertStateMatchesConfig(state, settings.configPath);
+  const current = await readConfigFile(settings.configPath, { mustExist: true });
+  const located = locateOwnedBlocks(current.text, state);
+  const pickerRoot = inspectPickerMutableRoot(located.root, state);
+  for (const name of ownedBlockNames(state)) {
+    if (sha256(located[name].text) !== state.blocks[name].sha256 && !(name === "root" && pickerRoot.safe)) {
+      throw failure("MANAGED_BLOCK_MODIFIED", "Refusing to change modified managed search settings.");
+    }
+  }
+  if (!hasSafeProviderScopeTail(current.text, located.provider.end)) {
+    throw failure("MANAGED_BLOCK_MODIFIED", "Managed provider table scope changed.");
+  }
+  const matching = [...located.provider.text.matchAll(/^supports_standalone_web_search = (?:true|false)\r?$/gmu)];
+  if (matching.length !== 1) {
+    throw failure("WEB_SEARCH_CONFIG_CONFLICT", "Managed provider search capability is missing or ambiguous.");
+  }
+  const providerText = located.provider.text.replace(
+    /^supports_standalone_web_search = false(?=\r?$)/gmu,
+    "supports_standalone_web_search = true",
+  );
+  const projected = current.text.slice(0, located.provider.start) + providerText + current.text.slice(located.provider.end);
+  const webSearch = addStandaloneWebSearchFeature(projected);
+  if (webSearch.text === current.text) {
+    return { changed: false, enabled: webSearch.enabled };
+  }
+  const updated = {
+    ...state,
+    blocks: {
+      ...state.blocks,
+      provider: { ...state.blocks.provider, sha256: sha256(providerText) },
+      ...(webSearch.block ? { webSearch: webSearch.block } : {}),
+    },
+  };
+  // A pre-existing user edit must never become a new pristine baseline, since
+  // uninstall would then replace it with the original installation backup.
+  const originalWithRecoveredMarker = located.provider.recoveredEnd
+    ? current.text.slice(0, located.provider.start) + located.provider.text + current.text.slice(located.provider.end)
+    : current.bytes;
+  if (sha256(originalWithRecoveredMarker) === state.installedSha256) {
+    updated.installedSha256 = sha256(webSearch.text);
+  } else {
+    delete updated.installedSha256;
+  }
+  const nextState = Buffer.from(`${JSON.stringify(updated, null, 2)}\n`);
+  const before = { config: current.bytes, state: stateFile.contents };
+  const after = { config: Buffer.from(webSearch.text), state: nextState };
+  await writeManagedConfigPair(settings, current.mode, before, after, async () => {
+    if (settings.beforeConfigCommit) await settings.beforeConfigCommit();
+    await revalidateManagedConfigOwnership(ownership);
+  });
+  let active = true;
+  return {
+    changed: true,
+    enabled: webSearch.enabled,
+    async rollback() {
+      if (!active) return;
+      await writeManagedConfigPair(settings, current.mode, after, before);
+      active = false;
+    },
+  };
+}
+
+async function writeManagedConfigPair(settings, configMode, before, after, beforeCommit) {
+  const previousConfig = { exists: true, sha256: sha256(before.config) };
+  const previousState = { exists: true, sha256: sha256(before.state) };
+  const nextConfig = { exists: true, sha256: sha256(after.config) };
+  await atomicWrite(settings.configPath, after.config, configMode, {
+    expectedSource: previousConfig,
+    beforeCommit: async () => {
+      if (beforeCommit) await beforeCommit();
+      await assertSourceUnchanged(settings.statePath, previousState);
+    },
+  });
+  try {
+    await atomicWrite(settings.statePath, after.state, 0o600, {
+      expectedSource: previousState,
+      beforeCommit: () => assertSourceUnchanged(settings.configPath, nextConfig),
+    });
+  } catch (error) {
+    try {
+      await atomicWrite(settings.configPath, before.config, configMode, { expectedSource: nextConfig });
+    } catch (rollbackError) {
+      throw failure("WEB_SEARCH_CONFIG_ROLLBACK_FAILED", "Managed search settings could not be rolled back after a concurrent change.", {
+        cause: new AggregateError([error, rollbackError]),
+      });
+    }
+    throw error;
+  }
 }
 
 /**
@@ -563,7 +671,7 @@ export async function uninstallConfig(options) {
   const pickerRoot = inspectPickerMutableRoot(located.root, state);
 
   const modified = [];
-  for (const name of ["root", "provider"]) {
+  for (const name of ownedBlockNames(state)) {
     if (
       sha256(located[name].text) !== state.blocks[name].sha256 &&
       !(name === "root" && pickerRoot.safe)
@@ -630,6 +738,7 @@ export async function uninstallConfig(options) {
     const replacements = [
       { ...located.root, replacement: prior },
       { ...located.provider, replacement: "" },
+      ...(located.webSearch ? [{ ...located.webSearch, replacement: "" }] : []),
     ].sort((left, right) => right.start - left.start);
 
     let restoredText = current.text;
@@ -765,6 +874,9 @@ export async function restoreRecoveredProviderEndMarker(options = {}) {
   if (sha256(located.provider.text) !== ownership.state.blocks.provider.sha256) {
     modified.push("provider");
   }
+  if (located.webSearch && sha256(located.webSearch.text) !== ownership.state.blocks.webSearch.sha256) {
+    modified.push("webSearch");
+  }
   if (!hasSafeProviderScopeTail(current.text, located.provider.end)) {
     modified.push("provider-scope-tail");
   }
@@ -849,7 +961,7 @@ export async function getConfigStatus(options) {
     assertStateMatchesConfig(state, configPath);
     const located = locateOwnedBlocks(current.text, state);
     const pickerRoot = inspectPickerMutableRoot(located.root, state);
-    const modifiedBlocks = ["root", "provider"].filter((name) => {
+    const modifiedBlocks = ownedBlockNames(state).filter((name) => {
       if (sha256(located[name].text) === state.blocks[name].sha256) return false;
       return !(name === "root" && pickerRoot.safe);
     });
@@ -905,6 +1017,10 @@ function normalizeInstallOptions(options = {}) {
   requireNonEmptyString(modelCatalogJson, "modelCatalogJson");
   requireNonEmptyString(providerInput.name, "provider.name");
   requireNonEmptyString(providerInput.baseUrl, "provider.baseUrl");
+  if (providerInput.supportsStandaloneWebSearch !== undefined &&
+    typeof providerInput.supportsStandaloneWebSearch !== "boolean") {
+    throw failure("INVALID_ARGUMENT", "provider.supportsStandaloneWebSearch must be a boolean.");
+  }
   if (!PICKER_REASONING_EFFORTS.has(modelReasoningEffort)) {
     throw failure(
       "INVALID_REASONING_EFFORT",
@@ -1113,7 +1229,129 @@ function parseState(contents, path) {
   ) {
     throw failure("INVALID_STATE", `Unsupported or incomplete state file: ${path}`);
   }
+  if (state.blocks.webSearch && (
+    state.blocks.webSearch.begin !== CONFIG_MARKERS.webSearchBegin ||
+    state.blocks.webSearch.end !== CONFIG_MARKERS.webSearchEnd ||
+    !["root", "features"].includes(state.blocks.webSearch.scope) ||
+    !/^[a-f0-9]{64}$/u.test(state.blocks.webSearch.sha256)
+  )) {
+    throw failure("INVALID_STATE", "Invalid managed web search feature receipt.");
+  }
   return state;
+}
+
+function standaloneWebSearchPlan(source) {
+  let scope = [];
+  let featureTable;
+  const explicit = [];
+  for (const line of scanTomlLexicalLines(source).lines) {
+    const code = line.code.trim();
+    if (!code) continue;
+    if (isTableHeader(code)) {
+      scope = parseTomlTablePath(code);
+      if (scope?.[0] === "features") {
+        if (scope.length !== 1 || code.startsWith("[[") || featureTable) {
+          throw failure("WEB_SEARCH_CONFIG_CONFLICT", "The features table is ambiguous.");
+        }
+        featureTable = line;
+      }
+      continue;
+    }
+    if (!scope) continue;
+    const key = parseTomlDottedKey(code);
+    if (!key || code[key.end] !== "=") continue;
+    const fullPath = [...scope, ...key.path];
+    if (fullPath[0] !== "features") continue;
+    if (fullPath.length === 1) {
+      // Inline tables are sealed in TOML. Respect a proven explicit boolean,
+      // but never expand or rewrite unrelated inline feature settings.
+      const value = code.slice(key.end + 1).trim();
+      const entries = splitInlineFeatureEntries(value);
+      let found = false;
+      for (const entry of entries) {
+        const inlineKey = parseTomlDottedKey(entry);
+        if (!inlineKey || entry[inlineKey.end] !== "=") {
+          throw failure("WEB_SEARCH_CONFIG_CONFLICT", "The inline features table is malformed.");
+        }
+        if (inlineKey.path.length === 1 && inlineKey.path[0] === "standalone_web_search") {
+          explicit.push(parseFeatureBoolean(entry.slice(inlineKey.end + 1)));
+          found = true;
+        }
+      }
+      if (!found) {
+        throw failure("WEB_SEARCH_CONFIG_CONFLICT", "Set standalone_web_search explicitly in the inline features table before refreshing.");
+      }
+    } else if (fullPath[1] === "standalone_web_search") {
+      if (fullPath.length !== 2) {
+        throw failure("WEB_SEARCH_CONFIG_CONFLICT", "The standalone web search feature must be a boolean.");
+      }
+      explicit.push(parseFeatureBoolean(code.slice(key.end + 1)));
+    }
+  }
+  if (explicit.length > 1) {
+    throw failure("WEB_SEARCH_CONFIG_CONFLICT", "The standalone web search feature is defined more than once.");
+  }
+  if (explicit.length) return { existing: true, enabled: explicit[0] };
+  return { existing: false, featureTable };
+}
+
+function parseFeatureBoolean(value) {
+  const text = value.trim();
+  if (text !== "true" && text !== "false") {
+    throw failure("WEB_SEARCH_CONFIG_CONFLICT", "The standalone web search feature must be true or false.");
+  }
+  return text === "true";
+}
+
+function splitInlineFeatureEntries(value) {
+  if (!value.startsWith("{") || !value.endsWith("}")) {
+    throw failure("WEB_SEARCH_CONFIG_CONFLICT", "The features setting must be a supported TOML table.");
+  }
+  const body = value.slice(1, -1);
+  const entries = [];
+  let depth = 0;
+  let start = 0;
+  for (let index = 0; index < body.length; index += 1) {
+    if (body[index] === '"') {
+      index = skipTomlBasicString(body, index) - 1;
+    } else if (body[index] === "'") {
+      index = skipTomlLiteralString(body, index) - 1;
+    } else if (body[index] === "[" || body[index] === "{") {
+      depth += 1;
+    } else if (body[index] === "]" || body[index] === "}") {
+      depth -= 1;
+    } else if (body[index] === "," && depth === 0) {
+      entries.push(body.slice(start, index).trim());
+      start = index + 1;
+    }
+    if (depth < 0) throw failure("WEB_SEARCH_CONFIG_CONFLICT", "The inline features table is malformed.");
+  }
+  if (depth !== 0) throw failure("WEB_SEARCH_CONFIG_CONFLICT", "The inline features table is malformed.");
+  const last = body.slice(start).trim();
+  if (last) entries.push(last);
+  return entries;
+}
+
+function addStandaloneWebSearchFeature(source) {
+  const plan = standaloneWebSearchPlan(source);
+  if (plan.existing) return { text: source, enabled: plan.enabled };
+  const eol = detectEol(splitLines(source));
+  const scope = plan.featureTable ? "features" : "root";
+  const key = scope === "root" ? "features.standalone_web_search" : "standalone_web_search";
+  const blockText = [CONFIG_MARKERS.webSearchBegin, `${key} = true`, CONFIG_MARKERS.webSearchEnd, ""].join(eol);
+  const insertion = plan.featureTable?.end ?? source.indexOf(CONFIG_MARKERS.rootBegin);
+  if (insertion < 0) throw failure("WEB_SEARCH_CONFIG_CONFLICT", "Managed root block is missing.");
+  const prefix = insertion > 0 && !endsWithNewline(source.slice(0, insertion)) ? eol : "";
+  return {
+    text: source.slice(0, insertion) + prefix + blockText + source.slice(insertion),
+    enabled: true,
+    block: {
+      begin: CONFIG_MARKERS.webSearchBegin,
+      end: CONFIG_MARKERS.webSearchEnd,
+      sha256: sha256(blockText),
+      scope,
+    },
+  };
 }
 
 function analyzeConfig(source, providerId) {
@@ -1351,6 +1589,7 @@ function scanTomlLexicalLines(source) {
   const comments = [];
   const lines = splitLines(source).map((line) => {
     const code = line.raw.split("");
+    let commentStart = null;
     let index = 0;
     while (index < line.raw.length) {
       if (multilineQuote) {
@@ -1372,6 +1611,7 @@ function scanTomlLexicalLines(source) {
 
       const character = line.raw[index];
       if (character === "#") {
+        commentStart = index;
         comments.push(line.raw.slice(index + 1));
         maskCharacters(code, index, line.raw.length);
         break;
@@ -1395,7 +1635,7 @@ function scanTomlLexicalLines(source) {
       }
       index += 1;
     }
-    return { ...line, code: code.join("") };
+    return { ...line, code: code.join(""), commentStart };
   });
   if (multilineQuote) {
     throw failure(
@@ -1663,6 +1903,10 @@ function renderPickerSelectionRoot(block, model, modelReasoningEffort) {
 }
 
 function locateOwnedBlocks(source, state) {
+  if (!state.blocks.webSearch &&
+    [CONFIG_MARKERS.webSearchBegin, CONFIG_MARKERS.webSearchEnd].some((marker) => source.includes(marker))) {
+    throw failure("ORPHANED_MANAGED_BLOCK", "Managed web search markers have no ownership receipt.");
+  }
   const provider = locateBlock(
     source,
     state.blocks.provider,
@@ -1672,11 +1916,38 @@ function locateOwnedBlocks(source, state) {
       providerId: state.providerId,
     },
   );
+  const webSearch = state.blocks.webSearch
+    ? locateBlock(source, state.blocks.webSearch, "webSearch")
+    : undefined;
+  if (webSearch) {
+    const lexicalLines = scanTomlLexicalLines(source).lines;
+    const markerLines = lexicalLines.filter((line) =>
+      line.start === webSearch.start || line.end === webSearch.end);
+    if (markerLines.length !== 2 || markerLines.some((line) => line.commentStart !== 0)) {
+      throw failure("MANAGED_BLOCK_BOUNDARY_INVALID", "Managed web search boundaries must be TOML comments.");
+    }
+    let scope = [];
+    for (const line of lexicalLines) {
+      if (line.start >= webSearch.start) break;
+      if (isTableHeader(line.code.trim())) {
+        scope = parseTomlTablePath(line.code.trim());
+      }
+    }
+    const expected = state.blocks.webSearch.scope === "root" ? [] : ["features"];
+    if (JSON.stringify(scope) !== JSON.stringify(expected)) {
+      throw failure("MANAGED_BLOCK_BOUNDARY_INVALID", "Managed web search feature changed table scope.");
+    }
+  }
   return {
     root: locateBlock(source, state.blocks.root, "root"),
     provider,
+    ...(webSearch ? { webSearch } : {}),
     recoveredMarkers: provider.recoveredEnd ? ["provider-end"] : [],
   };
+}
+
+function ownedBlockNames(state) {
+  return ["root", "provider", ...(state.blocks.webSearch ? ["webSearch"] : [])];
 }
 
 function hasSafeProviderScopeTail(source, providerEnd) {

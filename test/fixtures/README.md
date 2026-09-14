@@ -1,4 +1,12 @@
-# Representative Codex 0.151 context fixtures
+# Public Codex fixtures
+
+The [web-search-tool-description](web-search-tool-description/README.md)
+subdirectory contains an exact public `web.run` description, source and hash
+provenance, the Apache-2.0 license, and the compact description's policy review.
+Unlike the semantic-kind fixtures below, only its exact SHA-256-pinned text is
+eligible for description compaction.
+
+## Representative Codex 0.151 context fixtures
 
 These files contain only generated bootstrap payloads used to exercise
 PickerMux's prompt-compaction trust boundary across wording changes. They

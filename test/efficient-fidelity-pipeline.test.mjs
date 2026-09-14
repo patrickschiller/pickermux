@@ -62,7 +62,7 @@ function requestProxy({
   });
 }
 
-function requestAbortedStream({ port, body }) {
+function requestStreamUntilClose({ port, body, onData }) {
   const encoded = Buffer.from(JSON.stringify(body), "utf8");
   return new Promise((resolve) => {
     let settled = false;
@@ -85,7 +85,10 @@ function requestAbortedStream({ port, body }) {
       },
       (response) => {
         const chunks = [];
-        response.on("data", (chunk) => chunks.push(chunk));
+        response.on("data", (chunk) => {
+          chunks.push(chunk);
+          onData?.(chunk);
+        });
         response.once("aborted", () => finish({
           aborted: true,
           body: Buffer.concat(chunks),
@@ -992,7 +995,8 @@ test("failed Efficient Fidelity SSE discards its uncommitted held tail", async (
   ]);
 });
 
-test("late invalid Efficient Fidelity streams abort safely and leave the bridge alive", async (t) => {
+test("late invalid Efficient Fidelity streams fail safely and leave the bridge alive", async (t) => {
+  let sendInvalidTail;
   const harness = await createHarness(t, {
     respond({ body, index, response }) {
       if (index === 3) {
@@ -1007,52 +1011,70 @@ test("late invalid Efficient Fidelity streams abort safely and leave the bridge 
         type: "response.created",
         response: { id: `resp_bad_${index}`, output: [] },
       });
-      if (index < 2) {
-        const syntheticName = body.tools.find(
-          (tool) => tool.name?.startsWith("mbts_"),
-        ).name;
-        const item = {
-          id: `item_bad_${index}`,
-          type: "function_call",
-          name: syntheticName,
-          call_id: `call_bad_${index}`,
-          status: "completed",
-          arguments: '{"query":"workspace"}',
-        };
-        writeEvent({
-          type: "response.output_item.done",
-          output_index: 0,
-          item,
-        });
-        if (index === 1) {
+      sendInvalidTail = () => {
+        sendInvalidTail = undefined;
+        if (index < 2) {
+          const syntheticName = body.tools.find(
+            (tool) => tool.name?.startsWith("mbts_"),
+          ).name;
+          const item = {
+            id: `item_bad_${index}`,
+            type: "function_call",
+            name: syntheticName,
+            call_id: `call_bad_${index}`,
+            status: "completed",
+            arguments: '{"query":"workspace"}',
+          };
           writeEvent({
-            type: "response.completed",
-            response: {
-              id: "resp_bad_1",
-              output: [{ ...item, arguments: '{"query":"changed"}' }],
-            },
+            type: "response.output_item.done",
+            output_index: 0,
+            item,
+          });
+          if (index === 1) {
+            writeEvent({
+              type: "response.completed",
+              response: {
+                id: "resp_bad_1",
+                output: [{ ...item, arguments: '{"query":"changed"}' }],
+              },
+            });
+          }
+        } else {
+          writeEvent({
+            type: "response.function_call_arguments.delta",
+            item_id: "item_orphan",
+            output_index: 0,
+            delta: "{}",
           });
         }
-      } else {
-        writeEvent({
-          type: "response.function_call_arguments.delta",
-          item_id: "item_orphan",
-          output_index: 0,
-          delta: "{}",
-        });
-      }
-      response.end();
+        response.end();
+      };
     },
   });
 
   for (let index = 0; index < 3; index += 1) {
-    const result = await requestAbortedStream({
+    const result = await requestStreamUntilClose({
       port: harness.port,
       body: efficientRequest({ stream: true }),
+      // Start the invalid tail only after the initial event reached the client.
+      onData: () => sendInvalidTail?.(),
     });
-    assert.ok(result.statusCode === undefined || result.statusCode === 200);
-    assert.equal(result.aborted, true);
-    assert.doesNotMatch(result.body.toString("utf8"), /tool_search_call|mbts_/u);
+    assert.equal(result.statusCode, 200);
+    assert.equal(result.aborted, false);
+    assert.deepEqual(parseSse(result.body), [
+      { type: "response.created", response: { id: `resp_bad_${index}`, output: [] } },
+      {
+        type: "response.failed",
+        response: {
+          status: "failed",
+          error: {
+            code: "UPSTREAM_RESPONSE_ERROR",
+            message: "The upstream response could not be read or validated (UPSTREAM_RESPONSE_ERROR)",
+          },
+        },
+      },
+    ]);
+    assert.doesNotMatch(result.body.toString("utf8"), /function_call|tool_search_call|mbts_|call_bad_|item_bad_|item_orphan|workspace|changed/u);
   }
 
   const healthy = await requestProxy({

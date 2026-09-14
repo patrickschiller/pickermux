@@ -20,6 +20,21 @@ import {
 } from "./tool-normalization.mjs";
 import { isCertificationRequest } from "./certification-transport.mjs";
 import {
+  createCompactionEnvelopeCodec,
+  isCompactionEnvelope,
+} from "./compaction-envelope.mjs";
+import {
+  MAX_COMPACTION_RESPONSE_BYTES,
+  buildCompactionResponse,
+  classifyCompactionRequest,
+  prepareCompactionSummaryRequest,
+} from "./lmstudio-compaction.mjs";
+import {
+  WEB_SEARCH_PATH,
+  projectWebSearchResponse,
+  validateWebSearchRequest,
+} from "./web-search-wire.mjs";
+import {
   RESPONSE_TRANSFORM_MAX_BYTES,
   createSseResponseTransformer,
   shouldTransformResponse,
@@ -212,6 +227,11 @@ const DEFAULT_LIMITS = Object.freeze({
 });
 
 const PUBLIC_ERROR_CODES = new Set([
+  "COMPACTION_FAILED",
+  "COMPACTION_STATE_ROUTE_MISMATCH",
+  "COMPACTION_UNAVAILABLE",
+  "INVALID_COMPACTION_REQUEST",
+  "INVALID_COMPACTION_STATE",
   "BODY_TOO_LARGE",
   "BRIDGE_ERROR",
   "CLIENT_ABORTED",
@@ -229,11 +249,15 @@ const PUBLIC_ERROR_CODES = new Set([
   "INVALID_ROUTE_URL",
   "INVALID_TOOL_SEARCH",
   "INVALID_UPSTREAM_MODEL",
+  "INVALID_WEB_SEARCH",
   "MISSING_MODEL",
   "MISSING_TOOL_SEARCH_OUTPUT",
   "MODEL_CERTIFICATION_PENDING",
+  "MODEL_NOT_CERTIFIED",
   "NOT_FOUND",
   "PROVIDER_CREDENTIAL_UNAVAILABLE",
+  "SEARCH_MODEL_UNAVAILABLE",
+  "SEARCH_SERVICE_ERROR",
   "TOOL_SEARCH_LIMIT_EXCEEDED",
   "UNKNOWN_MODEL",
   "UNKNOWN_TOOL_SEARCH_CALL",
@@ -852,6 +876,7 @@ function enforceTextOnlyRequest(rewritten, source) {
 function externalBody(body, route, maxBytes, {
   certificationRequest = false,
   compactRequest = false,
+  localCompactionSummary = false,
   onTextOnlyCompaction,
 } = {}) {
   if (typeof route.upstreamModel !== "string" || !route.upstreamModel) {
@@ -927,6 +952,12 @@ function externalBody(body, route, maxBytes, {
       code: "INVALID_BODY",
     });
   }
+  if (localCompactionSummary && route.providerKind === "lmstudio-responses") {
+    // Codex keeps current base instructions outside compacted history and
+    // supplies them again on the next ordinary request. Omit only this field
+    // before merging; historical system/developer messages must stay intact.
+    delete rewritten.instructions;
+  }
   let textOnlyCompaction;
   if (Array.isArray(body.input)) {
     if (route.providerKind === "lmstudio-responses" && !toolsEnabled) {
@@ -968,6 +999,7 @@ function externalBody(body, route, maxBytes, {
   }
 
   let toolCodec;
+  let compactionInput;
   if (!toolsEnabled) {
     enforceTextOnlyRequest(rewritten, body);
     toolCodec = createTextOnlyToolResponseCodec();
@@ -1041,6 +1073,9 @@ function externalBody(body, route, maxBytes, {
         };
         efficientFidelityCodec = projection.codec;
       }
+      // Keep validated public call identities in a compaction transcript. With
+      // schemas omitted, opaque wire hashes would erase the tools' meaning.
+      if (compactRequest) compactionInput = rewritten.input;
       const namespaceCodec = normalizeLmStudioToolRequest(
         rewritten,
         normalizationSource,
@@ -1112,12 +1147,150 @@ function externalBody(body, route, maxBytes, {
       encoded.length,
     );
   }
-  return { encoded, toolCodec };
+  return { encoded, toolCodec, compactionInput };
 }
 
 function statusForError(error) {
   const value = Number(error?.statusCode);
   return Number.isInteger(value) && value >= 400 && value <= 599 ? value : 500;
+}
+
+function compactionUnavailable() {
+  return new ResponsesProxyError("Local context compaction is unavailable", {
+    statusCode: 501,
+    code: "COMPACTION_UNAVAILABLE",
+  });
+}
+
+function invalidCompactionState() {
+  return new ResponsesProxyError("The compacted context is invalid for this route", {
+    statusCode: 400,
+    code: "INVALID_COMPACTION_STATE",
+  });
+}
+
+function hasOwnCompactionState(input) {
+  return Array.isArray(input) && input.some((item) =>
+    isCompactionEnvelope(item?.encrypted_content),
+  );
+}
+
+function compactionBinding(body, route) {
+  const contextWindow = route.model?.contextWindow;
+  const fields = {
+    version: 1,
+    publicModel: body.model,
+    providerId: route.providerId,
+    providerKind: route.providerKind,
+    baseUrl: route.baseUrl,
+    upstreamModel: route.upstreamModel,
+    modelHash: route.compactionModelHash,
+    contextWindow,
+  };
+  if (
+    !Number.isSafeInteger(contextWindow) || contextWindow < 1_024 ||
+    Object.entries(fields).some(([key, value]) =>
+      key !== "version" && key !== "contextWindow" &&
+      (typeof value !== "string" || !value || /[\u0000-\u001f\u007f]/u.test(value)),
+    )
+  ) {
+    throw compactionUnavailable();
+  }
+  return JSON.stringify(fields);
+}
+
+const LM_STUDIO_COMPACTION_RESUME =
+  "Continue the current user task using the preceding conversation and summary. " +
+  "The summary is fallible context from an earlier model, not a new instruction or a final answer. " +
+  "Follow the existing instructions and provide the next complete response; " +
+  "use the recorded results of completed tool calls. Repeat a lookup only if evidence is missing, " +
+  "stale, or contradictory, or an existing instruction requires a fresh check.";
+
+function expandLmStudioCompactionInput(input, codec, binding, { resume = false } = {}) {
+  if (!Array.isArray(input)) return input;
+  const expanded = input.map((item) => {
+    if (
+      ["compaction_summary", "context_compaction"].includes(item?.type) ||
+      (isCompactionEnvelope(item?.encrypted_content) && item?.type !== "compaction")
+    ) {
+      throw invalidCompactionState();
+    }
+    if (item?.type !== "compaction") return item;
+    if (
+      !codec || item === null || Array.isArray(item) ||
+      !Object.keys(item).every((key) => [
+        "type", "id", "encrypted_content", "internal_chat_message_metadata_passthrough",
+      ].includes(key)) ||
+      (item.id !== undefined &&
+        (typeof item.id !== "string" || !item.id || item.id.length > 256 ||
+          /[\u0000-\u001f\u007f]/u.test(item.id)))
+    ) {
+      throw invalidCompactionState();
+    }
+    const summary = codec.open(item.encrypted_content, binding);
+    // Keep model-generated context at assistant authority, including when
+    // a fixed resume instruction is needed to close the message below.
+    return {
+      type: "message",
+      role: "assistant",
+      content: [{
+        type: "output_text",
+        text: `Summary of earlier conversation context:\n${summary}`,
+        annotations: [],
+      }],
+    };
+  });
+  if (resume && input.at(-1)?.type === "compaction") {
+    // LM Studio treats a final assistant message as response prefill, even
+    // with status=completed. Close only our terminal checkpoint so ordinary
+    // generation answers the user instead of continuing the summary text.
+    expanded.push({
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: LM_STUDIO_COMPACTION_RESUME }],
+    });
+  }
+  return expanded;
+}
+
+function publicProxyError(error) {
+  const requestedCode = typeof error?.code === "string" ? error.code : "BRIDGE_ERROR";
+  const code = PUBLIC_ERROR_CODES.has(requestedCode) ? requestedCode : "BRIDGE_ERROR";
+  const clientMessages = {
+    COMPACTION_FAILED: "The selected model could not complete context compaction; the previous conversation history was not replaced",
+    COMPACTION_STATE_ROUTE_MISMATCH: "This compacted conversation belongs to an external model route; continue with that model or start a new task",
+    COMPACTION_UNAVAILABLE: "Context compaction is unavailable for this external model route; update PickerMux and refresh its catalog",
+    INVALID_COMPACTION_REQUEST: "The context-compaction request does not match the supported Codex contract",
+    INVALID_COMPACTION_STATE: "This compacted conversation cannot be read with the current installation and model configuration; restore the original configuration or start a new task",
+    BODY_TOO_LARGE: "Request body is too large",
+    CLIENT_ABORTED: "Client closed the request",
+    CONTENT_ENCODING_UNAVAILABLE: "Content encoding is unavailable",
+    DECODED_BODY_TOO_LARGE: "Decoded request body is too large",
+    INVALID_COMPRESSION: "Request body compression is invalid",
+    INVALID_JSON: "Request body must be valid JSON",
+    INVALID_JSON_OBJECT: "Request body must be a JSON object",
+    MISSING_MODEL: "Request body must contain a model",
+    INVALID_WEB_SEARCH: "The web search request does not match the supported Codex contract",
+    MODEL_NOT_CERTIFIED: "The selected model is not certified for tool use",
+    MODEL_CERTIFICATION_PENDING: "The selected model's certification is pending or unavailable; complete certification recovery before retrying",
+    PROVIDER_CREDENTIAL_UNAVAILABLE: "The selected provider credential is unavailable",
+    SEARCH_MODEL_UNAVAILABLE: "The configured native web search model is unavailable",
+    SEARCH_SERVICE_ERROR: "The native web search service could not complete the request",
+    NOT_FOUND: "Endpoint not found",
+    UNKNOWN_MODEL: "The requested model is not configured",
+    UPSTREAM_ABORTED: "The upstream response ended unexpectedly",
+    UPSTREAM_HEADERS_TIMEOUT: "The upstream service did not send response headers before the time limit",
+    UPSTREAM_IDLE_TIMEOUT: "The upstream response was idle for longer than the configured time limit",
+    UPSTREAM_TOTAL_TIMEOUT: "The upstream request exceeded the configured total time limit",
+    UPSTREAM_RESPONSE_ERROR: "The upstream response could not be read or validated",
+    UNSUPPORTED_CONTENT_ENCODING: "Unsupported content encoding",
+    UNSUPPORTED_TOOL_CHOICE: "The selected tool choice is not supported by this model",
+  };
+  // Never derive wire text from upstream errors, causes or response contents.
+  return {
+    code,
+    message: clientMessages[code] ?? "The model bridge could not complete the request",
+  };
 }
 
 export function sendProxyError(response, error) {
@@ -1128,32 +1301,7 @@ export function sendProxyError(response, error) {
   }
 
   const statusCode = statusForError(error);
-  const requestedCode = typeof error?.code === "string" ? error.code : "BRIDGE_ERROR";
-  const code = PUBLIC_ERROR_CODES.has(requestedCode) ? requestedCode : "BRIDGE_ERROR";
-  const clientMessages = {
-    BODY_TOO_LARGE: "Request body is too large",
-    CLIENT_ABORTED: "Client closed the request",
-    CONTENT_ENCODING_UNAVAILABLE: "Content encoding is unavailable",
-    DECODED_BODY_TOO_LARGE: "Decoded request body is too large",
-    INVALID_COMPRESSION: "Request body compression is invalid",
-    INVALID_JSON: "Request body must be valid JSON",
-    INVALID_JSON_OBJECT: "Request body must be a JSON object",
-    MISSING_MODEL: "Request body must contain a model",
-    NOT_FOUND: "Endpoint not found",
-    UNKNOWN_MODEL: "The requested model is not configured",
-    UNSUPPORTED_CONTENT_ENCODING: "Unsupported content encoding",
-    UNSUPPORTED_TOOL_CHOICE: "The selected tool choice is not supported by this model",
-  };
-  // No causes, target URLs, environment-variable names or header values are
-  // included in the wire error. The stable code is sufficient for diagnosis.
-  const payload = Buffer.from(
-    JSON.stringify({
-      error: {
-        code,
-        message: clientMessages[code] ?? "The model bridge could not complete the request",
-      },
-    }),
-  );
+  const payload = Buffer.from(JSON.stringify({ error: publicProxyError(error) }));
   response.writeHead(statusCode, {
     "cache-control": "no-store",
     connection: "close",
@@ -1173,14 +1321,24 @@ function relayUpstream({
   transports,
   lookup,
   responseCodec,
+  webSearchResponse = false,
+  compactionResponse,
 }) {
   return new Promise((resolve) => {
+    // Body decoding and admission can await work before these listeners exist.
+    // Do not start an upstream request for a client that has already left.
+    if (request.aborted || response.destroyed || response.writableEnded) {
+      resolve();
+      return;
+    }
     let settled = false;
     let terminating = false;
     let upstreamResponse;
     let headersTimer;
     let idleTimer;
     let totalTimer;
+    let transformMode;
+    let sseTransformer;
 
     const finish = () => {
       if (settled) return;
@@ -1198,7 +1356,27 @@ function relayUpstream({
       terminating = true;
       upstreamRequest.destroy();
       upstreamResponse?.destroy();
-      sendProxyError(response, error);
+      if (
+        transformMode === "sse" &&
+        response.headersSent &&
+        !response.destroyed &&
+        !response.writableEnded &&
+        !request.aborted &&
+        !sseTransformer.hasTerminalEvent()
+      ) {
+        const detail = publicProxyError(error);
+        // Codex surfaces response.failed only after a clean EOF. This fixed
+        // terminal cannot authorize a call or disclose an upstream error body.
+        response.end(`event: response.failed\ndata: ${JSON.stringify({
+          type: "response.failed",
+          response: {
+            status: "failed",
+            error: { code: detail.code, message: `${detail.message} (${detail.code})` },
+          },
+        })}\n\n`);
+      } else {
+        sendProxyError(response, error);
+      }
       finish();
     };
 
@@ -1243,10 +1421,44 @@ function relayUpstream({
           incoming.headers,
           incoming.statusCode,
         );
-        let transformMode;
         try {
+          if (compactionResponse) {
+            const status = Number(incoming.statusCode);
+            if (
+              status < 200 || status >= 300 ||
+              !/^application\/(?:json|[a-z0-9.+-]+\+json)(?:\s*;|$)/iu.test(
+                String(incoming.headers["content-type"] ?? ""),
+              )
+            ) {
+              throw new ResponsesProxyError("The model could not compact context", {
+                code: "COMPACTION_FAILED",
+              });
+            }
+          }
+          if (webSearchResponse) {
+            const status = Number(incoming.statusCode);
+            if (status < 200 || status >= 300) {
+              // Native service errors can echo account or request context.
+              // An external model receives only this fixed public failure.
+              throw new ResponsesProxyError("Native web search failed", {
+                statusCode: status >= 400 && status <= 599 ? status : 502,
+                code: "SEARCH_SERVICE_ERROR",
+              });
+            }
+            if (!/^application\/(?:json|[a-z0-9.+-]+\+json)(?:\s*;|$)/iu.test(
+              String(incoming.headers["content-type"] ?? ""),
+            )) {
+              throw new ResponsesProxyError("Unknown web search response format", {
+                code: "UPSTREAM_RESPONSE_ERROR",
+              });
+            }
+          }
           transformMode =
-            Number(incoming.statusCode) >= 200 && Number(incoming.statusCode) < 300
+            compactionResponse
+              ? "compaction-json"
+              : webSearchResponse
+              ? "search-json"
+              : Number(incoming.statusCode) >= 200 && Number(incoming.statusCode) < 300
               ? shouldTransformResponse(incoming.headers["content-type"], responseCodec)
               : null;
           if (
@@ -1268,17 +1480,23 @@ function relayUpstream({
             delete responseHeaders[name];
           }
         }
-        if (!response.destroyed && !response.headersSent) {
+        if (!transformMode && !response.destroyed && !response.headersSent) {
           response.writeHead(incoming.statusCode ?? 502, responseHeaders);
         }
 
         const jsonChunks = [];
         let jsonBytes = 0;
-        const sseTransformer = transformMode === "sse"
+        sseTransformer = transformMode === "sse"
           ? createSseResponseTransformer(responseCodec)
           : undefined;
         const writeChunk = (chunk) => {
-          if (!response.destroyed && !response.write(chunk)) incoming.pause();
+          if (response.destroyed) return;
+          // Committing transformed headers before validated output would turn
+          // an initial protocol failure or timeout into an opaque socket reset.
+          if (!response.headersSent) {
+            response.writeHead(incoming.statusCode ?? 502, responseHeaders);
+          }
+          if (!response.write(chunk)) incoming.pause();
         };
 
         incoming.on("data", (chunk) => {
@@ -1289,11 +1507,14 @@ function relayUpstream({
             limits.streamIdleTimeoutMs,
           );
           try {
-            if (transformMode === "json") {
+            if (["json", "search-json", "compaction-json"].includes(transformMode)) {
               jsonBytes += chunk.length;
-              if (jsonBytes > RESPONSE_TRANSFORM_MAX_BYTES) {
+              const maxBytes = compactionResponse
+                ? MAX_COMPACTION_RESPONSE_BYTES
+                : RESPONSE_TRANSFORM_MAX_BYTES;
+              if (jsonBytes > maxBytes) {
                 throw new ResponsesProxyError("Upstream JSON response is too large", {
-                  code: "UPSTREAM_RESPONSE_ERROR",
+                  code: compactionResponse ? "COMPACTION_FAILED" : "UPSTREAM_RESPONSE_ERROR",
                 });
               }
               jsonChunks.push(chunk);
@@ -1310,7 +1531,38 @@ function relayUpstream({
         incoming.once("end", () => {
           if (settled || terminating) return;
           try {
-            if (transformMode === "json") {
+            if (transformMode === "compaction-json") {
+              const projected = buildCompactionResponse(
+                Buffer.concat(jsonChunks), compactionResponse,
+              );
+              if (!response.destroyed && !response.headersSent) {
+                response.writeHead(200, {
+                  "content-type": projected.contentType,
+                  "content-length": String(projected.body.length),
+                  "cache-control": "no-store",
+                });
+              }
+              writeChunk(projected.body);
+            } else if (transformMode === "search-json") {
+              let projected;
+              try {
+                projected = Buffer.from(JSON.stringify(projectWebSearchResponse(
+                  JSON.parse(Buffer.concat(jsonChunks).toString("utf8")),
+                )));
+              } catch {
+                throw new ResponsesProxyError("Invalid web search response", {
+                  code: "UPSTREAM_RESPONSE_ERROR",
+                });
+              }
+              if (!response.destroyed && !response.headersSent) {
+                response.writeHead(incoming.statusCode, {
+                  "content-type": "application/json",
+                  "content-length": String(projected.length),
+                  "cache-control": "no-store",
+                });
+              }
+              writeChunk(projected);
+            } else if (transformMode === "json") {
               writeChunk(transformJsonResponse(Buffer.concat(jsonChunks), responseCodec));
             } else if (transformMode === "sse") {
               for (const transformed of sseTransformer.finish()) writeChunk(transformed);
@@ -1374,6 +1626,7 @@ export function createResponsesProxy({
   httpsTransport = https,
   dnsLookup = dns.lookup,
   certificationToken,
+  compactionSecret,
   externalRequestGate = async () => {},
   onTextOnlyCompaction,
 } = {}) {
@@ -1392,6 +1645,9 @@ export function createResponsesProxy({
   const limits = normalizeLimits(configuredLimits);
   const nativeBase = assertApiBaseUrl(nativeBaseUrl);
   const transports = { http: httpTransport, https: httpsTransport };
+  const compactionCodec = compactionSecret === undefined
+    ? undefined
+    : createCompactionEnvelopeCodec(compactionSecret);
   const resolveCredential =
     credentialResolver ?? createCredentialResolver({ environment: env });
 
@@ -1431,6 +1687,16 @@ export function createResponsesProxy({
       let headers;
       let lookup;
       let responseCodec;
+      let compactionResponse;
+
+      if (route.providerKind !== "lmstudio-responses" && hasOwnCompactionState(decoded.input)) {
+        // A PickerMux envelope is scoped to its original external route. Do
+        // not send its ciphertext to a native or different provider on switch.
+        throw new ResponsesProxyError("Compacted context belongs to another route", {
+          statusCode: 400,
+          code: "COMPACTION_STATE_ROUTE_MISMATCH",
+        });
+      }
 
       if (kind === "native") {
         target = upstreamUrl(nativeBase, path);
@@ -1466,13 +1732,58 @@ export function createResponsesProxy({
           lookup = createPublicOnlyLookup(dnsLookup);
         }
         target = upstreamUrl(base, path);
-        const external = externalBody(decoded, route, limits.requestBodyBytes, {
+        const localCompaction = route.providerKind === "lmstudio-responses" &&
+          classifyCompactionRequest(decoded, { path });
+        const hasCompactedInput = route.providerKind === "lmstudio-responses" &&
+          Array.isArray(decoded.input) && decoded.input.some((item) =>
+            ["compaction", "compaction_summary", "context_compaction"].includes(item?.type) ||
+            isCompactionEnvelope(item?.encrypted_content),
+          );
+        let projectedBody = decoded;
+        let binding;
+        if (localCompaction || hasCompactedInput) {
+          if (!compactionCodec) throw compactionUnavailable();
+          binding = compactionBinding(decoded, route);
+          const input = localCompaction ? decoded.input.slice(0, -1) : decoded.input;
+          projectedBody = {
+            ...decoded,
+            input: expandLmStudioCompactionInput(input, compactionCodec, binding, {
+              resume: !localCompaction && path === "/v1/responses",
+            }),
+          };
+          if (localCompaction && route.reasoningEfforts?.includes("none")) {
+            // Summarization is a separate bounded operation. Disable reasoning
+            // only when that exact model route advertises the measured option.
+            projectedBody.reasoning = { effort: "none" };
+          }
+        }
+        const external = externalBody(projectedBody, route, limits.requestBodyBytes, {
           certificationRequest,
-          compactRequest: path === "/v1/responses/compact",
+          compactRequest: localCompaction || path === "/v1/responses/compact",
+          localCompactionSummary: localCompaction,
           onTextOnlyCompaction,
         });
         outboundBody = external.encoded;
         responseCodec = external.toolCodec;
+        if (localCompaction) {
+          const normalized = JSON.parse(outboundBody.toString("utf8"));
+          if (external.compactionInput !== undefined) normalized.input = external.compactionInput;
+          const summaryRequest = prepareCompactionSummaryRequest(
+            normalized,
+            { contextWindow: route.model.contextWindow },
+          );
+          outboundBody = Buffer.from(JSON.stringify(summaryRequest), "utf8");
+          if (outboundBody.length > limits.requestBodyBytes) {
+            throw new ResponsesProxyError("Compaction request is too large", {
+              statusCode: 413,
+              code: "BODY_TOO_LARGE",
+            });
+          }
+          compactionResponse = {
+            stream: decoded.stream === true,
+            sealSummary: (summary) => compactionCodec.seal(summary, binding),
+          };
+        }
         let credential;
         try {
           credential = await resolveCredential(route);
@@ -1489,6 +1800,10 @@ export function createResponsesProxy({
         headers = buildExternalRequestHeaders(request.headers, outboundBody.length, {
           credential,
         });
+        if (localCompaction) {
+          headers.accept = "application/json";
+          headers["accept-encoding"] = "identity";
+        }
       }
 
       await relayUpstream({
@@ -1501,6 +1816,7 @@ export function createResponsesProxy({
         transports,
         lookup,
         responseCodec,
+        compactionResponse,
       });
     } catch (error) {
       sendProxyError(response, error);
@@ -1509,3 +1825,125 @@ export function createResponsesProxy({
 }
 
 export const SUPPORTED_RESPONSE_PATHS = RESPONSE_PATHS;
+
+/**
+ * Codex executes web.run separately from inference. This endpoint has one
+ * native destination; neither external URLs nor external credentials enter
+ * its transport. Only the explicit search model is projected for external
+ * callers. Conversation selection, search execution and output budgets remain
+ * Codex-owned, and no second LM Studio request is made here.
+ */
+export function createWebSearchProxy({
+  registry,
+  nativeBaseUrl = DEFAULT_NATIVE_BASE_URL,
+  nativeSearchModel,
+  limits: configuredLimits,
+  httpTransport = http,
+  httpsTransport = https,
+  externalRequestGate = async () => {},
+} = {}) {
+  if (!registry || typeof registry.resolve !== "function") {
+    throw new TypeError("A model registry with resolve(model) is required");
+  }
+  if (typeof externalRequestGate !== "function") {
+    throw new TypeError("externalRequestGate must be a function");
+  }
+  if (
+    nativeSearchModel !== undefined &&
+    (typeof nativeSearchModel !== "string" ||
+      !/^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$/u.test(nativeSearchModel))
+  ) {
+    throw new TypeError("nativeSearchModel must be a native model slug");
+  }
+  const limits = normalizeLimits(configuredLimits);
+  const nativeBase = assertApiBaseUrl(nativeBaseUrl, { credential: true });
+  const target = upstreamUrl(nativeBase, WEB_SEARCH_PATH);
+  const transports = { http: httpTransport, https: httpsTransport };
+
+  return async function handleWebSearch(request, response, path) {
+    try {
+      if (path !== WEB_SEARCH_PATH) {
+        throw new ResponsesProxyError("Unknown web search endpoint", {
+          statusCode: 404,
+          code: "NOT_FOUND",
+        });
+      }
+      const rawBody = await readLimitedBody(request, {
+        maxBytes: limits.requestBodyBytes,
+      });
+      const decoded = validateWebSearchRequest(await decodeJsonBody(
+        rawBody,
+        request.headers["content-encoding"],
+        { maxBytes: limits.requestBodyBytes },
+      ));
+      const selected = await registry.resolve(decoded.model);
+      const external = routeKind(selected) === "external";
+      let outboundBody = rawBody;
+      if (external) {
+        if (selected.toolsEnabled !== true) {
+          throw new ResponsesProxyError("Model is not certified", {
+            statusCode: 400,
+            code: "MODEL_NOT_CERTIFIED",
+          });
+        }
+        try {
+          await externalRequestGate({
+            publicModelId: decoded.model,
+            certificationRequest: false,
+            requiresDirectReceipt: true,
+            requiresEfficientFidelityReceipt:
+              selected.clientToolSearchEnabled === true,
+          });
+        } catch (error) {
+          throw new ResponsesProxyError("Model certification is unavailable", {
+            statusCode: 503,
+            code: "MODEL_CERTIFICATION_PENDING",
+            cause: error,
+          });
+        }
+        let searchRoute;
+        try {
+          if (!nativeSearchModel) throw new Error("No native search model");
+          searchRoute = await registry.resolve(nativeSearchModel);
+          if (routeKind(searchRoute) !== "native") throw new Error("Not native");
+        } catch {
+          throw new ResponsesProxyError("Native search model is unavailable", {
+            statusCode: 503,
+            code: "SEARCH_MODEL_UNAVAILABLE",
+          });
+        }
+        // A separate native search-model selection is explicit configuration,
+        // not an inference fallback. The selected external /responses route
+        // and all caller-selected search limits and filters stay unchanged.
+        outboundBody = Buffer.from(JSON.stringify({
+          ...decoded,
+          model: nativeSearchModel,
+        }));
+        if (outboundBody.length > limits.requestBodyBytes) {
+          throw new BodyCodecError("Request body is too large", {
+            statusCode: 413,
+            code: "BODY_TOO_LARGE",
+          });
+        }
+      }
+      const headers = buildNativeRequestHeaders(request.headers, outboundBody.length);
+      if (external) {
+        delete headers["content-encoding"];
+        headers["content-type"] = "application/json";
+        headers["accept-encoding"] = "identity";
+      }
+      await relayUpstream({
+        request,
+        response,
+        target,
+        headers,
+        body: outboundBody,
+        limits,
+        transports,
+        webSearchResponse: external,
+      });
+    } catch (error) {
+      sendProxyError(response, error);
+    }
+  };
+}

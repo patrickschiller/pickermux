@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { compactWebSearchToolDescription } from "./web-search-tool-description.mjs";
 
 const DEFAULT_NAMESPACE = "functions";
 const WIRE_PREFIX = "mbns_";
@@ -186,6 +187,13 @@ export function normalizeLmStudioToolRequest(
 
   const add = ({ namespace, tool, label }) => {
     const normalized = normalizedFunction(tool, label);
+    if (Object.hasOwn(normalized, "description")) {
+      normalized.description = compactWebSearchToolDescription({
+        namespace,
+        name: normalized.name,
+        description: normalized.description,
+      });
+    }
     const semanticKey = `${namespace ?? ""}\0${normalized.name}`;
     if (keys.has(semanticKey)) {
       throw new ToolNormalizationError(`Duplicate function tool ${normalized.name}`);

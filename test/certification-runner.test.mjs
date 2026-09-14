@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import http from "node:http";
 import test from "node:test";
 
 import {
@@ -1668,4 +1669,179 @@ test("requires the private runtime marker for Efficient Fidelity certification",
     /Certification token/u,
   );
   assert.equal(requested, false);
+});
+
+test("certification retains one ten-minute default deadline per complete probe", async (t) => {
+  const deadlines = [];
+  t.mock.method(AbortSignal, "timeout", (milliseconds) => {
+    deadlines.push(milliseconds);
+    return new AbortController().signal;
+  });
+  const responses = successfulP3Responses();
+  await runModelCertification({
+    baseUrl: "http://127.0.0.1:4210/c/test-capability/v1",
+    model: { id: "lmstudio/example/model", contextWindow: 32_768 },
+    certificationToken: CERTIFICATION_TOKEN,
+    fetchImpl: async () => responses.shift(),
+  });
+  assert.deepEqual(deadlines, Array(7).fill(600_000));
+});
+
+test("certification uses the scoped local HTTP transport by default for the complete matrix", async (t) => {
+  const responses = successfulP3Responses();
+  const received = [];
+  const server = http.createServer((request, response) => {
+    request.resume();
+    request.once("end", async () => {
+      received.push({ path: request.url, headers: request.headers });
+      const prepared = responses.shift();
+      if (!prepared) {
+        response.writeHead(500);
+        response.end();
+        return;
+      }
+      response.writeHead(prepared.status, { "content-type": prepared.headers.get("content-type") });
+      response.end(await prepared.text());
+    });
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  t.after(() => new Promise((resolve) => {
+    server.closeAllConnections();
+    server.close(resolve);
+  }));
+  const capability = "certification_default_transport_test_0123456789";
+  const gates = await runModelCertification({
+    baseUrl: `http://127.0.0.1:${server.address().port}/c/${capability}/v1`,
+    model: { id: "lmstudio/example/model", contextWindow: 32_768 },
+    certificationToken: CERTIFICATION_TOKEN,
+    timeoutMs: 5_000,
+  });
+  assert.deepEqual(gates, Object.fromEntries(REQUIRED_CERTIFICATION_GATES.map((gate) => [gate, true])));
+  assert.equal(received.length, 7);
+  for (const request of received) {
+    assert.equal(request.path, `/c/${capability}/v1/responses`);
+    assert.equal(request.headers[CERTIFICATION_HEADER], CERTIFICATION_TOKEN);
+    assert.equal(request.headers["accept-encoding"], "identity");
+  }
+});
+
+test("certification request failures retain the probe and only a fixed safe transport code", async (t) => {
+  const privateMarker = "synthetic-private-transport-context";
+  for (const [underlyingCode, expectedCode] of [
+    ["UND_ERR_HEADERS_TIMEOUT", "CERTIFICATION_TIMEOUT"],
+    ["UND_ERR_BODY_TIMEOUT", "CERTIFICATION_TIMEOUT"],
+    ["UND_ERR_CONNECT_TIMEOUT", "CERTIFICATION_TIMEOUT"],
+    ["ECONNREFUSED", "CERTIFICATION_CONNECTION_FAILED"],
+    ["ECONNRESET", "CERTIFICATION_CONNECTION_FAILED"],
+    ["HPE_HEADER_OVERFLOW", "CERTIFICATION_RESPONSE_HEADERS"],
+    ["ABORT_ERR", "CERTIFICATION_ABORTED"],
+    [privateMarker, "CERTIFICATION_TRANSPORT_FAILED"],
+  ]) {
+    await t.test(underlyingCode === privateMarker ? "unknown error" : underlyingCode, async () => {
+      let requests = 0;
+      const underlying = Object.assign(new Error(privateMarker), { code: underlyingCode });
+      const error = new TypeError("fetch failed", { cause: underlying });
+      await assert.rejects(runModelCertification({
+        baseUrl: "http://127.0.0.1:4210/c/test-capability/v1",
+        model: { id: "lmstudio/example/model", contextWindow: 32_768 },
+        certificationToken: CERTIFICATION_TOKEN,
+        fetchImpl: async () => { requests += 1; throw error; },
+        timeoutMs: 5_000,
+      }), (failure) => {
+        assert.equal(failure.message, `Text probe request failed (${expectedCode})`);
+        assert.equal(failure.code, expectedCode);
+        assert.equal(failure.cause, undefined);
+        assert.equal(String(failure.stack).includes(privateMarker), false);
+        assert.equal(JSON.stringify(failure).includes(privateMarker), false);
+        return true;
+      });
+      assert.equal(requests, 1);
+    });
+  }
+});
+
+test("certification labels streaming and additive request failures without private causes", async () => {
+  for (const [runner, responses, label] of [
+    [runModelCertification, [successfulP3Responses()[0]], "Stream probe"],
+    [runEfficientFidelityCertification, [], "Efficient Fidelity search probe"],
+  ]) {
+    const privateMarker = "synthetic-private-request-context";
+    await assert.rejects(runner({
+      baseUrl: "http://127.0.0.1:4210/c/test-capability/v1",
+      model: { id: "lmstudio/example/model", contextWindow: 32_768 },
+      certificationToken: CERTIFICATION_TOKEN,
+      fetchImpl: async () => {
+        if (responses.length > 0) return responses.shift();
+        throw Object.assign(new Error(privateMarker), { code: "CERTIFICATION_TIMEOUT" });
+      },
+      timeoutMs: 5_000,
+    }), (failure) => {
+      assert.equal(failure.message, `${label} request failed (CERTIFICATION_TIMEOUT)`);
+      assert.equal(failure.cause, undefined);
+      assert.equal(String(failure.stack).includes(privateMarker), false);
+      return true;
+    });
+  }
+});
+
+test("certification sanitizes JSON and SSE reader failures after headers have arrived", async () => {
+  for (const [streaming, code, expectedCode] of [
+    [false, "CERTIFICATION_BODY_FAILED", "CERTIFICATION_BODY_FAILED"],
+    [true, "UND_ERR_BODY_TIMEOUT", "CERTIFICATION_TIMEOUT"],
+  ]) {
+    const privateMarker = "synthetic-private-body-context";
+    const responses = streaming ? [successfulP3Responses()[0]] : [];
+    let reads = 0;
+    const body = new ReadableStream({
+      pull(controller) {
+        if (reads++ === 0) {
+          controller.enqueue(new TextEncoder().encode(privateMarker));
+        } else {
+          controller.error(new TypeError(privateMarker, {
+            cause: Object.assign(new Error(privateMarker), { code }),
+          }));
+        }
+      },
+    });
+    responses.push(new Response(body, {
+      headers: { "content-type": streaming ? "text/event-stream" : "application/json" },
+    }));
+    await assert.rejects(runModelCertification({
+      baseUrl: "http://127.0.0.1:4210/c/test-capability/v1",
+      model: { id: "lmstudio/example/model", contextWindow: 32_768 },
+      certificationToken: CERTIFICATION_TOKEN,
+      fetchImpl: async () => responses.shift(),
+      timeoutMs: 5_000,
+    }), (failure) => {
+      assert.equal(failure.message, `${streaming ? "Stream" : "Text"} probe response body failed (${expectedCode})`);
+      assert.equal(failure.cause, undefined);
+      assert.equal(String(failure.stack).includes(privateMarker), false);
+      assert.equal(JSON.stringify(failure).includes(privateMarker), false);
+      return true;
+    });
+  }
+});
+
+test("certification cancels rejected HTTP and MIME bodies before returning the fixed error", async () => {
+  for (const [status, contentType, message] of [
+    [503, "application/json", "Text probe returned HTTP 503"],
+    [200, "text/html", "Text probe returned invalid JSON Content-Type"],
+  ]) {
+    let canceled = false;
+    const response = new Response(new ReadableStream({ cancel() { canceled = true; } }), {
+      status,
+      headers: { "content-type": contentType },
+    });
+    await assert.rejects(runModelCertification({
+      baseUrl: "http://127.0.0.1:4210/c/test-capability/v1",
+      model: { id: "lmstudio/example/model", contextWindow: 32_768 },
+      certificationToken: CERTIFICATION_TOKEN,
+      fetchImpl: async () => response,
+      timeoutMs: 5_000,
+    }), (error) => error.message === message);
+    assert.equal(canceled, true);
+  }
 });

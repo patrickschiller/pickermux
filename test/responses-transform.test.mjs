@@ -694,3 +694,31 @@ test("rejects malformed UTF-8 before transformed JSON or SSE is forwarded", () =
   assert.deepEqual(truncated.push(Buffer.from([0xe2, 0x82])), []);
   assert.throws(() => truncated.finish(), /SSE is not valid UTF-8/u);
 });
+
+test("publishes terminal state only with successfully returned SSE output", () => {
+  const frame = (type) => `data: ${JSON.stringify({
+    type,
+    response: { status: type.slice("response.".length), output: [] },
+  })}\n\n`;
+  for (const type of ["response.completed", "response.failed", "response.incomplete"]) {
+    const transformer = createSseResponseTransformer(namespaceCodec());
+    assert.equal(transformer.hasTerminalEvent(), false);
+    assert.equal(transformer.push(Buffer.from(frame(type))).length, 1);
+    assert.equal(transformer.hasTerminalEvent(), true);
+    assert.deepEqual(transformer.finish(), []);
+    assert.equal(transformer.hasTerminalEvent(), true);
+  }
+
+  const rejectedChunk = createSseResponseTransformer(namespaceCodec());
+  assert.throws(
+    () => rejectedChunk.push(Buffer.from(`${frame("response.completed")}data: malformed\n\n`)),
+    /not valid JSON/u,
+  );
+  assert.equal(rejectedChunk.hasTerminalEvent(), false);
+
+  const eof = createSseResponseTransformer(namespaceCodec());
+  assert.deepEqual(eof.push(Buffer.from(frame("response.completed").trimEnd())), []);
+  assert.equal(eof.hasTerminalEvent(), false);
+  assert.equal(eof.finish().length, 1);
+  assert.equal(eof.hasTerminalEvent(), true);
+});

@@ -40,10 +40,16 @@ test("builds the authenticated mixed-bridge provider override", () => {
     baseUrl: "http://127.0.0.1:4210/capability/v1",
     catalogPath: "/tmp/mixed.json",
     requiresOpenAiAuth: true,
+    supportsStandaloneWebSearch: true,
   });
   assert.ok(overrides.includes('model_reasoning_effort="ultra"'));
   assert.ok(overrides.includes("model_providers.model_bridge.requires_openai_auth=true"));
   assert.ok(overrides.includes("model_providers.model_bridge.supports_websockets=false"));
+  assert.ok(overrides.includes("model_providers.model_bridge.supports_standalone_web_search=true"));
+});
+
+test("web search provider overrides reject non-boolean configuration", () => {
+  assert.throws(() => providerOverrides({ supportsStandaloneWebSearch: "false" }), /must be a boolean/u);
 });
 
 test("parses debug models output", async () => {
