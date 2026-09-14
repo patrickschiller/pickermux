@@ -16,7 +16,11 @@ export function providerOverrides({
   catalogPath,
   requiresOpenAiAuth = false,
   supportsWebsockets = false,
+  supportsStandaloneWebSearch = false,
 }) {
+  if (typeof supportsStandaloneWebSearch !== "boolean") {
+    throw new TypeError("supportsStandaloneWebSearch must be a boolean");
+  }
   const prefix = `model_providers.${providerId}`;
   return [
     `model=${tomlString(model)}`,
@@ -28,7 +32,7 @@ export function providerOverrides({
     `${prefix}.wire_api="responses"`,
     `${prefix}.requires_openai_auth=${requiresOpenAiAuth}`,
     `${prefix}.supports_websockets=${supportsWebsockets}`,
-    `${prefix}.supports_standalone_web_search=false`,
+    `${prefix}.supports_standalone_web_search=${supportsStandaloneWebSearch}`,
   ];
 }
 

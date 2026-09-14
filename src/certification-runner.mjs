@@ -10,6 +10,10 @@ import {
   CERTIFICATION_HEADER,
   requireCertificationToken,
 } from "./certification-transport.mjs";
+import {
+  certificationFetch,
+  certificationTransportErrorCode,
+} from "./certification-http.mjs";
 
 function providerForModel(config, model) {
   const provider = config.providers.find((entry) => entry.id === model.providerId);
@@ -186,6 +190,21 @@ function bodyTooLargeError(label) {
   );
 }
 
+function probeTransportError(label, phase, error) {
+  const code = certificationTransportErrorCode(error);
+  const failure = new Error(`${label} ${phase} failed (${code})`);
+  failure.code = code;
+  return failure;
+}
+
+async function cancelResponseBody(response) {
+  try {
+    await response.body?.cancel();
+  } catch {
+    // Cancellation cannot replace a fixed probe failure with private context.
+  }
+}
+
 async function readBoundedResponseText(response, label) {
   const contentLength = response.headers.get("content-length")?.trim();
   if (
@@ -214,7 +233,13 @@ async function readBoundedResponseText(response, label) {
   };
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      let next;
+      try {
+        next = await reader.read();
+      } catch (error) {
+        throw probeTransportError(label, "response body", error);
+      }
+      const { done, value } = next;
       if (done) break;
       if (!(value instanceof Uint8Array)) {
         throw new Error(`${label} response body returned a non-byte chunk`);
@@ -262,21 +287,32 @@ async function postJson({
   label,
   certificationToken,
 }) {
-  const response = await fetchImpl(`${baseUrl.replace(/\/+$/u, "")}/responses`, {
-    method: "POST",
-    redirect: "error",
-    headers: {
-      accept: "application/json",
-      "content-type": "application/json",
-      [CERTIFICATION_HEADER]: certificationToken,
-    },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(timeoutMs),
-  });
+  let response;
+  try {
+    response = await fetchImpl(`${baseUrl.replace(/\/+$/u, "")}/responses`, {
+      method: "POST",
+      redirect: "error",
+      headers: {
+        accept: "application/json",
+        "content-type": "application/json",
+        [CERTIFICATION_HEADER]: certificationToken,
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (error) {
+    throw probeTransportError(label, "request", error);
+  }
   if (!response.ok) {
+    await cancelResponseBody(response);
     throw new Error(`${label} returned HTTP ${response.status}`);
   }
-  assertJsonContentType(response, label);
+  try {
+    assertJsonContentType(response, label);
+  } catch (error) {
+    await cancelResponseBody(response);
+    throw error;
+  }
   const payload = parseCertificationJson(
     await readBoundedResponseText(response, label),
     label,
@@ -405,21 +441,32 @@ async function postSse({
   label,
   certificationToken,
 }) {
-  const response = await fetchImpl(`${baseUrl.replace(/\/+$/u, "")}/responses`, {
-    method: "POST",
-    redirect: "error",
-    headers: {
-      accept: "text/event-stream",
-      "content-type": "application/json",
-      [CERTIFICATION_HEADER]: certificationToken,
-    },
-    body: JSON.stringify({ ...body, stream: true }),
-    signal: AbortSignal.timeout(timeoutMs),
-  });
+  let response;
+  try {
+    response = await fetchImpl(`${baseUrl.replace(/\/+$/u, "")}/responses`, {
+      method: "POST",
+      redirect: "error",
+      headers: {
+        accept: "text/event-stream",
+        "content-type": "application/json",
+        [CERTIFICATION_HEADER]: certificationToken,
+      },
+      body: JSON.stringify({ ...body, stream: true }),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (error) {
+    throw probeTransportError(label, "request", error);
+  }
   if (!response.ok) {
+    await cancelResponseBody(response);
     throw new Error(`${label} returned HTTP ${response.status}`);
   }
-  assertSseContentType(response, label);
+  try {
+    assertSseContentType(response, label);
+  } catch (error) {
+    await cancelResponseBody(response);
+    throw error;
+  }
   const events = parseSse(await readBoundedResponseText(response, label));
   assertCompletedSse(events, label);
   return events;
@@ -799,7 +846,7 @@ export async function runModelCertification({
   baseUrl,
   model,
   certificationToken,
-  fetchImpl = globalThis.fetch,
+  fetchImpl = certificationFetch,
   timeoutMs = 10 * 60_000,
 } = {}) {
   if (typeof model?.id !== "string" || !Number.isSafeInteger(model.contextWindow)) {
@@ -1201,7 +1248,7 @@ export async function runEfficientFidelityCertification({
   baseUrl,
   model,
   certificationToken,
-  fetchImpl = globalThis.fetch,
+  fetchImpl = certificationFetch,
   timeoutMs = 10 * 60_000,
 } = {}) {
   if (typeof model?.id !== "string" || !Number.isSafeInteger(model.contextWindow)) {

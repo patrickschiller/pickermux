@@ -7,6 +7,221 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [0.7.5] - 2026-09-14
+
+This release contains the shared web-search feature and all fixes developed
+in the unpublished 0.7.0–0.7.4 milestones below. See the
+[complete release notes](docs/RELEASE_NOTES_0.7.5.md).
+
+### Added
+
+- Shared Codex `web.run` search for exact, tool-certified external models,
+  with the native search service kept separate from the selected answer model.
+- LM Studio V2 context compaction with authenticated model-bound state and
+  correct continuation after a restored summary.
+
+### Fixed
+
+- Bounded certification transport for long LM Link requests and structured
+  stream failures instead of opaque disconnects. Native credential isolation,
+  byte-preserving native routes, and certification gates remain intact.
+
+### Changed
+
+- During exact LM Studio V2 compaction only, validate then omit the original
+  top-level `instructions` before merging system messages. Codex keeps those
+  base instructions outside compacted history and sends them again for ordinary
+  inference. Preserve every input message, including historical system and
+  developer instructions, tool results, and source URLs. Ordinary requests,
+  replay, legacy compact, native routes, and other providers are unchanged.
+- Ask summaries to distinguish completed actions and evidence from remaining
+  work. Resume from recorded tool results; repeat a lookup when evidence is
+  missing, stale, or contradictory, or instructions require a fresh check.
+  This guidance addresses repeated search/compaction cycles without blocking
+  tool calls, adding retries, or claiming that model behavior is guaranteed.
+
+### Validation and limits
+
+- The successful 0.7.4 run took 16 minutes 56 seconds and included three
+  compactions totaling about 10 minutes 50 seconds. Its ordinary continuations
+  already reused over 26,000 cached input tokens; no cache setting is changed.
+- An offline reconstruction of the first summary through both adapter versions
+  reduced its JSON body from 73,012 to 51,426 bytes (29.6%), including the new
+  checkpoint instructions. All conversation input remained identical after
+  removing only the separately supplied base-instruction field. This measures
+  bytes, not model tokens or live latency.
+- The initial full Codex prompt remains large. Keep the current model
+  certification and upgrade normally from immutable 0.7.4; the encrypted-state
+  format and model/key binding remain compatible.
+- The user confirmed a correct answer with 0.7.5 in about eight minutes and a
+  faster subsequent request. This follows the roughly seventeen-minute 0.7.4
+  run on the same setup; it is an individual observation, not a controlled
+  benchmark or a guaranteed speedup for other models or hardware.
+
+## [0.7.4] - 2026-09-14
+
+Prepared locally; not published. Live continuation acceptance remains pending.
+See the [candidate acceptance procedure](docs/WEB_SEARCH_ACCEPTANCE.md).
+
+### Fixed
+
+- After restoring an authenticated terminal compaction item for ordinary LM
+  Studio inference, append one short fixed user-role continuation instruction.
+  LM Studio otherwise treats the restored assistant summary as response prefill
+  and continues its text instead of producing a new answer. Keep the dynamic
+  summary at assistant authority; add no instruction if later conversation
+  input already exists or when preparing another compaction.
+- Retain the existing v1 encrypted-state format, model/key binding, tool
+  authority, and native byte-preserving path. Existing 0.7.3 state continues
+  after a normal upgrade without recertification.
+
+### Validation and limits
+
+- The 0.7.3 live test completed web search and compaction. Both the search result
+  and encrypted summary contained the correct venue and official source; the
+  final ordinary request ended in assistant context and produced only a sentence
+  fragment. LM Studio's installed prompt builder confirms this prefill behavior.
+- The three live inference phases used 26,195, 19,556, and 26,268 input tokens.
+  Prompt processing accounted for approximately 13 minutes 43 seconds of the
+  13 minutes 58 seconds observed. This correction closes the response boundary;
+  it does not reduce the full coding harness or guarantee a faster next run.
+  No additional inference or automatic retry is added.
+
+## [0.7.3] - 2026-09-14
+
+Prepared locally; not published. Live external-model search, compaction, and
+continuation acceptance remain pending. See the
+[candidate acceptance procedure](docs/WEB_SEARCH_ACCEPTANCE.md).
+
+### Fixed
+
+- Adapt Codex's `compaction_trigger` request for LM Studio instead of forwarding
+  an unsupported input type. A requested compaction makes one bounded summary
+  call to the selected model without tool schemas. Supported text history,
+  public tool-call identities, results, and source URLs are supplied as data.
+- Return a completed compaction item only after a complete, nonempty, bounded
+  model summary. Its authenticated encrypted envelope is bound to the
+  installation and exact provider/model/context catalog configuration. Later
+  requests restore it as assistant context; ordinary requests add no inference.
+  Native and foreign compacted state cannot enter LM Studio, and PickerMux state
+  cannot cross to native or other providers on model switch.
+- Preserve text-array tool results and reasoning replay. Reject malformed
+  controls, unsupported media, invalid state, incomplete responses, and tool
+  calls without fabricating success or replacing prior history.
+
+### Validation and upgrade
+
+- The installed 0.7.2 build completed external-model certification and issued
+  a real web call. Its next request failed because Codex requested remote
+  compaction; this was not another timeout or a missing tool grant. Completed
+  sourced-answer acceptance remains pending.
+- Upgrade immutable 0.7.2 packages through normal setup and retain still-valid
+  certification. Ordinary refresh and upgrades preserve the derived key.
+  `refresh --full` and uninstall/reinstall replace the installation capability;
+  previous compacted tasks then require a new task or restored original state.
+- Summaries are model-generated and lossy. Oversized context still fails without
+  silent truncation. A measured `none` reasoning option is used for summaries
+  when available; ordinary inference reasoning and timeouts remain unchanged.
+
+## [0.7.2] - 2026-09-13
+
+Prepared locally on this date; not published. Live timeout-reporting and
+external-model web-search acceptance are pending; confirm the release date
+before tagging. See the [candidate acceptance procedure](docs/WEB_SEARCH_ACCEPTANCE.md).
+
+### Fixed
+
+- Transformed external responses defer their headers until validated output
+  is available, so an earlier timeout or validation failure can return a
+  structured error instead of an opaque stream disconnect. Header, idle, and
+  total timeouts have distinct fixed messages without provider error content.
+  Native response bytes and timeout limits remain unchanged.
+- After transformed external SSE output has started, an upstream transport or
+  validation failure emits a minimal `response.failed` event with the fixed
+  error code and message while the client remains connected, then ends the
+  response normally so Codex can display the cause.
+  The upstream request is stopped; no completion or tool result is fabricated.
+
+### Validation and upgrade
+
+- The installed 0.7.1 candidate passed all eight base certification gates and
+  the additive tool-search gate on the tested LM Link model. A later Codex task
+  hit its configured ten-minute idle limit during prompt processing; this
+  identifies the disconnect boundary, not the cause of slow prefill.
+- Upgrade immutable 0.7.1 packages normally to 0.7.2 and retain a still-valid
+  certification. The fix adds no model requests or tokens and does not alter
+  reasoning, GPU settings, or retained context. External-model search remains
+  pending despite successful native search/open smoke checks.
+
+## [0.7.1] - 2026-09-13
+
+Prepared locally on this date; not published. Certification subsequently passed
+all eight base gates and the additive tool-search gate on the tested LM Link
+model. External-model web-search acceptance remains pending; the current
+candidate and [acceptance procedure](docs/WEB_SEARCH_ACCEPTANCE.md) are 0.7.3.
+
+### Fixed
+
+- Certification uses bounded local HTTP transport instead of Node's default
+  `fetch`, avoiding Undici's independent five-minute header/body timeout when
+  a probe has a longer deadline. Failed probes retain a fixed probe label and
+  redacted transport code. This addresses a possible cause of an otherwise
+  generic `fetch failed`; the original LM Link failure has not been proven to
+  have that cause, although a complete live retry with this fix passed.
+- External inference now distinguishes pending or unavailable certification
+  from unavailable provider credentials with separate fixed diagnostics,
+  instead of reporting both as a generic service failure. Certification
+  recovery and credential isolation remain enforced.
+
+### Validation and upgrade
+
+- A short local bridge-to-LM-Link inference and native `web.run` search/open
+  smoke checks succeeded during investigation, followed by a full live
+  certification pass. External-model web search remains pending. No reasoning
+  defaults or unmeasured model capability grants are changed.
+- The corrected candidate is 0.7.1 so it can upgrade an already installed,
+  immutable 0.7.0 package normally. Same-version content and checksum checks
+  remain enforced.
+
+## [0.7.0] - 2026-09-13
+
+Prepared locally on this date; not published. Live acceptance is pending;
+confirm the release date before tagging. See the
+[candidate acceptance procedure](docs/WEB_SEARCH_ACCEPTANCE.md).
+
+### Added
+
+- Experimental shared Codex `web.run` support through the native standalone
+  search endpoint. Exact, tool-certified external models retain their own
+  answer route while search requests use optional `bridge.webSearchModel` or
+  the native `bridge.defaultModel`. No additional LM Studio inference request,
+  provider API key, result cache, or result truncation is introduced. Native
+  backend acceptance still requires live validation; the implemented protocol
+  is covered by public Codex fixtures and offline tests.
+
+### Changed
+
+- Install and normal refresh opt the managed provider into standalone search
+  and add the Codex feature only when it is not explicitly set. Existing
+  disabling settings remain effective. Refresh migrates receipt-owned state
+  transactionally, requires the running search contract, and rolls back on
+  failure; uninstall removes only the feature block PickerMux added. When an
+  old provider block needs this migration, its uniquely receipt-recovered
+  missing end marker is materialized as part of that same transaction.
+- One SHA-256-pinned public `web.run` description is reduced from 7,507 to 3,475
+  UTF-8 bytes for LM Studio while retaining search, citation, and source-limit
+  policy. Unknown or edited descriptions remain unchanged; schemas, search
+  settings, explicit budgets, conversation context, and results are preserved.
+
+### Security
+
+- Standalone search resolves the exact selected route and requires its current
+  Direct/appropriate Efficient Fidelity receipt and pending-state gate before
+  external-model use. Requests target only the fixed native destination;
+  native authentication never reaches an external provider. External-model
+  search results use a validated envelope and fixed, redacted errors, while
+  accepted native search requests and responses remain byte preserving.
+
 ## [0.6.1] - 2026-09-13
 
 ### Fixed
@@ -272,7 +487,13 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
   paths and file types, refuses root execution and foreign launchers, and
   restores the previous distribution state when activation fails.
 
-[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.7.5...HEAD
+[0.7.5]: https://github.com/patrickschiller/pickermux/releases/tag/v0.7.5
+[0.7.4]: docs/RELEASE_NOTES_0.7.4.md
+[0.7.3]: docs/RELEASE_NOTES_0.7.3.md
+[0.7.2]: docs/RELEASE_NOTES_0.7.2.md
+[0.7.1]: docs/RELEASE_NOTES_0.7.1.md
+[0.7.0]: docs/RELEASE_NOTES_0.7.0.md
 [0.6.1]: https://github.com/patrickschiller/pickermux/releases/tag/v0.6.1
 [0.6.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.6.0
 [0.5.4]: https://github.com/patrickschiller/pickermux/releases/tag/v0.5.4

@@ -131,6 +131,7 @@ test("capability-scoped health and model catalog expose only safe diagnostics", 
   assert.equal(health.statusCode, 200);
   assert.deepEqual(JSON.parse(health.body), {
     ok: true,
+    webSearchContractVersion: 1,
     instanceId: "instance-test-1",
     certificationPendingGateVersion: 1,
   });
@@ -308,6 +309,7 @@ test("runtime compatibility blocks model traffic before registry or body handlin
   assert.equal(health.statusCode, 200);
   assert.deepEqual(JSON.parse(health.body), {
     ok: false,
+    webSearchContractVersion: 1,
     instanceId: null,
     compatibility: {
       status: "update-required",

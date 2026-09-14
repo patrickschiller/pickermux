@@ -161,7 +161,7 @@ function renderStreamResult(result, fallbackFrame) {
   });
 }
 
-function transformEvent(event, codec, toolSearchStream) {
+function transformEvent(event, codec, toolSearchStream, onTerminalEvent) {
   const lines = splitEventLines(event);
   const data = [];
   const retained = [];
@@ -222,7 +222,14 @@ function transformEvent(event, codec, toolSearchStream) {
       "Upstream SSE event field does not match its data type",
     );
   }
-  if (!toolSearchStream) return [renderEvent(retained, insertAt, parsed)];
+  const terminalEvent =
+    parsed?.type === "response.completed" ||
+    parsed?.type === "response.failed" ||
+    parsed?.type === "response.incomplete";
+  if (!toolSearchStream) {
+    if (terminalEvent) onTerminalEvent();
+    return [renderEvent(retained, insertAt, parsed)];
+  }
   let transformed;
   try {
     transformed = toolSearchStream.push(parsed, frame);
@@ -232,7 +239,9 @@ function transformEvent(event, codec, toolSearchStream) {
       error,
     );
   }
-  return renderStreamResult(transformed, frame);
+  const output = renderStreamResult(transformed, frame);
+  if (terminalEvent) onTerminalEvent();
+  return output;
 }
 
 /** Incremental SSE event rewriter that tolerates arbitrary TCP chunking. */
@@ -244,6 +253,9 @@ export function createSseResponseTransformer(
     throw new TypeError("maxBufferedBytes must be an integer of at least 1024");
   }
   let buffered = "";
+  let terminalEventSeen = false;
+  let pendingTerminalEventSeen = false;
+  const recordTerminalEvent = () => { pendingTerminalEventSeen = true; };
   const decoder = new TextDecoder("utf-8", { fatal: true });
   const { efficientFidelityCodec, namespaceCodec } = responseCodecs(codec);
   const toolSearchStream = efficientFidelityCodec
@@ -257,6 +269,7 @@ export function createSseResponseTransformer(
       })
       : undefined;
   const push = (chunk) => {
+    pendingTerminalEventSeen = terminalEventSeen;
     try {
       buffered += Buffer.isBuffer(chunk)
         ? decoder.decode(chunk, { stream: true })
@@ -273,13 +286,17 @@ export function createSseResponseTransformer(
       if (!match) break;
       const event = buffered.slice(0, match.index);
       buffered = buffered.slice(match.index + match[0].length);
-      for (const transformed of transformEvent(event, codec, toolSearchStream)) {
+      for (const transformed of transformEvent(event, codec, toolSearchStream, recordTerminalEvent)) {
         output.push(Buffer.from(`${transformed}\n\n`, "utf8"));
       }
     }
+    // A later invalid frame can reject this entire chunk. Publish terminal
+    // state only when its validated output is actually returned to the caller.
+    terminalEventSeen = pendingTerminalEventSeen;
     return output;
   };
   const finish = () => {
+    pendingTerminalEventSeen = terminalEventSeen;
     try {
       buffered += decoder.decode();
     } catch (error) {
@@ -287,7 +304,7 @@ export function createSseResponseTransformer(
     }
     const output = [];
     if (buffered.length > 0) {
-      for (const transformed of transformEvent(buffered, codec, toolSearchStream)) {
+      for (const transformed of transformEvent(buffered, codec, toolSearchStream, recordTerminalEvent)) {
         output.push(Buffer.from(`${transformed}\n\n`, "utf8"));
       }
       buffered = "";
@@ -302,9 +319,10 @@ export function createSseResponseTransformer(
         );
       }
     }
+    terminalEventSeen = pendingTerminalEventSeen;
     return output;
   };
-  return Object.freeze({ push, finish });
+  return Object.freeze({ push, finish, hasTerminalEvent: () => terminalEventSeen });
 }
 
 export function shouldTransformResponse(contentType, codec) {

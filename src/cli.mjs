@@ -45,6 +45,7 @@ import {
   writeCatalogAtomic,
 } from "./catalog.mjs";
 import { isCodexDesktopRunning } from "./codex-desktop-state.mjs";
+import { WEB_SEARCH_CONTRACT_VERSION } from "./web-search-wire.mjs";
 import {
   createCatalogSynchronizer,
   hasLoadedModelDiscovery,
@@ -55,6 +56,7 @@ import {
   providerOverrides,
 } from "./codex.mjs";
 import {
+  enableManagedStandaloneWebSearch,
   getConfigStatus,
   inventoryManagedConfigOwnership,
   installConfig,
@@ -173,6 +175,12 @@ Usage:
   pickermux status [--config PATH] [--json]
   pickermux uninstall [--force] [--remove-cli | --purge] [--json]
   pickermux version | pickermux --version
+
+Install and refresh enable shared Codex web search unless explicitly disabled.
+External models still require tool certification; search runs outside LM Studio.
+LM Studio context compaction uses one bounded summary request without tool schemas.
+V2 summaries omit separately supplied base instructions, retaining all conversation messages.
+Restored terminal summaries receive a short continuation instruction for a new answer.
 
 The bridge binds only to 127.0.0.1. Native ChatGPT authentication is never
 stored and is stripped before every external request. Full purge removes only
@@ -416,7 +424,7 @@ function installationOptions({ config, paths, runtime }) {
       wireApi: "responses",
       requiresOpenAiAuth: true,
       supportsWebsockets: false,
-      supportsStandaloneWebSearch: false,
+      supportsStandaloneWebSearch: true,
       requestMaxRetries: 0,
       streamMaxRetries: 0,
       streamIdleTimeoutMs: config.bridge.limits.streamIdleTimeoutMs,
@@ -434,6 +442,7 @@ async function prevalidateCatalog({ config, runtime, catalog, catalogPath, codex
     catalogPath,
     requiresOpenAiAuth: true,
     supportsWebsockets: false,
+    supportsStandaloneWebSearch: true,
   });
   const parsed = await debugModels({ codexPath, overrides });
   assertCatalogSlugs(parsed, catalog.models.map((model) => model.slug));
@@ -579,7 +588,7 @@ async function install({
       }),
     );
     compatibilityPromoted = true;
-    await startBridgeService({
+    const started = await startBridgeService({
       config,
       configPath: servicePackage.serviceConfigPath,
       runtimePath: paths.runtimePath,
@@ -592,6 +601,7 @@ async function install({
       runtime,
     });
     serviceStarted = true;
+    assertBridgeWebSearchCompatibility(started.health);
     const installed = await installConfig(installationOptions({ config, paths, runtime }));
     configInstalled = true;
 
@@ -666,11 +676,19 @@ export async function restoreRefreshState({
   previousCompatibility = null,
   rollbackConfig,
   servicePackage,
+  managedConfigUpdate,
   restoreImpl = restorePrivateFile,
   restorePackageImpl = restoreServicePackage,
   restartImpl = restartBridgeService,
 }) {
   const failures = [];
+  if (managedConfigUpdate?.changed && typeof managedConfigUpdate.rollback === "function") {
+    try {
+      await managedConfigUpdate.rollback();
+    } catch (error) {
+      failures.push(error);
+    }
+  }
   if (servicePackage) {
     try {
       await restorePackageImpl({
@@ -767,6 +785,7 @@ async function refresh({ config, paths, codexPath, sourceRoot = projectRoot }) {
       statePath: paths.statePath,
     });
     let servicePackage;
+    let managedConfigUpdate;
     let registeredProviderIds = [];
     try {
       servicePackage = await stageServicePackage({
@@ -795,6 +814,12 @@ async function refresh({ config, paths, codexPath, sourceRoot = projectRoot }) {
           "The restarted bridge did not confirm its certification request gate",
         );
       }
+      assertBridgeWebSearchCompatibility(restarted.health);
+      managedConfigUpdate = await enableManagedStandaloneWebSearch({
+        configPath: paths.configPath,
+        statePath: paths.statePath,
+        backupDirectory: paths.backupDirectory,
+      });
       const parsed = await debugModels({ codexPath });
       assertCatalogSlugs(parsed, built.catalog.models.map((model) => model.slug));
       const doctor = await runBridgeDoctor({ config, paths, codexPath });
@@ -830,6 +855,7 @@ async function refresh({ config, paths, codexPath, sourceRoot = projectRoot }) {
           previousCompatibility,
           rollbackConfig,
           servicePackage,
+          managedConfigUpdate,
         });
       } catch (rollbackError) {
         selectionRollbackError = selectionRollbackError
@@ -876,6 +902,12 @@ async function refresh({ config, paths, codexPath, sourceRoot = projectRoot }) {
     };
   } finally {
     await unlink(stagingPath).catch(() => {});
+  }
+}
+
+export function assertBridgeWebSearchCompatibility(health) {
+  if (health?.webSearchContractVersion !== WEB_SEARCH_CONTRACT_VERSION) {
+    throw new Error("The running bridge did not confirm its standalone web search contract");
   }
 }
 
@@ -993,6 +1025,7 @@ async function serve({
   const server = await listenBridgeServer({
     registry,
     capabilityToken: runtime.capability,
+    nativeSearchModel: config.bridge.webSearchModel ?? config.bridge.defaultModel,
     instanceId: runtime.instanceId,
     limits: config.bridge.limits,
     credentialResolver,

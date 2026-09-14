@@ -10,12 +10,20 @@ import { promisify } from "node:util";
 import { validateBridgeConfig } from "../src/bridge-config.mjs";
 import {
   assertBridgeStartupCompatibility,
+  assertBridgeWebSearchCompatibility,
   assertPersistentCredentialSupport,
   assertSelectedCatalogModel,
   restoreRefreshState,
 } from "../src/cli.mjs";
 
 const execFileAsync = promisify(execFile);
+
+test("managed web search publication requires the running service contract", () => {
+  assert.doesNotThrow(() => assertBridgeWebSearchCompatibility({ webSearchContractVersion: 1 }));
+  for (const health of [undefined, {}, { webSearchContractVersion: 0 }, { webSearchContractVersion: "1" }]) {
+    assert.throws(() => assertBridgeWebSearchCompatibility(health), /standalone web search contract/u);
+  }
+});
 
 test("release metadata and both CLI entry points identify PickerMux", async () => {
   const projectDirectory = path.resolve(
@@ -26,7 +34,7 @@ test("release metadata and both CLI entry points identify PickerMux", async () =
     await readFile(path.join(projectDirectory, "package.json"), "utf8"),
   );
   assert.equal(packageMetadata.name, "pickermux");
-  assert.equal(packageMetadata.version, "0.6.1");
+  assert.equal(packageMetadata.version, "0.7.5");
   assert.equal(packageMetadata.license, "MIT");
 
   for (const entryPoint of ["pickermux.mjs", "lmstudio-picker.mjs"]) {
@@ -50,7 +58,7 @@ test("release metadata and both CLI entry points identify PickerMux", async () =
         [path.join(projectDirectory, "bin", entryPoint), versionArgument],
         { encoding: "utf8" },
       );
-      assert.equal(stdout, "pickermux 0.6.1\n");
+      assert.equal(stdout, "pickermux 0.7.5\n");
     }
   }
 });
@@ -189,6 +197,7 @@ test("refresh rollback restores catalog and service config before restarting", a
   const rollbackConfig = { schemaVersion: 2 };
   let restartOptions;
   let restoredPackage;
+  let searchConfigRestored = false;
   const servicePackage = {
     serviceDirectory: path.join(directory, "runtime-app"),
     previousPath: path.join(directory, "runtime-app.previous"),
@@ -202,11 +211,16 @@ test("refresh rollback restores catalog and service config before restarting", a
     previousServiceConfig: Buffer.from("old config\n"),
     rollbackConfig,
     servicePackage,
+    managedConfigUpdate: {
+      changed: true,
+      async rollback() { searchConfigRestored = true; },
+    },
     restorePackageImpl: async (options) => {
       restoredPackage = options;
     },
     restartImpl: async (options) => {
       restartOptions = options;
+      assert.equal(searchConfigRestored, true);
       assert.equal(await readFile(paths.catalogPath, "utf8"), "old catalog\n");
       assert.equal(await readFile(paths.serviceConfigPath, "utf8"), "old config\n");
     },
@@ -218,4 +232,24 @@ test("refresh rollback restores catalog and service config before restarting", a
     launchAgentLabel: paths.launchAgentLabel,
   });
   assert.deepEqual(restoredPackage, servicePackage);
+});
+
+test("search config rollback failure preserves recovery attempts and reports incomplete rollback", async () => {
+  const calls = [];
+  await assert.rejects(restoreRefreshState({
+    paths: { catalogPath: "catalog", serviceConfigPath: "service", runtimePath: "runtime" },
+    previousCatalog: Buffer.from("old catalog"),
+    previousServiceConfig: Buffer.from("old service"),
+    rollbackConfig: {},
+    managedConfigUpdate: {
+      changed: true,
+      async rollback() {
+        calls.push("search");
+        throw new Error("concurrent user edit");
+      },
+    },
+    restoreImpl: async (target) => { calls.push(target); },
+    restartImpl: async () => { calls.push("restart"); },
+  }), AggregateError);
+  assert.deepEqual(calls, ["search", "catalog", "service", "restart"]);
 });

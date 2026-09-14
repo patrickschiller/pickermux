@@ -72,12 +72,137 @@ The explicit Qwen entry acts as a display-name and reasoning override. In
 | `host` | Must be `127.0.0.1`. The bridge cannot bind to a LAN address. |
 | `port` | Local bridge port. The default is `4210`. |
 | `providerId` | Generated Codex provider ID. The default is `model_bridge`; it uses the same bounded ID grammar as provider namespaces. |
-| `defaultModel` | Native fallback selected when a local choice disappears. |
+| `defaultModel` | Native fallback selected when a local choice disappears; also the default native search request model for external-model searches. |
+| `webSearchModel` | Optional native model ID for standalone search requests made while an external model is selected. Defaults to `defaultModel`; does not change the answer model. |
 | `reasoningEffort` | Reasoning level for the native fallback. |
 | `limits` | Optional bounded request, header, idle, and total-duration limits. |
 
 The configured fallback must exist in the account-visible native catalog and
 support the selected reasoning level at install time.
+
+`webSearchModel` must be a native ID without a provider namespace. The search
+route also verifies that the configured ID resolves to a native model in the
+active registry; an absent or external selection fails with
+`SEARCH_MODEL_UNAVAILABLE` before making a search request.
+
+## Shared web search
+
+Version 0.7.5 uses one native
+search path for Codex's `web.run` function. The selected external model must already have a
+valid tool certification; text-only models do not receive a search exception.
+An Efficient Fidelity route must retain its additive receipt as well as its
+Direct receipt. Web search is independent of the tool-inventory search that
+Efficient Fidelity optimizes.
+
+For external-model searches, PickerMux replaces only the search request's
+`model` with `bridge.webSearchModel`, falling back to `bridge.defaultModel`.
+For example, an existing bridge configuration can include:
+
+```json
+{
+  "defaultModel": "gpt-5.6-sol",
+  "webSearchModel": "gpt-5.6-sol"
+}
+```
+
+These are fields inside the existing `bridge` object, not a complete
+configuration. The setting selects the native search service parameter only;
+it leaves the external `/responses` route and answer model unchanged. It does
+not identify the backend's internal search models or promise particular
+pricing, token usage, or latency. A native-model search keeps its original
+model and request bytes.
+
+Codex sends searches using its normal native authentication. PickerMux does
+not read `~/.codex/auth.json`, resolve an external provider credential, or send
+native headers to LM Studio for this operation. Search commands, conversation
+context selected by Codex, settings, domain filters, and explicit output
+budgets are preserved. Search does not require an additional LM Studio
+generation; Codex sends the returned text to the selected model for its answer.
+PickerMux adds no result cache, summary, or truncation pass.
+
+Install and ordinary refresh set the receipt-owned provider capability
+`supports_standalone_web_search = true`. They add
+`features.standalone_web_search = true` only when that feature has no explicit
+setting. An existing user-owned `true` or `false` remains unchanged; they do not
+change Codex's `web_search` mode or managed restrictions. To disable web search
+through Codex, use its user-level `web_search = "disabled"` setting. Keep each
+TOML key unique and leave PickerMux's marked blocks under lifecycle ownership.
+If a user-owned inline `features` table exists without this feature, add an
+explicit boolean there before refreshing, as directed by
+`WEB_SEARCH_CONFIG_CONFLICT`.
+
+After upgrading to a build containing this support, fully quit Codex, run
+normal `pickermux refresh`, and reopen Codex. If the selected model remains
+text-only, follow the regular certification procedure when it is loaded and
+no local-model task is active, then fully restart Codex. No model-wide setting
+or manual catalog edit replaces that certification.
+
+Refresh migrates only verified owned provider/feature state, checks the
+running bridge's `webSearchContractVersion = 1`, and restores the previous
+state if activation fails. Existing user feature settings are not adopted as
+owned content; uninstall removes only a feature block added by PickerMux.
+
+This is an experimental Codex endpoint. Native search/open smoke checks have
+succeeded, and the public client contract is covered by offline fixtures.
+Full certification, external-model search, and a correct sourced answer have
+passed for the tested LM Link setup. See
+the [acceptance record and procedure](WEB_SEARCH_ACCEPTANCE.md).
+The relevant
+capability remains subject to Codex runtime, account, and managed-policy
+support. See the [official standalone-search documentation](https://learn.chatgpt.com/docs/web-search?surface=app#app-search-with-a-custom-model-provider).
+
+## LM Studio context compaction
+
+The 0.7.5 adapter handles Codex's full-replay `compaction_trigger`
+request on `/v1/responses`. No configuration switch is needed. It sends one
+bounded summary request to the selected LM Studio model when Codex requests
+compaction, with no tool definitions or execution authority. The raw top-level
+`instructions` is validated and omitted from that summary only: Codex retains
+these base instructions separately and sends them again for ordinary answers.
+Historical system/developer/user messages are retained, even when they contain
+the same text. There is no role-wide filtering or change to ordinary requests.
+Supported text
+history, public tool identities, results, and source URLs remain available to
+the summarizer. A measured `none` reasoning mode is used for this operation when
+available; other turns keep their selected reasoning settings.
+
+The completed summary is encrypted in the normal Codex history. Its key is
+derived with a separate purpose from the private installation capability, and
+the envelope is authenticated against the exact provider, model, loaded context,
+and catalog model hash. Replay restores assistant context, not new developer
+instructions or tool authority. Normal requests do not trigger another summary.
+If the restored compaction item ends an ordinary request, one short fixed
+user-role continuation instruction closes the assistant message. LM Studio
+would otherwise treat it as response prefill and continue the summary text.
+The dynamic summary stays at assistant authority. Later conversation input and
+another compaction do not receive this extra instruction.
+The summary prompt separates completed actions and evidence from remaining
+work, and the continuation prompt asks the model to reuse recorded results.
+Missing, stale, or conflicting evidence and instructions requiring a fresh
+check still permit another lookup. This is model guidance, not a tool blocker
+or a guarantee against repeated searches.
+
+Service restarts, ordinary refresh, and version upgrades retain the key.
+`refresh --full` and uninstall/reinstall create a new installation capability,
+making previous compacted state unavailable. Changing the bound model
+configuration has the same effect. Restore the original state or start a new
+task; do not edit or copy encrypted state between models. Native and other
+provider routes refuse PickerMux-owned compacted state.
+
+This adapter supports text history only. Unsupported media, foreign encrypted
+state, malformed controls, failed or incomplete summaries, and still-oversized
+prompts fail without silently removing history. Summary quality depends on the
+selected model. The legacy `/responses/compact` endpoint is not replaced by
+this V2 adapter. Search and the final sourced answer passed on 0.7.5; the user
+reported about eight minutes and a faster follow-up. Timing remains dependent
+on the model, hardware, cache state, and number of tool/compaction steps.
+
+The summary output is capped at 2,048 tokens, but the next ordinary request
+still includes Codex's system context, tools, and retained messages. Compaction
+therefore cannot guarantee that the full request fits a 32K context window.
+If that fixed context stays near the limit, Codex may request another summary
+after the next tool step; the adapter performs one inference per requested
+compaction and does not retry it automatically.
 
 ## Provider fields
 
@@ -321,9 +446,12 @@ next TOML table (or end of file) reproduces the provider block SHA-256 stored in
 the private state receipt. Blank and comment-only tail lines remain outside the
 owned block and are preserved. `status` then reports
 `installed-marker-recovered`. Refresh, picker selection changes, and uninstall
-remain available; any provider-scoped content change, duplicate or missing
-begin/root marker, unsafe scope tail, ambiguous candidate, or receipt mismatch
-still fails closed.
+remain available. If the old managed provider needs the standalone-search
+migration, refresh materializes that same receipt-proven end marker while
+transactionally replacing the provider block. Other recovered-marker reads
+leave the file unchanged. Any provider-scoped content change, duplicate or
+missing begin/root marker, unsafe scope tail, ambiguous candidate, or receipt
+mismatch still fails closed.
 
 If this recovered-marker state coincides with a failed initial account-cache
 preflight during release setup, the downloaded payload atomically materializes

@@ -51,6 +51,9 @@ the reporter. No fixed response-time or remediation-time guarantee is offered.
 Reports involving any of the following are particularly important:
 
 - native Codex credentials or metadata reaching an external provider;
+- standalone search reaching an external destination, accepting an unknown or
+  uncertified model route, or exposing native service errors to an external
+  model;
 - requests escaping the intended loopback or provider allowlist boundary;
 - capability-path disclosure or unauthorized local bridge access;
 - unsafe writes to Codex configuration, backups, or the LaunchAgent runtime;
@@ -79,6 +82,74 @@ ordinary provider API `metadata` remains available to configured providers.
 Native Codex request bodies remain byte preserving. Treat request logs produced
 by older PickerMux releases as sensitive because they may contain installation,
 session, thread, window, or turn identifiers.
+
+Standalone web search has a distinct native trust boundary. The exact
+capability-scoped `POST /v1/alpha/search` route resolves the selected model and,
+for an external selection, requires its current tool authority and the same
+Direct/appropriate Efficient Fidelity receipt and pending-state checks as
+inference. It then validates the separately configured native search model
+against the registry. No external provider URL or credential is used; native
+headers are eligible only for the fixed native search destination, and
+`~/.codex/auth.json` is never read.
+
+For external-model searches, only the search request's model parameter is
+rewritten. The caller's session identity, conversation input, commands,
+settings, filters, reasoning, and explicit budgets remain intact and are sent
+to the native search service. Search results are untrusted external content.
+Successful external-model search replies must match the reviewed bounded
+envelope; native errors are replaced with fixed redacted messages so account
+or echoed prompt context cannot escape in an error body. Native-model search
+requests and response bodies remain byte preserving after request validation.
+The bridge never follows search-result URLs itself or routes search through
+LM Studio. The selected external model receives the search text through
+Codex's normal tool-result path, without an extra search-generation call.
+
+Search-description compaction is authorized only by the exact `web.run`
+identity, length, and reviewed SHA-256. Its replacement retains the original
+search obligations, citation policy, word limits, and exceptions. Unknown or
+edited descriptions remain unchanged; this optimization does not grant tools,
+alter schemas, defer tools, or shorten search results.
+
+Managed activation adds a separately marked and receipt-hashed standalone
+search feature only when the user has no explicit value. User-owned disabling
+settings remain effective. Provider/feature migration uses the existing
+compare-and-swap and rollback boundary and requires the running search
+contract; uninstall removes only an unchanged feature block PickerMux owns.
+
+LM Studio compaction has a separate request and replay boundary. Only an exact
+bare trailing `compaction_trigger` on full `/responses` replay is adapted. The
+usual certification gate, external sanitization, and tool-history validation
+run first. A single bounded, nonstreaming summary call receives supported text
+history as data and no tool schemas or execution authority. Incomplete output,
+calls, unsupported media, malformed controls, and oversized content do not
+produce a successful compaction item or replace the client's previous history.
+Only on this Codex V2 summary path, the original top-level `instructions` is
+type-validated then excluded before message merging. Codex retains that field
+outside history and supplies it again for ordinary inference. No text matching
+or role-wide filtering removes historical system/developer/user content. All
+ordinary request instructions and legacy/other-provider behavior are retained.
+
+Compaction summaries use a versioned AES-256-GCM envelope with a
+purpose-separated HKDF key from the installation's private local capability,
+not native or provider credentials. Authenticated additional data binds the
+exact provider/model/context and catalog model hash. Nonces are random; payloads,
+keys, and plaintext summaries never enter logs. Decoding has strict size,
+canonical encoding, UTF-8, shape, and authentication checks. Restored state is
+assistant context, never a new system/developer instruction or tool grant.
+For ordinary inference ending in an authenticated compaction item, a fixed
+user-role instruction closes the assistant message and resumes the existing
+task. Dynamic summary text is not promoted into that instruction. No such
+instruction is added to subsequent compaction or native requests.
+
+The complete own-envelope prefix family is rejected on native and other
+provider routes regardless of the input item type; all other native bytes are
+preserved. LM Studio rejects foreign/native encrypted compaction and unknown
+aliases before provider I/O or credential resolution. Known Codex passthrough
+metadata is removed from restored items. Ordinary refresh and version upgrades
+preserve the key; `refresh --full` and reinstallation replace the installation
+capability and invalidate earlier encrypted state. Model-configuration changes
+also invalidate its binding. These are explicit recovery limits, not an
+opportunity to bypass authentication or silently discard conversation content.
 
 Model re-certification uses a private, atomically persisted pending barrier.
 The active service reads it before external credential resolution or upstream
@@ -177,9 +248,12 @@ Managed configuration recovery is limited to a missing provider end marker
 whose virtual reinsertion at exactly one safe line boundary before the next
 TOML table or end of file recreates the receipt-recorded block digest. Blank or
 comment-only tail lines remain outside the owned block and are preserved.
-Status, refresh, and ordinary uninstall recovery do not write the marker. If
-the initial release-setup account-cache preflight fails while this exact state
-is active, the downloaded payload may materialize only the receipt-proven marker
+Status and ordinary uninstall recovery do not write the marker. A refresh
+that must migrate the old owned provider to standalone search materializes
+that same uniquely verified marker as part of the configuration transaction.
+This grants no broader marker-repair authority. If the initial release-setup
+account-cache preflight fails while this exact state is active, the downloaded
+payload may materialize only the receipt-proven marker
 under the private lifecycle lock. It revalidates state ownership, configuration
 bytes, the unique candidate, and Codex shutdown immediately before an atomic
 compare-and-swap write; CLI and runtime state remain unchanged. Missing

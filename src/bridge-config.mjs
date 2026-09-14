@@ -26,6 +26,7 @@ const BRIDGE_KEYS = new Set([
   "port",
   "providerId",
   "defaultModel",
+  "webSearchModel",
   "reasoningEffort",
   "limits",
 ]);
@@ -174,6 +175,13 @@ function normalizeBridge(input) {
       "bridge.defaultModel must be a native model id without a provider namespace",
     );
   }
+  const webSearchModel = input.webSearchModel;
+  if (
+    webSearchModel !== undefined &&
+    (typeof webSearchModel !== "string" || !NATIVE_MODEL_ID_PATTERN.test(webSearchModel))
+  ) {
+    throw new Error("bridge.webSearchModel must be a native model id without a provider namespace");
+  }
 
   const reasoningEffort = requireSingleLine(
     input.reasoningEffort ?? BRIDGE_DEFAULTS.reasoningEffort,
@@ -188,6 +196,7 @@ function normalizeBridge(input) {
     port,
     providerId,
     defaultModel,
+    ...(webSearchModel === undefined ? {} : { webSearchModel }),
     reasoningEffort,
     limits: normalizeLimits(input.limits),
   };

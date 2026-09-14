@@ -209,6 +209,7 @@ function mixedExternalRoutes(config, assignments, discoveredModels) {
     const route = {
       kind: "external",
       slug: catalogModel.slug,
+      compactionModelHash: catalogModel.comp_hash,
       upstreamModel: live?.upstreamId ?? upstreamModel,
       providerId: provider.id,
       providerKind: provider.kind,

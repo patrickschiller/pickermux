@@ -31,6 +31,44 @@ async function readContextFixture(name) {
   return (await readFile(new URL(`./fixtures/${name}`, import.meta.url), "utf8")).trim();
 }
 
+test("503 admission failures identify certification or credentials without disclosing private causes", async (t) => {
+  for (const [stage, code, message] of [
+    ["certification", "MODEL_CERTIFICATION_PENDING", "The selected model's certification is pending or unavailable; complete certification recovery before retrying"],
+    ["credentials", "PROVIDER_CREDENTIAL_UNAVAILABLE", "The selected provider credential is unavailable"],
+  ]) {
+    await t.test(stage, async (subtest) => {
+      let credentialReads = 0;
+      let upstreamRequests = 0;
+      const privateFailure = () => { throw new Error("private credential account prompt and capability canary"); };
+      const proxy = await createProxyHarness({
+        registry: {
+          resolve: () => ({
+            kind: "external",
+            providerKind: "lmstudio-responses",
+            baseUrl: "http://127.0.0.1:1/v1",
+            allowPrivateNetwork: true,
+            upstreamModel: "example-model",
+            toolsEnabled: false,
+          }),
+        },
+        externalRequestGate: stage === "certification" ? privateFailure : async () => {},
+        credentialResolver: async () => { credentialReads += 1; privateFailure(); },
+        httpTransport: { request() { upstreamRequests += 1; privateFailure(); } },
+      });
+      subtest.after(() => close(proxy.server));
+      const result = await httpRequest({
+        port: proxy.port,
+        body: Buffer.from(JSON.stringify({ model: "lmstudio/example-model", input: "Hello" })),
+      });
+      assert.equal(result.statusCode, 503);
+      assert.deepEqual(JSON.parse(result.body), { error: { code, message } });
+      assert.equal(result.body.toString().includes("canary"), false);
+      assert.equal(credentialReads, stage === "credentials" ? 1 : 0);
+      assert.equal(upstreamRequests, 0);
+    });
+  }
+});
+
 async function listen(server) {
   await new Promise((resolve, reject) => {
     server.once("error", reject);
@@ -80,6 +118,7 @@ function httpRequestUntilClose({
   port,
   path = "/v1/responses",
   body = Buffer.alloc(0),
+  onData,
 }) {
   return new Promise((resolve) => {
     let settled = false;
@@ -98,7 +137,10 @@ function httpRequestUntilClose({
       },
       (response) => {
         const chunks = [];
-        response.on("data", (chunk) => chunks.push(chunk));
+        response.on("data", (chunk) => {
+          chunks.push(chunk);
+          onData?.(chunk);
+        });
         response.once("end", () => finish({
           aborted: false,
           body: Buffer.concat(chunks),
@@ -546,7 +588,9 @@ test("text-only response authority rejects fabricated JSON and SSE tool calls", 
         input,
       })),
     });
-    assert.equal(result.aborted, true, input);
+    assert.equal(result.aborted, false, input);
+    assert.equal(result.statusCode, 502, input);
+    assert.equal(JSON.parse(result.body).error.code, "UPSTREAM_RESPONSE_ERROR", input);
     assert.doesNotMatch(result.body.toString("utf8"), /call_text_only/u);
   }
   assert.equal(upstreamRequests, 4);
@@ -738,8 +782,10 @@ test("LM Studio response authority is bound to advertised Direct functions", asy
       port: proxy.port,
       body: requestBody(input, toolChoice),
     });
-    assert.equal(blocked.aborted, true, input);
-    assert.equal(blocked.body.length, 0, input);
+    assert.equal(blocked.aborted, false, input);
+    assert.equal(blocked.statusCode, 502, input);
+    assert.equal(JSON.parse(blocked.body).error.code, "UPSTREAM_RESPONSE_ERROR", input);
+    assert.doesNotMatch(blocked.body.toString(), /call_custom|call_unknown|call_none/u);
   }
 
   assert.equal(upstreamTools.length, 4);
@@ -3614,6 +3660,246 @@ test("request size and upstream-header timeouts produce bounded errors", async (
     assert.equal(result.statusCode, 504);
     assert.equal(JSON.parse(result.body).error.code, "UPSTREAM_HEADERS_TIMEOUT");
   });
+});
+
+test("transformed responses retain structured errors before their first validated output", async (t) => {
+  const cases = [
+    { name: "invalid JSON", contentType: "application/json", payload: '{"private-canary":', code: "UPSTREAM_RESPONSE_ERROR", statusCode: 502 },
+    { name: "invalid first SSE event", contentType: "text/event-stream", payload: "data: private-canary\n\n", code: "UPSTREAM_RESPONSE_ERROR", statusCode: 502 },
+    { name: "SSE without a terminal", contentType: "text/event-stream", payload: "", code: "UPSTREAM_RESPONSE_ERROR", statusCode: 502 },
+    { name: "SSE idle before any event", contentType: "text/event-stream", timeout: "idle", code: "UPSTREAM_IDLE_TIMEOUT", statusCode: 504 },
+    { name: "buffered JSON idle", contentType: "application/json", payload: '{"private-canary":', timeout: "idle", code: "UPSTREAM_IDLE_TIMEOUT", statusCode: 504 },
+    { name: "SSE total time limit", contentType: "text/event-stream", timeout: "total", code: "UPSTREAM_TOTAL_TIMEOUT", statusCode: 504 },
+    { name: "response header time limit", contentType: "text/event-stream", timeout: "headers", code: "UPSTREAM_HEADERS_TIMEOUT", statusCode: 504 },
+  ];
+  for (const scenario of cases) {
+    await t.test(scenario.name, async (subtest) => {
+      const upstream = http.createServer((_request, response) => {
+        if (scenario.timeout === "headers") return;
+        response.writeHead(200, {
+          "content-type": scenario.contentType,
+          "x-private-upstream": "private-canary",
+        });
+        if (scenario.timeout) {
+          response.flushHeaders();
+          if (scenario.payload) response.write(scenario.payload);
+        } else {
+          response.end(scenario.payload);
+        }
+      });
+      const upstreamPort = await listen(upstream);
+      subtest.after(() => close(upstream));
+      const proxy = await createProxyHarness({
+        registry: {
+          resolve: () => ({
+            kind: "external",
+            providerKind: "lmstudio-responses",
+            baseUrl: `http://127.0.0.1:${upstreamPort}/v1`,
+            allowPrivateNetwork: true,
+            upstreamModel: "loaded-model",
+            toolsEnabled: false,
+          }),
+        },
+        credentialResolver: async () => undefined,
+        limits: {
+          upstreamHeadersTimeoutMs: scenario.timeout === "headers" ? 40 : 2_000,
+          streamIdleTimeoutMs: scenario.timeout === "idle" ? 40 : 2_000,
+          upstreamTotalTimeoutMs: scenario.timeout === "total" ? 40 : 2_000,
+        },
+      });
+      subtest.after(() => close(proxy.server));
+      const result = await httpRequest({
+        port: proxy.port,
+        body: Buffer.from(JSON.stringify({ model: "lmstudio/loaded-model", input: "Hello" })),
+      });
+      assert.equal(result.statusCode, scenario.statusCode);
+      assert.match(result.headers["content-type"], /^application\/json/u);
+      assert.equal(result.headers["x-private-upstream"], undefined);
+      assert.equal(JSON.parse(result.body).error.code, scenario.code);
+      assert.doesNotMatch(result.body.toString(), /private-canary|127\.0\.0\.1/u);
+      assert.notEqual(JSON.parse(result.body).error.message, "The model bridge could not complete the request");
+    });
+  }
+});
+
+test("late transformed failures emit one fixed failed terminal and clean EOF", async (t) => {
+  const unauthorized = `data: ${JSON.stringify({
+    type: "response.output_item.done",
+    output_index: 0,
+    item: { type: "function_call", name: "shell", call_id: "private-canary", arguments: "{}" },
+  })}\n\n`;
+  const completed = 'data: {"type":"response.completed","response":{"status":"completed","output":[]}}\n\n';
+  const heldItem = {
+    type: "function_call",
+    id: "item_held_legitimate",
+    call_id: "call_held_legitimate",
+    name: "known",
+    arguments: "{}",
+    status: "completed",
+  };
+  const heldCall = [
+    {
+      type: "response.output_item.added",
+      output_index: 0,
+      item: { ...heldItem, arguments: "", status: "in_progress" },
+    },
+    {
+      type: "response.function_call_arguments.delta",
+      output_index: 0,
+      item_id: heldItem.id,
+      delta: "{}",
+    },
+    {
+      type: "response.function_call_arguments.done",
+      output_index: 0,
+      item_id: heldItem.id,
+      arguments: "{}",
+    },
+    { type: "response.output_item.done", output_index: 0, item: heldItem },
+  ].map((event) => `data: ${JSON.stringify(event)}\n\n`).join("");
+  for (const scenario of [
+    { name: "idle timeout", code: "UPSTREAM_IDLE_TIMEOUT", timeout: "idle" },
+    { name: "idle timeout with a held authorized call", code: "UPSTREAM_IDLE_TIMEOUT", timeout: "idle", heldCall: true },
+    { name: "total timeout", code: "UPSTREAM_TOTAL_TIMEOUT", timeout: "total" },
+    { name: "upstream socket reset", code: "UPSTREAM_ABORTED", reset: true },
+    { name: "malformed frame", code: "UPSTREAM_RESPONSE_ERROR", tail: "data: private-canary\n\n" },
+    { name: "unauthorized call", code: "UPSTREAM_RESPONSE_ERROR", tail: unauthorized },
+    { name: "EOF without terminal", code: "UPSTREAM_RESPONSE_ERROR", tail: "" },
+    { name: "terminal in a rejected chunk", code: "UPSTREAM_RESPONSE_ERROR", tail: `${completed}data: private-canary\n\n` },
+  ]) {
+    await t.test(scenario.name, async (subtest) => {
+      let upstreamResponse;
+      let upstreamRequests = 0;
+      const upstream = http.createServer((_request, response) => {
+        upstreamRequests += 1;
+        upstreamResponse = response;
+        response.writeHead(200, { "content-type": "text/event-stream" });
+        response.write('data: {"type":"response.output_text.delta","delta":"validated text"}\n\n');
+      });
+      const upstreamPort = await listen(upstream);
+      subtest.after(() => close(upstream));
+      const proxy = await createProxyHarness({
+        registry: {
+          resolve: () => ({
+            kind: "external",
+            providerKind: "lmstudio-responses",
+            baseUrl: `http://127.0.0.1:${upstreamPort}/v1`,
+            allowPrivateNetwork: true,
+            upstreamModel: "loaded-model",
+            toolsEnabled: scenario.heldCall === true,
+          }),
+        },
+        credentialResolver: async () => undefined,
+        limits: {
+          upstreamHeadersTimeoutMs: 2_000,
+          streamIdleTimeoutMs: scenario.timeout === "idle" ? 80 : 2_000,
+          upstreamTotalTimeoutMs: scenario.timeout === "total" ? 80 : 2_000,
+        },
+      });
+      subtest.after(() => close(proxy.server));
+      let receivedFirstChunk = false;
+      const result = await httpRequestUntilClose({
+        port: proxy.port,
+        body: Buffer.from(JSON.stringify({
+          model: "lmstudio/loaded-model",
+          input: "Hello",
+          ...(scenario.heldCall ? {
+            tools: [{ type: "function", name: "known", parameters: { type: "object", properties: {} } }],
+          } : {}),
+        })),
+        onData: () => {
+          if (receivedFirstChunk) return;
+          receivedFirstChunk = true;
+          if (scenario.reset) upstreamResponse.destroy();
+          else if (scenario.heldCall) upstreamResponse.write(heldCall);
+          else if (!scenario.timeout) upstreamResponse.end(scenario.tail);
+        },
+      });
+      assert.equal(result.statusCode, 200);
+      assert.equal(result.aborted, false);
+      const body = result.body.toString();
+      const events = body.split("\n\n").filter(Boolean).map((frame) =>
+        JSON.parse(frame.split("\n").find((line) => line.startsWith("data: ")).slice(6)),
+      );
+      assert.equal(events.length, 2);
+      assert.deepEqual(events[0], { type: "response.output_text.delta", delta: "validated text" });
+      assert.deepEqual(events[1], {
+        type: "response.failed",
+        response: {
+          status: "failed",
+          error: { code: scenario.code, message: events[1].response.error.message },
+        },
+      });
+      assert.ok(events[1].response.error.message.includes(`(${scenario.code})`));
+      assert.equal(body.match(/^event: response.failed$/gmu)?.length, 1);
+      assert.doesNotMatch(body, /function_call|shell|private-canary|held_legitimate|response.completed|127\.0\.0\.1/u);
+      assert.equal(upstreamRequests, 1);
+    });
+  }
+});
+
+test("transformed streams never append a second terminal after a forwarded terminal", async (t) => {
+  for (const type of ["response.completed", "response.failed", "response.incomplete"]) {
+    await t.test(type, async (subtest) => {
+      let upstreamResponse;
+      const upstream = http.createServer((_request, response) => {
+        upstreamResponse = response;
+        response.writeHead(200, { "content-type": "text/event-stream" });
+        response.write(`data: ${JSON.stringify({
+          type,
+          response: { status: type.slice("response.".length), output: [] },
+        })}\n\n`);
+      });
+      const upstreamPort = await listen(upstream);
+      subtest.after(() => close(upstream));
+      const proxy = await createProxyHarness({
+        registry: {
+          resolve: () => ({
+            kind: "external",
+            providerKind: "lmstudio-responses",
+            baseUrl: `http://127.0.0.1:${upstreamPort}/v1`,
+            allowPrivateNetwork: true,
+            upstreamModel: "loaded-model",
+            toolsEnabled: false,
+          }),
+        },
+        credentialResolver: async () => undefined,
+      });
+      subtest.after(() => close(proxy.server));
+      const result = await httpRequestUntilClose({
+        port: proxy.port,
+        body: Buffer.from(JSON.stringify({ model: "lmstudio/loaded-model", input: "Hello" })),
+        onData: () => upstreamResponse.destroy(),
+      });
+      assert.equal(result.aborted, true);
+      assert.equal(result.body.toString().split("\n\n").filter(Boolean).length, 1);
+      assert.doesNotMatch(result.body.toString(), /UPSTREAM_ABORTED/u);
+    });
+  }
+});
+
+test("native late upstream failure still aborts the unchanged response stream", async (t) => {
+  let upstreamResponse;
+  const upstream = http.createServer((_request, response) => {
+    upstreamResponse = response;
+    response.writeHead(200, { "content-type": "text/event-stream" });
+    response.write('data: {"type":"response.output_text.delta","delta":"validated text"}\n\n');
+  });
+  const upstreamPort = await listen(upstream);
+  t.after(() => close(upstream));
+  const proxy = await createProxyHarness({
+    registry: { resolve: () => ({ kind: "native-openai", upstreamModel: "native-model" }) },
+    nativeBaseUrl: `http://127.0.0.1:${upstreamPort}/backend-api/codex`,
+  });
+  t.after(() => close(proxy.server));
+  const result = await httpRequestUntilClose({
+    port: proxy.port,
+    body: Buffer.from(JSON.stringify({ model: "native-model", input: "Hello" })),
+    onData: () => upstreamResponse.destroy(),
+  });
+  assert.equal(result.statusCode, 200);
+  assert.equal(result.aborted, true);
+  assert.equal(result.body.toString(), 'data: {"type":"response.output_text.delta","delta":"validated text"}\n\n');
 });
 
 test("redirects are never followed and cannot expose Location or cookies", async (t) => {

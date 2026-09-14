@@ -17,6 +17,7 @@ import test from "node:test";
 
 import {
   CONFIG_MARKERS,
+  enableManagedStandaloneWebSearch,
   getConfigStatus,
   installConfig,
   inventoryManagedConfigOwnership,
@@ -28,6 +29,240 @@ import {
 } from "../src/config-manager.mjs";
 
 const FIXED_NOW = new Date("2026-08-28T12:34:56.789Z");
+
+test("search-enabled installation owns only its new feature setting", async (t) => {
+  for (const original of [
+    'model = "gpt-5.6-sol"\n',
+    '[features]\nother = true\n[tools.web_search]\ncontext_size = "low"\n',
+    '["features"]\r\nother = true\r\n',
+    'features.other = true\nweb_search = "disabled"\n',
+  ]) {
+    await t.test(original.split(/\r?\n/u)[0], async (subtest) => {
+      const fixture = await makeFixture(subtest);
+      await writeFile(fixture.configPath, original);
+      const options = fixture.options();
+      options.provider.supportsStandaloneWebSearch = true;
+      await installConfig(options);
+      const installed = await readFile(fixture.configPath, "utf8");
+      assert.match(installed, /supports_standalone_web_search = true/u);
+      assert.match(installed, /standalone_web_search = true/u);
+      assert.equal(installed.split(CONFIG_MARKERS.webSearchBegin).length, 2);
+      assert.equal((await getConfigStatus(fixture.paths())).healthy, true);
+      await uninstallConfig(fixture.paths());
+      assert.equal(await readFile(fixture.configPath, "utf8"), original);
+    });
+  }
+});
+
+test("existing explicit search features are preserved, including false and inline tables", async (t) => {
+  for (const original of [
+    "features.standalone_web_search = false\n",
+    '["features"]\n"standalone_web_search" = false # user choice\n',
+    '[features]\nstandalone_web_search = true\n',
+    'features = { other = ["a,b", "standalone_web_search=true"], standalone_web_search = false }\n',
+  ]) {
+    await t.test(original.split("\n")[0], async (subtest) => {
+      const fixture = await makeFixture(subtest);
+      await writeFile(fixture.configPath, original);
+      await installConfig(fixture.options());
+      const update = await enableManagedStandaloneWebSearch(fixture.paths());
+      assert.equal(update.changed, true);
+      assert.equal(update.enabled, original.includes("standalone_web_search = true"));
+      const installed = await readFile(fixture.configPath, "utf8");
+      assert.equal(installed.includes(CONFIG_MARKERS.webSearchBegin), false);
+      assert.ok(installed.includes(original));
+      assert.equal((await getConfigStatus(fixture.paths())).healthy, true);
+      await uninstallConfig(fixture.paths());
+      assert.equal(await readFile(fixture.configPath, "utf8"), original);
+    });
+  }
+});
+
+test("managed search migration preserves the original receipt backup and rolls back byte-for-byte", async (t) => {
+  const fixture = await makeFixture(t);
+  await writeFile(fixture.configPath, '[features]\nother = true\n');
+  await installConfig(fixture.options());
+  const beforeConfig = await readFile(fixture.configPath);
+  const beforeState = await readFile(fixture.statePath);
+  const oldState = JSON.parse(beforeState);
+  const update = await enableManagedStandaloneWebSearch(fixture.paths());
+  assert.equal(update.changed, true);
+  assert.equal(update.enabled, true);
+  const migratedState = JSON.parse(await readFile(fixture.statePath, "utf8"));
+  assert.equal(migratedState.backupPath, oldState.backupPath);
+  assert.equal(migratedState.sourceSha256, oldState.sourceSha256);
+  assert.equal(migratedState.blocks.webSearch.scope, "features");
+  assert.equal((await getConfigStatus(fixture.paths())).healthy, true);
+  assert.deepEqual(await enableManagedStandaloneWebSearch(fixture.paths()), { changed: false, enabled: true });
+  await update.rollback();
+  assert.deepEqual(await readFile(fixture.configPath), beforeConfig);
+  assert.deepEqual(await readFile(fixture.statePath), beforeState);
+  await update.rollback();
+});
+
+test("search migration and surgical uninstall retain pre-existing contributor edits", async (t) => {
+  const fixture = await makeFixture(t);
+  await writeFile(fixture.configPath, '[features]\nother = true\n');
+  await installConfig(fixture.options());
+  await setManagedPickerSelection({ ...fixture.paths(), model: "lmstudio/changed", modelReasoningEffort: "high" });
+  const installed = await readFile(fixture.configPath, "utf8");
+  await writeFile(fixture.configPath, `${installed}user_added = true\n`);
+  await enableManagedStandaloneWebSearch(fixture.paths());
+  assert.equal((await getConfigStatus(fixture.paths())).model, "lmstudio/changed");
+  const state = JSON.parse(await readFile(fixture.statePath, "utf8"));
+  assert.equal(state.installedSha256, undefined);
+  await uninstallConfig(fixture.paths());
+  assert.equal(await readFile(fixture.configPath, "utf8"), '[features]\nother = true\nuser_added = true\n');
+});
+
+test("search migration retains absent config provenance and safe marker recovery", async (t) => {
+  for (const missingMarker of [false, true]) {
+    await t.test(missingMarker ? "recovered provider" : "intact provider", async (subtest) => {
+      const fixture = await makeFixture(subtest);
+      await installConfig(fixture.options());
+      if (missingMarker) {
+        const installed = await readFile(fixture.configPath, "utf8");
+        await writeFile(fixture.configPath, installed.replace(`${CONFIG_MARKERS.providerEnd}\n`, ""));
+      }
+      await enableManagedStandaloneWebSearch(fixture.paths());
+      assert.equal((await getConfigStatus(fixture.paths())).healthy, true);
+      await uninstallConfig(fixture.paths());
+      await assert.rejects(readFile(fixture.configPath), { code: "ENOENT" });
+    });
+  }
+});
+
+test("search configuration rejects ambiguous or unsupported state before writing", async (t) => {
+  for (const original of [
+    '[features]\nstandalone_web_search = "false"\n',
+    '[features]\nstandalone_web_search = false\nstandalone_web_search = true\n',
+    'features = { other = true }\n',
+    '[[features]]\nother = true\n',
+    '[features.standalone_web_search]\nvalue = true\n',
+  ]) {
+    await t.test(original.split("\n")[0], async (subtest) => {
+      const fixture = await makeFixture(subtest);
+      await writeFile(fixture.configPath, original);
+      await installConfig(fixture.options());
+      const beforeConfig = await readFile(fixture.configPath);
+      const beforeState = await readFile(fixture.statePath);
+      await assert.rejects(enableManagedStandaloneWebSearch(fixture.paths()), { code: "WEB_SEARCH_CONFIG_CONFLICT" });
+      assert.deepEqual(await readFile(fixture.configPath), beforeConfig);
+      assert.deepEqual(await readFile(fixture.statePath), beforeState);
+    });
+  }
+});
+
+test("search provider capability must be a boolean before configuration is written", async (t) => {
+  const fixture = await makeFixture(t);
+  const options = fixture.options();
+  options.provider.supportsStandaloneWebSearch = "false";
+  await assert.rejects(installConfig(options), { code: "INVALID_ARGUMENT" });
+  await assert.rejects(readFile(fixture.configPath), { code: "ENOENT" });
+  await assert.rejects(readFile(fixture.statePath), { code: "ENOENT" });
+});
+
+test("managed search upgrades and rollback fail closed on concurrent edits", async (t) => {
+  for (const target of ["configPath", "statePath"]) {
+    await t.test(target, async (subtest) => {
+      const fixture = await makeFixture(subtest);
+      await writeFile(fixture.configPath, '[features]\nother = true\n');
+      await installConfig(fixture.options());
+      const previous = await readFile(fixture[target], "utf8");
+      const edited = `${previous}\n`;
+      await assert.rejects(enableManagedStandaloneWebSearch({
+        ...fixture.paths(),
+        beforeConfigCommit: () => writeFile(fixture[target], edited),
+      }), { code: target === "statePath" ? "MANAGED_FILE_CHANGED" : "CONFIG_CHANGED_CONCURRENTLY" });
+      assert.equal(await readFile(fixture[target], "utf8"), edited);
+      await writeFile(fixture[target], previous);
+      const update = await enableManagedStandaloneWebSearch(fixture.paths());
+      const after = await readFile(fixture[target], "utf8");
+      await writeFile(fixture[target], `${after}\n`);
+      await assert.rejects(update.rollback(), { code: "CONFIG_CHANGED_CONCURRENTLY" });
+      assert.equal(await readFile(fixture[target], "utf8"), `${after}\n`);
+    });
+  }
+});
+
+test("new web search ownership rejects edits and table-scope relocation", async (t) => {
+  for (const edit of [
+    (text) => text.replace("\nstandalone_web_search = true\n", "\nstandalone_web_search = false\n"),
+    (text) => text.replace("[features]", "[unrelated]"),
+  ]) {
+    await t.test("modified ownership", async (subtest) => {
+      const fixture = await makeFixture(subtest);
+      await writeFile(fixture.configPath, '[features]\nother = true\n');
+      await installConfig(fixture.options());
+      await enableManagedStandaloneWebSearch(fixture.paths());
+      const changed = edit(await readFile(fixture.configPath, "utf8"));
+      await writeFile(fixture.configPath, changed);
+      assert.equal((await getConfigStatus(fixture.paths())).healthy, false);
+      await assert.rejects(enableManagedStandaloneWebSearch(fixture.paths()));
+      await assert.rejects(uninstallConfig(fixture.paths()));
+      assert.equal(await readFile(fixture.configPath, "utf8"), changed);
+    });
+  }
+});
+
+test("legacy receipts without feature markers migrate, while orphaned markers fail closed", async (t) => {
+  await t.test("legacy receipt without markers", async (subtest) => {
+    const fixture = await makeFixture(subtest);
+    await writeFile(fixture.configPath, '[features]\nother = true\n');
+    await installConfig(fixture.options());
+    const state = JSON.parse(await readFile(fixture.statePath, "utf8"));
+    assert.equal(state.blocks.webSearch, undefined);
+    assert.equal((await getConfigStatus(fixture.paths())).healthy, true);
+    assert.equal((await enableManagedStandaloneWebSearch(fixture.paths())).changed, true);
+    assert.equal((await getConfigStatus(fixture.paths())).healthy, true);
+  });
+  for (const markerText of [
+    `${CONFIG_MARKERS.webSearchBegin}\nstandalone_web_search = true\n${CONFIG_MARKERS.webSearchEnd}\n`,
+    `${CONFIG_MARKERS.webSearchBegin}\n`,
+    `${CONFIG_MARKERS.webSearchEnd}\n`,
+  ]) {
+    await t.test("orphaned feature ownership", async (subtest) => {
+      const fixture = await makeFixture(subtest);
+      await writeFile(fixture.configPath, '[features]\nother = true\n');
+      await installConfig(fixture.options());
+      const installed = await readFile(fixture.configPath, "utf8");
+      const orphaned = installed.replace("[features]\n", `[features]\n${markerText}`);
+      await writeFile(fixture.configPath, orphaned);
+      const previousState = await readFile(fixture.statePath);
+      const status = await getConfigStatus(fixture.paths());
+      assert.equal(status.healthy, false);
+      assert.equal(status.error.code, "ORPHANED_MANAGED_BLOCK");
+      await assert.rejects(enableManagedStandaloneWebSearch(fixture.paths()), { code: "ORPHANED_MANAGED_BLOCK" });
+      await assert.rejects(uninstallConfig(fixture.paths()), { code: "ORPHANED_MANAGED_BLOCK" });
+      assert.equal(await readFile(fixture.configPath, "utf8"), orphaned);
+      assert.deepEqual(await readFile(fixture.statePath), previousState);
+    });
+  }
+});
+
+test("owned web search boundaries must remain comments rather than multiline string content", async (t) => {
+  for (const quote of ['"""', "'''"]) {
+    await t.test(quote, async (subtest) => {
+      const fixture = await makeFixture(subtest);
+      const options = fixture.options();
+      options.provider.supportsStandaloneWebSearch = true;
+      await installConfig(options);
+      const installed = await readFile(fixture.configPath, "utf8");
+      const modified = installed
+        .replace(CONFIG_MARKERS.webSearchBegin, `note = ${quote}\n${CONFIG_MARKERS.webSearchBegin}`)
+        .replace(`${CONFIG_MARKERS.webSearchEnd}\n`, `${CONFIG_MARKERS.webSearchEnd}\n${quote}\n`);
+      await writeFile(fixture.configPath, modified);
+      const previousState = await readFile(fixture.statePath);
+      const status = await getConfigStatus(fixture.paths());
+      assert.equal(status.healthy, false);
+      assert.equal(status.error.code, "MANAGED_BLOCK_BOUNDARY_INVALID");
+      await assert.rejects(enableManagedStandaloneWebSearch(fixture.paths()), { code: "MANAGED_BLOCK_BOUNDARY_INVALID" });
+      await assert.rejects(uninstallConfig(fixture.paths()), { code: "MANAGED_BLOCK_BOUNDARY_INVALID" });
+      assert.equal(await readFile(fixture.configPath, "utf8"), modified);
+      assert.deepEqual(await readFile(fixture.statePath), previousState);
+    });
+  }
+});
 
 test("install preserves comments/table scope, creates exact backup, and uninstall restores prior values", async (t) => {
   const fixture = await makeFixture(t);

@@ -1,7 +1,8 @@
 import http from "node:http";
 
 import { hasDisallowedOrigin, isExpectedHost } from "./header-policy.mjs";
-import { createResponsesProxy } from "./responses-proxy.mjs";
+import { createResponsesProxy, createWebSearchProxy } from "./responses-proxy.mjs";
+import { WEB_SEARCH_CONTRACT_VERSION, WEB_SEARCH_PATH } from "./web-search-wire.mjs";
 
 const LOOPBACK_HOST = "127.0.0.1";
 export const CERTIFICATION_PENDING_GATE_VERSION = 1;
@@ -239,6 +240,7 @@ export function createBridgeServer({
   capabilityToken,
   limits,
   nativeBaseUrl,
+  nativeSearchModel,
   env,
   credentialResolver,
   httpTransport,
@@ -292,8 +294,18 @@ export function createBridgeServer({
     httpsTransport,
     dnsLookup,
     certificationToken: instanceId,
+    compactionSecret: capabilityToken,
     externalRequestGate,
     onTextOnlyCompaction: captureTextOnlyCompaction,
+  });
+  const handleWebSearch = createWebSearchProxy({
+    registry,
+    nativeBaseUrl,
+    nativeSearchModel,
+    limits,
+    httpTransport,
+    httpsTransport,
+    externalRequestGate,
   });
 
   const server = http.createServer({ maxHeaderSize: requestHeaderBytes }, async (request, response) => {
@@ -333,6 +345,7 @@ export function createBridgeServer({
       const textOnlyContext = textOnlyContextTelemetry.snapshot();
       writeJson(response, 200, {
         ok: compatibility === null || compatibility.status === "compatible",
+        webSearchContractVersion: WEB_SEARCH_CONTRACT_VERSION,
         instanceId,
         ...(certificationPendingGateActive
           ? {
@@ -367,7 +380,13 @@ export function createBridgeServer({
       return;
     }
 
-    if (path === "/v1/responses" || path === "/v1/responses/compact") {
+    if (request.method === "POST" && path === WEB_SEARCH_PATH) {
+      if (!(await admitModelRequest(compatibilityGate, response))) return;
+      await handleWebSearch(request, response, path);
+      return;
+    }
+
+    if (path === "/v1/responses" || path === "/v1/responses/compact" || path === WEB_SEARCH_PATH) {
       writeRouteError(response, 405, "METHOD_NOT_ALLOWED", "Method not allowed");
       return;
     }
