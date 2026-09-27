@@ -10,6 +10,28 @@ pickermux doctor
 Use `doctor --live` only when the static checks pass and a real model inference
 is needed.
 
+## `Failed to read the Codex client version`
+
+PickerMux 0.7.5 checks the older
+`/Applications/ChatGPT.app/Contents/Resources/codex` location, then `codex` on
+`PATH`. Newer app bundles put the executable inside `codex-cli/CodexCLI.app`.
+When the old location and a usable `PATH` command are absent, setup cannot read
+the client version. You can check the newer bundled executable directly:
+
+```bash
+/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex --version
+```
+
+Upgrade with the [0.7.6 release installer](RELEASE_NOTES_0.7.6.md#upgrade).
+Rerunning the 0.7.5 installer does not include the fix. Version 0.7.6 detects
+both bundled layouts and continues to validate the exact client version and
+catalog. A successful version check alone does not establish full
+compatibility.
+
+If `CODEX_BINARY` is set, confirm that it points to the intended bundled
+executable. It overrides automatic discovery and is not saved to the installed
+service. See [discovery order](CONFIGURATION.md#codex-executable-discovery).
+
 ## LM Studio reports `Channel Error` or a context-length failure
 
 `Channel Error` can wrap different inference failures. Read the nested error

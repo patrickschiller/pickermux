@@ -24,14 +24,22 @@ export function resolveCodexHome(environment = process.env) {
     : path.join(resolveUserHome(environment), ".codex");
 }
 
-export function resolveCodexBinary(environment = process.env) {
+export function resolveCodexBinary(
+  environment = process.env,
+  { existsSyncImpl = existsSync } = {},
+) {
   const configured = environment.CODEX_BINARY?.trim();
   if (configured) {
     return path.resolve(configured);
   }
 
-  const embedded = "/Applications/ChatGPT.app/Contents/Resources/codex";
-  return existsSync(embedded) ? embedded : "codex";
+  // Track the executable itself, not the package's shell wrapper, so runtime
+  // compatibility checks observe binary replacements after a Desktop update.
+  const embeddedPaths = [
+    "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
+    "/Applications/ChatGPT.app/Contents/Resources/codex",
+  ];
+  return embeddedPaths.find((candidate) => existsSyncImpl(candidate)) ?? "codex";
 }
 
 export function resolveProjectConfig(configPath, environment = process.env) {
