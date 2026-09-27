@@ -22,7 +22,7 @@ import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 
-import { setupPickerMux } from "../src/cli.mjs";
+import { certifyForInstallation, setupPickerMux } from "../src/cli.mjs";
 import {
   CONFIG_MARKERS,
   getConfigStatus,
@@ -1725,6 +1725,7 @@ test("setup orchestration preflights desktop, loaded LLM, config, and lifecycle 
         refreshedFrom = sourceRoot;
         return { refreshed: true };
       },
+      certifyInstallationImpl: async () => ({ status: "complete" }),
     });
 
     assert.equal(result.version, "0.5.3");
@@ -1823,6 +1824,79 @@ test("setup orchestration preflights desktop, loaded LLM, config, and lifecycle 
       "0.5.0",
     );
   });
+});
+
+test("setup certifies after activation under the lock and retains the new installation on probe failure", async (t) => {
+  for (const [upgrade, failProbe] of [[false, false], [true, false], [true, true]]) {
+    await t.test(`upgrade=${upgrade}, failed probe=${failProbe}`, async (t) => {
+      const fixture = await temporaryFixture(t);
+      if (upgrade) {
+        await setupManagedDistribution({
+          sourceRoot: fixture.source,
+          paths: fixture.distributionPaths,
+          activate: async () => ({}),
+        });
+      }
+      const release = upgrade ? await temporaryFixture(t, "0.4.1") : fixture;
+      let installed = upgrade;
+      let activated = false;
+      const progress = [];
+      const config = { testConfiguration: true };
+      const result = await setupPickerMux({
+        sourceRoot: release.source,
+        paths: fixture.installPaths,
+        distributionPaths: fixture.distributionPaths,
+        codexPath: "/test/codex",
+        configStatusImpl: async () => ({ installed, healthy: true }),
+        desktopRunningImpl: async () => false,
+        accountCacheImpl: async () => ({ ready: true }),
+        loadConfigImpl: async () => config,
+        discoverImpl: async () => ({ models: [{ id: "lmstudio/test" }] }),
+        installImpl: async () => { installed = true; activated = true; return {}; },
+        refreshImpl: async () => { activated = true; return {}; },
+        onProgress: (event) => progress.push(event),
+        certifyInstallationImpl: async (input) => {
+          assert.equal(activated, true);
+          assert.equal(input.config, config);
+          const distribution = await validateDistributionInstallation({ paths: fixture.distributionPaths });
+          assert.equal(distribution.receipt.activeVersion, upgrade ? "0.4.1" : "0.4.0");
+          assert.equal(input.sourceRoot, path.join(fixture.distributionPaths.versionsDirectory, distribution.receipt.activeVersion));
+          assert.equal(await pathExists(fixture.distributionPaths.lockPath), true);
+          return certifyForInstallation(input, {
+            desktopRunningImpl: async () => false,
+            certifyImpl: async () => {
+              if (failProbe) throw new Error("private-provider-prompt");
+              return { certified: [{ status: "valid" }], recoveredPending: [], reused: 0 };
+            },
+          });
+        },
+      });
+      assert.equal(result.certification.status, failProbe ? "incomplete" : "complete");
+      assert.equal(progress.at(-1).phase, failProbe ? "failed" : "complete");
+      assert.doesNotMatch(JSON.stringify({ result, progress }), /private-provider-prompt/u);
+      assert.equal(await pathExists(fixture.distributionPaths.lockPath), false);
+      const distribution = await validateDistributionInstallation({ paths: fixture.distributionPaths });
+      assert.equal(distribution.receipt.activeVersion, upgrade ? "0.4.1" : "0.4.0");
+    });
+  }
+});
+
+test("post-activation interruption does not restore only the old CLI pointer", async (t) => {
+  const fixture = await temporaryFixture(t);
+  await setupManagedDistribution({
+    sourceRoot: fixture.source,
+    paths: fixture.distributionPaths,
+    activate: async () => ({}),
+  });
+  const upgrade = await temporaryFixture(t, "0.4.1");
+  await assert.rejects(setupManagedDistribution({
+    sourceRoot: upgrade.source,
+    paths: fixture.distributionPaths,
+    activate: async () => ({}),
+    afterActivate: async () => { throw new Error("interrupted certification"); },
+  }), /interrupted certification/u);
+  assert.equal((await validateDistributionInstallation({ paths: fixture.distributionPaths })).receipt.activeVersion, "0.4.1");
+  assert.equal(await pathExists(fixture.distributionPaths.lockPath), false);
 });
 
 test("semantic version ordering rejects silent downgrade edge cases", () => {

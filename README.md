@@ -7,10 +7,11 @@
 
 **Use local LM Studio models directly from the Codex Desktop picker.**
 
-**New in 0.7.6: installation detects the current Codex app layout.** This fixes
-`Failed to read the Codex client version` when the bundled executable has moved
-into `codex-cli/CodexCLI.app`. Older app layouts remain supported. See the
-[complete release notes](docs/RELEASE_NOTES_0.7.6.md).
+**New in 0.8.0: installation includes model tool certification.** Setup checks
+loaded models for project-file and command tools, explains that live tests can
+take several minutes per model, and displays check progress with elapsed time.
+Existing valid certifications are retained. See the
+[complete release notes](docs/RELEASE_NOTES_0.8.0.md).
 
 Certified external models can also use Codex's `web.run` tool to search the web,
 read sources, and answer with links. See [Web search](#web-search-tool).
@@ -89,6 +90,20 @@ PickerMux's transactional setup lifecycle. It stores versioned CLI files below
 `~/Library/Application Support/PickerMux` and exposes the command as
 `~/.local/bin/pickermux`.
 
+Setup then automatically certifies discovered external models that do not have
+a valid tool certification. These live test requests enable Codex tools for
+reading project files and running commands only after the model passes. Allow
+several minutes per model, or longer on slow hardware. Keep the models loaded
+and Codex fully closed until setup finishes. Progress shows the model number,
+current check, and elapsed time, with an update every ten seconds while waiting.
+Existing valid Direct and Efficient Fidelity certifications are retained.
+
+If certification fails, setup reports **installation retained, certification
+incomplete** and exits unsuccessfully. Models without a valid certification
+remain text-only or blocked pending recovery; later models may not yet have
+been tested. Run `pickermux doctor`, then `pickermux certify --all` with the
+models loaded to retry. See [certification recovery](docs/TROUBLESHOOTING.md#installation-completes-but-model-certification-does-not).
+
 If `~/.local/bin` is not already in `PATH`, the installer prints the exact
 one-time shell configuration needed. It does not change `.zprofile`, `.zshrc`,
 or another shell file automatically. Until then, use the absolute command path.
@@ -96,7 +111,7 @@ or another shell file automatically. Until then, use the absolute command path.
 Use the exact version for a reproducible installation:
 
 ```bash
-/usr/bin/curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://github.com/patrickschiller/pickermux/releases/download/v0.7.6/install.sh | /bin/sh
+/usr/bin/curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://github.com/patrickschiller/pickermux/releases/download/v0.8.0/install.sh | /bin/sh
 ```
 
 Both one-line forms execute code downloaded from GitHub. The archive checksum
@@ -131,7 +146,7 @@ If setup stops with `Failed to read the Codex client version`, see the
 ~/.local/bin/pickermux discover
 ```
 
-For this release, the first command must print `pickermux 0.7.6`. `status`
+For this release, the first command must print `pickermux 0.8.0`. `status`
 checks the managed configuration, catalog, compatibility contract, and bridge.
 It also reports `full-refresh=idle` normally or the current recovery phase;
 `status --json` exposes the same state as `fullRefresh.status` and
@@ -152,6 +167,10 @@ LM Studio inference check. Once `~/.local/bin` is in `PATH`, the shorter
 
 Normal `refresh` does not warn merely because the matching Codex account cache
 is old. Its fetch time and neutral age remain visible through `doctor`.
+
+Models first discovered after installation still need
+`pickermux certify --model SLUG` before they can use tools. Ordinary refresh
+does not run live certification automatically.
 
 ## Refresh native account visibility
 
@@ -319,13 +338,13 @@ See [Configuration](docs/CONFIGURATION.md#shared-web-search) and
 
 ## Upgrade
 
-Version 0.7.6 fixes Codex executable discovery for the current macOS app layout
-and retains the web search and context compaction introduced in 0.7.5. Upgrade
-through the normal release installer, including when a 0.7.5 setup attempt
-failed to read the Codex client version. Do not replace immutable package files
-or bypass a same-version checksum mismatch. Keep an existing valid model
-certification; an upgrade alone does not require recertification. See the
-[0.7.6 release notes](docs/RELEASE_NOTES_0.7.6.md) for the versioned installer and
+Version 0.8.0 adds automatic installation-time model certification and progress
+reporting. It retains the Codex executable discovery fix from 0.7.6 and the web
+search and context compaction from 0.7.5. Upgrade through the normal release
+installer. Do not replace immutable package files or bypass a same-version
+checksum mismatch. Setup retains valid tool certifications and tests only
+models whose base certification is missing, stale, or pending recovery. See the
+[0.8.0 release notes](docs/RELEASE_NOTES_0.8.0.md) for the versioned installer and
 validation limits.
 
 PickerMux never updates silently. Run the same latest-release installer again
@@ -462,10 +481,10 @@ catalog lifecycle, request normalization, and certification design.
 | Command | Purpose |
 | --- | --- |
 | `pickermux --version` | Print the exact PickerMux release version. |
-| `pickermux setup [--config PATH]` | Install a fresh release or transactionally activate it over a healthy installation. |
+| `pickermux setup [--config PATH] [--json]` | Install or upgrade, then certify discovered models without a valid tool receipt. |
 | `pickermux discover` | List external models that are safe to publish from the current provider state. |
 | `pickermux build` | Build and validate a mixed catalog without installing it. |
-| `pickermux install` | Install the catalog, managed Codex configuration, and per-user bridge service. |
+| `pickermux install` | Install the catalog, configuration, and bridge service, then certify models without a valid tool receipt. |
 | `pickermux refresh` | Rediscover models and atomically refresh the catalog and runtime. |
 | `pickermux refresh --full` | Interactively suspend PickerMux, refresh Codex account visibility, transactionally reactivate it, and reopen Codex. |
 | `pickermux status` | Show managed configuration, service, and compatibility status. |
@@ -512,6 +531,11 @@ behavior. A base pass grants Direct fidelity. For LM Studio, PickerMux then
 runs a separate client-executed tool-search probe; its pass is recorded as an
 additive Efficient Fidelity gate. Both forms of evidence are bound to the
 provider, model, context, capability metadata, and Codex client version.
+
+`setup` (including the release installer) and `install` run this certification
+automatically after installation for models without a valid base receipt.
+They preserve valid Direct receipts even if Efficient Fidelity is unavailable.
+To explicitly retest a model or try Efficient Fidelity again, use `certify`:
 
 ```bash
 pickermux certify --model lmstudio/qwen/qwen3.8-27b
@@ -615,8 +639,8 @@ redaction guidance.
   not compact project instructions, conversation history, selected skills, or
   other Codex harness context, and v0.6.0 does not reuse provider-side response
   state through `previous_response_id`.
-- `doctor --live` and certification perform real local inference and can take
-  several minutes on large models.
+- `setup`, `install`, `doctor --live`, and certification can perform real
+  provider inference and take several minutes per model.
 - Codex and LM Studio updates can change compatibility. The running bridge
   quarantines model traffic when its installed contract is no longer verified;
   its private health endpoint remains available so `status` and `doctor` can

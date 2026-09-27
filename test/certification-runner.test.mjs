@@ -346,14 +346,23 @@ test("runs the complete P3 matrix serially and returns only exact passed gates",
     }
   };
 
+  const progress = [];
   const gates = await runModelCertification({
     baseUrl: "http://127.0.0.1:4210/c/test-capability/v1",
     model: { id: "lmstudio/example/model", contextWindow: 32_768 },
     certificationToken: CERTIFICATION_TOKEN,
     fetchImpl,
     timeoutMs: 5_000,
+    onProgress: (event) => {
+      assert.equal(requests.length, progress.length);
+      progress.push(event);
+    },
   });
 
+  assert.deepEqual(progress, [
+    "text", "stream", "function", "toolResult", "parameterless",
+    "namespaceStream", "longContext",
+  ].map((probe) => ({ phase: "probe", probe })));
   assert.equal(maximumActive, 1);
   assert.equal(requests.length, 7);
   assert.ok(requests.every((entry) => entry.url.endsWith("/responses")));
@@ -1227,14 +1236,22 @@ test("certifies Efficient Fidelity with a stateless client tool-search replay", 
     }
   };
 
+  const progress = [];
   const gates = await runEfficientFidelityCertification({
     baseUrl: "http://127.0.0.1:4210/c/test-capability/v1",
     model: { id: "lmstudio/example/model", contextWindow: 32_768 },
     certificationToken: CERTIFICATION_TOKEN,
     fetchImpl,
     timeoutMs: 5_000,
+    onProgress: (event) => {
+      assert.equal(requests.length, progress.length);
+      progress.push(event);
+    },
   });
 
+  assert.deepEqual(progress, ["toolSearch", "searchedTool"].map((probe) => ({
+    phase: "probe", probe,
+  })));
   assert.equal(maximumActive, 1);
   assert.equal(requests.length, 2);
   assert.ok(requests.every((entry) => entry.url.endsWith("/responses")));

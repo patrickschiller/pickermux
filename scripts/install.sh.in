@@ -93,5 +93,9 @@ extract_directory="$temporary_directory/extracted"
 symlink_count=$(/usr/bin/find "$extract_directory" -type l -print | /usr/bin/wc -l | /usr/bin/tr -d '[:space:]')
 [ "$symlink_count" -eq 0 ] || fail 'release archive extracted symbolic links'
 
+printf '%s\n' \
+  'Installing PickerMux and checking model tool support.' \
+  'Live certification can take several minutes per model. Keep models loaded and Codex fully closed.' >&2
+
 node "$extract_directory/bin/pickermux.mjs" setup \
   --distribution-root "$extract_directory"

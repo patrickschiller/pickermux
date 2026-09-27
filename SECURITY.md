@@ -222,6 +222,14 @@ catalog publication and route-registry replacement remain blocked while the
 barrier is present, and an interrupted pre-publication transition leaves the
 model quarantined for explicit retry instead of restoring stale authority.
 
+Setup and direct installation automatically invoke these same live gates after
+installation commits, while retaining the lifecycle lock. Valid base receipts
+are reused; no installer flag bypasses certification. A failed certification
+retains the activated installation and its conservative recovery state instead
+of rolling back only the CLI pointer. Installer progress uses fixed check names
+and numeric counts, never provider payloads or model identifiers. Progress
+callbacks cannot grant authority or change certification outcomes.
+
 For Codex's exact remote-compaction endpoint, a namespaced call whose older
 selected schema was trimmed may receive a deterministic history-only wire
 name. That mapping adds no tool definition and conveys no execution authority;

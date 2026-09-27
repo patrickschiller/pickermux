@@ -24,6 +24,17 @@ before creating the managed distribution. The activated contents are copied to
 PickerMux's private service configuration; later upgrades reuse that copy and
 do not replace it with a new release default.
 
+`setup` and `install` automatically run live tool certification for discovered
+external models with missing, stale, or pending base receipts. This uses the
+activated provider configuration, including any explicitly configured remote
+provider. Valid Direct or Efficient Fidelity receipts are reused. Keep Codex
+closed and models loaded; allow several minutes per model. Progress and waiting
+updates go to stderr, including when `--json` is selected; stdout then contains
+one JSON result with a `certification.status` of `complete` or `incomplete`.
+An incomplete certification exits with status 1 while retaining the activated
+installation and the existing certification recovery boundary. Ordinary
+`refresh` does not submit certification prompts.
+
 ## Codex executable discovery
 
 PickerMux 0.7.6 checks these locations in order:

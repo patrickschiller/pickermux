@@ -14,6 +14,7 @@ import {
   certificationFetch,
   certificationTransportErrorCode,
 } from "./certification-http.mjs";
+import { emitCertificationProgress } from "./certification-progress.mjs";
 
 function providerForModel(config, model) {
   const provider = config.providers.find((entry) => entry.id === model.providerId);
@@ -848,6 +849,7 @@ export async function runModelCertification({
   certificationToken,
   fetchImpl = certificationFetch,
   timeoutMs = 10 * 60_000,
+  onProgress,
 } = {}) {
   if (typeof model?.id !== "string" || !Number.isSafeInteger(model.contextWindow)) {
     throw new Error("Certification requires a discovered model with context metadata");
@@ -859,6 +861,7 @@ export async function runModelCertification({
     stream: false,
   };
 
+  emitCertificationProgress(onProgress, { phase: "probe", probe: "text" });
   const text = await postJson({
     baseUrl,
     fetchImpl,
@@ -872,6 +875,7 @@ export async function runModelCertification({
   });
   assertMarker(text, "P3_TEXT_OK", "Text probe");
 
+  emitCertificationProgress(onProgress, { phase: "probe", probe: "stream" });
   const streamEvents = await postSse({
     baseUrl,
     fetchImpl,
@@ -902,6 +906,7 @@ export async function runModelCertification({
     throw new Error("Stream probe did not complete the Responses SSE contract");
   }
 
+  emitCertificationProgress(onProgress, { phase: "probe", probe: "function" });
   const directTools = directFunctionTools();
   const directResponse = await postJson({
     baseUrl,
@@ -925,6 +930,7 @@ export async function runModelCertification({
     throw new Error("Direct function probe returned no response id");
   }
 
+  emitCertificationProgress(onProgress, { phase: "probe", probe: "toolResult" });
   const toolResult = await postJson({
     baseUrl,
     fetchImpl,
@@ -950,6 +956,7 @@ export async function runModelCertification({
   });
   assertMarker(toolResult, "P3_TOOL_RESULT_OK", "Tool-result probe");
 
+  emitCertificationProgress(onProgress, { phase: "probe", probe: "parameterless" });
   const namespaceToolset = namespaceTools();
   const namespaceResponse = await postJson({
     baseUrl,
@@ -972,6 +979,7 @@ export async function runModelCertification({
   );
   assertNamespaceCall(namespaceCall, "Parameterless namespace JSON probe");
 
+  emitCertificationProgress(onProgress, { phase: "probe", probe: "namespaceStream" });
   const namespaceEvents = await postSse({
     baseUrl,
     fetchImpl,
@@ -996,6 +1004,7 @@ export async function runModelCertification({
     assertNamespaceCall(terminalCall, "Namespace stream probe terminal");
   }
 
+  emitCertificationProgress(onProgress, { phase: "probe", probe: "longContext" });
   const minimumInputTokens = Math.min(
     8_192,
     Math.max(2_048, Math.floor(model.contextWindow / 8)),
@@ -1250,6 +1259,7 @@ export async function runEfficientFidelityCertification({
   certificationToken,
   fetchImpl = certificationFetch,
   timeoutMs = 10 * 60_000,
+  onProgress,
 } = {}) {
   if (typeof model?.id !== "string" || !Number.isSafeInteger(model.contextWindow)) {
     throw new Error(
@@ -1270,6 +1280,7 @@ export async function runEfficientFidelityCertification({
     parallel_tool_calls: false,
   };
 
+  emitCertificationProgress(onProgress, { phase: "probe", probe: "toolSearch" });
   const searchEvents = await postSse({
     baseUrl,
     fetchImpl,
@@ -1283,6 +1294,7 @@ export async function runEfficientFidelityCertification({
   });
   const searchCall = assertEfficientFidelitySearchCall(searchEvents);
 
+  emitCertificationProgress(onProgress, { phase: "probe", probe: "searchedTool" });
   const loadedTool = efficientFidelityDeferredTool();
   const loadedToolResponse = await postJson({
     baseUrl,
