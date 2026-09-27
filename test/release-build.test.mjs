@@ -474,7 +474,10 @@ test("the rendered production installer enforces its bootstrap trust boundaries"
       version: release.version,
     });
     assert.equal(execution.ok, true, execution.error?.stderr);
-    assert.equal(execution.stderr, "");
+    assert.equal(execution.stderr,
+      "Installing PickerMux and checking model tool support.\n" +
+      "Live certification can take several minutes per model. Keep models loaded and Codex fully closed.\n",
+    );
     const curlArguments = (await readFile(execution.curlLogPath, "utf8"))
       .trimEnd()
       .split("\n");
@@ -729,6 +732,7 @@ test("the repository itself produces a smoke-testable release archive", async (t
   assert.equal(archivePaths.has("src/account-cache.mjs"), true);
   assert.equal(archivePaths.has("src/codex-account-cache-file.mjs"), true);
   assert.equal(archivePaths.has("src/certification-transport.mjs"), true);
+  assert.equal(archivePaths.has("src/certification-progress.mjs"), true);
   assert.equal(archivePaths.has("src/efficient-fidelity.mjs"), true);
   assert.equal(archivePaths.has("src/provider-id.mjs"), true);
   assert.equal(archivePaths.has("src/purge-data.mjs"), true);

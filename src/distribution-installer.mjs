@@ -750,6 +750,7 @@ export async function setupManagedDistribution({
   now = () => new Date(),
   processKillImpl,
   beforeControlCommit = async () => undefined,
+  afterActivate = async () => undefined,
 }) {
   if (typeof activate !== "function") throw new TypeError("Setup requires an activation callback");
   if (currentUid() === 0) {
@@ -871,6 +872,7 @@ export async function setupManagedDistribution({
       throw error;
     }
 
+    let result;
     try {
       await ensureDirectory(path.dirname(paths.launcherDirectory), 0o755);
       await ensureDirectory(paths.launcherDirectory, 0o755);
@@ -887,7 +889,7 @@ export async function setupManagedDistribution({
         previousVersion: installed.receipt?.activeVersion ?? null,
         version: metadata.version,
       });
-      return {
+      result = {
         version: metadata.version,
         previousVersion: installed.receipt?.activeVersion ?? null,
         upgraded:
@@ -905,6 +907,11 @@ export async function setupManagedDistribution({
         cause: error,
       });
     }
+    // Activation has committed. Subsequent model checks have their own
+    // recovery boundary and must not roll back only the CLI pointer while
+    // leaving the newly installed runtime active. Keep the lifecycle lock.
+    await afterActivate({ distributionRoot: destination });
+    return result;
   }, { processKillImpl });
 }
 

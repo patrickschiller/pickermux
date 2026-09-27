@@ -138,6 +138,10 @@ import {
   finalizeServicePackage,
 } from "./service-package.mjs";
 import { readPickerMuxMetadata } from "./version.mjs";
+import {
+  createCertificationProgress,
+  emitCertificationProgress,
+} from "./certification-progress.mjs";
 
 const COMMANDS = new Set([
   "build",
@@ -167,7 +171,7 @@ Usage:
   pickermux credential-set PROVIDER [--config PATH]
   pickermux credential-status PROVIDER [--config PATH] [--json]
   pickermux credential-delete PROVIDER [--config PATH]
-  pickermux setup [--config PATH]
+  pickermux setup [--config PATH] [--json]
   pickermux install [--config PATH] [--json]
   pickermux refresh [--config PATH] [--json]
   pickermux refresh --full
@@ -181,6 +185,9 @@ CODEX_BINARY overrides discovery for this command; it is not saved to the servic
 
 Install and refresh enable shared Codex web search unless explicitly disabled.
 External models still require tool certification; search runs outside LM Studio.
+Setup and install automatically certify discovered models without a valid tool receipt.
+Live tests can take several minutes per model. Keep models loaded and Codex fully closed.
+Progress is written to stderr; --json keeps stdout machine-readable.
 LM Studio context compaction uses one bounded summary request without tool schemas.
 V2 summaries omit separately supplied base instructions, retaining all conversation messages.
 Restored terminal summaries receive a short continuation instruction for a new answer.
@@ -1300,6 +1307,8 @@ export async function runCertificationTransaction({
   targetModelIds,
   recoveryModelIds = [],
   exactModelSet = false,
+  sourceRoot = projectRoot,
+  onProgress,
 }, {
   refreshImpl = refresh,
   discoverImpl = discoverBridgeModels,
@@ -1337,12 +1346,13 @@ export async function runCertificationTransaction({
   let deactivationCleared = false;
   let currentModelId;
   try {
+    emitCertificationProgress(onProgress, { phase: "prepare" });
     const pendingAtStart = await listPendingImpl(paths.certificationPath);
     targetPendingAtStart = targetModelIds.some((modelId) =>
       pendingAtStart.includes(modelId),
     );
     const authorityRefresh = assertCertificationPendingGate(
-      await refreshImpl({ config, paths, codexPath }),
+      await refreshImpl({ config, paths, codexPath, sourceRoot }),
       "Certification authority refresh",
     );
     if (targetModelIds.length > 0) {
@@ -1378,7 +1388,7 @@ export async function runCertificationTransaction({
     deactivationStaged = true;
 
     const deactivated = assertCertificationPendingGate(
-      await refreshImpl({ config, paths, codexPath }),
+      await refreshImpl({ config, paths, codexPath, sourceRoot }),
       "Conservative certification refresh",
     );
     const reboundModels = selectCertificationModels(
@@ -1417,6 +1427,12 @@ export async function runCertificationTransaction({
     for (const entry of rebound) {
       const { candidate, subject } = entry;
       currentModelId = candidate.id;
+      emitCertificationProgress(onProgress, {
+        phase: "model",
+        index: completed.length + 1,
+        total: rebound.length,
+        probeCount: subject.providerKind === "lmstudio-responses" ? 9 : 7,
+      });
       assertMatchingCertificationSubjects(
         [entry],
         await currentCertificationSubjects({
@@ -1434,6 +1450,7 @@ export async function runCertificationTransaction({
         baseUrl: bridgeBaseUrl(config, runtime),
         model: candidate,
         certificationToken: runtime.instanceId,
+        onProgress,
       });
       assertMatchingCertificationSubjects(
         [entry],
@@ -1480,6 +1497,7 @@ export async function runCertificationTransaction({
               baseUrl: bridgeBaseUrl(config, runtime),
               model: candidate,
               certificationToken: runtime.instanceId,
+              onProgress,
             });
         } catch {
           // Efficient Fidelity is additive. The independently revalidated
@@ -1522,6 +1540,10 @@ export async function runCertificationTransaction({
           ? { efficientFidelityPassedAt }
           : {}),
       });
+      emitCertificationProgress(onProgress, {
+        phase: "model-passed",
+        mode: efficientFidelity === "enabled" ? "efficient" : "direct",
+      });
     }
 
     assertMatchingCertificationSubjects(
@@ -1538,8 +1560,9 @@ export async function runCertificationTransaction({
     );
     await clearDeactivationImpl(paths.certificationPath, targetModelIds);
     deactivationCleared = true;
+    emitCertificationProgress(onProgress, { phase: "publishing" });
     const refreshed = assertCertificationPendingGate(
-      await refreshImpl({ config, paths, codexPath }),
+      await refreshImpl({ config, paths, codexPath, sourceRoot }),
       "Certified catalog refresh",
     );
     const finalModels = selectCertificationModels(
@@ -1574,7 +1597,7 @@ export async function runCertificationTransaction({
     ) {
       try {
         assertCertificationPendingGate(
-          await refreshImpl({ config, paths, codexPath }),
+          await refreshImpl({ config, paths, codexPath, sourceRoot }),
           "Conservative recovery refresh",
         );
       } catch (recoveryError) {
@@ -1609,36 +1632,70 @@ export async function runCertificationTransaction({
   }
 }
 
-export async function certify({ config, paths, codexPath, model, all }) {
+export async function certify({
+  config, paths, codexPath, model, all,
+  onlyUncertified = false,
+  sourceRoot = projectRoot,
+  onProgress,
+}, {
+  configStatusImpl = getConfigStatus,
+  serviceStatusImpl = getBridgeServiceStatus,
+  runtimeImpl = readRuntime,
+  discoverImpl = discoverBridgeModels,
+  listPendingImpl = listPendingModelCertificationIds,
+  clientVersionImpl = loadCodexClientVersion,
+  resolveStatusesImpl = resolveCertificationStatuses,
+  transactionImpl = runCertificationTransaction,
+  credentialResolver = createCredentialResolver(),
+} = {}) {
   const [managedConfig, service, runtime] = await Promise.all([
-    getConfigStatus({ configPath: paths.configPath, statePath: paths.statePath }),
-    getBridgeServiceStatus({
+    configStatusImpl({ configPath: paths.configPath, statePath: paths.statePath }),
+    serviceStatusImpl({
       config,
       runtimePath: paths.runtimePath,
       launchAgentLabel: paths.launchAgentLabel,
     }),
-    readRuntime(paths.runtimePath),
+    runtimeImpl(paths.runtimePath),
   ]);
   if (!managedConfig.installed || !managedConfig.healthy || !service.healthy) {
     throw new Error("PickerMux model certification requires a healthy installed bridge");
   }
 
-  const credentialResolver = createCredentialResolver();
   const [discovery, pendingModelIds] = await Promise.all([
-    discoverBridgeModels({ config, credentialResolver }),
-    listPendingModelCertificationIds(paths.certificationPath),
+    discoverImpl({ config, credentialResolver }),
+    listPendingImpl(paths.certificationPath),
   ]);
   const supported = discovery.models;
   const supportedIds = new Set(supported.map((entry) => entry.id));
-  const candidates = all
+  let candidates = all
     ? supported
     : supported.filter((entry) => entry.id === model);
+  let reused = 0;
+  if (onlyUncertified) {
+    const statuses = await resolveStatusesImpl({
+      storePath: paths.certificationPath,
+      config,
+      models: candidates,
+      codexClientVersion: await clientVersionImpl({ codexPath }),
+    });
+    const validIds = new Set(statuses
+      .filter((entry) => entry.certification.status === "valid")
+      .map((entry) => entry.model.id));
+    const required = candidates.filter((entry) =>
+      !validIds.has(entry.id) || pendingModelIds.includes(entry.id),
+    );
+    reused = candidates.length - required.length;
+    candidates = required;
+  }
   const recoveryModelIds = all
     ? pendingModelIds.filter((modelId) => !supportedIds.has(modelId))
     : pendingModelIds.includes(model) && candidates.length === 0
       ? [model]
       : [];
   if (candidates.length === 0 && recoveryModelIds.length === 0) {
+    if (onlyUncertified) {
+      return { certified: [], recoveredPending: [], reused, restartRequired: true };
+    }
     throw new Error(
       all
         ? "No external model is available for certification"
@@ -1646,7 +1703,7 @@ export async function certify({ config, paths, codexPath, model, all }) {
     );
   }
 
-  return runCertificationTransaction({
+  const result = await transactionImpl({
     config,
     paths,
     codexPath,
@@ -1654,8 +1711,40 @@ export async function certify({ config, paths, codexPath, model, all }) {
     credentialResolver,
     targetModelIds: candidates.map((candidate) => candidate.id),
     recoveryModelIds,
-    exactModelSet: all,
+    exactModelSet: all && !onlyUncertified,
+    sourceRoot,
+    onProgress,
   });
+  return onlyUncertified ? { ...result, reused } : result;
+}
+
+export async function certifyForInstallation({
+  config, paths, codexPath, sourceRoot, onProgress,
+}, {
+  certifyImpl = certify,
+  desktopRunningImpl = isCodexDesktopRunning,
+} = {}) {
+  emitCertificationProgress(onProgress, { phase: "start" });
+  try {
+    await assertCodexDesktopClosed(desktopRunningImpl);
+    const result = await certifyImpl({
+      config, paths, codexPath, sourceRoot, onProgress,
+      all: true,
+      onlyUncertified: true,
+    });
+    emitCertificationProgress(onProgress, {
+      phase: result.certified.length > 0 || result.recoveredPending.length > 0
+        ? "complete"
+        : result.reused > 0 ? "reused" : "no-models",
+    });
+    return { ...result, status: "complete" };
+  } catch {
+    // The installation is already committed. Certification owns its pending
+    // barrier and conservative recovery; never roll back only the CLI here or
+    // echo an arbitrary provider/service error into installer output.
+    emitCertificationProgress(onProgress, { phase: "failed" });
+    return { status: "incomplete", retryCommand: "pickermux certify --all" };
+  }
 }
 
 async function managedRuntimeDirectories(paths) {
@@ -2783,6 +2872,8 @@ export async function setupPickerMux({
   discoverImpl = discoverBridgeModels,
   installImpl = install,
   refreshImpl = refresh,
+  certifyInstallationImpl = certifyForInstallation,
+  onProgress,
   assertNoPendingFullRefreshImpl = async () => null,
 } = {}) {
   const initialStatus = await configStatusImpl({
@@ -2870,7 +2961,9 @@ export async function setupPickerMux({
     );
   }
 
-  return setupImpl({
+  let certification;
+  let activatedConfig;
+  const result = await setupImpl({
     sourceRoot,
     paths: distributionPaths,
     async beforeControlCommit() {
@@ -2909,6 +3002,7 @@ export async function setupPickerMux({
       }
       await assertAccountCacheReady();
       const config = await loadConfigImpl(effectiveConfigPath);
+      activatedConfig = config;
       if (status.installed) {
         const result = await refreshImpl({
           config,
@@ -2930,7 +3024,26 @@ export async function setupPickerMux({
       });
       return { action: "install", integration: result };
     },
+    async afterActivate({ distributionRoot }) {
+      certification = await certifyInstallationImpl({
+        config: activatedConfig,
+        paths,
+        codexPath,
+        sourceRoot: distributionRoot,
+        onProgress,
+      }, { desktopRunningImpl });
+    },
   });
+  return { ...result, certification };
+}
+
+async function withCertificationProgress(operation) {
+  const progress = createCertificationProgress();
+  try {
+    return await operation(progress.onProgress);
+  } finally {
+    progress.stop();
+  }
 }
 
 export async function runCli(argv, {
@@ -2939,6 +3052,7 @@ export async function runCli(argv, {
   executeFullRefreshWorkerImpl = executeFullRefreshWorker,
   confirmFullRefreshImpl = confirmFullRefresh,
   assertNoPendingFullRefreshImpl = assertNoPendingFullRefresh,
+  setupImpl = setupPickerMux,
 } = {}) {
   const options = parseArguments(argv);
   if (options.command === "help") {
@@ -2999,7 +3113,7 @@ export async function runCli(argv, {
     await assertNoPendingFullRefreshLocked();
   }
   if (options.command === "setup") {
-    const result = await setupPickerMux({
+    const result = await withCertificationProgress((onProgress) => setupImpl({
       sourceRoot: options.distributionRoot
         ? path.resolve(options.distributionRoot)
         : projectRoot,
@@ -3010,11 +3124,16 @@ export async function runCli(argv, {
       paths,
       distributionPaths,
       assertNoPendingFullRefreshImpl: assertNoPendingFullRefreshLocked,
-    });
+      onProgress,
+    }));
+    const certificationIncomplete = result.certification?.status === "incomplete";
+    if (certificationIncomplete) process.exitCode = 1;
     if (options.json) printJson(result);
     else {
       process.stdout.write(
-        `PickerMux ${result.version} setup completed (${result.activation.action}).\n`,
+        certificationIncomplete
+          ? `PickerMux ${result.version} installed (${result.activation.action}); model certification incomplete. Retry pickermux certify --all.\n`
+          : `PickerMux ${result.version} setup completed (${result.activation.action}).\n`,
       );
       process.stdout.write(`Launcher installed at ${result.launcherPath}.\n`);
       process.stdout.write(
@@ -3202,13 +3321,20 @@ export async function runCli(argv, {
     return summary;
   }
   if (options.command === "install") {
-    const result = await withInstallationLock(
+    const result = await withCertificationProgress((onProgress) => withInstallationLock(
       distributionPaths,
       async () => {
         await assertNoPendingFullRefreshLocked();
-        return install({ config, configPath, paths, codexPath });
+        await assertCodexDesktopClosed(isCodexDesktopRunning);
+        const installed = await install({ config, configPath, paths, codexPath });
+        const certification = await certifyForInstallation({
+          config, paths, codexPath, sourceRoot: projectRoot, onProgress,
+        });
+        const doctor = await runBridgeDoctor({ config, paths, codexPath });
+        return { ...installed, certification, doctor };
       },
-    );
+    ));
+    if (result.certification.status === "incomplete" || !result.doctor.ok) process.exitCode = 1;
     if (options.json) printJson(result);
     else {
       printNativeCatalogWarning(result);
@@ -3234,7 +3360,7 @@ export async function runCli(argv, {
     return result;
   }
   if (options.command === "certify") {
-    const result = await withInstallationLock(
+    const result = await withCertificationProgress((onProgress) => withInstallationLock(
       distributionPaths,
       async () => {
         await assertNoPendingFullRefreshLocked();
@@ -3244,9 +3370,10 @@ export async function runCli(argv, {
           codexPath,
           model: options.model,
           all: options.all,
+          onProgress,
         });
       },
-    );
+    ));
     if (options.json) printJson(result);
     else {
       for (const modelId of result.recoveredPending ?? []) {

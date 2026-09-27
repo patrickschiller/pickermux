@@ -7,6 +7,22 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-27
+
+### Added
+
+- Automatically certify discovered external models without a valid tool receipt
+  after release setup or direct installation. Preserve existing Direct and
+  Efficient Fidelity receipts and retain the activated installation if model
+  certification fails, with a nonzero exit status and explicit retry guidance.
+- Explain live certification's duration during installation and show model/check
+  progress with elapsed-time updates every ten seconds. Progress also covers
+  manual certification, uses stderr for pipe-safe output, and keeps JSON stdout
+  machine-readable without logging model identifiers, prompts, or credentials.
+
+See the [release notes](docs/RELEASE_NOTES_0.8.0.md) for installation, recovery,
+and validation limits.
+
 ## [0.7.6] - 2026-09-27
 
 ### Fixed
@@ -500,7 +516,8 @@ confirm the release date before tagging. See the
   paths and file types, refuses root execution and foreign launchers, and
   restores the previous distribution state when activation fails.
 
-[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.7.6...HEAD
+[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.8.0
 [0.7.6]: https://github.com/patrickschiller/pickermux/releases/tag/v0.7.6
 [0.7.5]: https://github.com/patrickschiller/pickermux/releases/tag/v0.7.5
 [0.7.4]: docs/RELEASE_NOTES_0.7.4.md

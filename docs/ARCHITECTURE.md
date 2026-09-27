@@ -1,6 +1,6 @@
 # PickerMux Architecture
 
-This document describes PickerMux v0.7.6.
+This document describes PickerMux v0.8.0.
 It is intended for contributors, security reviewers, and users who want to
 understand what runs on their Mac.
 
@@ -584,6 +584,27 @@ fails, and download, digest, or archive-validation failures occur before any
 persistent mutation. Concurrent setup and removal are serialized by a private
 installation lock.
 
+After activation commits, setup retains the same installation lock while
+certifying discovered models without a valid base receipt. Direct installation
+uses the same certification step. Receipt evaluation binds the current model
+configuration and Codex client; valid Direct and Efficient Fidelity receipts
+are reused, while pending models still enter recovery. Missing or stale models
+use the existing certification transaction and all its deactivation, probe,
+subject-revalidation, and publication gates. Certification refreshes explicitly
+use the activated immutable distribution, not the bootstrap's temporary source.
+
+This step has a separate recovery boundary: certification failure must not
+restore just an older CLI pointer after a new runtime has committed. The
+installation remains active and the command reports incomplete certification
+with a nonzero exit status and retry guidance. A base failure stops the matrix;
+subsequent models may remain untested. The pending barrier and conservative
+recovery remain authoritative. No install path synthesizes a passing receipt.
+Progress observers receive only fixed phases/probe kinds and ordinal counts;
+stderr reports the current check and elapsed-time heartbeats without provider
+responses, paths, model IDs, or credentials. Observer errors do not affect
+certification authority. Timers are cleaned up on completion and failure, and
+JSON stdout is kept separate from progress output.
+
 Integration uninstall and distribution removal are intentionally distinct.
 `uninstall` restores Codex and removes the bridge runtime; the explicit
 `--remove-cli` option additionally removes only receipt-owned launcher and
@@ -672,7 +693,7 @@ The private health endpoint remains available with fixed safe status/reason
 enums so the LaunchAgent does not enter a restart loop and diagnostics can
 direct the user to refresh.
 
-Versions 0.6.0 through 0.7.6 use bridge contract
+Versions 0.6.0 through 0.8.0 use bridge contract
 `codex-responses-bridge/p6-v1`.
 The managed publisher emits the search claim only from valid model-bound
 evidence, and the runtime accepts it only on entries generated under that exact

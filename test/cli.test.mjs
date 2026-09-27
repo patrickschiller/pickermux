@@ -34,7 +34,7 @@ test("release metadata and both CLI entry points identify PickerMux", async () =
     await readFile(path.join(projectDirectory, "package.json"), "utf8"),
   );
   assert.equal(packageMetadata.name, "pickermux");
-  assert.equal(packageMetadata.version, "0.7.6");
+  assert.equal(packageMetadata.version, "0.8.0");
   assert.equal(packageMetadata.license, "MIT");
 
   for (const entryPoint of ["pickermux.mjs", "lmstudio-picker.mjs"]) {
@@ -46,6 +46,8 @@ test("release metadata and both CLI entry points identify PickerMux", async () =
       );
       assert.match(stdout, /PickerMux/u);
       assert.match(stdout, /CODEX_BINARY overrides discovery for this command/u);
+      assert.match(stdout, /Setup and install automatically certify discovered models/u);
+      assert.match(stdout, /several minutes per model/u);
       assert.doesNotMatch(
         stdout,
         new RegExp(["Smart", "Routing"].join(" "), "iu"),
@@ -59,7 +61,37 @@ test("release metadata and both CLI entry points identify PickerMux", async () =
         [path.join(projectDirectory, "bin", entryPoint), versionArgument],
         { encoding: "utf8" },
       );
-      assert.equal(stdout, "pickermux 0.7.6\n");
+      assert.equal(stdout, "pickermux 0.8.0\n");
+    }
+  }
+});
+
+test("setup keeps JSON stdout clean and returns a failing exit code for incomplete certification", async () => {
+  const cwd = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+  for (const incomplete of [false, true]) {
+    const script = `
+      import { runCli } from "./src/cli.mjs";
+      await runCli(["setup", "--json"], {
+        assertNoPendingFullRefreshImpl: async () => {},
+        setupImpl: async ({ onProgress }) => {
+          onProgress({ phase: "start" });
+          onProgress({ phase: ${incomplete} ? "failed" : "complete" });
+          return {
+            version: "0.8.0",
+            activation: { action: "install" },
+            certification: { status: ${incomplete} ? "incomplete" : "complete" },
+          };
+        },
+      });
+    `;
+    const output = await execFileAsync(process.execPath, ["--input-type=module", "--eval", script], { cwd })
+      .then((result) => ({ ...result, code: 0 }), (error) => error);
+    assert.equal(output.code, incomplete ? 1 : 0);
+    assert.equal(JSON.parse(output.stdout).certification.status, incomplete ? "incomplete" : "complete");
+    assert.match(output.stderr, /several minutes per model/u);
+    if (incomplete) {
+      assert.match(output.stderr, /Installation retained/u);
+      assert.doesNotMatch(output.stderr, /publication complete/u);
     }
   }
 });

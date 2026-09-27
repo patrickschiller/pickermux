@@ -22,7 +22,7 @@ the client version. You can check the newer bundled executable directly:
 /Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex --version
 ```
 
-Upgrade with the [0.7.6 release installer](RELEASE_NOTES_0.7.6.md#upgrade).
+Upgrade with the [0.8.0 release installer](RELEASE_NOTES_0.8.0.md#upgrade).
 Rerunning the 0.7.5 installer does not include the fix. Version 0.7.6 detects
 both bundled layouts and continues to validate the exact client version and
 catalog. A successful version check alone does not establish full
@@ -259,9 +259,38 @@ Other failures such as timeouts, malformed responses, and temporary network
 errors retain the last known good catalog instead of treating the provider as
 cleanly offline.
 
+## Installation completes but model certification does not
+
+Setup and direct installation automatically check discovered models without a
+valid tool receipt after activating the installation. The live tests can take
+several minutes per model, especially the long-context check. Progress shows
+the model number and current check; waiting updates every ten seconds show
+elapsed time, not an estimated completion percentage. Keep LM Studio and its
+models running and Codex fully closed throughout setup.
+
+If a test or recovery step fails, the installer retains the activated CLI and
+bridge but reports certification as incomplete and exits with status 1. A
+missing or failed base certification does not grant tools. A model may remain
+blocked behind the persistent recovery barrier, and later models may not yet
+have been checked. Run:
+
+```bash
+~/.local/bin/pickermux doctor
+~/.local/bin/pickermux certify --all
+```
+
+Use the reported fixed probe label and redacted failure code from the explicit
+retry to diagnose failures. A successful base matrix is enough for Direct tools;
+failure of only the Efficient Fidelity probe retains that working mode.
+Restart Codex completely after success, start a chat in the local project, and
+ask the model to list files and read an existing README to check actual workspace
+access. Tool certification does not itself grant filesystem permissions.
+
 ## A model is text-only
 
-That is the default for every newly discovered external model. Run a live
+That is the default for every newly discovered external model until its
+certification passes. Setup and install now attempt that automatically; models
+discovered later by refresh still need explicit certification. Run a live
 certification only when LM Studio and the target model are ready:
 
 ```bash

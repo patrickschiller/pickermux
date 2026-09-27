@@ -482,15 +482,20 @@ test("an additive probe failure reports a safe Direct fallback", async (t) => {
   const model = discoveredModel();
   let refreshCalls = 0;
   let efficientReceiptCalls = 0;
+  const progress = [];
+  const onProgress = (event) => progress.push(event);
 
   const result = await runCertificationTransaction(
     {
       ...setup,
       targetModelIds: [model.id],
+      sourceRoot: "/managed/version",
+      onProgress,
     },
     {
       listPendingImpl: async () => [],
-      refreshImpl: async () => {
+      refreshImpl: async ({ sourceRoot }) => {
+        assert.equal(sourceRoot, "/managed/version");
         refreshCalls += 1;
         return {
           externalModels: [model],
@@ -503,11 +508,15 @@ test("an additive probe failure reports a safe Direct fallback", async (t) => {
       clientVersionImpl: async () => CODEX_VERSION,
       readCatalogImpl: async () => conservativeCatalog(model),
       discoverImpl: async () => ({ models: [model], providers: [] }),
-      runModelCertificationImpl: async () => allDirectGates(),
+      runModelCertificationImpl: async (input) => {
+        assert.equal(input.onProgress, onProgress);
+        return allDirectGates();
+      },
       recordPassedCertificationImpl: async () => ({
         passedAt: "2026-09-03T00:00:00.000Z",
       }),
-      runEfficientFidelityCertificationImpl: async () => {
+      runEfficientFidelityCertificationImpl: async (input) => {
+        assert.equal(input.onProgress, onProgress);
         throw new Error("private-provider-payload-must-not-surface");
       },
       recordPassedEfficientFidelityCertificationImpl: async () => {
@@ -517,6 +526,12 @@ test("an additive probe failure reports a safe Direct fallback", async (t) => {
   );
 
   assert.equal(refreshCalls, 3);
+  assert.deepEqual(progress, [
+    { phase: "prepare" },
+    { phase: "model", index: 1, total: 1, probeCount: 9 },
+    { phase: "model-passed", mode: "direct" },
+    { phase: "publishing" },
+  ]);
   assert.equal(efficientReceiptCalls, 0);
   assert.deepEqual(result.certified, [{
     model: model.id,
