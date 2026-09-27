@@ -7,10 +7,13 @@
 
 **Use local LM Studio models directly from the Codex Desktop picker.**
 
-**New in 0.7.5: web search is available as a tool for certified external
-models.** Your selected model can use Codex's `web.run` tool to search the web,
-read sources, and answer with links. See [Web search](#web-search-tool) and the
-[complete release notes](docs/RELEASE_NOTES_0.7.5.md).
+**New in 0.7.6: installation detects the current Codex app layout.** This fixes
+`Failed to read the Codex client version` when the bundled executable has moved
+into `codex-cli/CodexCLI.app`. Older app layouts remain supported. See the
+[complete release notes](docs/RELEASE_NOTES_0.7.6.md).
+
+Certified external models can also use Codex's `web.run` tool to search the web,
+read sources, and answer with links. See [Web search](#web-search-tool).
 
 PickerMux makes local models feel like a first-class part of Codex Desktop. Load
 a model in LM Studio, refresh PickerMux, and select it from the same familiar
@@ -93,7 +96,7 @@ or another shell file automatically. Until then, use the absolute command path.
 Use the exact version for a reproducible installation:
 
 ```bash
-/usr/bin/curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://github.com/patrickschiller/pickermux/releases/download/v0.7.5/install.sh | /bin/sh
+/usr/bin/curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://github.com/patrickschiller/pickermux/releases/download/v0.7.6/install.sh | /bin/sh
 ```
 
 Both one-line forms execute code downloaded from GitHub. The archive checksum
@@ -116,6 +119,9 @@ With LM Link, keep that local LM Studio URL: LM Studio forwards inference to
 the linked device internally. See LM Studio's
 [LM Link API documentation](https://lmstudio.ai/docs/developer/core/lmlink).
 
+If setup stops with `Failed to read the Codex client version`, see the
+[Codex executable discovery troubleshooting](docs/TROUBLESHOOTING.md#failed-to-read-the-codex-client-version).
+
 ## Verify the installation
 
 ```bash
@@ -125,7 +131,7 @@ the linked device internally. See LM Studio's
 ~/.local/bin/pickermux discover
 ```
 
-For this release, the first command must print `pickermux 0.7.5`. `status`
+For this release, the first command must print `pickermux 0.7.6`. `status`
 checks the managed configuration, catalog, compatibility contract, and bridge.
 It also reports `full-refresh=idle` normally or the current recovery phase;
 `status --json` exposes the same state as `fullRefresh.status` and
@@ -313,13 +319,14 @@ See [Configuration](docs/CONFIGURATION.md#shared-web-search) and
 
 ## Upgrade
 
-Version 0.7.5 adds shared web search, LM Studio context compaction, clearer
-stream errors, and a smaller summary request. Upgrade from 0.6.1 or a local
-0.7.x development build using the normal installer below. Do not replace
-immutable package files or bypass a same-version checksum mismatch. See
-[compaction failure recovery](docs/TROUBLESHOOTING.md#lm-studio-reports-invalid-type-for-input-after-a-tool-call).
-Keep an existing valid model certification; an upgrade alone does not require
-recertification.
+Version 0.7.6 fixes Codex executable discovery for the current macOS app layout
+and retains the web search and context compaction introduced in 0.7.5. Upgrade
+through the normal release installer, including when a 0.7.5 setup attempt
+failed to read the Codex client version. Do not replace immutable package files
+or bypass a same-version checksum mismatch. Keep an existing valid model
+certification; an upgrade alone does not require recertification. See the
+[0.7.6 release notes](docs/RELEASE_NOTES_0.7.6.md) for the versioned installer and
+validation limits.
 
 PickerMux never updates silently. Run the same latest-release installer again
 to stage and activate a newer version. A healthy installation is refreshed

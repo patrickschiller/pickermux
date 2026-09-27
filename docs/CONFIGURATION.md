@@ -24,6 +24,21 @@ before creating the managed distribution. The activated contents are copied to
 PickerMux's private service configuration; later upgrades reuse that copy and
 do not replace it with a new release default.
 
+## Codex executable discovery
+
+PickerMux 0.7.6 checks these locations in order:
+
+1. A nonempty `CODEX_BINARY` environment override for the current command.
+2. `/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex`.
+3. The older `/Applications/ChatGPT.app/Contents/Resources/codex` location.
+4. `codex` on `PATH` when neither bundled location exists.
+
+An explicit override remains authoritative; a failed override does not silently
+select another client. The override is not saved to the installed LaunchAgent,
+so setting it only for installation is not a persistent service configuration.
+See [troubleshooting](TROUBLESHOOTING.md#failed-to-read-the-codex-client-version)
+for the affected 0.7.5 release and a version check.
+
 ## Default LM Studio configuration
 
 The repository ships with a dynamic local configuration:

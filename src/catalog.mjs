@@ -15,9 +15,9 @@ import path from "node:path";
 import { promisify } from "node:util";
 
 import { readCodexAccountCacheFile } from "./codex-account-cache-file.mjs";
+import { resolveCodexBinary } from "./paths.mjs";
 
 const execFile = promisify(execFileCallback);
-const DEFAULT_CODEX_PATH = "/Applications/ChatGPT.app/Contents/Resources/codex";
 const MAX_BUNDLED_CATALOG_BYTES = 32 * 1024 * 1024;
 const MAX_ACCOUNT_CACHE_FUTURE_SKEW_MS = 5 * 60 * 1_000;
 const CATALOG_COMPARE_FLAGS =
@@ -121,7 +121,7 @@ function parseCatalogJson(raw, label) {
  * Ask the same Codex binary used by Desktop for its version-compatible schema.
  */
 export async function loadBundledCatalog({
-  codexPath = DEFAULT_CODEX_PATH,
+  codexPath = resolveCodexBinary(),
   execFileImpl = execFile,
 } = {}) {
   if (typeof codexPath !== "string" || !codexPath.trim()) {
@@ -153,7 +153,7 @@ export async function loadBundledCatalog({
 }
 
 export async function loadCodexClientVersion({
-  codexPath = DEFAULT_CODEX_PATH,
+  codexPath = resolveCodexBinary(),
   execFileImpl = execFile,
 } = {}) {
   let result;
@@ -163,7 +163,10 @@ export async function loadCodexClientVersion({
       maxBuffer: 1024 * 1024,
     });
   } catch {
-    throw new Error("Failed to read the Codex client version");
+    throw new Error(
+      "Failed to read the Codex client version. Check that Codex Desktop is " +
+      "installed and that CODEX_BINARY, if set, points to its bundled executable.",
+    );
   }
   const stdout = typeof result === "string" ? result : result?.stdout;
   const version = /(\d+\.\d+\.\d+)/u.exec(stdout ?? "")?.[1];

@@ -176,6 +176,9 @@ Usage:
   pickermux uninstall [--force] [--remove-cli | --purge] [--json]
   pickermux version | pickermux --version
 
+The bundled Codex executable is detected in the current or legacy Desktop layout.
+CODEX_BINARY overrides discovery for this command; it is not saved to the service.
+
 Install and refresh enable shared Codex web search unless explicitly disabled.
 External models still require tool certification; search runs outside LM Studio.
 LM Studio context compaction uses one bounded summary request without tool schemas.

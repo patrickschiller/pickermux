@@ -7,6 +7,19 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [0.7.6] - 2026-09-27
+
+### Fixed
+
+- Detect the nested Codex executable in current macOS app bundles, preserving
+  explicit `CODEX_BINARY` overrides, the older bundle location, and the `PATH`
+  fallback. This fixes `Failed to read the Codex client version` during setup
+  when only the newer bundle layout is present. Catalog reads use the same
+  resolver, and compatibility monitoring tracks the executable itself.
+
+See the [release notes](docs/RELEASE_NOTES_0.7.6.md) for upgrade instructions
+and validation limits.
+
 ## [0.7.5] - 2026-09-14
 
 This release contains the shared web-search feature and all fixes developed
@@ -487,7 +500,8 @@ confirm the release date before tagging. See the
   paths and file types, refuses root execution and foreign launchers, and
   restores the previous distribution state when activation fails.
 
-[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.7.5...HEAD
+[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.7.6...HEAD
+[0.7.6]: https://github.com/patrickschiller/pickermux/releases/tag/v0.7.6
 [0.7.5]: https://github.com/patrickschiller/pickermux/releases/tag/v0.7.5
 [0.7.4]: docs/RELEASE_NOTES_0.7.4.md
 [0.7.3]: docs/RELEASE_NOTES_0.7.3.md
