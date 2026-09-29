@@ -5,40 +5,37 @@ an older PickerMux uninstall removed the `model_bridge` provider definition.
 Normal uninstall and `uninstall --remove-cli` now preserve an inert definition
 for the canonical `model_bridge` integration, as full purge already did.
 
-**Release status:** The offline suite passed, but required live macOS lifecycle
-acceptance with current Codex Desktop and LM Studio remains pending. The
-version-pinned commands and four asset links below are planned release URLs;
-they become available only after that acceptance, tagging, and publication.
+**Validation exception:** macOS CI and the offline suite passed. Live installed
+lifecycle acceptance with current Codex Desktop and LM Studio was not recorded
+before publication. The maintainer explicitly authorized the 2026-09-29 release
+as an exception to the live acceptance gate in [the release checklist](RELEASING.md).
 
 ## Repair a chat before reinstalling
 
 If Codex reports that `config.toml` cannot be loaded because “Model provider
-`model_bridge` not found,” fully quit Codex Desktop with **Command-Q**. From
-a trusted local checkout of this candidate, run:
-
-```bash
-node bin/pickermux.mjs repair-chats
-```
-
-This command does not run setup or require LM Studio or a current Codex
-account model cache. Reopen the affected chat and select a **native Codex
-model** before sending another message. The restored `model_bridge` table
-exists only for historical chat parsing. It has no credentials, points to
-loopback port zero, and cannot serve a request.
-
-After publication, the version-pinned recovery installer will provide the
-same repair without requiring an updated installed CLI:
+`model_bridge` not found,” fully quit Codex Desktop with **Command-Q**, then run
+the version-pinned recovery installer:
 
 ```bash
 /usr/bin/curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://github.com/patrickschiller/pickermux/releases/download/v0.8.2/install.sh | /bin/sh -s -- --repair-chats
 ```
 
 The installer verifies the exact 0.8.2 payload, invokes `repair-chats`
-without setup, and does not install or start the bridge. To use local models
-again, first open Codex while signed in until its native picker loads, fully
-quit it, and then run the regular installer with LM Studio running. Until
-0.8.2 is published, the latest public installer remains 0.8.1; the following
-0.8.2 URL is a planned release target:
+without setup, and does not install or start the bridge. It works when the
+installed CLI lacks the command or a stale account model cache blocks setup;
+LM Studio is not required. From a trusted local 0.8.2 source checkout, you
+can instead run the repair from that repository root:
+
+```bash
+node bin/pickermux.mjs repair-chats
+```
+
+Reopen the affected chat and select a **native Codex model** before sending
+another message. The restored `model_bridge` table exists only for historical
+chat parsing. It has no credentials, points to loopback port zero, and cannot
+serve a request. To use local models again, first open Codex while signed in
+until its native picker loads, fully quit it, and then run the regular
+installer with LM Studio running:
 
 ```bash
 /usr/bin/curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://github.com/patrickschiller/pickermux/releases/download/v0.8.2/install.sh | /bin/sh
@@ -79,9 +76,9 @@ provider routing, and the bridge contract remain unchanged.
 
 Offline tests cover idempotent recovery, conflicting and installed states,
 concurrent configuration changes, uninstall modes, and the installer recovery
-dispatch. The full syntax and test suite passed (1,050 tests). The candidate
-was built twice with `--tag v0.8.2`; all four assets were byte-identical,
-`SHA256SUMS` and shell syntax passed, internal and external manifests matched,
+dispatch. macOS CI and the full syntax and test suite passed (1,050 tests).
+The release payload was built twice with `--tag v0.8.2`; all four assets were
+byte-identical, `SHA256SUMS` and shell syntax passed, manifests matched,
 and both extracted CLI entry points passed version/help smoke tests. The
 extracted `repair-chats --json` command also ran twice in an isolated synthetic
 home: the first run appended the table, the second was unchanged, the user's
@@ -89,11 +86,11 @@ config prefix and mode were preserved, and no runtime was created.
 
 Those checks use isolated test state. Real macOS acceptance of the recovery
 installer, normal install and upgrade, same-version rerun, and every uninstall
-mode with current Codex Desktop and LM Studio is still pending. No live model
-inference or installed lifecycle success is claimed. The release tag and
-assets must wait for that acceptance.
+mode with current Codex Desktop and LM Studio was not recorded before release.
+No live model inference or installed lifecycle success is claimed. Publication
+proceeded under the maintainer's explicit exception noted above.
 
-## Planned release assets
+## Release assets
 
 - [pickermux-v0.8.2.tar.gz](https://github.com/patrickschiller/pickermux/releases/download/v0.8.2/pickermux-v0.8.2.tar.gz): versioned runtime payload.
 - [install.sh](https://github.com/patrickschiller/pickermux/releases/download/v0.8.2/install.sh): installer with the payload version and SHA-256 embedded.
