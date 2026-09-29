@@ -60,6 +60,7 @@ import {
   getConfigStatus,
   inventoryManagedConfigOwnership,
   installConfig,
+  repairHistoricalChatsConfig,
   revalidateManagedConfigOwnership,
   restoreRecoveredProviderEndMarker,
   uninstallConfig,
@@ -153,6 +154,7 @@ const COMMANDS = new Set([
   "doctor",
   "help",
   "install",
+  "repair-chats",
   "refresh",
   "serve",
   "setup",
@@ -173,6 +175,7 @@ Usage:
   pickermux credential-delete PROVIDER [--config PATH]
   pickermux setup [--config PATH] [--json]
   pickermux install [--config PATH] [--json]
+  pickermux repair-chats [--json]
   pickermux refresh [--config PATH] [--json]
   pickermux refresh --full
   pickermux doctor [--config PATH] [--live] [--json]
@@ -180,6 +183,8 @@ Usage:
   pickermux uninstall [--force] [--remove-cli | --purge] [--json]
   pickermux version | pickermux --version
 
+repair-chats restores only the inert model_bridge table used to open historical
+chats after uninstall. Select a native model before sending a new turn.
 The bundled Codex executable is detected in the current or legacy Desktop layout.
 CODEX_BINARY overrides discovery for this command; it is not saved to the service.
 
@@ -254,6 +259,9 @@ function parseArguments(argv) {
     } else throw new Error(`Unknown option: ${argument}`);
   }
   if (options.force && command !== "uninstall") throw new Error("--force is supported only by uninstall");
+  if (options.configPath && command === "repair-chats") {
+    throw new Error("repair-chats always repairs the active Codex config.toml");
+  }
   if (options.removeCli && command !== "uninstall") throw new Error("--remove-cli is supported only by uninstall");
   if (options.purge && command !== "uninstall") throw new Error("--purge is supported only by uninstall");
   if (options.purge && options.removeCli) {
@@ -2441,6 +2449,29 @@ export async function assertNoPendingFullRefresh({
   return null;
 }
 
+export async function repairHistoricalChats({
+  paths = resolveInstallPaths(),
+  distributionPaths = resolveDistributionPaths(),
+  withLockImpl = withInstallationLock,
+  assertNoPendingFullRefreshImpl = assertNoPendingFullRefresh,
+  desktopRunningImpl = isCodexDesktopRunning,
+  repairConfigImpl = repairHistoricalChatsConfig,
+} = {}) {
+  return withLockImpl(distributionPaths, async () => {
+    await assertNoPendingFullRefreshImpl();
+    if (await desktopRunningImpl()) {
+      throw new Error(
+        "PickerMux chat repair requires Codex Desktop to be fully quit with Command-Q",
+      );
+    }
+    return repairConfigImpl({
+      configPath: paths.configPath,
+      statePath: paths.statePath,
+      backupDirectory: paths.backupDirectory,
+    });
+  });
+}
+
 export async function confirmFullRefresh({
   input = process.stdin,
   output = process.stderr,
@@ -3051,6 +3082,7 @@ async function withCertificationProgress(operation) {
 
 export async function runCli(argv, {
   purgeImpl = purgePickerMux,
+  repairHistoricalChatsImpl = repairHistoricalChats,
   scheduleFullRefreshImpl = scheduleFullRefresh,
   executeFullRefreshWorkerImpl = executeFullRefreshWorker,
   confirmFullRefreshImpl = confirmFullRefresh,
@@ -3108,6 +3140,7 @@ export async function runCli(argv, {
       "credential-delete",
       "credential-set",
       "install",
+      "repair-chats",
       "refresh",
       "setup",
       "uninstall",
@@ -3151,6 +3184,20 @@ export async function runCli(argv, {
     }
     return result;
   }
+  if (options.command === "repair-chats") {
+    const result = await repairHistoricalChatsImpl({
+      paths,
+      distributionPaths,
+      assertNoPendingFullRefreshImpl: assertNoPendingFullRefreshLocked,
+    });
+    if (options.json) printJson(result);
+    else process.stdout.write(
+      result.changed
+        ? "Historical model_bridge chats can be reopened. Select a native model before sending a new turn.\n"
+        : "Historical model_bridge chat compatibility is already present. Select a native model before sending a new turn.\n",
+    );
+    return result;
+  }
   if (options.command === "uninstall") {
     let result;
     if (options.purge) {
@@ -3188,6 +3235,7 @@ export async function runCli(argv, {
           return uninstallIntegration({
             paths,
             force: options.force,
+            preserveHistoricalModelBridge: true,
             servicePackageInventory,
             sourceRoot: distribution.activeDirectory,
           });
@@ -3206,6 +3254,7 @@ export async function runCli(argv, {
           return uninstallIntegration({
             paths,
             force: options.force,
+            preserveHistoricalModelBridge: true,
             servicePackageInventory,
             sourceRoot: projectRoot,
           });
@@ -3214,17 +3263,27 @@ export async function runCli(argv, {
     }
     if (options.json) printJson(result);
     else {
+      const historicalCompatibility = options.purge
+        ? result.beforeResult?.integration?.removedConfig?.historicalCompatibility
+        : options.removeCli
+          ? result.beforeResult?.removedConfig?.historicalCompatibility
+          : result.removedConfig?.historicalCompatibility;
       process.stdout.write(
         options.purge
-          ? result.beforeResult?.integration?.removedConfig?.historicalCompatibility
+          ? historicalCompatibility
             ? "PickerMux integration, receipt-validated CLI, verified backups, and registered provider Keychain credentials were removed. An inert model_bridge compatibility table remains only so historical chats parse; new turns through it fail locally.\n"
             : "PickerMux integration, receipt-validated CLI, verified backups, and registered provider Keychain credentials were removed.\n"
           : options.removeCli
-            ? "Model bridge and receipt-validated PickerMux CLI removed; backups and Keychain credentials were preserved.\n"
+            ? "PickerMux routing and receipt-validated CLI removed; backups and Keychain credentials were preserved.\n"
             : result.removedConfig.changed
-              ? "Model bridge removed; previous Codex configuration restored and managed runtime cleaned.\n"
+              ? "PickerMux routing removed; previous Codex configuration restored and managed runtime cleaned.\n"
               : "Managed bridge service and runtime artifacts were removed.\n",
       );
+      if (!options.purge && historicalCompatibility) {
+        process.stdout.write(
+          "An inert model_bridge table remains so historical chats open. Select a native model before sending a new turn.\n",
+        );
+      }
       if (options.removeCli && result.removed.cleanupPendingPath) {
         process.stderr.write(
           `PickerMux warning: private removal quarantine still requires cleanup at ${result.removed.cleanupPendingPath}. A new installation is not blocked.\n`,

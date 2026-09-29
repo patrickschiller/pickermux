@@ -1,6 +1,6 @@
 # PickerMux Architecture
 
-This document describes PickerMux v0.8.0.
+This document describes the PickerMux v0.8.2 candidate.
 It is intended for contributors, security reviewers, and users who want to
 understand what runs on their Mac.
 
@@ -633,16 +633,22 @@ paths, and invalid ownership state. Native Codex credentials and unrecognized
 files are always outside its scope; `~/.codex/auth.json` is never read,
 modified, or removed.
 
-The canonical `model_bridge` full-purge configuration restoration atomically
-appends its marker-bounded historical compatibility provider table. It is
-credential-free, loopback-only at port zero, and has no retries, so it
+All 0.8.2 CLI uninstall modes for the canonical `model_bridge` integration
+atomically retain its marker-bounded historical compatibility provider table.
+The temporary suspension during `refresh --full` is a separate lifecycle path
+and omits this table until reactivation. The table is credential-free,
+loopback-only at port zero, and has no retries, so it
 satisfies Codex's provider lookup for old chats without reviving a route. During
 a later installation, PickerMux removes only the byte-exact table at the end of
 the config before taking the new backup; any changed or foreign table remains a
 provider-table conflict. The marker carries only a config-file retention bit.
-It is false only when the path was absent before installation and no user bytes
-survive restoration, so a later ordinary uninstall preserves absence, an empty
-existing config, or surviving user content without storing that content.
+It stores no user content. The `repair-chats` command restores only this inert
+table after an older uninstall, and only when no active integration or
+ambiguous provider definition is present. It uses the lifecycle lock, requires
+Codex to be fully quit, and does not start the bridge. The release installer's
+`--repair-chats` mode verifies the pinned payload before invoking that command
+without running setup; a stale account cache or old installed CLI therefore
+does not block this narrow recovery.
 
 Runtime, backup, and registry quarantines are separate from the distribution
 quarantine. If one of their exact cleanups remains pending, purge fails and the
@@ -693,7 +699,7 @@ The private health endpoint remains available with fixed safe status/reason
 enums so the LaunchAgent does not enter a restart loop and diagnostics can
 direct the user to refresh.
 
-Versions 0.6.0 through 0.8.0 use bridge contract
+Versions 0.6.0 through 0.8.2 use bridge contract
 `codex-responses-bridge/p6-v1`.
 The managed publisher emits the search claim only from valid model-bound
 evidence, and the runtime accepts it only on entries generated under that exact

@@ -13,6 +13,7 @@ import {
   assertBridgeWebSearchCompatibility,
   assertPersistentCredentialSupport,
   assertSelectedCatalogModel,
+  repairHistoricalChats,
   restoreRefreshState,
 } from "../src/cli.mjs";
 
@@ -34,7 +35,7 @@ test("release metadata and both CLI entry points identify PickerMux", async () =
     await readFile(path.join(projectDirectory, "package.json"), "utf8"),
   );
   assert.equal(packageMetadata.name, "pickermux");
-  assert.equal(packageMetadata.version, "0.8.1");
+  assert.equal(packageMetadata.version, "0.8.2");
   assert.equal(packageMetadata.license, "MIT");
 
   for (const entryPoint of ["pickermux.mjs", "lmstudio-picker.mjs"]) {
@@ -61,7 +62,7 @@ test("release metadata and both CLI entry points identify PickerMux", async () =
         [path.join(projectDirectory, "bin", entryPoint), versionArgument],
         { encoding: "utf8" },
       );
-      assert.equal(stdout, "pickermux 0.8.1\n");
+      assert.equal(stdout, "pickermux 0.8.2\n");
     }
   }
 });
@@ -93,6 +94,114 @@ test("setup keeps JSON stdout clean and returns a failing exit code for incomple
       assert.match(output.stderr, /Installation retained/u);
       assert.doesNotMatch(output.stderr, /publication complete/u);
     }
+  }
+});
+
+test("repair-chats reaches recovery before loading bridge configuration", async () => {
+  const cwd = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+  const script = `
+    import { runCli } from "./src/cli.mjs";
+    await runCli(["repair-chats", "--json"], {
+      assertNoPendingFullRefreshImpl: async () => {},
+      repairHistoricalChatsImpl: async ({ paths, distributionPaths }) => ({
+        changed: true,
+        configPath: paths.configPath,
+        lockPath: distributionPaths.lockPath,
+      }),
+    });
+  `;
+  const { stdout, stderr } = await execFileAsync(
+    process.execPath,
+    ["--input-type=module", "--eval", script],
+    {
+      cwd,
+      env: {
+        ...process.env,
+        CODEX_BINARY: "/definitely/missing/codex",
+        PICKERMUX_CONFIG_PATH: "/definitely/missing/bridge-config.json",
+      },
+    },
+  );
+  const result = JSON.parse(stdout);
+  assert.equal(result.changed, true);
+  assert.match(result.configPath, /config\.toml$/u);
+  assert.match(result.lockPath, /\.setup\.lock$/u);
+  assert.equal(stderr, "");
+});
+
+test("chat repair keeps its pending, desktop, and config checks inside the lifecycle lock", async () => {
+  const paths = {
+    configPath: "/fixture/codex/config.toml",
+    statePath: "/fixture/codex/model-bridge/state.json",
+    backupDirectory: "/fixture/codex/model-bridge/backups",
+  };
+  const distributionPaths = { lockPath: "/fixture/pickermux/.setup.lock" };
+  const events = [];
+  let locked = false;
+  const result = await repairHistoricalChats({
+    paths,
+    distributionPaths,
+    withLockImpl: async (received, operation) => {
+      assert.equal(received, distributionPaths);
+      locked = true;
+      events.push("lock");
+      try {
+        return await operation();
+      } finally {
+        locked = false;
+        events.push("unlock");
+      }
+    },
+    assertNoPendingFullRefreshImpl: async () => {
+      assert.equal(locked, true);
+      events.push("pending-check");
+    },
+    desktopRunningImpl: async () => {
+      assert.equal(locked, true);
+      events.push("desktop-check");
+      return false;
+    },
+    repairConfigImpl: async (received) => {
+      assert.equal(locked, true);
+      assert.equal(received.configPath, paths.configPath);
+      assert.equal(received.statePath, paths.statePath);
+      assert.equal(received.backupDirectory, paths.backupDirectory);
+      events.push("repair");
+      return { changed: true };
+    },
+  });
+  assert.equal(result.changed, true);
+  assert.equal(events[0], "lock");
+  assert.equal(events.at(-1), "unlock");
+  assert.ok(events.indexOf("pending-check") < events.indexOf("repair"));
+  assert.ok(events.indexOf("desktop-check") < events.indexOf("repair"));
+});
+
+test("chat repair refuses a running desktop or pending full refresh", async () => {
+  const paths = {
+    configPath: "/fixture/codex/config.toml",
+    statePath: "/fixture/codex/model-bridge/state.json",
+    backupDirectory: "/fixture/codex/model-bridge/backups",
+  };
+  const distributionPaths = { lockPath: "/fixture/pickermux/.setup.lock" };
+  for (const blocker of ["desktop", "pending"]) {
+    let repaired = false;
+    await assert.rejects(
+      repairHistoricalChats({
+        paths,
+        distributionPaths,
+        withLockImpl: async (_received, operation) => operation(),
+        assertNoPendingFullRefreshImpl: async () => {
+          if (blocker === "pending") throw new Error("full refresh pending");
+        },
+        desktopRunningImpl: async () => blocker === "desktop",
+        repairConfigImpl: async () => {
+          repaired = true;
+          return { changed: true };
+        },
+      }),
+    );
+    assert.equal(repaired, false, `${blocker} guard must prevent configuration write`);
   }
 });
 

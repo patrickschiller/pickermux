@@ -21,6 +21,7 @@ import {
   getConfigStatus,
   installConfig,
   inventoryManagedConfigOwnership,
+  repairHistoricalChatsConfig,
   revalidateManagedConfigOwnership,
   restoreManagedPickerDefaults,
   restoreRecoveredProviderEndMarker,
@@ -1411,6 +1412,111 @@ test("state-absent purge compatibility restores the ordinary-uninstall sequence"
     await uninstallConfig(absentFixture.paths());
     await assert.rejects(stat(absentFixture.configPath), { code: "ENOENT" });
   });
+});
+
+test("chat repair restores an inert provider after ordinary uninstall and is idempotent", async (t) => {
+  const fixture = await makeFixture(t);
+  const original = 'model = "gpt-5.6-sol"\n[features]\nother = true\n';
+  const provider = {
+    id: "model_bridge",
+    name: "Model Bridge Fixture",
+    baseUrl: "http://127.0.0.1:1234/v1/",
+    wireApi: "responses",
+    requiresOpenAiAuth: false,
+    supportsWebsockets: false,
+    supportsStandaloneWebSearch: false,
+  };
+  const installOptions = fixture.options({ modelProvider: "model_bridge", provider });
+  await writeFile(fixture.configPath, original, { mode: 0o600 });
+  await installConfig(installOptions);
+  await uninstallConfig(fixture.paths());
+  assert.equal(await readFile(fixture.configPath, "utf8"), original);
+
+  const repaired = await repairHistoricalChatsConfig(fixture.paths());
+  assert.equal(repaired.changed, true);
+  assert.equal(repaired.historicalCompatibility, true);
+  assert.equal(repaired.provider, "model_bridge");
+  const restored = await readFile(fixture.configPath, "utf8");
+  assert.ok(restored.startsWith(original));
+  assert.equal((restored.match(/^\[model_providers\.model_bridge\]$/gmu) ?? []).length, 1);
+  assert.match(restored, /base_url = "http:\/\/127\.0\.0\.1:0\/v1"/u);
+  assert.match(restored, /requires_openai_auth = false/u);
+  assert.match(restored, /request_max_retries = 0/u);
+  assert.match(restored, /stream_max_retries = 0/u);
+  assert.equal((await stat(fixture.configPath)).mode & 0o777, 0o600);
+  await assert.rejects(stat(fixture.statePath), { code: "ENOENT" });
+
+  const repeated = await repairHistoricalChatsConfig(fixture.paths());
+  assert.equal(repeated.changed, false);
+  assert.equal(repeated.historicalCompatibility, true);
+  assert.equal(await readFile(fixture.configPath, "utf8"), restored);
+
+  const reinstalled = await installConfig(installOptions);
+  assert.deepEqual(await readFile(reinstalled.backupPath), Buffer.from(original));
+  await uninstallConfig(fixture.paths());
+  assert.equal(await readFile(fixture.configPath, "utf8"), original);
+});
+
+test("chat repair refuses active state without changing managed configuration", async (t) => {
+  const fixture = await makeFixture(t);
+  await writeFile(fixture.configPath, 'model = "gpt-5.6-sol"\n');
+  await installConfig(fixture.options());
+  const beforeConfig = await readFile(fixture.configPath);
+  const beforeState = await readFile(fixture.statePath);
+
+  await assert.rejects(
+    repairHistoricalChatsConfig(fixture.paths()),
+    (error) => error.code === "INTEGRATION_INSTALLED",
+  );
+  assert.deepEqual(await readFile(fixture.configPath), beforeConfig);
+  assert.deepEqual(await readFile(fixture.statePath), beforeState);
+});
+
+test("chat repair refuses a state file appearing before configuration commit", async (t) => {
+  const fixture = await makeFixture(t);
+  const original = 'model = "gpt-5.6-sol"\n';
+  await writeFile(fixture.configPath, original);
+
+  await assert.rejects(
+    repairHistoricalChatsConfig({
+      ...fixture.paths(),
+      beforeConfigCommit: async () => {
+        await mkdir(join(fixture.directory, "state"), {
+          recursive: true,
+          mode: 0o700,
+        });
+        await writeFile(fixture.statePath, "{}\n", { mode: 0o600 });
+      },
+    }),
+    (error) => error.code === "STATE_CHANGED_CONCURRENTLY",
+  );
+  assert.equal(await readFile(fixture.configPath, "utf8"), original);
+});
+
+test("chat repair preserves foreign provider and orphaned marker conflicts", async (t) => {
+  for (const [name, source, code] of [
+    [
+      "foreign provider",
+      '["model_providers"."model_bridge"]\nname = "foreign"\n',
+      "HISTORICAL_PROVIDER_CONFLICT",
+    ],
+    [
+      "orphaned managed marker",
+      `${CONFIG_MARKERS.providerBegin}\n`,
+      "ORPHANED_MANAGED_BLOCK",
+    ],
+  ]) {
+    await t.test(name, async (subtest) => {
+      const fixture = await makeFixture(subtest);
+      await writeFile(fixture.configPath, source);
+      await assert.rejects(
+        repairHistoricalChatsConfig(fixture.paths()),
+        (error) => error.code === code,
+      );
+      assert.equal(await readFile(fixture.configPath, "utf8"), source);
+      await assert.rejects(stat(fixture.statePath), { code: "ENOENT" });
+    });
+  }
 });
 
 test("state-absent purge compatibility fails closed on concurrent state or quoted provider conflicts", async (t) => {

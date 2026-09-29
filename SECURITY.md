@@ -332,18 +332,27 @@ deletion targets from untrusted configuration. Provider IDs use the canonical
 configuration grammar with a 127-character maximum, and registry changes are
 serialized and revalidated before deletion.
 
-The canonical `model_bridge` full-purge configuration restore may append one
-marker-bounded, inert compatibility table in `config.toml` so Codex can parse
-historical chats. Its no-auth, loopback-port-zero, zero-retry definition cannot
-route a new request to an external provider. The append is part of the atomic
-compare-and-swap restore; a later installation removes only the exact unchanged
-end-of-file table while producing its normal verified backup. Any modified,
-foreign, or non-terminal `model_bridge` table remains a fail-closed conflict
-and is never overwritten. The bounded marker contains only a boolean for
-whether the restored config must remain a file. It is false only when the path
-was absent before installation and no user bytes survive restoration, preserving
-absence, an empty file, or surviving user content without recording that content
-or personal data.
+All 0.8.2 CLI uninstall modes for the canonical `model_bridge` integration
+preserve one marker-bounded, inert provider table in `config.toml` so Codex can
+parse historical chats. The temporary `refresh --full` suspension is separate
+and omits the table until reactivation. The table's no-auth, loopback-port-zero,
+zero-retry definition cannot route a request to an external provider. The
+append is part of the atomic compare-and-swap restore; a later installation
+removes only the exact unchanged end-of-file
+table while producing its normal verified backup. Any modified, foreign, or
+non-terminal `model_bridge` table remains a fail-closed conflict and is never
+overwritten. The marker records only whether the restored config must remain a
+file, without recording user content or personal data.
+
+`pickermux repair-chats` applies the same narrow table restoration after an
+older uninstall. It requires Codex to be closed and refuses active managed
+state, leftover markers, foreign provider definitions, or concurrent config
+changes. It neither starts the bridge nor authorizes a provider route. The
+release installer's `--repair-chats` mode first verifies its exact archive
+checksum and rejects unsafe entries, then invokes repair from the extracted
+payload without setup. This keeps the recovery available when the installed
+CLI is old or Codex's account model cache is stale; it does not relax the
+configuration ownership checks.
 
 Foreign, modified, ambiguous, publicly accessible, or otherwise unsafe
 ownership state fails closed. `--force` may resolve an acknowledged conflict in

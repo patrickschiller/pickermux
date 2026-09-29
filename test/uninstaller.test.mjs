@@ -1391,6 +1391,139 @@ test("integration uninstall composes real config, metadata, and runtime removal"
   }
 });
 
+test("ordinary integration uninstall preserves historical model_bridge parsing and a foreign provider", async (t) => {
+  for (const force of [false, true]) {
+    await t.test(force ? "edited managed block with --force" : "pristine managed block", async (subtest) => {
+      const directory = await mkdtemp(path.join(tmpdir(), "pickermux-historical-uninstall-"));
+      subtest.after(() => rm(directory, { recursive: true, force: true }));
+      const paths = resolveInstallPaths({
+        HOME: path.join(directory, "home"),
+        CODEX_HOME: path.join(directory, "codex-home"),
+      });
+      const original = [
+        'model = "gpt-5.6-sol"',
+        "operator_setting = true",
+        "",
+        "[model_providers.foreign_provider]",
+        'name = "Operator provider"',
+        'base_url = "http://127.0.0.1:7777/v1"',
+        'wire_api = "responses"',
+        "",
+      ].join("\n");
+      await mkdir(paths.codexHome, { recursive: true, mode: 0o700 });
+      await writeFile(paths.configPath, original, { mode: 0o600 });
+      await stageServicePackage({
+        sourceRoot: PROJECT_ROOT,
+        installDirectory: paths.installDirectory,
+        config: { schemaVersion: 2 },
+      });
+      await installConfig({
+        configPath: paths.configPath,
+        statePath: paths.statePath,
+        backupDirectory: paths.backupDirectory,
+        model: "lmstudio/qwen/local",
+        modelProvider: "model_bridge",
+        modelCatalogJson: paths.catalogPath,
+        modelReasoningEffort: "low",
+        provider: {
+          id: "model_bridge",
+          name: "PickerMux Fixture",
+          baseUrl: "http://127.0.0.1:23456/v1/",
+          wireApi: "responses",
+          requiresOpenAiAuth: false,
+          supportsWebsockets: false,
+          supportsStandaloneWebSearch: false,
+        },
+        now: new Date("2026-09-01T12:00:00.000Z"),
+      });
+
+      if (force) {
+        const installed = await readFile(paths.configPath, "utf8");
+        assert.match(installed, /127\.0\.0\.1:23456/u);
+        const edited = installed.replace("127.0.0.1:23456", "127.0.0.1:9999");
+        await writeFile(paths.configPath, edited, { mode: 0o600 });
+        await assert.rejects(uninstallIntegration({
+          paths,
+          force: false,
+          preserveHistoricalModelBridge: true,
+          sourceRoot: PROJECT_ROOT,
+          stopServiceImpl: async () => {
+            throw new Error("service must not stop before config validation");
+          },
+        }), (error) => error.code === "MANAGED_BLOCK_MODIFIED");
+        assert.equal(await readFile(paths.configPath, "utf8"), edited);
+      }
+
+      const result = await uninstallIntegration({
+        paths,
+        force,
+        preserveHistoricalModelBridge: true,
+        sourceRoot: PROJECT_ROOT,
+        stopServiceImpl: async () => ({
+          stopped: false,
+          launchAgentRemoved: true,
+          runtimeRemoved: false,
+        }),
+      });
+      const restored = await readFile(paths.configPath, "utf8");
+      assert.equal(result.removedConfig.historicalCompatibility, true);
+      if (!force) assert.equal(restored.slice(0, original.length), original);
+      assert.match(restored, /^model = "gpt-5\.6-sol"$/mu);
+      assert.match(restored, /^operator_setting = true$/mu);
+      assert.ok(restored.includes(
+        original.slice(original.indexOf("[model_providers.foreign_provider]")),
+      ));
+      assert.equal(
+        (restored.match(/^\[model_providers\.foreign_provider\]$/gmu) ?? []).length,
+        1,
+      );
+      assert.equal(
+        (restored.match(/^\[model_providers\.model_bridge\]$/gmu) ?? []).length,
+        1,
+      );
+      assert.match(restored, /# >>> pickermux:historical-model-bridge >>>/u);
+      assert.match(restored, /base_url = "http:\/\/127\.0\.0\.1:0\/v1"/u);
+      assert.doesNotMatch(restored, /127\.0\.0\.1:(?:23456|9999)/u);
+      await assert.rejects(stat(paths.statePath), { code: "ENOENT" });
+    });
+  }
+});
+
+test("ordinary integration uninstall refuses to overwrite a foreign model_bridge provider", async (t) => {
+  const directory = await mkdtemp(path.join(tmpdir(), "pickermux-foreign-provider-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const paths = resolveInstallPaths({
+    HOME: path.join(directory, "home"),
+    CODEX_HOME: path.join(directory, "codex-home"),
+  });
+  const foreignConfig = [
+    'model = "gpt-5.6-sol"',
+    "",
+    "[model_providers.model_bridge]",
+    'name = "Operator owned model_bridge"',
+    'base_url = "https://operator.example/v1"',
+    'wire_api = "responses"',
+    "",
+  ].join("\n");
+  await mkdir(paths.codexHome, { recursive: true, mode: 0o700 });
+  await writeFile(paths.configPath, foreignConfig, { mode: 0o600 });
+  let serviceStops = 0;
+
+  await assert.rejects(uninstallIntegration({
+    paths,
+    force: true,
+    preserveHistoricalModelBridge: true,
+    servicePackageInventory: { exists: false },
+    installDirectoryInventory: { exists: false },
+    backupDirectoryInventory: { exists: false },
+    revalidateRuntimeImpl: async () => undefined,
+    revalidateMetadataImpl: async () => undefined,
+    stopServiceImpl: async () => { serviceStops += 1; },
+  }), (error) => error.code === "HISTORICAL_PROVIDER_CONFLICT");
+  assert.equal(serviceStops, 0);
+  assert.equal(await readFile(paths.configPath, "utf8"), foreignConfig);
+});
+
 test("integration uninstall reads its exact config backup while backup purge is staged", async (t) => {
   const directory = await mkdtemp(path.join(tmpdir(), "pickermux-staged-backup-"));
   t.after(() => rm(directory, { recursive: true, force: true }));

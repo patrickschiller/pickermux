@@ -10,6 +10,52 @@ pickermux doctor
 Use `doctor --live` only when the static checks pass and a real model inference
 is needed.
 
+## Historical chats cannot load `model_bridge`
+
+An older `pickermux uninstall` or `uninstall --remove-cli` can remove the
+`model_bridge` provider table while old chats still name that provider. Codex
+may then say it cannot load `config.toml` because “Model provider
+`model_bridge` not found.” The repair restores a provider definition only so
+those chats can open. It does not restart PickerMux or make that provider usable.
+
+Until v0.8.2 passes live macOS acceptance and is published, v0.8.1 remains the
+public release and the v0.8.2 installer URL below is unavailable. To use the
+candidate now:
+
+1. Fully quit Codex Desktop with `Command-Q`.
+2. From a trusted local checkout of this 0.8.2 candidate, run:
+
+   ```bash
+   node bin/pickermux.mjs repair-chats
+   ```
+
+3. Reopen Codex and the affected chat. Choose a native model before sending
+   another message. The inert `model_bridge` table points to loopback port zero
+   and cannot serve a turn.
+4. If you want PickerMux again, first let the signed-in native picker refresh
+   its account model cache, fully quit Codex, and then run the
+   [regular installer](../README.md#install).
+
+After 0.8.2 is published, the following version-pinned recovery installer
+will verify the release payload and invoke the same repair without setup,
+LM Studio, or a current account model cache:
+
+```bash
+/usr/bin/curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://github.com/patrickschiller/pickermux/releases/download/v0.8.2/install.sh | /bin/sh -s -- --repair-chats
+```
+
+The installed 0.8.2 CLI will also offer `pickermux repair-chats [--json]`.
+The installer mode helps when the old CLI lacks that command or setup is
+blocked by a stale cache. The repair is idempotent. It refuses an active
+installation, managed markers, a foreign or modified `model_bridge` table, and
+other ambiguous configuration state rather than overwriting it. Review such a
+failure with `pickermux status` and `pickermux doctor` where available; do not
+delete a provider table or use `--force` to bypass ownership checks.
+
+Starting with 0.8.2, normal uninstall and `uninstall --remove-cli` for the
+canonical `model_bridge` integration leave this same inert compatibility table.
+Full purge already preserved it.
+
 ## `Failed to read the Codex client version`
 
 PickerMux 0.7.5 checks the older
@@ -675,17 +721,15 @@ invalid receipt, unsafe permission, symbolic link, unexpected backup entry, or
 provider-registry change stops the purge. `--force` does not override those
 ownership checks.
 
-The canonical `model_bridge` full-purge configuration restoration leaves one
-intentionally unusable compatibility table in `config.toml` so historical chats
-can open. It has no credentials, uses `http://127.0.0.1:0/v1`, and retries zero
-times; select a native model for new turns. A later PickerMux setup removes only
-the exact marker-bounded compatibility table. If setup reports a provider-table
-conflict, do not delete or edit the table broadly: it was modified or is not
-PickerMux-owned and needs manual review. The exact marker also records only
-whether the restored `config.toml` must remain a file. It is false only when the
-path was absent before installation and no user content survives restoration,
-so a setup followed by ordinary uninstall preserves absence, an empty existing
-file, or surviving user bytes.
+Every 0.8.2 CLI uninstall mode for the canonical `model_bridge` integration
+leaves one intentionally unusable compatibility table in `config.toml` so
+historical chats can open. It has no credentials, uses
+`http://127.0.0.1:0/v1`, and retries zero times; select a
+native model for new turns. A later PickerMux setup removes only the exact
+marker-bounded table. If setup reports a provider-table conflict, do not delete
+or edit the table broadly: it was modified or is not PickerMux-owned and needs
+manual review. The marker records only whether the restored config must remain
+a file; it stores no user content.
 
 All uninstall modes compare `runtime-app` byte-for-byte with the invoking
 PickerMux version before changing Codex configuration. A modified or additional

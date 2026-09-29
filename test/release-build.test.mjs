@@ -165,6 +165,7 @@ async function writeExecutable(filePath, content) {
 async function runRenderedInstaller(t, {
   archive,
   archiveName,
+  args = [],
   installer,
   version,
 }) {
@@ -220,11 +221,17 @@ if [ "$#" -eq 1 ] && [ "$1" = '--version' ]; then
   printf '%s\\n' 'v22.15.0'
   exit 0
 fi
-[ "$#" -eq 4 ] || exit 81
+[ "$#" -eq 2 ] || [ "$#" -eq 4 ] || exit 81
 entry_point=$1
-[ "$2" = 'setup' ] || exit 82
-[ "$3" = '--distribution-root' ] || exit 83
-distribution_root=$4
+[ "$2" = 'setup' ] || [ "$2" = 'repair-chats' ] || exit 82
+if [ "$2" = 'setup' ]; then
+  [ "$#" -eq 4 ] || exit 83
+  [ "$3" = '--distribution-root' ] || exit 83
+  distribution_root=$4
+else
+  [ "$#" -eq 2 ] || exit 83
+  distribution_root=\${entry_point%/bin/pickermux.mjs}
+fi
 [ "$entry_point" = "$distribution_root/bin/pickermux.mjs" ] || exit 84
 case "$distribution_root" in
   "$TMPDIR"/pickermux-installer.*/extracted) ;;
@@ -256,7 +263,7 @@ printf '%s\\n' "$@" > "$PICKERMUX_TEST_NODE_LOG"
     TMPDIR: temporaryDirectory,
   };
   try {
-    const result = await execFileAsync("/bin/sh", [installerPath], {
+    const result = await execFileAsync("/bin/sh", [installerPath, ...args], {
       encoding: "utf8",
       env: environment,
     });
@@ -283,6 +290,13 @@ printf '%s\\n' "$@" > "$PICKERMUX_TEST_NODE_LOG"
 async function assertNoNodeHandoff(nodeLogPath) {
   await assert.rejects(
     readFile(nodeLogPath, "utf8"),
+    (error) => error?.code === "ENOENT",
+  );
+}
+
+async function assertNoCurlDownload(curlLogPath) {
+  await assert.rejects(
+    readFile(curlLogPath, "utf8"),
     (error) => error?.code === "ENOENT",
   );
 }
@@ -525,6 +539,102 @@ test("the rendered production installer enforces its bootstrap trust boundaries"
       ),
     );
     assert.deepEqual(await readdir(execution.homeDirectory), []);
+    assert.deepEqual(await readdir(execution.temporaryDirectory), []);
+  });
+
+  await t.test("hands the verified release payload to repair-chats", async (t) => {
+    const execution = await runRenderedInstaller(t, {
+      archive: productionArchive,
+      archiveName: release.archiveName,
+      args: ["--repair-chats"],
+      installer: productionInstaller,
+      version: release.version,
+    });
+    assert.equal(execution.ok, true, execution.error?.stderr);
+    assert.equal(execution.stderr,
+      "Repairing historical PickerMux chat configuration with the verified release payload.\n" +
+      "Keep Codex fully closed until the command finishes.\n",
+    );
+    const nodeArguments = (await readFile(execution.nodeLogPath, "utf8"))
+      .trimEnd()
+      .split("\n");
+    assert.equal(nodeArguments.length, 2);
+    assert.equal(nodeArguments[1], "repair-chats");
+    assert.match(
+      nodeArguments[0],
+      /^.*\/pickermux-installer\.[^/]+\/extracted\/bin\/pickermux\.mjs$/u,
+    );
+    assert.deepEqual(await readdir(execution.homeDirectory), []);
+    assert.deepEqual(await readdir(execution.temporaryDirectory), []);
+  });
+
+  await t.test("rejects unknown and extra installer arguments before download", async (t) => {
+    for (const args of [
+      ["--unknown"],
+      ["--repair-chats", "--unknown"],
+      ["--repair-chats", "--repair-chats"],
+    ]) {
+      await t.test(args.join(" "), async (t) => {
+        const execution = await runRenderedInstaller(t, {
+          archive: productionArchive,
+          archiveName: release.archiveName,
+          args,
+          installer: productionInstaller,
+          version: release.version,
+        });
+        assert.equal(execution.ok, false);
+        assert.equal(execution.error.code, 1);
+        assert.match(execution.error.stderr, /pickermux installer:/u);
+        await assertNoCurlDownload(execution.curlLogPath);
+        await assertNoNodeHandoff(execution.nodeLogPath);
+        assert.deepEqual(await readdir(execution.temporaryDirectory), []);
+      });
+    }
+  });
+
+  await t.test("repair mode rejects a checksum mismatch before payload execution", async (t) => {
+    const tamperedArchive = Buffer.concat([
+      productionArchive,
+      Buffer.from("tampered\n", "utf8"),
+    ]);
+    const execution = await runRenderedInstaller(t, {
+      archive: tamperedArchive,
+      archiveName: release.archiveName,
+      args: ["--repair-chats"],
+      installer: productionInstaller,
+      version: release.version,
+    });
+    assert.equal(execution.ok, false);
+    assert.equal(execution.error.code, 1);
+    assert.match(execution.error.stderr, /release archive checksum mismatch/u);
+    await assertNoNodeHandoff(execution.nodeLogPath);
+  });
+
+  await t.test("repair mode rejects an unsafe archive before payload execution", async (t) => {
+    const traversalArchive = createTarGzip([
+      ...productionEntries,
+      {
+        path: "../pickermux-installer-escaped",
+        mode: 0o644,
+        type: "0",
+        content: Buffer.from("must not escape\n", "utf8"),
+      },
+    ]);
+    const execution = await runRenderedInstaller(t, {
+      archive: traversalArchive,
+      archiveName: release.archiveName,
+      args: ["--repair-chats"],
+      installer: installerForArchive(
+        productionInstaller,
+        release.archiveSha256,
+        traversalArchive,
+      ),
+      version: release.version,
+    });
+    assert.equal(execution.ok, false);
+    assert.equal(execution.error.code, 1);
+    assert.match(execution.error.stderr, /unsafe archive path:/u);
+    await assertNoNodeHandoff(execution.nodeLogPath);
     assert.deepEqual(await readdir(execution.temporaryDirectory), []);
   });
 
