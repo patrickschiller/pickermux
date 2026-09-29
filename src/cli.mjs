@@ -2881,8 +2881,11 @@ export async function setupPickerMux({
     statePath: paths.statePath,
   });
   if (initialStatus.healthy !== true) {
+    const recovery = initialStatus.status === "modified"
+      ? " Fully quit Codex, review ~/.codex/config.toml, then use the receipt-active CLI to run 'pickermux uninstall --force' only if PickerMux's recorded configuration should be removed. Open Codex once without PickerMux to refresh its signed-in model cache, quit it with Command-Q, and rerun setup."
+      : " Run 'pickermux status' and 'pickermux doctor', then follow the state-specific recovery in docs/TROUBLESHOOTING.md before retrying setup.";
     throw new Error(
-      `PickerMux setup refuses inconsistent integration state (${initialStatus.status ?? "unknown"})`,
+      `PickerMux setup refuses inconsistent integration state (${initialStatus.status ?? "unknown"}).${recovery}`,
     );
   }
   if (await desktopRunningImpl()) {

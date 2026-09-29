@@ -613,6 +613,9 @@ or the integration is already absent, follow setup's manual recovery: run
 Codex while signed in, wait for its native picker to load, fully quit with
 `Command-Q`, and rerun setup with the same custom configuration, if one was
 used. Do not delete `models_cache.json` or `~/.codex/auth.json` as a workaround.
+If `managed-config` is also `modified`, do not run `refresh --full`; follow the
+[modified-configuration recovery](docs/TROUBLESHOOTING.md#uninstall-refuses-modified-configuration),
+which requires reviewing the edit before an explicit forced uninstall.
 
 See [Troubleshooting](docs/TROUBLESHOOTING.md) for recovery procedures and
 redaction guidance.

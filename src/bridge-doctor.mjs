@@ -283,6 +283,27 @@ export async function runBridgeDoctor({
     configPath: paths.configPath,
     statePath: paths.statePath,
   });
+  const managedConfigDetail = (() => {
+    if (
+      configStatus.status !== "modified" ||
+      !Array.isArray(configStatus.modifiedBlocks) ||
+      configStatus.modifiedBlocks.length === 0
+    ) {
+      return configStatus.status;
+    }
+    const knownBlocks = new Set([
+      "root",
+      "provider",
+      "webSearch",
+      "provider-scope-tail",
+    ]);
+    const modifiedBlocks = configStatus.modifiedBlocks.filter(
+      (name) => knownBlocks.has(name),
+    );
+    return modifiedBlocks.length > 0
+      ? `modified (${modifiedBlocks.join(", ")})`
+      : configStatus.status;
+  })();
   if (runtime) {
     const expected = {
       provider: config.bridge.providerId,
@@ -298,12 +319,12 @@ export async function runBridgeDoctor({
         "managed-config",
         configStatus.installed === true && configStatus.healthy === true && mismatches.length === 0,
         mismatches.length === 0
-          ? configStatus.status
-          : `${configStatus.status}; unexpected ${mismatches.map(([key]) => key).join(", ")}`,
+          ? managedConfigDetail
+          : `${managedConfigDetail}; unexpected ${mismatches.map(([key]) => key).join(", ")}`,
       ),
     );
   } else {
-    checks.push(check("managed-config", false, configStatus.status));
+    checks.push(check("managed-config", false, managedConfigDetail));
   }
 
   let discovery;

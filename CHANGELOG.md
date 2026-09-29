@@ -7,6 +7,13 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Changed
+
+- Make post-Codex-upgrade recovery actionable when setup finds a modified
+  managed configuration. Doctor now identifies the affected receipt-owned area
+  without printing its contents, and setup directs the user to the explicit
+  review, forced-uninstall, native-cache refresh, and reinstall sequence.
+
 ## [0.8.0] - 2026-09-27
 
 ### Added

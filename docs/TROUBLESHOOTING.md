@@ -583,6 +583,32 @@ Use `uninstall --force` only when you have reviewed the conflict and explicitly
 want PickerMux to remove its owned block. The command still targets managed
 artifacts; it does not delete provider Keychain items or backup directories.
 
+When this state occurs together with `update-required` after a Codex Desktop
+upgrade, normal setup and `refresh --full` intentionally remain blocked: neither
+operation is allowed to bless edited managed bytes as a new baseline. Use this
+manual recovery sequence instead:
+
+1. Fully quit Codex Desktop with `Command-Q`.
+2. Run `pickermux doctor`. The `managed-config` check names only the affected
+   receipt-owned area, such as `provider` or `provider-scope-tail`; it does not
+   print the block contents.
+3. Review `~/.codex/config.toml` and decide whether the edit must be preserved.
+   Save any intentional settings outside PickerMux's marked blocks separately.
+4. If PickerMux's recorded configuration should win, run
+   `pickermux uninstall --force`. Do not use `--purge`, delete
+   `models_cache.json`, or edit PickerMux's private receipt.
+5. Open Codex without PickerMux while signed in and wait for its native model
+   picker to load. Fully quit it again.
+6. Rerun the latest PickerMux installer, reusing the same custom PickerMux
+   configuration if applicable, and then run `pickermux doctor`.
+
+This uninstall/reinstall path also creates a new private bridge capability. If
+a diagnostic was shared without redacting the `/c/...` URL, complete this
+recovery rather than attempting to reuse the old bridge runtime, and remove the
+unredacted diagnostic wherever possible. A browser opening the Responses URL
+uses `GET`; `METHOD_NOT_ALLOWED` is expected because inference accepts only its
+validated request method and is not evidence that the bridge is healthy.
+
 ## The release installer stops before setup
 
 The installer fails before mutation when macOS, the CPU architecture, Node.js,
