@@ -248,6 +248,46 @@ test("doctor inspects the Codex account cache without an installed bridge", asyn
   );
 });
 
+test("doctor identifies only known modified managed blocks", async (t) => {
+  const { config, paths } = await fixture(t);
+  const result = await runBridgeDoctor({
+    config,
+    paths,
+    codexPath: "/fake/codex",
+    statusImpl: async () => ({
+      installed: true,
+      healthy: false,
+      status: "modified",
+      modifiedBlocks: ["provider", "provider-scope-tail", "private-value"],
+    }),
+    discoveryImpl: async () => ({ models: [], providers: [] }),
+    accountCacheImpl: async () => ({
+      ready: true,
+      codexClientVersion: "0.151.0",
+      cacheClientVersion: "0.151.0",
+      catalog: { models: [NATIVE_MODEL] },
+    }),
+    runtimeSupportsZstdImpl: () => true,
+    bundledCatalogImpl: async () => ({ models: [] }),
+    clientVersionImpl: async () => "0.151.0",
+    compatibilityImpl: async () => ({
+      status: "compatible",
+      compatible: true,
+      reasons: [],
+    }),
+    certificationStatusesImpl: async () => [],
+    fetchImpl: async () => new Response(JSON.stringify({ object: "list", data: [] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }),
+  });
+
+  const managedConfig = result.checks.find((entry) => entry.name === "managed-config");
+  assert.equal(managedConfig.status, "fail");
+  assert.match(managedConfig.detail, /modified \(provider, provider-scope-tail\)/u);
+  assert.doesNotMatch(managedConfig.detail, /private-value/u);
+});
+
 test("doctor reports a refresh-required account cache without managed artifacts", async (t) => {
   const { config, paths } = await fixture(t);
   await Promise.all([
