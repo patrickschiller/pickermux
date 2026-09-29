@@ -844,6 +844,28 @@ export async function uninstallConfig(options) {
   };
 }
 
+/** Restore parser compatibility for old chats only after the integration is gone. */
+export async function repairHistoricalChatsConfig(options = {}) {
+  const settings = normalizeOwnershipOptions(options);
+  const ownershipReceipt = await inventoryManagedConfigOwnership(settings);
+  if (ownershipReceipt.exists) {
+    throw failure(
+      "INTEGRATION_INSTALLED",
+      "Historical chat repair requires PickerMux to be uninstalled; review the managed integration before changing it.",
+    );
+  }
+  const result = await uninstallConfig({
+    ...settings,
+    ownershipReceipt,
+    preserveHistoricalModelBridge: true,
+  });
+  return {
+    changed: result.changed,
+    historicalCompatibility: result.historicalCompatibility,
+    provider: HISTORICAL_MODEL_BRIDGE_PROVIDER_ID,
+  };
+}
+
 /**
  * Materialize the one receipt-recovered provider end marker so an older
  * installed CLI can complete recovery after a newer setup preflight stops.

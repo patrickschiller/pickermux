@@ -7,6 +7,29 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-09-29
+
+### Added
+
+- Add `pickermux repair-chats [--json]` for historical chats that cannot load
+  after an older uninstall removed `model_bridge`. The command restores only
+  the inert compatibility table, requires Codex Desktop to be closed, is
+  idempotent, and refuses installed or ambiguous configuration state.
+- Add a verified release-installer recovery mode, `install.sh --repair-chats`,
+  that runs the repair from the checked payload without setup. It works when
+  the installed CLI lacks the new command or a stale account model cache blocks
+  setup.
+
+### Fixed
+
+- Preserve the inert historical `model_bridge` provider table during normal
+  uninstall and `uninstall --remove-cli` for the canonical `model_bridge`
+  integration, as full purge already did. Old chats remain parseable after
+  removal; select a native model before sending another turn.
+
+See the [release notes](docs/RELEASE_NOTES_0.8.2.md) for recovery instructions
+and validation limits.
+
 ## [0.8.1] - 2026-09-29
 
 ### Fixed
@@ -529,7 +552,8 @@ confirm the release date before tagging. See the
   paths and file types, refuses root execution and foreign launchers, and
   restores the previous distribution state when activation fails.
 
-[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.8.1...HEAD
+[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.8.2...HEAD
+[0.8.2]: https://github.com/patrickschiller/pickermux/releases/tag/v0.8.2
 [0.8.1]: https://github.com/patrickschiller/pickermux/releases/tag/v0.8.1
 [0.8.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.8.0
 [0.7.6]: https://github.com/patrickschiller/pickermux/releases/tag/v0.7.6
