@@ -1,6 +1,6 @@
 # PickerMux Architecture
 
-This document describes the PickerMux v0.8.2 candidate.
+This document describes PickerMux v0.8.2.
 It is intended for contributors, security reviewers, and users who want to
 understand what runs on their Mac.
 

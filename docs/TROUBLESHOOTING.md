@@ -18,33 +18,23 @@ may then say it cannot load `config.toml` because “Model provider
 `model_bridge` not found.” The repair restores a provider definition only so
 those chats can open. It does not restart PickerMux or make that provider usable.
 
-Until v0.8.2 passes live macOS acceptance and is published, v0.8.1 remains the
-public release and the v0.8.2 installer URL below is unavailable. To use the
-candidate now:
-
-1. Fully quit Codex Desktop with `Command-Q`.
-2. From a trusted local checkout of this 0.8.2 candidate, run:
-
-   ```bash
-   node bin/pickermux.mjs repair-chats
-   ```
-
-3. Reopen Codex and the affected chat. Choose a native model before sending
-   another message. The inert `model_bridge` table points to loopback port zero
-   and cannot serve a turn.
-4. If you want PickerMux again, first let the signed-in native picker refresh
-   its account model cache, fully quit Codex, and then run the
-   [regular installer](../README.md#install).
-
-After 0.8.2 is published, the following version-pinned recovery installer
-will verify the release payload and invoke the same repair without setup,
-LM Studio, or a current account model cache:
+Fully quit Codex Desktop with `Command-Q`, then run the version-pinned 0.8.2
+recovery installer. It verifies the release payload and invokes only the
+repair, without setup, LM Studio, or a current account model cache:
 
 ```bash
 /usr/bin/curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://github.com/patrickschiller/pickermux/releases/download/v0.8.2/install.sh | /bin/sh -s -- --repair-chats
 ```
 
-The installed 0.8.2 CLI will also offer `pickermux repair-chats [--json]`.
+From a trusted local 0.8.2 source checkout, you can instead run
+`node bin/pickermux.mjs repair-chats` from the repository root. Reopen Codex
+and the affected chat after repair. Choose a native model before sending
+another message. The inert `model_bridge` table points to loopback port zero
+and cannot serve a turn. If you want PickerMux again, first let the signed-in
+native picker refresh its account model cache, fully quit Codex, and then run
+the [regular installer](../README.md#install).
+
+The installed 0.8.2 CLI also offers `pickermux repair-chats [--json]`.
 The installer mode helps when the old CLI lacks that command or setup is
 blocked by a stale cache. The repair is idempotent. It refuses an active
 installation, managed markers, a foreign or modified `model_bridge` table, and
