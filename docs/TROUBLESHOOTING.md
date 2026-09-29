@@ -22,7 +22,7 @@ the client version. You can check the newer bundled executable directly:
 /Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex --version
 ```
 
-Upgrade with the [0.8.0 release installer](RELEASE_NOTES_0.8.0.md#upgrade).
+Upgrade with the [latest release installer](../README.md#install).
 Rerunning the 0.7.5 installer does not include the fix. Version 0.7.6 detects
 both bundled layouts and continues to validate the exact client version and
 catalog. A successful version check alone does not establish full
@@ -184,7 +184,10 @@ catalog contract. PickerMux 0.5.2 also detects a Codex executable replacement
 while the service is already running. It quarantines `/models` and Responses
 traffic with HTTP 503 while keeping its capability-scoped health endpoint
 available, so `status` and `doctor` can report `update-required` without a
-LaunchAgent restart loop. Rerun the latest-release installer. Setup checks the Codex
+LaunchAgent restart loop. If `managed-config` is also `modified`, follow
+[modified-configuration recovery](#uninstall-refuses-modified-configuration)
+before retrying the installer; do not use `refresh --full`. Otherwise, rerun
+the latest-release installer. Setup checks the Codex
 account cache before staging the downloaded CLI, checks it again under the
 lifecycle lock before committing CLI controls, and checks it once more
 immediately before integration activation. A missing, malformed, or
@@ -582,6 +585,36 @@ mismatch remains `inconsistent` and requires manual review.
 Use `uninstall --force` only when you have reviewed the conflict and explicitly
 want PickerMux to remove its owned block. The command still targets managed
 artifacts; it does not delete provider Keychain items or backup directories.
+
+When this state occurs together with `update-required` after a Codex Desktop
+upgrade, normal setup and `refresh --full` intentionally remain blocked: neither
+operation is allowed to bless edited managed bytes as a new baseline. Use this
+manual recovery sequence instead:
+
+1. Fully quit Codex Desktop with `Command-Q`.
+2. Run the installed `pickermux doctor`. Version 0.8.0 may report only
+   `managed-config: modified`; that is enough to follow this recovery. Version
+   0.8.1 names only known affected receipt-owned areas, such as `provider` or
+   `provider-scope-tail`, without printing their contents.
+3. Review `~/.codex/config.toml` and decide whether the edit must be preserved.
+   Keep a private copy of intentional changes, including edits inside PickerMux's
+   marked blocks, before forced uninstall removes them. After reinstalling,
+   reapply desired settings through supported configuration rather than copying
+   old managed blocks back wholesale.
+4. If PickerMux's recorded configuration should win, run
+   `pickermux uninstall --force`. Do not use `--purge`, delete
+   `models_cache.json`, or edit PickerMux's private receipt.
+5. Open Codex without PickerMux while signed in and wait for its native model
+   picker to load. Fully quit it again.
+6. Rerun the latest PickerMux installer, reusing the same custom PickerMux
+   configuration if applicable, and then run `pickermux doctor`.
+
+This uninstall/reinstall path also creates a new private bridge capability. If
+a diagnostic was shared without redacting the `/c/...` URL, complete this
+recovery rather than attempting to reuse the old bridge runtime, and remove the
+unredacted diagnostic wherever possible. A browser opening the Responses URL
+uses `GET`; `METHOD_NOT_ALLOWED` is expected because inference accepts only its
+validated request method and is not evidence that the bridge is healthy.
 
 ## The release installer stops before setup
 

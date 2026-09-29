@@ -7,11 +7,13 @@
 
 **Use local LM Studio models directly from the Codex Desktop picker.**
 
-**New in 0.8.0: installation includes model tool certification.** Setup checks
-loaded models for project-file and command tools, explains that live tests can
-take several minutes per model, and displays check progress with elapsed time.
-Existing valid certifications are retained. See the
-[complete release notes](docs/RELEASE_NOTES_0.8.0.md).
+**New in 0.8.1: clearer recovery after a Codex Desktop upgrade.** When setup
+finds modified PickerMux-managed configuration, it explains the manual repair
+sequence. Doctor identifies only known managed block names, without showing
+their contents. See the [0.8.1 release notes](docs/RELEASE_NOTES_0.8.1.md).
+
+For installation, upgrade, and diagnostic problems, see
+[Troubleshooting](docs/TROUBLESHOOTING.md).
 
 Certified external models can also use Codex's `web.run` tool to search the web,
 read sources, and answer with links. See [Web search](#web-search-tool).
@@ -111,7 +113,7 @@ or another shell file automatically. Until then, use the absolute command path.
 Use the exact version for a reproducible installation:
 
 ```bash
-/usr/bin/curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://github.com/patrickschiller/pickermux/releases/download/v0.8.0/install.sh | /bin/sh
+/usr/bin/curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://github.com/patrickschiller/pickermux/releases/download/v0.8.1/install.sh | /bin/sh
 ```
 
 Both one-line forms execute code downloaded from GitHub. The archive checksum
@@ -146,7 +148,7 @@ If setup stops with `Failed to read the Codex client version`, see the
 ~/.local/bin/pickermux discover
 ```
 
-For this release, the first command must print `pickermux 0.8.0`. `status`
+For this release, the first command must print `pickermux 0.8.1`. `status`
 checks the managed configuration, catalog, compatibility contract, and bridge.
 It also reports `full-refresh=idle` normally or the current recovery phase;
 `status --json` exposes the same state as `fullRefresh.status` and
@@ -338,14 +340,20 @@ See [Configuration](docs/CONFIGURATION.md#shared-web-search) and
 
 ## Upgrade
 
-Version 0.8.0 adds automatic installation-time model certification and progress
-reporting. It retains the Codex executable discovery fix from 0.7.6 and the web
+Version 0.8.1 makes a blocked upgrade easier to diagnose when the managed Codex
+configuration was edited. Setup still refuses to overwrite it. Review the edit
+before using the explicit forced-uninstall recovery described in the
+[0.8.1 release notes](docs/RELEASE_NOTES_0.8.1.md) and
+[Troubleshooting](docs/TROUBLESHOOTING.md#uninstall-refuses-modified-configuration).
+
+Version 0.8.0 added automatic installation-time model certification and progress
+reporting. It retained the Codex executable discovery fix from 0.7.6 and the web
 search and context compaction from 0.7.5. Upgrade through the normal release
 installer. Do not replace immutable package files or bypass a same-version
 checksum mismatch. Setup retains valid tool certifications and tests only
 models whose base certification is missing, stale, or pending recovery. See the
-[0.8.0 release notes](docs/RELEASE_NOTES_0.8.0.md) for the versioned installer and
-validation limits.
+[0.8.0 release notes](docs/RELEASE_NOTES_0.8.0.md) for certification behavior and
+its validation limits.
 
 PickerMux never updates silently. Run the same latest-release installer again
 to stage and activate a newer version. A healthy installation is refreshed
@@ -602,7 +610,11 @@ pickermux status
 pickermux doctor
 ```
 
-If compatibility is reported as `update-required`, rerun the latest-release
+If `managed-config` is `modified`, review the edit and follow the
+[modified-configuration recovery](docs/TROUBLESHOOTING.md#uninstall-refuses-modified-configuration)
+before retrying the installer. Do not run `refresh --full` in that state.
+
+Otherwise, if compatibility is reported as `update-required`, rerun the latest-release
 installer. Setup performs the cache check at all three activation barriers and
 does not change active PickerMux state when the cache still belongs to an older
 Codex version. If the receipt-active installed CLI is v0.5.4 or newer and the

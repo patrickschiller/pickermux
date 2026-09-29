@@ -7,6 +7,19 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-09-29
+
+### Fixed
+
+- Make post-Codex-upgrade recovery actionable when setup finds modified
+  PickerMux-managed configuration. Doctor names only known affected managed
+  areas, without printing their contents, and setup explains the explicit
+  review, forced-uninstall, native-cache refresh, and reinstall sequence.
+  Modified configuration still blocks automatic setup and full refresh.
+
+See the [release notes](docs/RELEASE_NOTES_0.8.1.md) for the manual recovery
+procedure and validation limits.
+
 ## [0.8.0] - 2026-09-27
 
 ### Added
@@ -516,7 +529,8 @@ confirm the release date before tagging. See the
   paths and file types, refuses root execution and foreign launchers, and
   restores the previous distribution state when activation fails.
 
-[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.8.1...HEAD
+[0.8.1]: https://github.com/patrickschiller/pickermux/releases/tag/v0.8.1
 [0.8.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.8.0
 [0.7.6]: https://github.com/patrickschiller/pickermux/releases/tag/v0.7.6
 [0.7.5]: https://github.com/patrickschiller/pickermux/releases/tag/v0.7.5

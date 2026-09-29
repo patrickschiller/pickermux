@@ -1683,7 +1683,14 @@ test("setup orchestration preflights desktop, loaded LLM, config, and lifecycle 
           return false;
         },
       }),
-      /inconsistent integration state.*modified/iu,
+      (error) => {
+        assert.match(error.message, /inconsistent integration state.*modified/iu);
+        assert.match(error.message, /uninstall --force/iu);
+        assert.match(error.message, /privately save intentional edits/iu);
+        assert.match(error.message, /open Codex once without PickerMux/iu);
+        assert.match(error.message, /latest PickerMux release installer/iu);
+        return true;
+      },
     );
     assert.equal(desktopChecked, false);
   });
