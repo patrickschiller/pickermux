@@ -7,6 +7,11 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Fixed
+
+- Show the regular installer first in the README's installation section and
+  move the repair-only `--repair-chats` command into its own subsection.
+
 ## [0.8.3] - 2026-09-30
 
 ### Fixed
