@@ -80,32 +80,8 @@ release, open a new terminal, and rerun the check.
 
 ## Install
 
-If an older uninstall left historical chats unable to open with
-“Model provider `model_bridge` not found,” fully quit Codex Desktop with
-`Command-Q`, then run the version-pinned 0.8.3 recovery installer:
-
-```bash
-/usr/bin/curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://github.com/patrickschiller/pickermux/releases/download/v0.8.3/install.sh | /bin/sh -s -- --repair-chats
-```
-
-The installer verifies its exact payload and runs only the repair; it does not
-run setup or require a new installed CLI, LM Studio, or a current Codex account
-model cache. From a trusted local 0.8.3 source checkout, you can instead run
-the repair from that repository root:
-
-```bash
-node bin/pickermux.mjs repair-chats
-```
-
-Reopen the affected chat and choose a native model before sending another
-message: the restored provider table cannot serve requests. When the native
-picker and model cache are ready, use the regular installer if you want
-PickerMux again.
-
-See [historical chat recovery](docs/TROUBLESHOOTING.md#historical-chats-cannot-load-model_bridge).
-
-For ordinary installation after satisfying the requirements above, use the
-latest published release:
+After satisfying the requirements above, fully quit Codex Desktop with
+`Command-Q` and install the latest published release:
 
 ```bash
 /usr/bin/curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://github.com/patrickschiller/pickermux/releases/latest/download/install.sh | /bin/sh
@@ -163,6 +139,32 @@ the linked device internally. See LM Studio's
 
 If setup stops with `Failed to read the Codex client version`, see the
 [Codex executable discovery troubleshooting](docs/TROUBLESHOOTING.md#failed-to-read-the-codex-client-version).
+
+### Repair historical chats
+
+Use this repair-only mode if an older uninstall left historical chats unable
+to open with “Model provider `model_bridge` not found.” Fully quit Codex
+Desktop with `Command-Q`, then run the version-pinned 0.8.3 recovery installer:
+
+```bash
+/usr/bin/curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://github.com/patrickschiller/pickermux/releases/download/v0.8.3/install.sh | /bin/sh -s -- --repair-chats
+```
+
+The installer verifies its exact payload and runs only the repair; it does not
+run setup or require a new installed CLI, LM Studio, or a current Codex account
+model cache. From a trusted local 0.8.3 source checkout, you can instead run
+the repair from that repository root:
+
+```bash
+node bin/pickermux.mjs repair-chats
+```
+
+Reopen the affected chat and choose a native model before sending another
+message: the restored provider table cannot serve requests. When the native
+picker and model cache are ready, use the [regular installer](#install) if you
+want PickerMux again.
+
+See [historical chat recovery](docs/TROUBLESHOOTING.md#historical-chats-cannot-load-model_bridge).
 
 ## Verify the installation
 
@@ -386,7 +388,8 @@ See the [0.8.3 release notes](docs/RELEASE_NOTES_0.8.3.md) and
 
 Version 0.8.2 keeps historical chats parseable after normal
 `pickermux uninstall` and `uninstall --remove-cli`. For a chat already broken by
-an older uninstall, use the [repair command](#install) before regular setup.
+an older uninstall, use the [repair command](#repair-historical-chats) before
+regular setup.
 The [0.8.2 release notes](docs/RELEASE_NOTES_0.8.2.md) explain the recovery
 and its validation limits.
 
