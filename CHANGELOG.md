@@ -7,6 +7,25 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [0.8.3] - 2026-09-30
+
+### Fixed
+
+- Validate the exact-version Codex account cache before external-provider
+  discovery or credential resolution during catalog construction. A failed
+  managed build preserves the existing catalog and reports `refresh --full`
+  recovery, including the managed-configuration review requirement.
+- Accept `refresh --FULL` as an alias for `refresh --full`, retaining the same
+  interactive confirmation and option restrictions. Cover patch-update cache
+  recovery and refusal to reactivate with an older cache in offline tests.
+- Explain that a refused uninstall retains the integration and requires
+  review before `--force`. Successful uninstall now explicitly asks for a full
+  Codex restart and native-model selection in historical PickerMux chats;
+  their retained compatibility provider cannot serve new turns.
+
+See the [release notes](docs/RELEASE_NOTES_0.8.3.md) for update recovery and
+validation limits.
+
 ## [0.8.2] - 2026-09-29
 
 ### Added
@@ -552,7 +571,8 @@ confirm the release date before tagging. See the
   paths and file types, refuses root execution and foreign launchers, and
   restores the previous distribution state when activation fails.
 
-[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.8.2...HEAD
+[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.8.3...HEAD
+[0.8.3]: https://github.com/patrickschiller/pickermux/releases/tag/v0.8.3
 [0.8.2]: https://github.com/patrickschiller/pickermux/releases/tag/v0.8.2
 [0.8.1]: https://github.com/patrickschiller/pickermux/releases/tag/v0.8.1
 [0.8.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.8.0

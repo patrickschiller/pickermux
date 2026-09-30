@@ -1412,6 +1412,9 @@ test("ordinary integration uninstall preserves historical model_bridge parsing a
       ].join("\n");
       await mkdir(paths.codexHome, { recursive: true, mode: 0o700 });
       await writeFile(paths.configPath, original, { mode: 0o600 });
+      const cachePath = path.join(paths.codexHome, "models_cache.json");
+      const staleCache = JSON.stringify({ client_version: "0.159.0", models: [] });
+      await writeFile(cachePath, staleCache, { mode: 0o600 });
       await stageServicePackage({
         sourceRoot: PROJECT_ROOT,
         installDirectory: paths.installDirectory,
@@ -1450,7 +1453,14 @@ test("ordinary integration uninstall preserves historical model_bridge parsing a
           stopServiceImpl: async () => {
             throw new Error("service must not stop before config validation");
           },
-        }), (error) => error.code === "MANAGED_BLOCK_MODIFIED");
+        }), (error) => {
+          assert.equal(error.code, "MANAGED_BLOCK_MODIFIED");
+          assert.match(error.message, /integration has not been removed/u);
+          assert.match(error.message, /pickermux doctor/u);
+          assert.match(error.message, /only after privately saving intentional edits/u);
+          assert.doesNotMatch(error.message, /127\.0\.0\.1|9999|23456/u);
+          return true;
+        });
         assert.equal(await readFile(paths.configPath, "utf8"), edited);
       }
 
@@ -1466,6 +1476,7 @@ test("ordinary integration uninstall preserves historical model_bridge parsing a
         }),
       });
       const restored = await readFile(paths.configPath, "utf8");
+      assert.equal(await readFile(cachePath, "utf8"), staleCache);
       assert.equal(result.removedConfig.historicalCompatibility, true);
       if (!force) assert.equal(restored.slice(0, original.length), original);
       assert.match(restored, /^model = "gpt-5\.6-sol"$/mu);
@@ -1721,6 +1732,8 @@ test("runCli discloses the parser-only historical compatibility table after purg
   }
   assert.match(stdout.join(""), /compatibility table remains only so historical chats parse/iu);
   assert.match(stdout.join(""), /new turns through it fail locally/iu);
+  assert.match(stdout.join(""), /Fully quit and reopen Codex Desktop after removal/u);
+  assert.match(stdout.join(""), /select a native model before sending/u);
 });
 
 test("runCli rejects incomplete full purge results before its success path", async () => {

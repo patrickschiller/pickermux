@@ -18,7 +18,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { CODEX_ACCOUNT_CACHE_REFRESH_REQUIRED } from "../src/account-cache.mjs";
+import { CODEX_ACCOUNT_CACHE_REFRESH_REQUIRED, inspectCodexAccountCache } from "../src/account-cache.mjs";
 import {
   armFullRefreshLaunchAgent,
   captureFullRefreshBaseline,
@@ -313,6 +313,56 @@ test("unchanged, mismatched and temporarily invalid caches cannot complete", asy
     })).phase,
     "native-opened",
   );
+});
+
+test("full refresh recovers a real patch-version mismatch only after Codex renews its cache", async (t) => {
+  for (const renewCache of [false, true]) {
+    await t.test(renewCache ? "renewed cache" : "old cache retained", async (subtest) => {
+      const paths = await fixture(subtest, "patch-update-");
+      const codexHome = path.join(paths.installDirectory, "codex-home");
+      await mkdir(codexHome, { mode: 0o700 });
+      const cachePath = path.join(codexHome, "models_cache.json");
+      const cacheBytes = (clientVersion) => JSON.stringify({
+        client_version: clientVersion,
+        fetched_at: REFRESHED_AT,
+        models: [{ slug: "account-native", context_window: 32_768, max_context_window: 32_768 }],
+      });
+      await writeFile(cachePath, cacheBytes("0.159.0"), { mode: 0o600 });
+      const events = [];
+      const workflow = runFullRefreshWorkflow({
+        installDirectory: paths.installDirectory,
+        checkpointPath: paths.checkpointPath,
+        codexHome,
+        cacheTimeoutMs: 10,
+        cachePollIntervalMs: 10,
+        ...callbackDefaults(events, (options) => inspectCodexAccountCache({
+          ...options,
+          clientVersionImpl: async () => "0.159.2",
+        })),
+        sleepImpl: async () => {
+          events.push("sleep");
+          if (renewCache) await writeFile(cachePath, cacheBytes("0.159.2"), { mode: 0o600 });
+        },
+        reactivateAndDoctorImpl: async () => {
+          assert.equal(JSON.parse(await readFile(cachePath, "utf8")).client_version, "0.159.2");
+          events.push("reactivate-doctor");
+        },
+      });
+      if (renewCache) {
+        const result = await workflow;
+        assert.equal(result.clientVersion, "0.159.2");
+        assert.equal(result.baselineFetchedAt, null);
+        assert.ok(events.indexOf("sleep") < events.indexOf("reactivate-doctor"));
+        assert.equal(events.at(-1), "phase:completed");
+      } else {
+        await assert.rejects(workflow, /was not refreshed within 10 ms/u);
+        assert.equal(events.includes("reactivate-doctor"), false);
+        assert.equal(events.includes("open-final"), false);
+        assert.equal(await readFile(cachePath, "utf8"), cacheBytes("0.159.0"));
+        assert.equal((await readFullRefreshCheckpoint(paths)).phase, "native-opened");
+      }
+    });
+  }
 });
 
 test("second quit failure is resumable without repeating suspension", async (t) => {

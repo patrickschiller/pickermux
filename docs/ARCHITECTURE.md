@@ -1,6 +1,6 @@
 # PickerMux Architecture
 
-This document describes PickerMux v0.8.2.
+This document describes PickerMux v0.8.3.
 It is intended for contributors, security reviewers, and users who want to
 understand what runs on their Mac.
 
@@ -77,6 +77,9 @@ cannot. Once the snapshot is structurally valid and matches the exact installed
 Codex client version, elapsed time alone does not make it stale. Its
 `fetched_at` value and derived age are diagnostic metadata; missing, malformed,
 unsafe, future-dated, or version-mismatched snapshots still fail closed.
+Persistent catalog construction completes that account-cache check before
+external discovery or provider credential resolution. Cache failure leaves the
+published catalog unchanged and names the confirmed full-refresh recovery.
 
 External slugs must begin with their provider namespace, such as
 `lmstudio/qwen/qwen3.8-27b`. An unknown, differently cased, or prefix-only slug
@@ -521,6 +524,11 @@ block only when PickerMux owns it, preserving pre-existing feature settings.
 is not an age-triggered variant of ordinary `refresh`, and it rejects structured
 `--json` execution because the confirmation and application handoff are part of
 its safety contract.
+`--FULL` is an alias with the same confirmation and option restrictions. A
+runtime quarantined by a client update does not prevent scheduling recovery:
+the admission checks prove configuration and runtime ownership rather than
+requiring the outdated bridge to serve model traffic. Modified owned blocks
+still fail closed.
 
 Before Codex is asked to quit, PickerMux creates a private checkpoint with
 operation metadata and the initial phase while holding the same lifecycle lock
@@ -633,7 +641,7 @@ paths, and invalid ownership state. Native Codex credentials and unrecognized
 files are always outside its scope; `~/.codex/auth.json` is never read,
 modified, or removed.
 
-All 0.8.2 CLI uninstall modes for the canonical `model_bridge` integration
+All current CLI uninstall modes for the canonical `model_bridge` integration
 atomically retain its marker-bounded historical compatibility provider table.
 The temporary suspension during `refresh --full` is a separate lifecycle path
 and omits this table until reactivation. The table is credential-free,
@@ -699,7 +707,7 @@ The private health endpoint remains available with fixed safe status/reason
 enums so the LaunchAgent does not enter a restart loop and diagnostics can
 direct the user to refresh.
 
-Versions 0.6.0 through 0.8.2 use bridge contract
+Versions 0.6.0 through 0.8.3 use bridge contract
 `codex-responses-bridge/p6-v1`.
 The managed publisher emits the search claim only from valid model-bound
 evidence, and the runtime accepts it only on entries generated under that exact

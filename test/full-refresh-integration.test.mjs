@@ -703,6 +703,40 @@ test("refresh --full cancellation does not schedule a worker", async () => {
   assert.match(output.join(""), /cancelled; no state was changed/iu);
 });
 
+test("refresh --FULL uses the same confirmation and option restrictions as --full", async (t) => {
+  for (const confirmed of [false, true]) {
+    let confirmations = 0;
+    let schedules = 0;
+    const { result } = await captureStdout(() => runCli(["refresh", "--FULL"], {
+      confirmFullRefreshImpl: async () => {
+        confirmations += 1;
+        return confirmed;
+      },
+      scheduleFullRefreshImpl: async () => {
+        schedules += 1;
+        return { started: true };
+      },
+    }));
+    assert.equal(confirmations, 1);
+    assert.equal(schedules, confirmed ? 1 : 0);
+    assert.equal(result.started, confirmed);
+  }
+  for (const argv of [
+    ["refresh", "--FULL", "--json"],
+    ["refresh", "--FULL", "--config", "/fixture/config.json"],
+    ["refresh", "--FULL", "--full-worker", "--checkpoint", "/fixture/state.json"],
+    ["uninstall", "--FULL"],
+    ["refresh", "--Full"],
+  ]) {
+    await t.test(argv.join(" "), async () => {
+      await assert.rejects(runCli(argv, {
+        confirmFullRefreshImpl: async () => assert.fail("invalid options must precede confirmation"),
+        scheduleFullRefreshImpl: async () => assert.fail("invalid options must not arm the worker"),
+      }));
+    });
+  }
+});
+
 test("refresh --full confirms before dispatching the detached worker", async () => {
   const events = [];
   const scheduled = {
