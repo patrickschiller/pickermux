@@ -18,15 +18,15 @@ may then say it cannot load `config.toml` because “Model provider
 `model_bridge` not found.” The repair restores a provider definition only so
 those chats can open. It does not restart PickerMux or make that provider usable.
 
-Fully quit Codex Desktop with `Command-Q`, then run the version-pinned 0.8.2
+Fully quit Codex Desktop with `Command-Q`, then run the version-pinned 0.8.3
 recovery installer. It verifies the release payload and invokes only the
 repair, without setup, LM Studio, or a current account model cache:
 
 ```bash
-/usr/bin/curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://github.com/patrickschiller/pickermux/releases/download/v0.8.2/install.sh | /bin/sh -s -- --repair-chats
+/usr/bin/curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://github.com/patrickschiller/pickermux/releases/download/v0.8.3/install.sh | /bin/sh -s -- --repair-chats
 ```
 
-From a trusted local 0.8.2 source checkout, you can instead run
+From a trusted local 0.8.3 source checkout, you can instead run
 `node bin/pickermux.mjs repair-chats` from the repository root. Reopen Codex
 and the affected chat after repair. Choose a native model before sending
 another message. The inert `model_bridge` table points to loopback port zero
@@ -34,7 +34,7 @@ and cannot serve a turn. If you want PickerMux again, first let the signed-in
 native picker refresh its account model cache, fully quit Codex, and then run
 the [regular installer](../README.md#install).
 
-The installed 0.8.2 CLI also offers `pickermux repair-chats [--json]`.
+The installed 0.8.3 CLI also offers `pickermux repair-chats [--json]`.
 The installer mode helps when the old CLI lacks that command or setup is
 blocked by a stale cache. The repair is idempotent. It refuses an active
 installation, managed markers, a foreign or modified `model_bridge` table, and
@@ -242,8 +242,8 @@ pickermux doctor
 `doctor` reports `codex-account-cache` independently from the bridge runtime and
 mixed catalog, so this check remains useful after an integration-only
 uninstall. If setup or doctor reports that the account cache needs a refresh
-and the receipt-active PickerMux CLI is v0.5.4 or newer with a healthy
-integration, use the managed recovery:
+and the receipt-active PickerMux CLI is v0.5.4 or newer with intact managed
+configuration and receipt-owned runtime, use the managed recovery:
 
 ```bash
 pickermux refresh --full
@@ -255,6 +255,51 @@ older integration remains installed, open Codex Desktop while signed in, wait
 for its native model picker to load, fully quit it with `Command-Q`, and install
 PickerMux again. Reuse the same custom configuration path if one was used.
 Never delete `models_cache.json` or `~/.codex/auth.json` as a workaround.
+
+## Refresh reports an account-cache version mismatch after a Codex update
+
+A cache from `0.159.0` cannot authorize a catalog for client `0.159.2`, even
+though both are patch versions of the same release. Normal refresh stops before
+external-provider discovery and leaves the installed catalog and account cache
+unchanged. It reports the mismatch and the recovery command:
+
+```bash
+pickermux refresh --full
+```
+
+Run it from the installed CLI in a terminal and confirm with `FULL`. Starting
+with 0.8.3, `--FULL` is also accepted as an option alias; earlier releases use
+lowercase `--full`. Recovery can start while the bridge is
+quarantined as `update-required`, provided the managed configuration and
+receipt-owned runtime remain intact. It temporarily suspends PickerMux so
+Codex can fetch its own exact-version account cache, then reactivates the
+integration through the ordinary validation gates. No patch-version exception
+or bundled-catalog substitution grants account access.
+
+If the option is unknown, check `pickermux --version` and `pickermux help` to
+identify the CLI being invoked; try the canonical lowercase `--full`. If that
+command is also absent, use the manual uninstall/native-cache/reinstall
+sequence above. If PickerMux has already been removed, open Codex natively
+while signed in until its picker loads, fully quit it with `Command-Q`, and
+run the [0.8.3 installer](RELEASE_NOTES_0.8.3.md#upgrade-and-verify).
+If `doctor` reports modified managed configuration, follow
+[the reviewed conflict recovery](#uninstall-refuses-modified-configuration).
+
+## Connection failed after uninstall
+
+Fully quit and reopen Codex Desktop, open the affected chat, and select a
+native model before sending. Historical PickerMux chats can still retain their
+`model_bridge` provider. The inert compatibility table preserves parsing but
+deliberately cannot serve a new turn; sending through it can report
+“Connection failed: error sending request.” Restarting alone does not change
+the provider stored for that chat.
+
+If uninstall instead reports that managed blocks were edited, it refused
+removal before stopping the service. The integration remains installed; inspect
+`pickermux doctor` and follow
+[modified-configuration recovery](#uninstall-refuses-modified-configuration).
+`--force` is for choosing to remove those reviewed owned blocks. It does not
+renew Codex's account cache or migrate historical chats to another provider.
 
 ## Full account-cache refresh stops before completion
 
@@ -711,7 +756,7 @@ invalid receipt, unsafe permission, symbolic link, unexpected backup entry, or
 provider-registry change stops the purge. `--force` does not override those
 ownership checks.
 
-Every 0.8.2 CLI uninstall mode for the canonical `model_bridge` integration
+Every current CLI uninstall mode for the canonical `model_bridge` integration
 leaves one intentionally unusable compatibility table in `config.toml` so
 historical chats can open. It has no credentials, uses
 `http://127.0.0.1:0/v1`, and retries zero times; select a

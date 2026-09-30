@@ -185,6 +185,9 @@ Usage:
 
 repair-chats restores only the inert model_bridge table used to open historical
 chats after uninstall. Select a native model before sending a new turn.
+refresh --full (also --FULL) recovers an account cache after a Codex update.
+It requires interactive confirmation and unchanged managed configuration.
+After uninstall, fully restart Codex and select a native model in existing chats.
 The bundled Codex executable is detected in the current or legacy Desktop layout.
 CODEX_BINARY overrides discovery for this command; it is not saved to the service.
 
@@ -235,7 +238,7 @@ function parseArguments(argv) {
     if (argument === "--force") options.force = true;
     else if (argument === "--remove-cli") options.removeCli = true;
     else if (argument === "--purge") options.purge = true;
-    else if (argument === "--full") options.full = true;
+    else if (argument === "--full" || argument === "--FULL") options.full = true;
     else if (argument === "--full-worker") options.fullWorker = true;
     else if (argument === "--all") options.all = true;
     else if (argument === "--json") options.json = true;
@@ -373,7 +376,7 @@ export async function assertBridgeStartupCompatibility({
   return { compatibility, bundledCatalog, codexClientVersion };
 }
 
-async function buildCatalog({
+export async function buildCatalog({
   config,
   codexPath,
   codexHome,
@@ -381,18 +384,23 @@ async function buildCatalog({
   certificationPath,
   credentialResolver,
   allowBundledFallback = true,
+  discoverImpl = discoverBridgeModels,
+  bundledCatalogImpl = loadBundledCatalog,
+  clientVersionImpl = loadCodexClientVersion,
 }) {
-  const [discovery, bundledCatalog, codexClientVersion] = await Promise.all([
-    discoverBridgeModels({ config, credentialResolver }),
-    loadBundledCatalog({ codexPath }),
-    loadCodexClientVersion({ codexPath }),
+  const [bundledCatalog, codexClientVersion] = await Promise.all([
+    bundledCatalogImpl({ codexPath }),
+    clientVersionImpl({ codexPath }),
   ]);
+  // An invalid account snapshot must stop publication before external provider
+  // discovery or credential resolution can obscure the required recovery.
   const nativeCatalog = await loadNativeCatalog({
     codexHome,
     bundledCatalog,
     expectedClientVersion: codexClientVersion,
     allowBundledFallback,
   });
+  const discovery = await discoverImpl({ config, credentialResolver });
   const capabilities = certificationPath
     ? await resolveModelCapabilitySlugs({
         storePath: certificationPath,
@@ -3284,6 +3292,9 @@ export async function runCli(argv, {
           "An inert model_bridge table remains so historical chats open. Select a native model before sending a new turn.\n",
         );
       }
+      process.stdout.write(
+        "Fully quit and reopen Codex Desktop after removal. In existing PickerMux chats, select a native model before sending; the removed bridge cannot serve new turns.\n",
+      );
       if (options.removeCli && result.removed.cleanupPendingPath) {
         process.stderr.write(
           `PickerMux warning: private removal quarantine still requires cleanup at ${result.removed.cleanupPendingPath}. A new installation is not blocked.\n`,

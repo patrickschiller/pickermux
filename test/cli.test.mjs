@@ -13,6 +13,7 @@ import {
   assertBridgeWebSearchCompatibility,
   assertPersistentCredentialSupport,
   assertSelectedCatalogModel,
+  buildCatalog,
   repairHistoricalChats,
   restoreRefreshState,
 } from "../src/cli.mjs";
@@ -35,7 +36,7 @@ test("release metadata and both CLI entry points identify PickerMux", async () =
     await readFile(path.join(projectDirectory, "package.json"), "utf8"),
   );
   assert.equal(packageMetadata.name, "pickermux");
-  assert.equal(packageMetadata.version, "0.8.2");
+  assert.equal(packageMetadata.version, "0.8.3");
   assert.equal(packageMetadata.license, "MIT");
 
   for (const entryPoint of ["pickermux.mjs", "lmstudio-picker.mjs"]) {
@@ -49,6 +50,8 @@ test("release metadata and both CLI entry points identify PickerMux", async () =
       assert.match(stdout, /CODEX_BINARY overrides discovery for this command/u);
       assert.match(stdout, /Setup and install automatically certify discovered models/u);
       assert.match(stdout, /several minutes per model/u);
+      assert.match(stdout, /refresh --full \(also --FULL\)/u);
+      assert.match(stdout, /After uninstall, fully restart Codex/u);
       assert.doesNotMatch(
         stdout,
         new RegExp(["Smart", "Routing"].join(" "), "iu"),
@@ -62,9 +65,82 @@ test("release metadata and both CLI entry points identify PickerMux", async () =
         [path.join(projectDirectory, "bin", entryPoint), versionArgument],
         { encoding: "utf8" },
       );
-      assert.equal(stdout, "pickermux 0.8.2\n");
+      assert.equal(stdout, "pickermux 0.8.3\n");
     }
   }
+});
+
+test("managed catalog build rejects invalid account caches before provider discovery or publication", async (t) => {
+  for (const cache of [undefined, "{not-json", JSON.stringify({
+    client_version: "0.159.0",
+    fetched_at: "2026-09-29T10:00:00.000Z",
+    models: [{ slug: "private-account-model", context_window: 32_768, max_context_window: 32_768 }],
+  })]) {
+    await t.test(cache === undefined ? "missing" : cache.startsWith("{not") ? "malformed" : "patch update", async (subtest) => {
+      const directory = await mkdtemp(path.join(os.tmpdir(), "pickermux-build-cache-"));
+      subtest.after(() => rm(directory, { recursive: true, force: true }));
+      const outputPath = path.join(directory, "models.json");
+      const previousCatalog = "previous catalog must remain unchanged\n";
+      await writeFile(outputPath, previousCatalog, { mode: 0o600 });
+      if (cache !== undefined) {
+        await writeFile(path.join(directory, "models_cache.json"), cache, { mode: 0o600 });
+      }
+      let externalCalls = 0;
+      await assert.rejects(buildCatalog({
+        config: { providers: [] },
+        codexHome: directory,
+        outputPath,
+        allowBundledFallback: false,
+        bundledCatalogImpl: async () => ({ models: [] }),
+        clientVersionImpl: async () => "0.159.2",
+        discoverImpl: async ({ credentialResolver }) => {
+          externalCalls += 1;
+          await credentialResolver();
+          throw new Error("provider unavailable must not obscure cache recovery");
+        },
+        credentialResolver: async () => { externalCalls += 1; },
+      }), (error) => {
+        assert.match(error.message, /valid account-scoped Codex model cache is required/u);
+        assert.match(error.message, /pickermux refresh --full/u);
+        assert.match(error.message, /pickermux doctor/u);
+        assert.doesNotMatch(error.message, /private-account-model/u);
+        return true;
+      });
+      assert.equal(externalCalls, 0);
+      assert.equal(await readFile(outputPath, "utf8"), previousCatalog);
+      if (cache !== undefined) {
+        assert.equal(await readFile(path.join(directory, "models_cache.json"), "utf8"), cache);
+      }
+    });
+  }
+});
+
+test("managed catalog build publishes an old exact-version account cache after discovery", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "pickermux-build-valid-cache-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const models = [{ slug: "account-native", context_window: 32_768, max_context_window: 32_768 }];
+  await writeFile(path.join(directory, "models_cache.json"), JSON.stringify({
+    client_version: "0.159.2",
+    fetched_at: "2026-01-01T00:00:00.000Z",
+    models,
+  }), { mode: 0o600 });
+  let discoveries = 0;
+  const outputPath = path.join(directory, "models.json");
+  const result = await buildCatalog({
+    config: { providers: [] },
+    codexHome: directory,
+    outputPath,
+    allowBundledFallback: false,
+    bundledCatalogImpl: async () => ({ models: [{ ...models[0], slug: "bundle-only" }] }),
+    clientVersionImpl: async () => "0.159.2",
+    discoverImpl: async () => {
+      discoveries += 1;
+      return { models: [] };
+    },
+  });
+  assert.equal(discoveries, 1);
+  assert.equal(result.nativeCatalog.source, "codex-account-cache");
+  assert.deepEqual(JSON.parse(await readFile(outputPath, "utf8")), { models });
 });
 
 test("setup keeps JSON stdout clean and returns a failing exit code for incomplete certification", async () => {

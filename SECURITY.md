@@ -332,7 +332,7 @@ deletion targets from untrusted configuration. Provider IDs use the canonical
 configuration grammar with a 127-character maximum, and registry changes are
 serialized and revalidated before deletion.
 
-All 0.8.2 CLI uninstall modes for the canonical `model_bridge` integration
+All current CLI uninstall modes for the canonical `model_bridge` integration
 preserve one marker-bounded, inert provider table in `config.toml` so Codex can
 parse historical chats. The temporary `refresh --full` suspension is separate
 and omits the table until reactivation. The table's no-auth, loopback-port-zero,

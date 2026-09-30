@@ -685,7 +685,9 @@ export async function uninstallConfig(options) {
   if (modified.length > 0 && !force) {
     throw failure(
       "MANAGED_BLOCK_MODIFIED",
-      `Refusing uninstall because managed block(s) were edited: ${modified.join(", ")}`,
+      `Refusing uninstall because managed block(s) were edited: ${modified.join(", ")}. ` +
+        "The integration has not been removed. Run 'pickermux doctor' and review config.toml; " +
+        "use 'pickermux uninstall --force' only after privately saving intentional edits and choosing to remove the recorded managed blocks.",
       { modified },
     );
   }

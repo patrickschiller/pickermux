@@ -246,7 +246,10 @@ export async function loadNativeCatalog({
   } catch (error) {
     if (!allowBundledFallback) {
       throw new Error(
-        `A valid account-scoped Codex model cache is required: ${error.message}`,
+        `A valid account-scoped Codex model cache is required: ${error.message}. ` +
+          "If PickerMux is installed, run 'pickermux refresh --full' from the installed CLI to renew it with interactive confirmation. " +
+          "Otherwise open Codex while signed in until its native picker loads, quit with Command-Q, and retry installation. " +
+          "Run 'pickermux doctor' first if managed configuration was edited; full refresh requires unchanged managed configuration.",
         { cause: error },
       );
     }
