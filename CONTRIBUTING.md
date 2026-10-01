@@ -42,7 +42,7 @@ without those applications.
 
 For the optional macOS 13+ companion, use Apple command-line tools with Swift 6
 tooling. The package compiles in Swift 5 language mode. Run its isolated tests
-and choose a fresh output directory for an unsigned universal app build:
+and choose a fresh output directory for an unsigned universal app and DMG build:
 
 ```bash
 swift test --package-path macos
@@ -51,7 +51,10 @@ node scripts/build-companion.mjs --output /tmp/pickermux-companion-development
 
 The app bundles a verified PickerMux backend and requires an externally
 installed Node.js runtime. A development build does not establish release
-signing or notarization. See [the companion guide](docs/MACOS_COMPANION.md#development-and-distribution)
+signing or notarization. The builder mounts its newly created image read-only,
+validates the app and Applications shortcut, and unmounts it without installing
+the app. Tests must inject these tool operations rather than mounting images.
+See [the companion guide](docs/MACOS_COMPANION.md#development-and-distribution)
 for the protected signing workflow and outstanding live acceptance checks.
 
 ## Making a change

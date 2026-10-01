@@ -195,6 +195,15 @@ LM Studio inference check. Once `~/.local/bin` is in `PATH`, the shorter
 
 ## macOS companion
 
+The companion build includes an installable
+`PickerMux-v0.9.0-macos-universal.dmg` for the planned release. Open the disk
+image, drag **PickerMux.app** to **Applications**, eject the image, and open the
+copied app. Node.js remains a prerequisite. Copying the app does not install
+the CLI or change Codex configuration; use the app's explicit preview and
+setup action when the integration needs installation. Use a signed and
+notarized release image for distribution; unsigned development images are
+local test builds. See [installation details](docs/MACOS_COMPANION.md#install-from-a-disk-image).
+
 Open `PickerMux.app` to inspect the bridge, Codex compatibility, account cache,
 and active integration from the menu bar. Available actions use the same
 receipt checks, installation locks, certification gates, and rollback as the

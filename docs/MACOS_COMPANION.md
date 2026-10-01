@@ -13,6 +13,32 @@ LaunchAgents, rollback, and account-cache recovery remain implemented by the
 Node.js core. PickerMux remains an unofficial community project, unaffiliated
 with OpenAI, Codex, or LM Studio.
 
+## Install from a disk image
+
+The companion build produces `PickerMux-v0.9.0-macos-universal.dmg` alongside
+the app archive. The planned release includes a Developer ID signed and
+notarized image for macOS 13+ on Apple silicon and Intel. Development images
+are labelled `unsigned-development` and remain local test artifacts.
+
+1. Install a supported Node.js runtime at one of the locations listed above.
+2. Open the reviewed disk image and drag **PickerMux.app** to **Applications**.
+3. Eject the disk image and open the copied app from **Applications**.
+4. With Codex fully closed and the provider's models loaded, inspect the status
+   and choose **Preview configuration changes**, then confirm
+   **Apply configuration changes…** if a new integration is required.
+
+The image contains only the app and an Applications shortcut. Dragging the
+app installs its bundle; it does not install the CLI, modify Codex TOML,
+start a bridge, or authorize provider requests. Setup remains the explicit
+transaction described below. The app does not need to run from the mounted
+image after it has been copied.
+
+For an app upgrade, quit the existing companion before replacing its copied
+bundle with the matching reviewed release. CLI/runtime updates and app
+replacement remain separate operations. The live release acceptance includes
+mounting the image, copying and opening the app, and testing the app upgrade
+on the target Mac.
+
 ## Daily use
 
 Open `PickerMux.app` and click its menu-bar icon. The panel shows Codex state,
@@ -198,15 +224,38 @@ node scripts/build-companion.mjs --output /tmp/pickermux-companion-development
 
 Choose a new output directory for each build; the builder refuses to replace
 one. The output contains `PickerMux.app`,
-`PickerMux-v0.9.0-macos-universal.tar.gz`, `companion-manifest.json`, and
-`SHA256SUMS`. The universal binary contains `arm64` and `x86_64` slices targeting
-macOS 13. The manifest distinguishes `unsigned-development` from
-`developer-id-notarized` artifacts and binds the bundled backend manifest.
-Unsigned development output is for local validation; it is not evidence of a
-distributable signed release.
+`PickerMux-v0.9.0-macos-universal.tar.gz`,
+`PickerMux-v0.9.0-macos-universal.dmg`, `companion-manifest.json`, and
+`SHA256SUMS`. The universal binary contains `arm64` and `x86_64` slices
+targeting macOS 13. The manifest distinguishes `unsigned-development` from
+`developer-id-notarized` artifacts and binds the bundled backend manifest,
+archive, and disk image. Its `diskImage` entry records the versioned filename,
+SHA-256 digest, `UDZO` format, `HFS+` filesystem, and
+`drag-to-applications` installation method. Unsigned development output is for
+local validation; it is not evidence of a distributable signed release.
+
+When the selected command-line tools do not match the installed Xcode, use
+the full Xcode toolchain for this command without changing the system-wide
+selection:
+
+```bash
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer node scripts/build-companion.mjs --output /tmp/pickermux-companion-xcode
+```
 
 For a release, configure an existing Developer ID Application identity and
-existing `notarytool` Keychain profile outside the repository, then run:
+existing `notarytool` Keychain profile outside the repository.
+
+To check the identity in Xcode, open **Xcode > Settings > Accounts**, select
+the account and team, then choose **Manage Certificates**. The required type
+is **Developer ID Application**; **Apple Development** is for development.
+The certificate and its matching private key must be available locally for
+this command-line signing workflow. Xcode can also use cloud-managed
+certificates in its Organizer distribution workflow; their availability
+does not establish a local `codesign` identity. See Apple's
+[signing identity instructions](https://developer.apple.com/documentation/xcode/sharing-your-teams-signing-certificates)
+and [cloud-managed certificate guide](https://developer.apple.com/help/account/certificates/cloud-managed-certificates/).
+
+Once the local identity and profile are configured:
 
 ```bash
 node scripts/build-companion.mjs --release --output /tmp/pickermux-companion-release
@@ -216,12 +265,23 @@ The build reads `PICKERMUX_SIGNING_IDENTITY` and `PICKERMUX_NOTARY_PROFILE`.
 Missing signing configuration fails before a release is produced. The release
 path enables the hardened runtime and Apple-event entitlement, verifies the
 signature, requires an accepted notarization, staples and validates the
-ticket, and assesses the app with Gatekeeper before packaging it.
+ticket, and assesses the app with Gatekeeper before packaging it. It then
+creates a compressed read-only DMG containing exactly the app and
+`Applications` pointing to `/Applications`. The image receives its own
+Developer ID signature, accepted notarization, stapled ticket, signature
+validation, and Gatekeeper assessment. Both release assets are checksummed
+after their final signatures and tickets are applied.
+
+Every build checks disk-image integrity and format and mounts it read-only
+to verify the complete app tree against the packaged bundle before unmounting
+it. Unexpected entries, altered app bytes or modes, and a changed Applications
+shortcut fail the build. These checks do not open the app or run setup.
 
 The `macOS companion` workflow tests Swift and build boundaries and retains
-unsigned development artifacts. Its separately dispatched signed-release job
-requires the protected `companion-signing` environment and provisioned macOS
-runner labeled `pickermux-signing`; it retains artifacts for release review.
+unsigned development archive and DMG artifacts. Its separately dispatched
+signed-release job requires the protected `companion-signing` environment
+and provisioned macOS runner labeled `pickermux-signing`; it retains both
+assets for release review.
 The workflow does not publish a GitHub release automatically.
 
 ## Acceptance status
@@ -238,9 +298,11 @@ following live checks:
   intentional user edits on the target installation.
 - Login startup, notification authorization, and an opt-in refresh after
   Codex fully closes.
-- A real signed/notarized artifact and app/CLI upgrade through the release
-  channel.
+- A real signed/notarized app and DMG, drag-to-install/open after ejecting the
+  image, and app/CLI upgrade through the release channel.
 
-These remain release acceptance checks. No usable signing identity was
-available in the development environment, so signing and notarization have not
-been demonstrated there.
+These remain release acceptance checks. The release build requires a usable
+Developer ID Application identity with its private key and an existing
+notarytool Keychain profile. An Apple Development identity does not fulfill
+this distribution requirement. Offline tests and development artifacts do
+not demonstrate successful signing or notarization.

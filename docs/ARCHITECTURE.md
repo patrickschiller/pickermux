@@ -815,10 +815,14 @@ transaction; original activation rollback and retained incomplete-certification
 semantics remain authoritative. CLI updates and app replacement are separate.
 
 The universal builder embeds the verified backend and produces an unsigned
-development bundle by default. Its explicit release mode requires Developer ID,
-hardened runtime, accepted notarization, stapling, and Gatekeeper assessment.
-A protected signing job retains reviewed artifacts. Build configuration alone
-does not establish signing or live macOS acceptance; see
+development app, archive, and drag-to-install DMG by default. The DMG contains
+the app and an Applications shortcut; copying the app grants no configuration
+or CLI installation authority. Its explicit release mode requires Developer ID,
+hardened runtime, accepted notarization, stapling, and Gatekeeper assessment
+for the app, then signs, notarizes, staples, and verifies the disk image. The
+distribution manifest and checksums bind both archive and DMG. A protected
+signing job retains reviewed artifacts. Build configuration alone does not
+establish signing or live macOS acceptance; see
 [the companion guide](MACOS_COMPANION.md).
 
 ## Private local data

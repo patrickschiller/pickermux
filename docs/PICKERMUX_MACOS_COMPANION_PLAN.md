@@ -246,7 +246,7 @@ passende, exakte Zertifizierung als Tool-Freigabe.
 | 3 Menüleisten App liefern | Native Statusanzeige, Diagnose, Dienst-/Katalogbedienung und regulärer Refresh; bestehende Provider-Integration bleibt nutzbar. | Bedienbar ohne manuelle TOML-Bearbeitung; keine direkte State-/Config-Manipulation durch Swift; CLI-Pfade und Umgebung geprüft. |
 | 4 Update Recovery integrieren | Nativer Bestätigungsdialog, unabhängiger Helper, Fortschritt, Wiederaufnahme und Öffnen von Codex. | Fehler und Abbrüche in jeder Phase getestet; reale macOS-Update-/TCC-Abnahme; kein unbestätigtes Quit. |
 | 5 Konfiguration migrieren | Bereinigter Renderer beziehungsweise qualifizierter kompakter Modus mit kompatiblen Receipts. | LF/CRLF, User-Edits, Ollama-Konflikte, Backup, CAS, Rollback, Uninstall und historische Chatöffnung bestehen. |
-| 6 App verteilen und aktualisieren | Signierte/notarisierte Distribution, geprüfte Versionsanzeige und opt-in GUI-Autostart. | Versionierte Downloads, Digest-/Archiv-/Receipt-Prüfungen, atomare Aktivierung und Rollback; App-/CLI-Versionskonflikte werden erklärt. |
+| 6 App verteilen und aktualisieren | Signierte/notarisierte App und installierbares DMG, geprüfte Versionsanzeige und opt-in GUI-Autostart. | Versionierte Downloads, Digest-/Archiv-/Receipt-Prüfungen, atomare Aktivierung und Rollback; DMG-Mount, Drag-to-Applications und App-Start geprüft; App-/CLI-Versionskonflikte werden erklärt. |
 
 Phase 1 und der Entwurf von Phase 2 können parallel erfolgen. Phase 3 benötigt
 Phase 2; Phase 4 baut auf beiden auf. Die App muss nicht auf den optionalen
@@ -258,19 +258,49 @@ statt eines Shell-Pipes im GUI-Prozess. Die App kann ein verfügbares Update
 zeigen und vorab prüfen; die Aktivierung wird bewusst gestartet. Sie bleibt
 von der Recovery nach einem Codex-Update getrennt.
 
-Der Implementierungsstand besteht `npm run verify` mit 1.188 Offline-Tests
+Der Companion-Build erzeugt zusätzlich zum Universal-Archiv ein versioniertes
+`PickerMux-v0.9.0-macos-universal.dmg`. Das Image enthält ausschließlich
+`PickerMux.app` und einen `Applications`-Link auf `/Applications`. Nutzer
+kopieren die App nach „Programme“, werfen das Image aus und öffnen die
+kopierte App. Node.js 22.15+ bleibt eine externe Voraussetzung. Das Kopieren
+installiert weder CLI noch Bridge und ändert keine Codex-Konfiguration;
+die Einrichtung erfolgt über die bestätigte Vorschau und bestehende
+Installationstransaktion.
+
+Der Builder prüft die Image-Integrität, das komprimierte Read-only-Format und
+den read-only gemounteten Inhalt einschließlich aller App-Dateien und Modi.
+Manifest und Prüfsummen binden sowohl Archiv als auch DMG. Im Release-Modus
+werden zunächst App und anschließend DMG separat mit Developer ID signiert,
+notarisiert, gestapelt und geprüft. Der geschützte Workflow bewahrt beide
+Artefakte zur Review auf; eine Veröffentlichung ist ein eigener Schritt.
+Unsignierte Entwicklungsimages bleiben als Testartefakte gekennzeichnet.
+
+Der Implementierungsstand besteht `npm run verify` mit 1.201 Offline-Tests
 und den Syntaxprüfungen. Zusätzliche Swift-Tests prüfen die echten
 Protokoll-Fixtures, Receipt-/Datei-/Runtime-Prüfungen, Bestätigungen und
 begrenzte Subprozesse. Der Universal-Build wird für `arm64` und `x86_64`
 erstellt; seine eingebetteten Backend-Dateien müssen dem geprüften Source-Stand
 entsprechen.
+Die DMG-Erstellung besteht zusätzlich 20 isolierte Packaging-Prüfungen.
+Der reale Universal-Build mit Xcode 27.0 sowie die Prüfsummen, UDZO-Format-
+und gemountete Inhaltsprüfung einschließlich aller Dateiberechtigungen
+bestehen; das Image wurde anschließend erfolgreich ausgeworfen.
 
 Die Code-Umsetzung aller sechs Phasen liegt vor. Die Abnahme von Phase 4
 benötigt noch den realen GUI-/TCC-Recovery-Test mit der neuen App. Für die
-Release-Abnahme von Phase 6 fehlt eine auf dem Build-Mac nutzbare
-„Developer ID Application“-Identität und der konkrete notarytool-Profilname.
+Release-Abnahme von Phase 6 muss eine auf dem Build-Mac nutzbare
+„Developer ID Application“-Identität mit privatem Schlüssel und ein
+konkretes notarytool-Profil nachgewiesen werden.
 Die vorhandene Apple-Development-Identität ersetzt dieses Zertifikat nicht.
-Es wurde keine produktive Installation oder automatische Recovery ausgeführt.
+Die Prüfung mit dem vollständigen Xcode 27.0 und dessen macOS-SDK 27.0
+bestätigt, dass `notarytool` und `stapler` verfügbar sind. In vier lokalen
+beziehungsweise System-Schlüsselbünden wurde kein Developer-ID-Application-
+Zertifikat und keine nutzbare entsprechende Identität gefunden. Eine mögliche
+cloudverwaltete Identität im Entwickleraccount wurde dadurch nicht geprüft;
+der CLI-Release-Build benötigt eine lokal nutzbare Identität.
+DMG-Installation, App-Start nach dem Auswerfen des Images und App-Upgrade
+gehören zur realen Release-Abnahme. Es wurde keine produktive Installation
+oder automatische Recovery ausgeführt.
 
 ## Optionales Laden lokaler Modelle
 

@@ -27,6 +27,10 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
   development and Developer ID/notarized release paths. A protected signing
   workflow retains reviewed release artifacts rather than publishing them
   automatically.
+- Package the companion as a versioned DMG with an Applications shortcut for
+  drag-to-install, alongside the existing archive. Both assets are bound by
+  the release manifest and checksums; release mode signs, notarizes, staples,
+  and verifies the app and disk image before retaining them for review.
 - Verify fixed-origin release assets, checksums, the embedded manifest, and
   each archive file before executing an update through the existing setup
   transaction. CLI updates retain the existing rollback and incomplete

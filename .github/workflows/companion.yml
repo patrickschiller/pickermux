@@ -59,13 +59,14 @@ jobs:
         run: node --test test/companion-build.test.mjs
       - name: Test Swift protocol, launcher and subprocess boundaries
         run: swift test --package-path macos --scratch-path "$RUNNER_TEMP/companion-swift-build" --cache-path "$RUNNER_TEMP/companion-swift-cache"
-      - name: Build unsigned development bundle
+      - name: Build unsigned development app and disk image
         run: node scripts/build-companion.mjs --output "$RUNNER_TEMP/pickermux-companion"
       - name: Verify checksums and universal architecture
         shell: bash
         run: |
           cd "$RUNNER_TEMP/pickermux-companion"
           shasum -a 256 --check SHA256SUMS
+          /usr/bin/hdiutil verify ./*.dmg
           architecture_list="$(/usr/bin/lipo PickerMux.app/Contents/MacOS/PickerMuxCompanion -archs)"
           case "$architecture_list" in
             "x86_64 arm64"|"arm64 x86_64") ;;
@@ -77,6 +78,7 @@ jobs:
           name: pickermux-companion-unsigned-development
           path: |
             ${{ runner.temp }}/pickermux-companion/*.tar.gz
+            ${{ runner.temp }}/pickermux-companion/*.dmg
             ${{ runner.temp }}/pickermux-companion/companion-manifest.json
             ${{ runner.temp }}/pickermux-companion/SHA256SUMS
           if-no-files-found: error
@@ -111,6 +113,7 @@ jobs:
           name: pickermux-companion-developer-id-notarized
           path: |
             ${{ runner.temp }}/pickermux-companion-release-${{ github.run_id }}/*.tar.gz
+            ${{ runner.temp }}/pickermux-companion-release-${{ github.run_id }}/*.dmg
             ${{ runner.temp }}/pickermux-companion-release-${{ github.run_id }}/companion-manifest.json
             ${{ runner.temp }}/pickermux-companion-release-${{ github.run_id }}/SHA256SUMS
           if-no-files-found: error
