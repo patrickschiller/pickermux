@@ -23,6 +23,8 @@ public enum CompanionAction: String, Codable, CaseIterable {
   case configurationPreview = "configuration-preview"
   case configurationApply = "configuration-apply"
   case integrationDeactivate = "integration-deactivate"
+  case uninstallPreview = "uninstall-preview"
+  case uninstall
 
   public var label: String {
     switch self {
@@ -36,13 +38,15 @@ public enum CompanionAction: String, Codable, CaseIterable {
     case .configurationPreview: return "Review PickerMux setup"
     case .configurationApply: return "Install and enable PickerMux…"
     case .integrationDeactivate: return "Turn off PickerMux in Codex…"
+    case .uninstallPreview: return "Review complete removal"
+    case .uninstall: return "Remove PickerMux completely…"
     }
   }
 
   public var timeout: TimeInterval {
     switch self {
     case .certify, .update, .configurationApply: return 3600
-    case .recover, .refresh, .integrationDeactivate: return 600
+    case .recover, .refresh, .integrationDeactivate, .uninstall: return 600
     default: return 45
     }
   }
@@ -81,6 +85,8 @@ public struct CompanionSnapshot: Decodable {
   public let issues: [CompanionIssue]
   public var usesBundledBackend = false
 
+  public var supportsNativeUninstall: Bool { capabilities.contains("native-uninstall-v1") }
+
   enum CodingKeys: String, CodingKey {
     case schemaVersion, capabilities, version, state, desktop, installation, managedConfig,
          service, compatibility, accountCache, recovery, integration, actions, issues
@@ -104,10 +110,12 @@ public struct CompanionSnapshot: Decodable {
           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
           Set(object.keys) == Set(["schemaVersion", "capabilities", "version", "state", "desktop", "installation", "managedConfig", "service", "compatibility", "accountCache", "recovery", "integration", "actions", "issues"]),
           let value = try? JSONDecoder().decode(CompanionSnapshot.self, from: data),
-          value.schemaVersion == 1, value.capabilities == ["integration-toggle-v1"],
+          value.schemaVersion == 1,
+          [["integration-toggle-v1"], ["integration-toggle-v1", "native-uninstall-v1"]].contains(value.capabilities),
           (isVersion(value.version) || value.version == "unknown"),
           safeToken(value.state), value.actions.count <= CompanionAction.allCases.count,
           Set(value.actions).count == value.actions.count, value.issues.count <= 32,
+          value.supportsNativeUninstall || !value.actions.contains(where: { [.uninstall, .uninstallPreview].contains($0) }),
           value.issues.allSatisfy({ safeCode($0.code) && $0.message.utf8.count <= 256 }),
           [value.desktop, value.installation, value.managedConfig, value.service,
            value.compatibility, value.accountCache, value.integration].allSatisfy({ safeToken($0.status) }),
@@ -135,12 +143,32 @@ public struct UpdateStatus: Decodable {
   public let restartRequired: Bool?
 }
 
+public struct UninstallPreview: Decodable {
+  public let action: String
+  public static let expectedChanges = ["restore-native-codex", "remove-integration", "remove-runtime", "remove-cli", "remove-certifications", "delete-backups", "delete-provider-credentials", "preserve-historical-chats", "preserve-user-settings"]
+  public let status: String
+  public let canApply: Bool
+  public let previewToken: String?
+  public let changes: [String]
+}
+
+public struct UninstallCompletion: Decodable {
+  public let action: String
+  public let status: String
+  public let removed: Bool
+  public let nativeRestored: Bool
+  public let historicalChatsPreserved: Bool
+  public let restartRequired: Bool
+}
+
 public struct CompanionResult: Decodable {
   public let schemaVersion: Int
   public let ok: Bool
   public let code: String
   public let preview: ConfigurationPreview?
   public let update: UpdateStatus?
+  public let uninstallPreview: UninstallPreview?
+  public let uninstallCompletion: UninstallCompletion?
   public let certificationIncomplete: Bool
   public let restartRequired: Bool
 
@@ -155,6 +183,9 @@ public struct CompanionResult: Decodable {
     code = try container.decode(String.self, forKey: .code)
     preview = try? container.decode(ConfigurationPreview.self, forKey: .data)
     update = try? container.decode(UpdateStatus.self, forKey: .data)
+    let candidate = try? container.decode(UninstallPreview.self, forKey: .data)
+    uninstallPreview = candidate?.status == "ready" ? candidate : nil
+    uninstallCompletion = try? container.decode(UninstallCompletion.self, forKey: .data)
     let flags = try? container.nestedContainer(keyedBy: ResultDataKeys.self, forKey: .data)
     certificationIncomplete = (try? flags?.decode(Bool.self, forKey: .certificationIncomplete)) ?? false
     restartRequired = (try? flags?.decode(Bool.self, forKey: .restartRequired)) ?? false
@@ -179,6 +210,20 @@ public struct CompanionResult: Decodable {
             isVersion(update.currentVersion), update.targetVersion.map(isVersion) ?? true
       else { throw CompanionFailure.incompatibleProtocol }
     }
+    if let removal = value.uninstallCompletion {
+      guard value.ok, removal.action == "uninstall", removal.status == "removed", removal.removed, removal.nativeRestored,
+            removal.historicalChatsPreserved, removal.restartRequired,
+            let fields = object["data"] as? [String: Any],
+            Set(fields.keys) == Set(["action", "status", "removed", "nativeRestored", "historicalChatsPreserved", "restartRequired"])
+      else { throw CompanionFailure.incompatibleProtocol }
+    }
+    if let removal = value.uninstallPreview {
+      guard value.ok, removal.action == "uninstall-preview", removal.canApply, removal.changes == UninstallPreview.expectedChanges,
+            removal.previewToken?.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil,
+            let fields = object["data"] as? [String: Any],
+            Set(fields.keys) == Set(["action", "status", "canApply", "previewToken", "changes"])
+      else { throw CompanionFailure.incompatibleProtocol }
+    }
     return value
   }
 }
@@ -198,6 +243,12 @@ public func actionRequest(_ action: CompanionAction, confirmed: Bool = false, pr
   if action == .integrationDeactivate {
     guard confirmed else { throw CompanionFailure.incompatibleProtocol }
     object["confirmation"] = ["deactivateIntegration": true]
+  }
+  if action == .uninstall {
+    guard confirmed, let previewToken, previewToken.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil
+    else { throw CompanionFailure.incompatibleProtocol }
+    object["previewToken"] = previewToken
+    object["confirmation"] = ["removePickerMux": true, "restoreNativeCodex": true, "deleteProviderCredentials": true, "deleteBackups": true]
   }
   return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
 }
@@ -272,6 +323,10 @@ public func companionActionFailureMessage(_ code: String) -> String {
     "NO_LOADED_MODELS": "No loaded model was found during setup. Load a model on the configured server, then retry setup.",
     "DEACTIVATION_FAILED": "PickerMux could not be turned off. Check status before retrying; review the installation in Help.",
     "DEACTIVATION_ROLLBACK_FAILED": "Turning PickerMux off could not finish or fully restore its prior state. Check status and review the pending repair in Help before changing it again.",
+    "UNINSTALL_CONFLICT": "The installation changed since the removal review. Keep Codex closed, check status and review a fresh removal preview. Modified or foreign files are retained.",
+    "UNINSTALL_PREFLIGHT_FAILED": "PickerMux could not verify all removal ownership. Keep the app installed and review the CLI installation before retrying.",
+    "PURGE_INCOMPLETE": "Complete removal could not finish. Some registered credentials or files may already be removed. Keep the app installed for an explicit retry; Codex data is preserved.",
+    "UNINSTALL_FAILED": "PickerMux removal could not finish. Keep the app installed, check status and retry only after reviewing the installation.",
   ]
   return messages[code] ?? "PickerMux could not complete this action. Check status and open Help to review the installation."
 }

@@ -29,6 +29,13 @@ export const COMPANION_ACTIONS = Object.freeze([
   "configuration-preview",
   "configuration-apply",
   "integration-deactivate",
+  "uninstall-preview",
+  "uninstall",
+]);
+export const COMPANION_UNINSTALL_CHANGES = Object.freeze([
+  "restore-native-codex", "remove-integration", "remove-runtime", "remove-cli",
+  "remove-certifications", "delete-backups", "delete-provider-credentials",
+  "preserve-historical-chats", "preserve-user-settings",
 ]);
 export const COMPANION_CONFIGURATION_CHANGES = Object.freeze([
   "replace-integration",
@@ -117,6 +124,10 @@ const ERROR_MESSAGES = Object.freeze({
   NO_LOADED_MODELS: "No usable external model is loaded. Load a model in the configured provider, then retry activation.",
   DEACTIVATION_FAILED: "Deactivation failed. The previous integration was retained or restored.",
   DEACTIVATION_ROLLBACK_FAILED: "Deactivation could not safely restore the previous integration. Keep Codex closed and inspect status before retrying.",
+  UNINSTALL_CONFLICT: "The reviewed removal changed or configuration ownership needs review. Check status and review removal again.",
+  UNINSTALL_PREFLIGHT_FAILED: "PickerMux removal ownership could not be verified. Keep Codex closed and review the installation.",
+  PURGE_INCOMPLETE: "Full removal did not complete. Some provider credentials may already be absent. Keep Codex closed and review recovery before retrying.",
+  UNINSTALL_FAILED: "PickerMux could not complete removal. Keep Codex closed and review the installation before retrying.",
   ACTION_FAILED: "The PickerMux action could not complete. Inspect companion status.",
 });
 
@@ -227,10 +238,16 @@ export function parseCompanionRequest(input) {
     if (!exactKeys(request.confirmation, ["deactivateIntegration"], ["deactivateIntegration"]) || request.confirmation.deactivateIntegration !== true) {
       throw requestError("CONFIRMATION_REQUIRED");
     }
+  } else if (request.action === "uninstall") {
+    const keys = ["removePickerMux", "restoreNativeCodex", "deleteProviderCredentials", "deleteBackups"];
+    if (!exactKeys(request.confirmation, keys, keys) || keys.some((key) => request.confirmation[key] !== true)) {
+      throw requestError("CONFIRMATION_REQUIRED");
+    }
+    if (typeof request.previewToken !== "string" || !PREVIEW_TOKEN_PATTERN.test(request.previewToken)) throw requestError();
   } else if (Object.hasOwn(request, "confirmation")) {
     throw requestError();
   }
-  if (request.action !== "configuration-apply" && Object.hasOwn(request, "previewToken")) throw requestError();
+  if (!["configuration-apply", "uninstall"].includes(request.action) && Object.hasOwn(request, "previewToken")) throw requestError();
   return {
     schemaVersion: COMPANION_SCHEMA_VERSION,
     action: request.action,
@@ -307,7 +324,7 @@ export async function collectCompanionStatus({ probes = {}, probeTimeoutMs = 5_0
   if (!isPlainRecord(probes) || !Number.isSafeInteger(probeTimeoutMs) || probeTimeoutMs < 1 || probeTimeoutMs > 30_000) throw requestError();
   const names = ["metadata", ...Object.keys(STATUS_ENUMS)];
   const observed = await Promise.allSettled(names.map((name) => boundedProbe(probes[name], probeTimeoutMs)));
-  const snapshot = { schemaVersion: COMPANION_SCHEMA_VERSION, capabilities: ["integration-toggle-v1"], version: "unknown", state: "degraded" };
+  const snapshot = { schemaVersion: COMPANION_SCHEMA_VERSION, capabilities: ["integration-toggle-v1", "native-uninstall-v1"], version: "unknown", state: "degraded" };
   const issues = [];
   function issue(code) { issues.push({ code, message: ISSUE_MESSAGES[code] }); }
   names.forEach((name, index) => {
@@ -378,6 +395,10 @@ export async function collectCompanionStatus({ probes = {}, probeTimeoutMs = 5_0
     ["installed", "not-installed"].includes(snapshot.installation.status) &&
     ["installed", "installed-marker-recovered", "not-installed", "deactivated"].includes(snapshot.managedConfig.status) &&
     ["pickermux", "ollama", "foreign", "none"].includes(snapshot.integration.status)) snapshot.actions.push("configuration-apply");
+  if (installed && snapshot.desktop.status === "stopped" && knownRecovery && !configurationConflict &&
+    ((healthyConfig && snapshot.integration.status === "pickermux") || deactivated)) {
+    snapshot.actions.push("uninstall-preview", "uninstall");
+  }
   snapshot.issues = issues;
   return snapshot;
 }
@@ -432,6 +453,7 @@ function companionErrorCode(error) {
   else if (error?.code === "PICKERMUX_INSTALLATION_LOCK_BUSY") code = "BUSY";
   else if (error?.code === "CODEX_ACCOUNT_CACHE_REFRESH_REQUIRED") code = "ACCOUNT_CACHE_REFRESH_REQUIRED";
   else if (error?.code === "CONFIGURATION_SUSPENDED") code = "RECOVERY_PENDING";
+  else if (/^PICKERMUX_(?:PURGE|CREDENTIAL_PURGE)_/u.test(error?.code ?? "")) code = "PURGE_INCOMPLETE";
   else if (["DESKTOP_COMPATIBILITY_UPDATE_REQUIRED", "CODEX_IDENTITY_CHANGED"].includes(error?.code)) code = "UPDATE_REQUIRED";
   else if (["CONFIG_CHANGED_CONCURRENTLY", "CONFIG_MODIFIED", "MANAGED_CONFIG_MODIFIED", "STATE_CONFIG_MISMATCH", "WEB_SEARCH_CONFIG_CONFLICT", "INTEGRATION_CONFLICT", "INTEGRATION_PREVIEW_CHANGED", "INTEGRATION_SWITCH_CONFLICT", "FOREIGN_INTEGRATION_CONFLICT", "CONFIG_SUSPENSION_CONFLICT", "CONFIG_SUSPENSION_CHANGED", "CONFIG_SUSPENSION_INVALID", "CONFIG_SUSPENSION_RECEIPT_REQUIRED", "CONFIG_SUSPENSION_ROLLBACK_FAILED", "CONFIGURATION_NOT_SUSPENDED", "CONFIGURATION_SUSPENSION_CONFLICT", "REACTIVATION_RECEIPT_REQUIRED", "STATE_PROVIDER_MISMATCH", "HISTORICAL_PROVIDER_CONFLICT", "HISTORICAL_MARKER_CONFLICT"].includes(error?.code)) code = "CONFIGURATION_CONFLICT";
   return code;
@@ -474,6 +496,22 @@ export function companionSuccess(action, result = {}) {
     if (action === "configuration-preview" && typeof result?.previewToken === "string" && PREVIEW_TOKEN_PATTERN.test(result.previewToken)) response.previewToken = result.previewToken;
   }
   if (action === "integration-deactivate" && result?.status === "deactivated") response.status = "deactivated";
+  if (action === "uninstall-preview") {
+    if (result?.status !== "ready" || result?.canApply !== true || !PREVIEW_TOKEN_PATTERN.test(result?.previewToken ?? "") ||
+      !Array.isArray(result.changes) || result.changes.length !== COMPANION_UNINSTALL_CHANGES.length ||
+      result.changes.some((change, index) => change !== COMPANION_UNINSTALL_CHANGES[index])) throw requestError("UNINSTALL_PREFLIGHT_FAILED");
+    response.status = "ready";
+    response.canApply = true;
+    response.previewToken = result.previewToken;
+    response.changes = [...COMPANION_UNINSTALL_CHANGES];
+  }
+  if (action === "uninstall") {
+    if (result?.status !== "removed" || ["removed", "nativeRestored", "historicalChatsPreserved", "restartRequired"].some((key) => result[key] !== true)) {
+      throw requestError("PURGE_INCOMPLETE");
+    }
+    response.status = "removed";
+    for (const key of ["removed", "nativeRestored", "historicalChatsPreserved", "restartRequired"]) response[key] = true;
+  }
   if (["update", "update-check"].includes(action) && ["current", "unavailable", "unsupported", "up-to-date", "available", "updated", "installed", "no-update", "update-available"].includes(result?.status)) response.status = result.status;
   return response;
 }

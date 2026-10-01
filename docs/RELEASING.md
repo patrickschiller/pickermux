@@ -83,9 +83,9 @@ release has been verified. Adapt every version to the approved tag:
 shasum -a 256 --check SHA256SUMS
 cp -n SHA256SUMS companion-SHA256SUMS
 cmp SHA256SUMS companion-SHA256SUMS
-gh release upload v0.9.4 --repo patrickschiller/pickermux \
-  PickerMux-v0.9.4-macos-universal.dmg \
-  PickerMux-v0.9.4-macos-universal.tar.gz \
+gh release upload v0.9.5 --repo patrickschiller/pickermux \
+  PickerMux-v0.9.5-macos-universal.dmg \
+  PickerMux-v0.9.5-macos-universal.tar.gz \
   companion-manifest.json companion-SHA256SUMS
 ```
 
@@ -284,6 +284,13 @@ At minimum, record:
   backups and Keychain items remain;
 - full purge, confirming that only verified backups and registered PickerMux
   Keychain items are removed and foreign state is refused;
+- companion full removal from active and toggle-off states, confirming native
+  defaults without reactivating a prior Ollama gateway, retained historical
+  chat readability, disabled login startup, exact app-preference/notification
+  cleanup, and no queued polling/refresh after success. Verify native sign-in,
+  account cache and chats are untouched; manually quit and delete the app in
+  Finder only after successful removal. Check cancellation and failure before
+  purge separately, without discarding retained recovery evidence;
 - runtime removal with a byte-identical installed payload, plus refusal of a
   modified payload, an added or symbolic-link entry, and a residual
   `runtime-app.previous-*` package without recursive deletion;

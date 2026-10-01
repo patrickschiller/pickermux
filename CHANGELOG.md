@@ -7,6 +7,31 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [0.9.5] - 2026-10-01
+
+### Added
+
+- Add **Remove PickerMux completely…** in companion Settings with a fresh
+  removal preview and explicit consent to remove the integration, runtime,
+  CLI, certifications, verified backups and registered provider credentials.
+- Add `uninstall --purge --restore-native` to restore native Codex defaults
+  without reactivating a former Ollama gateway. Default uninstall behavior
+  still restores the previous configuration.
+- Disable companion login startup before removal, clear only app-owned
+  preferences and notifications after success, and stop queued/background
+  actions. The final screen explains how to quit and remove the app in Finder.
+
+### Security
+
+- Validate the native configuration plan before irreversible provider
+  credential deletion, revalidate ownership at commit, and retain existing
+  inventory, lock, rollback and exact-cleanup guards. Native authentication,
+  account model cache, chats and unrelated settings are preserved; an inert
+  provider alias keeps historical chats readable.
+- Keep complete removal restricted to the receipt-owned installed backend;
+  older or unverified CLI versions cannot silently use the bundled setup
+  backend for removal.
+
 ## [0.9.4] - 2026-10-01
 
 ### Changed
@@ -696,7 +721,8 @@ confirm the release date before tagging. See the
   paths and file types, refuses root execution and foreign launchers, and
   restores the previous distribution state when activation fails.
 
-[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.9.4...HEAD
+[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.9.5...HEAD
+[0.9.5]: https://github.com/patrickschiller/pickermux/releases/tag/v0.9.5
 [0.9.4]: https://github.com/patrickschiller/pickermux/releases/tag/v0.9.4
 [0.9.3]: https://github.com/patrickschiller/pickermux/releases/tag/v0.9.3
 [0.9.2]: https://github.com/patrickschiller/pickermux/releases/tag/v0.9.2

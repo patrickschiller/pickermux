@@ -1,6 +1,6 @@
 # PickerMux Architecture
 
-This document describes PickerMux v0.9.4.
+This document describes PickerMux v0.9.5.
 It is intended for contributors, security reviewers, and users who want to
 understand what runs on their Mac.
 
@@ -685,6 +685,16 @@ paths, and invalid ownership state. Native Codex credentials and unrecognized
 files are always outside its scope; `~/.codex/auth.json` is never read,
 modified, or removed.
 
+The opt-in `uninstall --purge --restore-native` mode uses the same full-removal
+transaction but does not restore recorded prior picker overrides. This avoids
+reactivating an original Ollama gateway/catalog. Its native candidate removes
+only current receipt-owned integration blocks and omits the five recorded root
+assignments for model, provider, catalog, reasoning and gateway. Other current
+user bytes and historical chat parsing remain intact. A read-only plan binds
+the native candidate to configuration/state/verified backup before Keychain
+deletion, and the commit revalidates that binding. Unknown root/profile routing
+and concurrent changes fail closed. The default uninstall baseline is unchanged.
+
 All current CLI uninstall modes for the canonical `model_bridge` integration
 atomically retain its marker-bounded historical compatibility provider table.
 The temporary suspension during `refresh --full` is a separate lifecycle path
@@ -751,7 +761,7 @@ The private health endpoint remains available with fixed safe status/reason
 enums so the LaunchAgent does not enter a restart loop and diagnostics can
 direct the user to refresh.
 
-Versions 0.6.0 through 0.9.4 use bridge contract
+Versions 0.6.0 through 0.9.5 use bridge contract
 `codex-responses-bridge/p6-v1`.
 The managed publisher emits the search claim only from valid model-bound
 evidence, and the runtime accepts it only on entries generated under that exact
@@ -796,6 +806,18 @@ suspension contains native root configuration plus the exact inert historical
 provider alias. Reactivation rejects edited suspension bytes and preserves the
 original eventual-uninstall baseline. This suspension does not authorize the
 full-refresh helper or replace its checkpoint.
+
+A separate Settings removal action uses finite `uninstall-preview` and
+`uninstall` protocol actions. The preview token binds the native restoration
+intent; removal requires four exact consent fields and the receipt-owned
+installed backend. Status can offer removal for both active and correctly
+deactivated installations without requiring current provider availability or a
+healthy account cache. The GUI unregisters login startup before purge and
+verifies a specific completed-removal result before clearing app-owned defaults
+and notifications. Activity generations prevent queued polls or auto-refresh
+from invoking the backend after removal. Local cleanup retries never rerun a
+successful purge. The final screen keeps Quit available and directs app-bundle
+removal through Finder.
 
 `companion status` collects independent read-only probes and projects only
 bounded status enums, booleans, safe issues, a version, allowed next actions,

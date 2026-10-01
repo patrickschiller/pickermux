@@ -198,10 +198,15 @@ public struct PickerMuxClient {
     guard selected.snapshot.actions.contains(action),
           !selected.bundled || [.configurationPreview, .configurationApply, .updateCheck, .diagnose].contains(action)
     else { throw CompanionFailure.incompatibleProtocol }
+    if [.uninstallPreview, .uninstall].contains(action) {
+      guard !selected.bundled, selected.snapshot.supportsNativeUninstall else { throw CompanionFailure.incompatibleProtocol }
+    }
     let input = try actionRequest(action, confirmed: confirmed, previewToken: previewToken)
     let result = try await execute(selected.invocation, arguments: ["companion", "run"], input: input, timeout: action.timeout, runtime: selected.runtime)
     let envelope = try CompanionResult.decode(result.stdout)
     guard result.exitCode == 0 || !envelope.ok else { throw CompanionFailure.processFailed }
+    if envelope.ok && action == .uninstallPreview && envelope.uninstallPreview == nil { throw CompanionFailure.incompatibleProtocol }
+    if envelope.ok && action == .uninstall && envelope.uninstallCompletion == nil { throw CompanionFailure.incompatibleProtocol }
     return envelope
   }
 

@@ -5,6 +5,8 @@ import test from "node:test";
 import { executeCompanionAction } from "../src/companion-actions.mjs";
 import { runCompanionCli } from "../src/companion-cli.mjs";
 import { COMPANION_ACTIONS } from "../src/companion-control.mjs";
+import { runPickerMuxCompanion } from "../src/cli.mjs";
+import { ConfigManagerError } from "../src/config-manager.mjs";
 
 const request = (action, additional = {}) => ({ schemaVersion: 1, action, ...additional });
 const consent = { quitCodexTwice: true, interruptTasks: true, invalidateCompaction: true };
@@ -35,6 +37,91 @@ test("companion actions revalidate authority under the shared installation lock"
     const { calls, options } = fixture();
     await executeCompanionAction(request(action), options);
     assert.deepEqual(calls, ["lock", "status", "distribution", action]);
+  }
+});
+
+const uninstallConsent = { removePickerMux: true, restoreNativeCodex: true, deleteProviderCredentials: true, deleteBackups: true };
+
+test("uninstall actions require stopped Desktop and the receipt-active source without nested locks", async () => {
+  for (const action of ["uninstall-preview", "uninstall"]) {
+    const additional = action === "uninstall" ? { confirmation: uninstallConsent, previewToken: "a".repeat(64) } : {};
+    const valid = fixture();
+    await executeCompanionAction(request(action, additional), valid.options);
+    assert.deepEqual(valid.calls, ["status", "distribution", action]);
+    for (const override of [
+      { snapshot: { desktop: { status: "running" } } },
+      { options: { validateDistributionImpl: async () => ({ installed: false }) } },
+      { options: { validateDistributionImpl: async () => ({ installed: true, activeDirectory: "/different/source" }) } },
+    ]) {
+      const blocked = fixture(override);
+      await assert.rejects(executeCompanionAction(request(action, additional), blocked.options));
+      assert.equal(blocked.calls.includes(action), false);
+    }
+  }
+});
+
+test("companion uninstall reports success only after completed purge and native history proofs", async () => {
+  const snapshot = fixture().snapshot;
+  const result = {
+    beforeResult: { installDirectoryRemoved: true, integration: { removedConfig: { nativeRestored: true, historicalCompatibility: true } } },
+    removed: { versionsDirectoryRemoved: true, applicationDirectoryRemoved: true },
+  };
+  for (const invalid of [false, "cleanup", "native", "history"]) {
+    let output = "";
+    let purges = 0;
+    const projected = await runPickerMuxCompanion(["run"], {
+      paths: { installDirectory: "/private/tmp/fixture/model-bridge" }, distributionPaths: { applicationDirectory: "/private/tmp/fixture/distribution", versionsDirectory: "/private/tmp/fixture/distribution/versions" },
+      sourceRoot: "/verified/versions/0.9.0", statusImpl: async () => snapshot,
+      validateDistributionImpl: async () => ({ installed: true, activeDirectory: "/verified/versions/0.9.0" }),
+      desktopRunningImpl: async () => false, assertNoPendingFullRefreshImpl: async () => null,
+      input: Readable.from([JSON.stringify(request("uninstall", { confirmation: uninstallConsent, previewToken: "a".repeat(64) }))]),
+      output: { write: (value) => { output += value; } }, progressOutput: { write: () => {} },
+      withLockImpl: async () => assert.fail("purge owns its complete lifecycle lock"),
+      purgeUninstallImpl: async (options) => {
+        purges += 1;
+        assert.equal(options.restoreNative, true);
+        assert.equal(options.expectedPreviewToken, "a".repeat(64));
+        assert.equal(options.sourceRoot, "/verified/versions/0.9.0");
+        if (invalid === "cleanup") return { ...result, removed: { ...result.removed, cleanupPendingPath: secret } };
+        if (invalid === "native" || invalid === "history") return { ...result, beforeResult: { ...result.beforeResult, integration: { removedConfig: { nativeRestored: invalid !== "native", historicalCompatibility: invalid !== "history" } } } };
+        return result;
+      },
+    });
+    assert.equal(purges, 1);
+    assert.deepEqual(JSON.parse(output), projected);
+    assert.equal(output.includes(secret), false);
+    assert.equal(projected.ok, invalid === false);
+    if (invalid) assert.equal(projected.code, "PURGE_INCOMPLETE");
+    else assert.deepEqual(projected.data, { action: "uninstall", restartRequired: true, status: "removed", removed: true, nativeRestored: true, historicalChatsPreserved: true });
+  }
+});
+
+test("native uninstall maps bounded causes without exposing errors or flattening rollback aggregates", async () => {
+  const conflict = Object.assign(new Error(secret), { name: "ConfigManagerError", code: "UNINSTALL_CONFLICT" });
+  for (const [error, code] of [
+    [new Error(secret, { cause: conflict }), "UNINSTALL_CONFLICT"],
+    [new Error(secret, { cause: Object.assign(new Error(secret), { code: "PICKERMUX_CREDENTIAL_PURGE_INCOMPLETE" }) }), "PURGE_INCOMPLETE"],
+    [Object.assign(new Error(secret, { cause: conflict }), { code: "PICKERMUX_PURGE_COMMIT_INCOMPLETE" }), "PURGE_INCOMPLETE"],
+    [Object.assign(new Error(secret), { code: "CODEX_RUNNING" }), "CODEX_RUNNING"],
+    [Object.assign(new Error(secret), { code: "RECOVERY_PENDING" }), "RECOVERY_PENDING"],
+    [new Error(secret, { cause: new AggregateError([conflict, new Error(secret)], secret) }), "UNINSTALL_FAILED"],
+    [Object.assign(new Error(secret, { cause: conflict }), { code: "PRIVATE_ROLLBACK_FAILED" }), "UNINSTALL_FAILED"],
+    [new ConfigManagerError("CONFIG_SUSPENSION_ROLLBACK_FAILED", secret, { cause: conflict }), "UNINSTALL_FAILED"],
+    [Object.assign(new AggregateError([conflict, new Error(secret)], secret), { code: "CODEX_RUNNING" }), "UNINSTALL_FAILED"],
+    [Object.assign(new AggregateError([conflict, new Error(secret)], secret), { code: "PICKERMUX_CREDENTIAL_PURGE_INCOMPLETE" }), "PURGE_INCOMPLETE"],
+  ]) {
+    let output = "";
+    const result = await runPickerMuxCompanion(["run"], {
+      sourceRoot: "/verified/versions/0.9.0", statusImpl: async () => fixture().snapshot,
+      validateDistributionImpl: async () => ({ installed: true, activeDirectory: "/verified/versions/0.9.0" }),
+      desktopRunningImpl: async () => false, assertNoPendingFullRefreshImpl: async () => null,
+      input: Readable.from([JSON.stringify(request("uninstall", { confirmation: uninstallConsent, previewToken: "a".repeat(64) }))]),
+      output: { write: (value) => { output += value; } }, progressOutput: { write: () => {} },
+      purgeUninstallImpl: async () => { throw error; },
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.code, code);
+    assert.equal(output.includes(secret), false);
   }
 });
 

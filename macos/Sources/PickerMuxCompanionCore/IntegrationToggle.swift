@@ -49,7 +49,7 @@ public struct IntegrationToggleState {
         guidance = canReviewSetup ? "Complete setup for this app to update the installed bridge before changing the switch." :
           "Complete Codex setup and fully quit it before updating the installed bridge for this app."
       } else {
-        guidance = canChange ? "Turn off to use the native Codex picker. The app and PickerMux settings stay installed." :
+        guidance = canChange ? "Turn off, then reopen Codex to load its native picker without PickerMux models. The app and PickerMux settings stay installed." :
           "Fully quit Codex and check status before turning PickerMux off."
       }
     } else if snapshot.desktop.status == "unknown" {

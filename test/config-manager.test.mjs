@@ -24,12 +24,14 @@ import {
   getConfigStatus,
   installConfig,
   inventoryManagedConfigOwnership,
+  inventoryNativeConfigRestoration,
   inventoryConfigIntegrationSwitch,
   inventoryManagedConfigReactivation,
   migrateManagedConfiguration,
   previewConfigIntegration,
   repairHistoricalChatsConfig,
   revalidateManagedConfigOwnership,
+  revalidateNativeConfigRestoration,
   restoreManagedPickerDefaults,
   restoreRecoveredProviderEndMarker,
   setManagedPickerSelection,
@@ -3042,6 +3044,128 @@ test("deactivation preserves edits outside owned blocks during reactivation and 
     if (reactivate) await installConfig({ ...options, reactivationReceipt: await inventoryDeactivatedConfigReactivation(fixture.paths()) });
     await uninstallConfig(fixture.paths());
     assert.equal(await readFile(fixture.configPath, "utf8"), `${original}user_added = true\n`);
+  }
+});
+
+test("native uninstall resets recorded picker fields for active and OFF baselines without restoring Ollama", async (t) => {
+  const baselines = [undefined, 'model = "gpt-5.6-sol"\nmodel_reasoning_effort = "ultra"\n', [
+    'model = "previous-external-model"', 'model_provider = "openai"',
+    'model_catalog_json = "/private/fixture/ollama-launch-models.json"',
+    'openai_base_url = "http://127.0.0.1:11434/api/codex/v1"', 'model_reasoning_effort = "low"', "",
+  ].join("\n")];
+  for (const [index, baseline] of baselines.entries()) {
+    for (const off of [false, true]) {
+      await t.test(`baseline ${index}, ${off ? "OFF" : "active"}`, async (subtest) => {
+        const fixture = await makeFixture(subtest);
+        const preserved = 'user_setting = true\nprompt = """\nmodel_catalog_json = "string-only"\n"""\n[features]\nother = true\n';
+        if (baseline !== undefined) await writeFile(fixture.configPath, baseline + preserved);
+        const options = fixture.options();
+        options.modelProvider = options.provider.id = "model_bridge";
+        const preview = await previewConfigIntegration(fixture.paths());
+        if (["ollama", "foreign"].includes(preview.status)) options.integrationSwitchReceipt = await inventoryConfigIntegrationSwitch({ ...fixture.paths(), expectedPreviewToken: preview.previewToken });
+        await installConfig(options);
+        await writeFile(fixture.configPath, `${await readFile(fixture.configPath, "utf8")}# contributor edit\n`);
+        if (off) await deactivateManagedConfiguration(fixture.paths());
+        const beforeConfig = await snapshotFile(fixture.configPath);
+        const beforeState = await snapshotFile(fixture.statePath);
+        const receipt = await inventoryNativeConfigRestoration(fixture.paths());
+        assert.match(receipt.previewToken, /^[a-f0-9]{64}$/u);
+        assert.deepEqual(await snapshotFile(fixture.configPath), beforeConfig);
+        assert.deepEqual(await snapshotFile(fixture.statePath), beforeState);
+        await revalidateNativeConfigRestoration(receipt);
+        const result = await uninstallConfig({ ...fixture.paths(), restoreNative: true, nativeRestorationReceipt: receipt });
+        assert.equal(result.nativeRestored, true);
+        assert.equal(result.historicalCompatibility, true);
+        const restored = await readFile(fixture.configPath, "utf8");
+        assert.match(restored, /# contributor edit/u);
+        if (baseline !== undefined) assert.ok(restored.includes(preserved));
+        const outsidePrompt = restored.replace(/prompt = """[\s\S]*?"""\n/u, "");
+        assert.doesNotMatch(outsidePrompt, /^\s*(?:model|model_provider|model_catalog_json|model_reasoning_effort|openai_base_url)\s*=/mu);
+        assert.match(restored, /base_url = "http:\/\/127\.0\.0\.1:0\/v1"/u);
+        await assert.rejects(readFile(fixture.statePath), { code: "ENOENT" });
+      });
+    }
+  }
+});
+
+test("native uninstall preserves table scope, quoted data and CRLF user bytes", async (t) => {
+  const fixture = await makeFixture(t);
+  const user = ['# operator comment', '[model_providers.foreign]', 'name = "Operator"', 'model_catalog_json = "table-only"', ""].join("\r\n");
+  await writeFile(fixture.configPath, `"model" = "gpt-5.6-sol"\r\n${user}`);
+  const options = fixture.options();
+  options.modelProvider = options.provider.id = "model_bridge";
+  await installConfig(options);
+  await uninstallConfig({ ...fixture.paths(), restoreNative: true });
+  const restored = await readFile(fixture.configPath, "utf8");
+  assert.ok(restored.includes(user));
+  assert.doesNotMatch(restored, /(?<!\r)\n/u);
+});
+
+test("native uninstall refuses unowned profile and picker roots before changing configuration", async (t) => {
+  for (const assignment of [
+    'profile = "foreign"', '"profile" = "foreign"', 'model_catalog_json = "/foreign.json"',
+    '"model_catalog_json" = "/foreign.json"', 'model_catalog_json.extra = "foreign"',
+    'openai_base_url = "http://127.0.0.1:4567/v1"', 'model_provider = "foreign"',
+    'model = "unowned-native-choice"', 'model_reasoning_effort = "high"',
+  ]) {
+    const fixture = await makeFixture(t);
+    const options = fixture.options();
+    options.modelProvider = options.provider.id = "model_bridge";
+    await installConfig(options);
+    const edited = (await readFile(fixture.configPath, "utf8")).replace(CONFIG_MARKERS.rootBegin, `${assignment}\n${CONFIG_MARKERS.rootBegin}`);
+    await writeFile(fixture.configPath, edited);
+    await assert.rejects(inventoryNativeConfigRestoration(fixture.paths()));
+    await assert.rejects(uninstallConfig({ ...fixture.paths(), restoreNative: true }));
+    assert.equal(await readFile(fixture.configPath, "utf8"), edited);
+  }
+});
+
+test("native restoration rejects stale config, state and backup proofs without overwriting edits", async (t) => {
+  for (const changed of ["config", "state", "backup"]) {
+    const fixture = await makeFixture(t);
+    const options = fixture.options();
+    options.modelProvider = options.provider.id = "model_bridge";
+    await installConfig(options);
+    const receipt = await inventoryNativeConfigRestoration(fixture.paths());
+    const state = JSON.parse(await readFile(fixture.statePath));
+    const target = changed === "config" ? fixture.configPath : changed === "state" ? fixture.statePath : state.backupPath;
+    await writeFile(target, `${await readFile(target, "utf8")}\n`);
+    const before = await readFile(fixture.configPath);
+    await assert.rejects(uninstallConfig({ ...fixture.paths(), restoreNative: true, nativeRestorationReceipt: receipt }));
+    assert.deepEqual(await readFile(fixture.configPath), before);
+  }
+});
+
+test("native restoration rejects forged receipts, wrong intent, recovery suspension and force", async (t) => {
+  const fixture = await makeFixture(t);
+  const options = fixture.options();
+  options.modelProvider = options.provider.id = "model_bridge";
+  await installConfig(options);
+  const before = await readFile(fixture.configPath);
+  await assert.rejects(uninstallConfig({ ...fixture.paths(), restoreNative: true, nativeRestorationReceipt: { previewToken: "a".repeat(64) } }), { code: "UNINSTALL_CONFLICT" });
+  await assert.rejects(inventoryNativeConfigRestoration({ ...fixture.paths(), expectedPreviewToken: "0".repeat(64) }), { code: "UNINSTALL_CONFLICT" });
+  await assert.rejects(uninstallConfig({ ...fixture.paths(), restoreNative: true, force: true }), { code: "UNINSTALL_CONFLICT" });
+  assert.deepEqual(await readFile(fixture.configPath), before);
+  await suspendManagedConfiguration(fixture.paths());
+  await assert.rejects(inventoryNativeConfigRestoration(fixture.paths()), { code: "UNINSTALL_CONFLICT" });
+});
+
+test("native restoration rolls back exact active and OFF bytes when state removal fails", async (t) => {
+  for (const off of [false, true]) {
+    const fixture = await makeFixture(t);
+    const options = fixture.options();
+    options.modelProvider = options.provider.id = "model_bridge";
+    await installConfig(options);
+    if (off) await deactivateManagedConfiguration(fixture.paths());
+    const before = await readFile(fixture.configPath);
+    const stateDirectory = join(fixture.directory, "state");
+    await assert.rejects((async () => {
+      try {
+        await uninstallConfig({ ...fixture.paths(), restoreNative: true, beforeConfigCommit: () => chmod(stateDirectory, 0o500) });
+      } finally { await chmod(stateDirectory, 0o700); }
+    })(), { code: "STATE_REMOVE_FAILED" });
+    assert.deepEqual(await readFile(fixture.configPath), before);
+    await uninstallConfig({ ...fixture.paths(), restoreNative: true });
   }
 });
 

@@ -9,6 +9,7 @@ import {
   BUILTIN_PROVIDER_QUALIFICATION,
   COMPANION_ACTIONS,
   COMPANION_MAX_REQUEST_BYTES,
+  COMPANION_UNINSTALL_CHANGES,
   CompanionControlError,
   collectCompanionStatus,
   companionFailure,
@@ -42,10 +43,64 @@ function probes(overrides = {}) {
 test("companion request grammar accepts only named actions with their exact consent", () => {
   for (const action of COMPANION_ACTIONS) {
     const additional = action === "recover" ? { confirmation: consent } : action === "configuration-apply"
-      ? { confirmation: { replaceIntegration: true }, previewToken: "f".repeat(64) } : action === "integration-deactivate" ? { confirmation: { deactivateIntegration: true } } : {};
+      ? { confirmation: { replaceIntegration: true }, previewToken: "f".repeat(64) } : action === "integration-deactivate" ? { confirmation: { deactivateIntegration: true } } : action === "uninstall"
+        ? { confirmation: { removePickerMux: true, restoreNativeCodex: true, deleteProviderCredentials: true, deleteBackups: true }, previewToken: "f".repeat(64) } : {};
     assert.deepEqual(parseCompanionRequest(request(action, additional)), { schemaVersion: 1, action, ...additional });
   }
   assert.deepEqual(parseCompanionRequest(Buffer.from(request("refresh"))), { schemaVersion: 1, action: "refresh" });
+});
+
+test("native uninstall requires every exact consent field and a lowercase preview token", () => {
+  const confirmation = { removePickerMux: true, restoreNativeCodex: true, deleteProviderCredentials: true, deleteBackups: true };
+  for (const key of Object.keys(confirmation)) {
+    for (const value of [false, "true", undefined]) assert.throws(() => parseCompanionRequest(request("uninstall", {
+      confirmation: { ...confirmation, [key]: value }, previewToken: "a".repeat(64),
+    })), { code: "CONFIRMATION_REQUIRED" });
+  }
+  for (const previewToken of [undefined, "A".repeat(64), "a".repeat(63), "/private/config"]) {
+    assert.throws(() => parseCompanionRequest(request("uninstall", { confirmation, previewToken })), { code: "INVALID_REQUEST" });
+  }
+  assert.throws(() => parseCompanionRequest(request("uninstall", { confirmation: { ...confirmation, force: true }, previewToken: "a".repeat(64) })), { code: "CONFIRMATION_REQUIRED" });
+  assert.throws(() => parseCompanionRequest(request("uninstall-preview", { previewToken: "a".repeat(64) })), { code: "INVALID_REQUEST" });
+  assert.throws(() => parseCompanionRequest('{"schemaVersion":1,"action":"uninstall","previewToken":"' + "a".repeat(64) + '","confirmation":{"removePickerMux":true,"restoreNativeCodex":true,"deleteProviderCredentials":true,"deleteBackups":true,"deleteBackups":false}}'), { code: "INVALID_REQUEST" });
+});
+
+test("native removal status allows valid active/OFF installations despite stale caches and compatibility", async () => {
+  for (const off of [false, true]) {
+    const result = await collectCompanionStatus({ probes: probes({
+      ...(off ? { managedConfig: async () => ({ status: "deactivated" }), integration: async () => ({ status: "none" }) } : {}),
+      accountCache: async () => ({ status: "refresh-required" }), compatibility: async () => ({ status: "update-required" }),
+    }) });
+    assert.ok(result.actions.includes("uninstall-preview"));
+    assert.ok(result.actions.includes("uninstall"));
+  }
+  for (const override of [
+    { desktop: async () => true }, { desktop: async () => ({ status: "unknown" }) },
+    { installation: async () => ({ installed: false }) }, { managedConfig: async () => ({ status: "modified" }) },
+    { managedConfig: async () => ({ status: "suspension-conflict" }) }, { recovery: async () => ({ phase: "prepared", operationId: OPERATION_ID }) },
+    { recovery: async () => ({ status: "unknown" }) }, { integration: async () => ({ status: "foreign" }) },
+  ]) {
+    const result = await collectCompanionStatus({ probes: probes(override) });
+    assert.equal(result.actions.includes("uninstall"), false);
+    assert.equal(result.actions.includes("uninstall-preview"), false);
+  }
+});
+
+test("native removal projections require complete proof and redact private inventories", () => {
+  const preview = companionSuccess("uninstall-preview", { status: "ready", canApply: true, previewToken: "a".repeat(64), changes: [...COMPANION_UNINSTALL_CHANGES], paths: SECRET, model: SECRET });
+  assert.deepEqual(preview, { schemaVersion: 1, ok: true, code: "COMPLETE", action: "uninstall-preview", status: "ready", canApply: true, previewToken: "a".repeat(64), changes: [...COMPANION_UNINSTALL_CHANGES] });
+  const data = { status: "removed", removed: true, nativeRestored: true, historicalChatsPreserved: true, restartRequired: true };
+  assert.deepEqual(companionSuccess("uninstall", { ...data, private: SECRET }), { schemaVersion: 1, ok: true, code: "COMPLETE", action: "uninstall", restartRequired: true, status: "removed", removed: true, nativeRestored: true, historicalChatsPreserved: true });
+  for (const key of ["removed", "nativeRestored", "historicalChatsPreserved", "restartRequired"]) {
+    assert.throws(() => companionSuccess("uninstall", { ...data, [key]: false }), { code: "PURGE_INCOMPLETE" });
+  }
+  assert.throws(() => companionSuccess("uninstall-preview", { ...preview, changes: [SECRET] }), { code: "UNINSTALL_PREFLIGHT_FAILED" });
+  for (const code of ["UNINSTALL_CONFLICT", "UNINSTALL_PREFLIGHT_FAILED", "PURGE_INCOMPLETE", "UNINSTALL_FAILED", "PICKERMUX_CREDENTIAL_PURGE_INCOMPLETE"]) {
+    const failure = companionFailure(Object.assign(new Error(SECRET), { code }));
+    assert.equal(failure.ok, false);
+    assert.equal(failure.code, code.startsWith("PICKERMUX_") ? "PURGE_INCOMPLETE" : code);
+    assert.equal(JSON.stringify(failure).includes(SECRET), false);
+  }
 });
 
 test("companion rejects unknown versions, extra authority and duplicate JSON keys", () => {
@@ -340,7 +395,7 @@ test("toggle capability is server-owned and OFF remains possible without provide
     accountCache: async () => ({ status: "refresh-required" }),
     service: async () => ({ status: "stopped" }),
   }) });
-  assert.deepEqual(result.capabilities, ["integration-toggle-v1"]);
+  assert.deepEqual(result.capabilities, ["integration-toggle-v1", "native-uninstall-v1"]);
   assert.ok(result.actions.includes("integration-deactivate"));
   assert.equal(JSON.stringify(result).includes(SECRET), false);
   for (const override of [

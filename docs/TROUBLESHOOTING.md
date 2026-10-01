@@ -918,6 +918,27 @@ and open an issue describing the compatibility problem instead.
 
 ## Complete CLI removal is refused
 
+For full removal with native Codex defaults, use **Remove PickerMux completely…**
+in companion Settings, or `pickermux uninstall --purge --restore-native` after
+fully quitting Codex. Unlike default uninstall, this explicit mode does not
+reactivate a gateway/catalog that preceded PickerMux. A fresh removal preview
+and ownership checks remain required; foreign configuration is never deleted
+to make restoration appear successful.
+
+If the companion asks for a matching CLI, removal is unavailable through an
+older or unverified backend. Update explicitly or use that CLI's documented
+manual uninstall. The bundled setup backend cannot purge another installed
+source. A login-startup failure stops removal before purge. If backend removal
+has succeeded but app cleanup needs retrying, use the cleanup-only retry; it
+does not rerun purge or reinstall PickerMux. The final screen directs you to
+quit and remove PickerMux.app in Finder.
+
+The toggle remains reversible deactivation. After successfully switching off,
+fully quit and reopen Codex to load the native catalog. The catalog retained on
+disk is inactive, and the historical provider alias adds no model entries.
+If external models remain after a full restart, inspect ownership/status rather
+than deleting Codex's account cache or configuration broadly.
+
 `pickermux uninstall --remove-cli` removes distribution files only when their
 paths and launcher match the private installation receipt. If that ownership
 check fails, integration uninstall can still restore Codex safely, but the

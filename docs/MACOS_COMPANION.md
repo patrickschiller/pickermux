@@ -1,6 +1,6 @@
 # macOS companion
 
-PickerMux 0.9.4 includes an optional SwiftUI menu-bar app for inspecting and
+PickerMux 0.9.5 includes an optional SwiftUI menu-bar app for inspecting and
 operating the existing PickerMux installation. It requires macOS 13 or newer,
 Apple silicon or Intel, and Node.js 22.15.0 or newer. The supported Node
 locations are `/opt/homebrew/bin/node`, `/usr/local/bin/node`, and
@@ -15,7 +15,7 @@ with OpenAI, Codex, or LM Studio.
 
 ## Install from a disk image
 
-The companion build produces `PickerMux-v0.9.4-macos-universal.dmg` alongside
+The companion build produces `PickerMux-v0.9.5-macos-universal.dmg` alongside
 the app archive. The planned release includes a Developer ID signed and
 notarized image for macOS 13+ on Apple silicon and Intel. Development images
 are labelled `unsigned-development` and remain local test artifacts.
@@ -95,6 +95,11 @@ PickerMux is off. Deactivation is separate from account-cache recovery and
 does not create a full-refresh checkpoint. Pending recovery, edited ownership
 state or concurrent configuration changes block the operation.
 
+Reopen Codex after successful deactivation to load its native picker. The
+generated mixed catalog retained on disk is inactive while the toggle is off;
+the inert provider alias adds no picker models. A historical chat may still
+show its former model selection until you choose a native model.
+
 Setup and status details are expandable so that the toggle remains prominent.
 The app has a dedicated Finder/Dock icon compiled from the versioned
 [master artwork](../macos/Resources/AppIcon.md).
@@ -113,6 +118,7 @@ The menu offers actions according to the current validated state:
 | Check installation | Run the deterministic doctor without live inference. |
 | Check for PickerMux updates (Settings) | Inspect the fixed public release endpoint without modifying the installation. |
 | Update PickerMux… (Settings) | Verify the release payload and explicitly activate it through the existing setup transaction. |
+| Remove PickerMux completely… (Settings) | Preview and confirm native Codex restoration plus complete owned removal, then stop background actions and explain app deletion in Finder. |
 
 The app controls models from the installed provider configuration, including
 local or remote compatible Responses providers. New GUI installations use
@@ -139,6 +145,46 @@ Update checks, their results, and app/backend versions also live in Settings.
 Opening or reopening Settings does not automatically download or activate an
 update. Recovery, live certification and software updates still require their
 explicit asynchronous confirmation before starting.
+
+## Remove PickerMux completely
+
+Fully quit Codex with **Command-Q**, then choose **Settings → Remove PickerMux
+completely…**. The app obtains a fresh removal preview and asks for explicit
+consent before deleting the integration, runtime, CLI, certifications, verified
+backups and registered PickerMux provider credentials. It restores native Codex
+defaults instead of bringing back a former Ollama gateway/catalog. The action
+works with a verified active or toggle-deactivated installation. Provider
+availability and a current account cache are not required for removal.
+
+Login startup is unregistered before purge; if that fails, removal does not
+start. A purge failure retains the app for recovery and leaves login startup
+disabled. After verified success, the app clears only its own refresh and
+notification preferences and its named notification, and stops polling and
+queued automatic actions. A local-cleanup retry never reruns a successful
+backend purge. Quit the app, move **PickerMux.app** from Applications to the
+Trash in Finder, and reopen Codex. The app does not delete its own bundle.
+
+Native sign-in, the account model cache, projects, chats and unrelated settings
+are preserved. One inert `model_bridge` provider table remains so older chats
+can open; it contains no catalog models or usable provider route. Select a
+native model before continuing an older PickerMux chat.
+
+Removal requires the receipt-owned installed CLI with the new native-uninstall
+capability. An older or unverified backend cannot use the bundled setup payload
+to purge an installed distribution. Update the matching app/CLI explicitly or
+follow the supported manual uninstall instructions; the app does not run setup
+or certification automatically merely to enable removal.
+
+The equivalent CLI command is:
+
+```bash
+pickermux uninstall --purge --restore-native
+```
+
+Without `--restore-native`, the existing uninstall modes continue restoring the
+original configuration, which may include a previous Ollama integration.
+Native restoration rejects foreign, edited or ambiguous routing state and
+cannot be combined with `--force`.
 
 ## Switching from Ollama or cleaning configuration
 
@@ -224,7 +270,8 @@ pickermux companion status
 ```
 
 Its direct JSON snapshot has `schemaVersion: 1`, the fixed
-`capabilities: ["integration-toggle-v1"]` marker, the PickerMux version, fixed
+`capabilities: ["integration-toggle-v1", "native-uninstall-v1"]` markers,
+the PickerMux version, fixed
 component status enums, a state, allowed actions, and fixed safe issues. Recovery
 contains only a known phase and an operation UUID. No path, capability URL,
 model/account identifier, prompt, credential, or raw exception is returned.
@@ -238,8 +285,8 @@ printf '%s\n' '{"schemaVersion":1,"action":"configuration-preview"}' | pickermux
 ```
 
 The finite actions are `refresh`, `open`, `recover`, `certify`, `diagnose`,
-`update-check`, `update`, `configuration-preview`, `configuration-apply`, and
-`integration-deactivate`.
+`update-check`, `update`, `configuration-preview`, `configuration-apply`,
+`integration-deactivate`, `uninstall-preview`, and `uninstall`.
 Recovery requires `confirmation` containing exactly `quitCodexTwice: true`,
 `interruptTasks: true`, and `invalidateCompaction: true`. Configuration apply
 requires the exact prior `previewToken` and
@@ -251,8 +298,17 @@ integration with Codex stopped. It is available only through the receipt-owned
 installed CLI. The app detects older backends even when both versions are
 labelled 0.9.0; the missing capability marker selects its pinned setup backend
 before any mutation. Confirm setup to upgrade that CLI before deactivating.
-The current 0.9.4 payload installs into its own version directory; the older
+The current 0.9.5 payload installs into its own version directory; the older
 0.9.0 contents are never overwritten to add this feature.
+
+`uninstall-preview` returns only fixed removal changes and a digest token.
+`uninstall` requires that exact `previewToken` and a confirmation containing
+exactly `removePickerMux: true`, `restoreNativeCodex: true`,
+`deleteProviderCredentials: true`, and `deleteBackups: true`. A successful
+removal result must explicitly report `status: "removed"`, `removed: true`,
+`nativeRestored: true`, and `historicalChatsPreserved: true` before the GUI
+claims completion. An old toggle-only capability remains readable but cannot
+authorize removal.
 
 Successful action output has `schemaVersion`, `ok`, `code`, and a bounded
 `data` object. Failures contain a fixed safe code and message, such as
@@ -299,8 +355,8 @@ node scripts/build-companion.mjs --output /tmp/pickermux-companion-development
 
 Choose a new output directory for each build; the builder refuses to replace
 one. The output contains `PickerMux.app`,
-`PickerMux-v0.9.4-macos-universal.tar.gz`,
-`PickerMux-v0.9.4-macos-universal.dmg`, `companion-manifest.json`, and
+`PickerMux-v0.9.5-macos-universal.tar.gz`,
+`PickerMux-v0.9.5-macos-universal.dmg`, `companion-manifest.json`, and
 `SHA256SUMS`. The universal binary contains `arm64` and `x86_64` slices
 targeting macOS 13. The manifest distinguishes `unsigned-development` from
 `developer-id-notarized` artifacts and binds the bundled backend manifest,

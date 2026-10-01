@@ -51,6 +51,32 @@ final class ProtocolTests: XCTestCase {
     XCTAssertThrowsError(try actionRequest(.recover))
   }
 
+  func testNativeUninstallRequiresItsCapabilityBoundPreviewAndExactConsent() throws {
+    let capabilities = ["integration-toggle-v1", "native-uninstall-v1"]
+    let value = try CompanionSnapshot.decode(snapshot(["capabilities": capabilities, "actions": ["uninstall-preview", "uninstall"]]))
+    XCTAssertTrue(value.supportsNativeUninstall)
+    XCTAssertThrowsError(try CompanionSnapshot.decode(snapshot(["actions": ["uninstall"]])))
+    XCTAssertThrowsError(try CompanionSnapshot.decode(snapshot(["capabilities": capabilities.reversed().map { $0 }])))
+    XCTAssertThrowsError(try actionRequest(.uninstall))
+    XCTAssertThrowsError(try actionRequest(.uninstall, confirmed: true))
+    XCTAssertThrowsError(try actionRequest(.uninstall, confirmed: false, previewToken: String(repeating: "a", count: 64)))
+    let request = try XCTUnwrap(JSONSerialization.jsonObject(with: actionRequest(.uninstall, confirmed: true, previewToken: String(repeating: "a", count: 64))) as? [String: Any])
+    XCTAssertEqual(Set(request.keys), Set(["schemaVersion", "action", "confirmation", "previewToken"]))
+    XCTAssertEqual(request["confirmation"] as? [String: Bool], ["removePickerMux": true, "restoreNativeCodex": true, "deleteProviderCredentials": true, "deleteBackups": true])
+  }
+
+  func testRemovalCompletionRejectsPartialFlagsAndUnexpectedPublicFields() throws {
+    let base: [String: Any] = ["action": "uninstall", "status": "removed", "removed": true, "nativeRestored": true, "historicalChatsPreserved": true, "restartRequired": true]
+    for changes in [["removed": false], ["nativeRestored": false], ["historicalChatsPreserved": false], ["restartRequired": false], ["action": "configuration-apply"], ["unexpected": "/private/secret"]] as [[String: Any]] {
+      var data = base
+      data.merge(changes) { _, new in new }
+      XCTAssertThrowsError(try CompanionResult.decode(JSONSerialization.data(withJSONObject: ["schemaVersion": 1, "ok": true, "code": "COMPLETE", "data": data])))
+    }
+    var preview: [String: Any] = ["action": "uninstall-preview", "status": "ready", "canApply": true, "previewToken": String(repeating: "b", count: 64), "changes": UninstallPreview.expectedChanges]
+    preview["changes"] = ["delete-unrelated-files"]
+    XCTAssertThrowsError(try CompanionResult.decode(JSONSerialization.data(withJSONObject: ["schemaVersion": 1, "ok": true, "code": "PREVIEW_READY", "data": preview])))
+  }
+
   func testConfigurationApplyRequiresBoundPreviewAndConfirmation() throws {
     XCTAssertThrowsError(try actionRequest(.configurationApply, confirmed: true))
     XCTAssertThrowsError(try actionRequest(.configurationApply, confirmed: false, previewToken: String(repeating: "a", count: 64)))

@@ -1,5 +1,5 @@
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readdir, rmdir, unlink } from "node:fs/promises";
 import { createInterface } from "node:readline/promises";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -49,7 +49,7 @@ import { isCodexDesktopRunning, openCodexDesktop } from "./codex-desktop-state.m
 import { executeCompanionAction } from "./companion-actions.mjs";
 import { runCompanionCli } from "./companion-cli.mjs";
 import { loadCompanionServiceConfig } from "./companion-config.mjs";
-import { CompanionControlError, collectCompanionStatus, createCompanionReadOnlyProbes } from "./companion-control.mjs";
+import { CompanionControlError, COMPANION_UNINSTALL_CHANGES, collectCompanionStatus, createCompanionReadOnlyProbes } from "./companion-control.mjs";
 import { applyCompanionUpdate, checkForCompanionUpdate } from "./companion-update.mjs";
 import { WEB_SEARCH_CONTRACT_VERSION } from "./web-search-wire.mjs";
 import {
@@ -66,6 +66,7 @@ import {
   enableManagedStandaloneWebSearch,
   getConfigStatus,
   inventoryManagedConfigOwnership,
+  inventoryNativeConfigRestoration,
   inventoryConfigIntegrationSwitch,
   inventoryManagedConfigReactivation,
   inventoryDeactivatedConfigReactivation,
@@ -74,6 +75,7 @@ import {
   previewConfigIntegration,
   repairHistoricalChatsConfig,
   revalidateManagedConfigOwnership,
+  revalidateNativeConfigRestoration,
   restoreRecoveredProviderEndMarker,
   suspendManagedConfiguration,
   uninstallConfig,
@@ -199,7 +201,11 @@ Usage:
   pickermux status [--config PATH] [--json]
   pickermux companion status
   pickermux companion run  (one versioned JSON request on stdin)
-  pickermux uninstall [--force] [--remove-cli | --purge] [--json]
+  pickermux uninstall [--force] [--remove-cli | --purge [--restore-native]] [--json]
+
+uninstall --purge --restore-native removes the owned installation and restores
+native Codex defaults without reinstating a previous picker gateway or catalog.
+The inert historical provider alias and unrelated Codex settings remain.
   pickermux version | pickermux --version
 
 Companion schema 1 advertises integration-toggle-v1. configuration-apply requires
@@ -247,6 +253,7 @@ function parseArguments(argv) {
     force: false,
     removeCli: false,
     purge: false,
+    restoreNative: false,
     full: false,
     fullWorker: false,
     json: false,
@@ -261,6 +268,7 @@ function parseArguments(argv) {
     if (argument === "--force") options.force = true;
     else if (argument === "--remove-cli") options.removeCli = true;
     else if (argument === "--purge") options.purge = true;
+    else if (argument === "--restore-native") options.restoreNative = true;
     else if (argument === "--full" || argument === "--FULL") options.full = true;
     else if (argument === "--full-worker") options.fullWorker = true;
     else if (argument === "--all") options.all = true;
@@ -292,6 +300,9 @@ function parseArguments(argv) {
   if (options.purge && command !== "uninstall") throw new Error("--purge is supported only by uninstall");
   if (options.purge && options.removeCli) {
     throw new Error("--purge already includes --remove-cli");
+  }
+  if (options.restoreNative && (command !== "uninstall" || !options.purge || options.force)) {
+    throw new Error("--restore-native requires uninstall --purge and cannot be combined with --force");
   }
   if (options.full && command !== "refresh") {
     throw new Error("--full is supported only by refresh");
@@ -2177,6 +2188,8 @@ export async function uninstallIntegration({
   paths,
   force,
   preserveHistoricalModelBridge = false,
+  restoreNative = false,
+  nativeRestorationReceipt,
   servicePackageInventory,
   runtimePreflightCompleted = false,
   installDirectoryInventory,
@@ -2250,6 +2263,8 @@ export async function uninstallIntegration({
     readBackupImpl,
     force,
     preserveHistoricalModelBridge,
+    restoreNative,
+    nativeRestorationReceipt,
   });
   const service = await stopServiceImpl({
     runtimePath: paths.runtimePath,
@@ -2319,9 +2334,11 @@ function assertSameDistributionOwnership(previous, confirmed) {
 
 async function assertCodexDesktopClosed(desktopRunningImpl) {
   if (await desktopRunningImpl()) {
-    throw new Error(
+    const error = new Error(
       "PickerMux uninstall requires Codex Desktop to be fully quit with Command-Q",
     );
+    error.code = "CODEX_RUNNING";
+    throw error;
   }
 }
 
@@ -2380,10 +2397,90 @@ function assertFullPurgeCompleted(
   throw error;
 }
 
+function nativeUninstallPreviewToken({ distribution, nativeRestorationReceipt, installInventory, backupInventory, providerIds }) {
+  const identity = (entry) => [entry.snapshot?.dev, entry.snapshot?.ino, entry.snapshot?.mode, entry.snapshot?.size];
+  const entries = [...(installInventory.entries ?? [])].sort((left, right) => left.name.localeCompare(right.name));
+  if (entries.some((entry) => entry.name.startsWith("runtime-app.previous-"))) {
+    throw new CompanionControlError("UNINSTALL_PREFLIGHT_FAILED");
+  }
+  return createHash("sha256").update(JSON.stringify([
+    "pickermux-native-uninstall-preview-v1", nativeRestorationReceipt.previewToken,
+    createHash("sha256").update(distribution.raw).digest("hex"),
+    // Live service logs/catalogs may change during the consent window. Bind
+    // their fixed removal scope here; purge separately inventories and checks
+    // their exact current hashes and identities under the lifecycle lock.
+    entries.map((entry) => [entry.name, entry.type]),
+    (backupInventory.backups ?? []).map((entry) => [entry.name, entry.sha256, identity(entry)]),
+    providerIds, COMPANION_UNINSTALL_CHANGES,
+  ])).digest("hex");
+}
+
+function nativeUninstallFailure(error, fallback = "UNINSTALL_FAILED") {
+  const seen = new Set();
+  for (let current = error, depth = 0; current && typeof current === "object" && depth < 8 && !seen.has(current); current = current.cause, depth += 1) {
+    seen.add(current);
+    if (/^PICKERMUX_(?:PURGE|CREDENTIAL_PURGE)_/u.test(current.code ?? "")) return new CompanionControlError("PURGE_INCOMPLETE");
+    // Competing rollback causes cannot imply that a simpler guard recovered.
+    if (current instanceof AggregateError || /ROLLBACK_FAILED$/u.test(current.code ?? "")) break;
+    if (current instanceof CompanionControlError) return current;
+    if (["CODEX_RUNNING", "RECOVERY_PENDING"].includes(current.code)) return new CompanionControlError(current.code);
+    if (current.code === "PICKERMUX_INSTALLATION_LOCK_BUSY") return new CompanionControlError("BUSY");
+    if (current.name === "ConfigManagerError") return new CompanionControlError("UNINSTALL_CONFLICT");
+  }
+  return new CompanionControlError(fallback);
+}
+
+/** Full read-only removal preflight; private inventories never cross the GUI. */
+export async function previewPickerMuxUninstall({
+  paths = resolveInstallPaths(), distributionPaths = resolveDistributionPaths(), sourceRoot,
+  desktopRunningImpl = isCodexDesktopRunning,
+  assertNoPendingFullRefreshImpl = async () => null,
+  validateDistributionImpl = validateDistributionInstallation,
+  validateLaunchAgentImpl = assertManagedLaunchAgent,
+  inventoryInstallImpl = inventoryPickerMuxInstallDirectory,
+  inventoryBackupsImpl = inventoryPickerMuxBackups,
+  inventoryRuntimeImpl = inventoryManagedServicePackage,
+  inventoryConfigImpl = inventoryManagedConfigOwnership,
+  inventoryNativeConfigImpl = inventoryNativeConfigRestoration,
+  listProviderIdsImpl = listRegisteredKeychainProviderIds,
+} = {}) {
+  try {
+    await assertNoPendingFullRefreshImpl();
+    if (await desktopRunningImpl()) throw new CompanionControlError("CODEX_RUNNING");
+    const distribution = await validateDistributionImpl({ paths: distributionPaths });
+    if (!distribution.installed || (sourceRoot !== undefined && path.resolve(sourceRoot) !== path.resolve(distribution.activeDirectory))) {
+      throw new CompanionControlError("DISTRIBUTION_INVALID");
+    }
+    await validateLaunchAgentImpl(managedLaunchAgentOptions(paths));
+    const installInventory = await inventoryInstallImpl({ installDirectory: paths.installDirectory });
+    const backupInventory = await inventoryBackupsImpl({ backupDirectory: paths.backupDirectory, configPath: paths.configPath });
+    await inventoryRuntimeImpl({ serviceDirectory: paths.serviceDirectory, sourceRoot: distribution.activeDirectory });
+    const configOwnership = await inventoryConfigImpl({
+      configPath: paths.configPath, statePath: paths.statePath,
+      backupDirectory: paths.backupDirectory, backupDirectoryInventory: backupInventory,
+    });
+    const nativeRestorationReceipt = await inventoryNativeConfigImpl({
+      configPath: paths.configPath, statePath: paths.statePath,
+      backupDirectory: paths.backupDirectory, ownershipReceipt: configOwnership,
+    });
+    const providerIds = await listProviderIdsImpl({ registryPath: paths.keychainRegistryPath });
+    return {
+      status: "ready", canApply: true,
+      previewToken: nativeUninstallPreviewToken({ distribution, nativeRestorationReceipt, installInventory, backupInventory, providerIds }),
+      changes: [...COMPANION_UNINSTALL_CHANGES],
+    };
+  } catch (error) {
+    throw nativeUninstallFailure(error, "UNINSTALL_PREFLIGHT_FAILED");
+  }
+}
+
 export async function purgePickerMux({
   paths = resolveInstallPaths(),
   distributionPaths = resolveDistributionPaths(),
   force = false,
+  restoreNative = false,
+  expectedPreviewToken,
+  sourceRoot,
   desktopRunningImpl = isCodexDesktopRunning,
   validateDistributionImpl = validateDistributionInstallation,
   validateLaunchAgentImpl = assertManagedLaunchAgent,
@@ -2395,6 +2492,8 @@ export async function purgePickerMux({
   revalidateBackupsImpl = revalidatePickerMuxBackupInventory,
   revalidateRuntimeImpl = revalidateManagedServicePackageInventory,
   revalidateConfigImpl = revalidateManagedConfigOwnership,
+  inventoryNativeConfigImpl = inventoryNativeConfigRestoration,
+  revalidateNativeConfigImpl = revalidateNativeConfigRestoration,
   listProviderIdsImpl = listRegisteredKeychainProviderIds,
   removeDistributionImpl = removeManagedDistribution,
   uninstallIntegrationImpl = uninstallIntegration,
@@ -2404,6 +2503,10 @@ export async function purgePickerMux({
   rmdirImpl = rmdir,
   assertNoPendingFullRefreshImpl = async () => null,
 } = {}) {
+  if (typeof restoreNative !== "boolean" || (restoreNative && force) ||
+    (expectedPreviewToken !== undefined && (!restoreNative || !/^[a-f0-9]{64}$/u.test(expectedPreviewToken)))) {
+    throw new CompanionControlError("UNINSTALL_CONFLICT");
+  }
   await assertCodexDesktopClosed(desktopRunningImpl);
   const distribution = await validateDistributionImpl({
     paths: distributionPaths,
@@ -2412,6 +2515,9 @@ export async function purgePickerMux({
     throw new Error(
       "PickerMux full uninstall requires a receipt-validated CLI installation",
     );
+  }
+  if (sourceRoot !== undefined && path.resolve(sourceRoot) !== path.resolve(distribution.activeDirectory)) {
+    throw new CompanionControlError("DISTRIBUTION_INVALID");
   }
   await validateLaunchAgentImpl(managedLaunchAgentOptions(paths));
   const installInventory = await inventoryInstallImpl({
@@ -2434,6 +2540,18 @@ export async function purgePickerMux({
   const providerIds = await listProviderIdsImpl({
     registryPath: paths.keychainRegistryPath,
   });
+  const nativeRestorationReceipt = restoreNative
+    ? await inventoryNativeConfigImpl({
+      configPath: paths.configPath, statePath: paths.statePath,
+      backupDirectory: paths.backupDirectory, ownershipReceipt: configOwnership,
+    })
+    : undefined;
+  if (restoreNative && expectedPreviewToken !== undefined && expectedPreviewToken !== nativeUninstallPreviewToken({
+    distribution, nativeRestorationReceipt, installInventory, backupInventory, providerIds,
+  })) throw new CompanionControlError("UNINSTALL_CONFLICT");
+  if (restoreNative && expectedPreviewToken === undefined) nativeUninstallPreviewToken({
+    distribution, nativeRestorationReceipt, installInventory, backupInventory, providerIds,
+  });
 
   const result = await removeDistributionImpl({
     paths: distributionPaths,
@@ -2447,6 +2565,7 @@ export async function purgePickerMux({
       await revalidateBackupsImpl(backupInventory);
       await revalidateRuntimeImpl(runtimeInventory);
       await revalidateConfigImpl(configOwnership);
+      if (restoreNative) await revalidateNativeConfigImpl(nativeRestorationReceipt);
       const confirmedProviderIds = await listProviderIdsImpl({
         registryPath: paths.keychainRegistryPath,
       });
@@ -2468,6 +2587,13 @@ export async function purgePickerMux({
             configPath: paths.configPath,
             inventory: backupInventory,
             async beforeCommit({ readBackup } = {}) {
+              // Prove the exact native candidate again before the irreversible
+              // Keychain phase, including when backups have been quarantined.
+              if (restoreNative) {
+                await assertNoPendingFullRefreshImpl();
+                await assertCodexDesktopClosed(desktopRunningImpl);
+                await revalidateNativeConfigImpl(nativeRestorationReceipt, { readBackupImpl: readBackup });
+              }
               // Keychain values are deliberately never read, so a successful
               // deletion cannot be recreated. Perform every receipt check and
               // reversible quarantine first. On a partial deletion failure,
@@ -2504,6 +2630,8 @@ export async function purgePickerMux({
                   readBackupImpl: readBackup,
                   sourceRoot: distribution.activeDirectory,
                   preserveHistoricalModelBridge: true,
+                  restoreNative,
+                  nativeRestorationReceipt,
                 });
               } catch (cause) {
                 const error = new Error(
@@ -2585,9 +2713,11 @@ export async function assertNoPendingFullRefresh({
     throw error;
   }
   if (checkpoint !== null) {
-    throw new Error(
+    const error = new Error(
       `PickerMux full refresh is incomplete at ${checkpoint.phase}; rerun pickermux refresh --full to resume before another lifecycle change`,
     );
+    error.code = "RECOVERY_PENDING";
+    throw error;
   }
   return null;
 }
@@ -3269,12 +3399,16 @@ export async function runPickerMuxCompanion(argv, {
   statusImpl = () => collectCompanionStatus({ probes: createCompanionReadOnlyProbes({ paths, distributionPaths, fullRefreshPaths, codexPath }) }),
   validateDistributionImpl = validateDistributionInstallation,
   withLockImpl = withInstallationLock,
+  desktopRunningImpl = isCodexDesktopRunning,
+  assertNoPendingFullRefreshImpl = () => assertNoPendingFullRefresh({ fullRefreshPaths }),
+  previewUninstallImpl = previewPickerMuxUninstall,
+  purgeUninstallImpl = purgePickerMux,
   handlers,
 } = {}) {
   const configurationPaths = { configPath: paths.configPath, statePath: paths.statePath, backupDirectory: paths.backupDirectory };
-  const noRecovery = () => assertNoPendingFullRefresh({ fullRefreshPaths });
+  const noRecovery = assertNoPendingFullRefreshImpl;
   const closed = async () => {
-    if (await isCodexDesktopRunning()) throw new CompanionControlError("CODEX_RUNNING");
+    if (await desktopRunningImpl()) throw new CompanionControlError("CODEX_RUNNING");
   };
   const installedConfig = () => loadCompanionServiceConfig({ paths });
   const certificationProgress = (onProgress) => (event) => onProgress({ phase: "certifying", current: event.index, total: event.total, elapsedMs: event.elapsedMs });
@@ -3321,6 +3455,28 @@ export async function runPickerMuxCompanion(argv, {
         config: await installedConfig(), paths, sourceRoot,
         assertNoPendingFullRefreshImpl: noRecovery,
       });
+    },
+    "uninstall-preview"() {
+      return previewUninstallImpl({ paths, distributionPaths, sourceRoot, desktopRunningImpl, assertNoPendingFullRefreshImpl: noRecovery });
+    },
+    async uninstall(request) {
+      try {
+        await noRecovery();
+        await closed();
+        const result = await purgeUninstallImpl({
+          paths, distributionPaths, sourceRoot, restoreNative: true,
+          desktopRunningImpl,
+          expectedPreviewToken: request.previewToken, assertNoPendingFullRefreshImpl: noRecovery,
+        });
+        assertFullPurgeCompleted(result, paths.installDirectory, distributionPaths);
+        if (result.beforeResult?.integration?.removedConfig?.nativeRestored !== true ||
+          result.beforeResult?.integration?.removedConfig?.historicalCompatibility !== true) {
+          throw new CompanionControlError("PURGE_INCOMPLETE");
+        }
+        return { status: "removed", removed: true, nativeRestored: true, historicalChatsPreserved: true, restartRequired: true };
+      } catch (error) {
+        throw nativeUninstallFailure(error);
+      }
     },
     "configuration-preview"() {
       return previewConfigIntegration(configurationPaths);
@@ -3481,6 +3637,8 @@ export async function runCli(argv, {
         paths,
         distributionPaths,
         force: options.force,
+        restoreNative: options.restoreNative,
+        ...(options.restoreNative ? { sourceRoot: projectRoot } : {}),
         assertNoPendingFullRefreshImpl: assertNoPendingFullRefreshLocked,
       });
       assertFullPurgeCompleted(
@@ -3546,9 +3704,11 @@ export async function runCli(argv, {
           : result.removedConfig?.historicalCompatibility;
       process.stdout.write(
         options.purge
-          ? historicalCompatibility
-            ? "PickerMux integration, receipt-validated CLI, verified backups, and registered provider Keychain credentials were removed. An inert model_bridge compatibility table remains only so historical chats parse; new turns through it fail locally.\n"
-            : "PickerMux integration, receipt-validated CLI, verified backups, and registered provider Keychain credentials were removed.\n"
+          ? options.restoreNative
+            ? "PickerMux runtime, receipt-validated CLI, verified backups, and registered provider credentials were removed. Codex uses native defaults; historical chats remain readable.\n"
+            : historicalCompatibility
+              ? "PickerMux integration, receipt-validated CLI, verified backups, and registered provider Keychain credentials were removed. An inert model_bridge compatibility table remains only so historical chats parse; new turns through it fail locally.\n"
+              : "PickerMux integration, receipt-validated CLI, verified backups, and registered provider Keychain credentials were removed.\n"
           : options.removeCli
             ? "PickerMux routing and receipt-validated CLI removed; backups and Keychain credentials were preserved.\n"
             : result.removedConfig.changed

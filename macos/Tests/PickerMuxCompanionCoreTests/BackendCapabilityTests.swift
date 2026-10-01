@@ -54,6 +54,42 @@ final class BackendCapabilityTests: XCTestCase {
     XCTAssertEqual(executor.mutations, [["/verified/old/bin/pickermux.mjs", "companion", "run"]])
     XCTAssertEqual(executor.requests.last?["confirmation"] as? [String: Bool], ["deactivateIntegration": true])
   }
+
+  func testUninstallCannotUseBundledFallbackOrLegacyInstalledProtocol() async throws {
+    for installed in [nil, ["integration-toggle-v1"]] as [[String]?] {
+      let executor = CapabilityExecutor()
+      executor.installedCapabilities = installed
+      for action in [CompanionAction.uninstallPreview, .uninstall] {
+        do {
+          _ = try await client(executor).run(action, confirmed: true, previewToken: String(repeating: "b", count: 64))
+          XCTFail("A bootstrap or older installed source cannot remove the installation")
+        } catch { XCTAssertEqual(error as? CompanionFailure, .incompatibleProtocol) }
+      }
+      XCTAssertTrue(executor.mutations.isEmpty)
+    }
+  }
+
+  func testRemovalUsesOnlyVerifiedInstalledSourceAndNeverRetriesMalformedSuccess() async throws {
+    let executor = CapabilityExecutor()
+    executor.installedCapabilities = ["integration-toggle-v1", "native-uninstall-v1"]
+    executor.malformedMutation = true
+    do {
+      _ = try await client(executor).run(.uninstall, confirmed: true, previewToken: String(repeating: "b", count: 64))
+      XCTFail("Malformed removal is indeterminate and cannot be retried")
+    } catch { XCTAssertEqual(error as? CompanionFailure, .incompatibleProtocol) }
+    XCTAssertEqual(executor.mutations, [["/verified/old/bin/pickermux.mjs", "companion", "run"]])
+    XCTAssertEqual(executor.requests.last?["action"] as? String, "uninstall")
+  }
+
+  func testGenericSuccessCannotProveRemoval() async throws {
+    let executor = CapabilityExecutor()
+    executor.installedCapabilities = ["integration-toggle-v1", "native-uninstall-v1"]
+    do {
+      _ = try await client(executor).run(.uninstall, confirmed: true, previewToken: String(repeating: "b", count: 64))
+      XCTFail("Only a full removal receipt can be accepted")
+    } catch { XCTAssertEqual(error as? CompanionFailure, .incompatibleProtocol) }
+    XCTAssertEqual(executor.mutations.count, 1)
+  }
 }
 
 private final class CapabilityExecutor: CompanionExecuting {
@@ -75,6 +111,9 @@ private final class CapabilityExecutor: CompanionExecuting {
       ]
       if arguments.first == "/verified/current/bin/pickermux.mjs" { snapshot["capabilities"] = ["integration-toggle-v1"] }
       else if let capabilities = installedCapabilities { snapshot["capabilities"] = capabilities }
+      if installedCapabilities == ["integration-toggle-v1", "native-uninstall-v1"] {
+        snapshot["actions"] = ["configuration-preview", "configuration-apply", "integration-deactivate", "uninstall-preview", "uninstall"]
+      }
       return ProcessOutput(stdout: try JSONSerialization.data(withJSONObject: snapshot), exitCode: 0)
     }
     mutations.append(arguments)

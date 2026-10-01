@@ -418,6 +418,34 @@ symbolic links, special files, or a leftover `runtime-app.previous-*` package
 stop removal for explicit review; no unrecognized runtime directory is deleted
 recursively.
 
+### Full removal with native Codex defaults
+
+Ordinary uninstall, including `--purge`, restores the original configuration.
+After a switch from Ollama, this may restore Ollama's gateway and catalog.
+PickerMux 0.9.5 provides a separate explicit mode:
+
+```bash
+pickermux uninstall --purge --restore-native
+```
+
+It removes the verified integration without reinstating its recorded prior
+root `model`, `model_provider`, `model_catalog_json`, `model_reasoning_effort`
+or `openai_base_url`. Codex then selects its native defaults. Current unrelated
+settings, comments and provider tables are preserved. Unowned overrides,
+ambiguous configuration or concurrent edits stop the operation; this mode
+cannot be combined with `--force` or used without `--purge`.
+
+The native candidate and its ownership binding are checked before registered
+provider credentials are deleted and again before configuration commit. It works
+for an active or verified toggle-deactivated installation. It does not edit
+the native account cache, authentication or historical chats. The inert
+`model_bridge` provider alias remains solely to keep old chats readable.
+
+The companion exposes this mode as **Settings → Remove PickerMux completely…**,
+with explicit consent and a fresh removal preview. It also disables its login
+startup and clears only its own preferences and notifications. After success,
+quit the companion and move its app bundle to the Trash in Finder.
+
 ## Efficient Fidelity is not a provider setting
 
 Version 0.6.0 does not add an `agent`, `toolDelivery`, or similar provider-wide

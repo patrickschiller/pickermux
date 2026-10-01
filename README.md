@@ -7,7 +7,7 @@
 
 **Use local and remote models from compatible Responses providers in Codex Desktop.**
 
-**Version 0.9.4 includes a native macOS menu-bar companion with a Codex toggle.**
+**Version 0.9.5 includes a native macOS menu-bar companion with a Codex toggle.**
 Check the picker, refresh it after Codex closes, preview a switch from Ollama,
 and start confirmed recovery after a Codex update. The app uses PickerMux's
 existing installation and routing core. See the
@@ -215,7 +215,7 @@ external-provider inference check. Once `~/.local/bin` is in `PATH`, the shorter
 ## macOS companion
 
 The companion build includes an installable
-`PickerMux-v0.9.4-macos-universal.dmg` for the planned release. Open the disk
+`PickerMux-v0.9.5-macos-universal.dmg` for the planned release. Open the disk
 image, drag **PickerMux.app** to **Applications**, eject the image, and open the
 copied app. Node.js remains a prerequisite. Copying the app does not install
 the CLI or change Codex configuration; turn on **Use PickerMux in Codex** to
@@ -240,7 +240,9 @@ prompts to configured models. Turning it off authorizes deactivation and stops t
 bridge while keeping the CLI, provider settings,
 certifications and backups for later use. The native Codex picker and an inert
 historical-chat provider alias remain available. Changes require Codex to be
-fully closed; the switch does not quit it automatically.
+fully closed; the switch does not quit it automatically. Reopen Codex afterward
+to load the native picker. The generated catalog retained on disk is inactive
+while the switch is off.
 Primary text and controls use 14-point type. Setup failures distinguish
 connection, timeout, access, authentication, and response errors, and refer
 to the last attempt. After addressing the cause, turn the switch on again;
@@ -266,7 +268,20 @@ transport defaults have not qualified for the bridge's safety contract.
 **Check status** shows its progress and completion time even when nothing
 changed. Settings and Help open their own reusable windows. Longer operations
 show a spinner and elapsed time. **Check for PickerMux updates** and the update
-result are in Settings. The update action verifies the CLI release before
+result are in Settings.
+
+**Remove PickerMux completely…** in Settings previews removal and asks before
+deleting the integration, runtime, CLI, certifications, verified backups and
+registered PickerMux provider credentials. It restores native Codex defaults
+instead of reactivating a previously installed gateway. It works while
+PickerMux is enabled or off, with Codex fully closed. Login startup is disabled
+before removal; after success, the app clears its own settings and notifications
+and stops background actions. Quit the app and move **PickerMux.app** to the
+Trash in Finder. Native Codex sign-in, chats, projects and unrelated settings
+are preserved. An inert provider alias keeps older chats readable and
+contributes no models.
+
+The update action verifies the CLI release before
 activating its existing setup transaction. App and CLI versions are shown separately; install a matching app
 build after updating the CLI. App builds, signing requirements, and validation
 limits are documented in [the companion guide](docs/MACOS_COMPANION.md).
@@ -564,6 +579,28 @@ multiply linked. The same-user final-syscall race boundary is documented in
 multi-item Keychain deletion. Full purge never reads, changes, or removes
 native Codex authentication, including `~/.codex/auth.json`.
 
+By default, uninstall restores the pre-PickerMux configuration, which can
+include a former Ollama gateway and catalog. To remove PickerMux and return
+Codex to native picker defaults instead, use the explicit mode used by the app:
+
+```bash
+pickermux uninstall --purge --restore-native
+```
+
+This mode omits only the receipt-recorded model, provider, catalog, reasoning
+and gateway overrides. It preserves other current user settings and rejects
+foreign or concurrently changed routing overrides. It must be used with
+`--purge` and cannot be combined with `--force`. A native restoration plan is
+validated before registered provider credentials are deleted. The account model
+cache, native sign-in and chats are never reset.
+
+In the app, choose **Settings → Remove PickerMux completely…** and confirm the
+reviewed removal with Codex fully closed. After successful removal, quit
+PickerMux, move **PickerMux.app** from Applications to the Trash, and reopen
+Codex. The app does not delete its own bundle. Older or unverified CLI versions
+require a matching update or the supported manual uninstall; removal never
+silently falls back to the bundled setup backend.
+
 The canonical `model_bridge` compatibility table has no credentials, targets
 `127.0.0.1:0`, and has zero request and stream retries, so turns through it fail
 locally. A later PickerMux installation removes only the exact unchanged table
@@ -662,6 +699,7 @@ catalog lifecycle, request normalization, and certification design.
 | `pickermux uninstall` | Restore previous Codex settings and remove managed runtime files; canonical `model_bridge` installations retain historical chat parsing. |
 | `pickermux uninstall --remove-cli` | Also remove only the receipt-owned CLI launcher and versioned distribution. |
 | `pickermux uninstall --purge` | Remove the integration, receipt-owned CLI, verified backups, and registered provider Keychain credentials; canonical `model_bridge` installations retain the inert chat table. |
+| `pickermux uninstall --purge --restore-native` | Perform full owned removal and restore native Codex defaults instead of the previous gateway; preserve historical chat parsing and unrelated settings. |
 
 Run `pickermux help`, `pickermux --help`, or `pickermux -h` for the compact CLI
 reference. `bin/lmstudio-picker.mjs` remains available as a compatibility alias.

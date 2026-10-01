@@ -20,6 +20,7 @@ const PRIVATE_READ_FLAGS =
 const ownershipReceiptDetails = new WeakMap();
 const integrationSwitchReceiptDetails = new WeakMap();
 const reactivationReceiptDetails = new WeakMap();
+const nativeRestorationReceiptDetails = new WeakMap();
 const CONFIG_LAYOUT = "explicit-provider-v1";
 const MANAGED_KEYS = [
   "model",
@@ -891,6 +892,10 @@ export async function revalidateManagedConfigOwnership(
  * both boundary markers remain intact.
  */
 export async function uninstallConfig(options) {
+  if (options.restoreNative !== undefined && typeof options.restoreNative !== "boolean") {
+    throw new TypeError("restoreNative must be a boolean");
+  }
+  if (options.restoreNative === true) return uninstallNativeConfig(options);
   const {
     configPath,
     statePath,
@@ -1174,6 +1179,125 @@ export async function uninstallConfig(options) {
     metadataPreservation: state.metadataPreservation,
     restoredAssignments: state.priorAssignments.map(({ key }) => key),
     historicalCompatibility: preserveHistoricalModelBridge,
+  };
+}
+
+function assertNativeDefaultRoot(source) {
+  // Foreign overrides added outside our recorded blocks are never deletion
+  // authority, even when full removal was explicitly confirmed.
+  inspectRootIntegration(source);
+  for (const line of scanTomlLexicalLines(source).lines) {
+    const code = line.code.trim();
+    if (isTableHeader(code)) break;
+    const key = parseTomlDottedKey(code);
+    if (key && INTEGRATION_KEYS.includes(key.path[0])) {
+      throw failure("UNINSTALL_CONFLICT", "Native restoration refuses an unowned picker root assignment.");
+    }
+  }
+}
+
+function nativeRestorationToken(settings, current, ownership, backup) {
+  return sha256(JSON.stringify([
+    "pickermux-native-uninstall-v1", settings.configPath, settings.statePath,
+    current.mode, sha256(current.bytes), current.identity?.dev, current.identity?.ino,
+    ownership.stateFile.sha256, ownership.stateFile.snapshot.dev, ownership.stateFile.snapshot.ino,
+    backup.sha256, backup.snapshot.dev, backup.snapshot.ino,
+    // The restoration intent is fixed rather than supplied as arbitrary fields.
+    INTEGRATION_KEYS, "preserve-historical-model-bridge",
+  ]));
+}
+
+/** Read-only proof of the exact native configuration resulting from removal. */
+export async function inventoryNativeConfigRestoration(options = {}) {
+  if (options.force) throw failure("UNINSTALL_CONFLICT", "Native restoration does not permit forced removal.");
+  const settings = normalizeOwnershipOptions(options);
+  const ownershipReceipt = options.ownershipReceipt ?? await inventoryManagedConfigOwnership(options);
+  const ownership = ownershipDetails(ownershipReceipt, settings);
+  await revalidateManagedConfigOwnership(ownershipReceipt, { readBackupImpl: options.readBackupImpl });
+  const state = ownership.state;
+  if (!state || state.providerId !== HISTORICAL_MODEL_BRIDGE_PROVIDER_ID) {
+    throw failure("UNINSTALL_CONFLICT", "Native restoration requires the recorded PickerMux integration.");
+  }
+  const current = await readConfigFile(settings.configPath, { mustExist: true });
+  const backup = await readOwnershipBackup(ownershipReceipt);
+  let candidate = current.text;
+  if (state.suspension) {
+    if (state.suspension.kind !== "integration-toggle-v1") {
+      throw failure("UNINSTALL_CONFLICT", "An interrupted recovery must finish before full removal.");
+    }
+    assertSuspendedConfiguration(current, state);
+    candidate = removeDeactivatedHistoricalCompatibility(candidate, state).text;
+  } else {
+    const located = locateHealthyManagedBlocks(current.text, state);
+    for (const block of ownedBlockNames(state).map((name) => located[name]).sort((left, right) => right.start - left.start)) {
+      candidate = candidate.slice(0, block.start) + candidate.slice(block.end);
+    }
+  }
+  assertNativeDefaultRoot(candidate);
+  assertNoManagedMarkers(candidate);
+  assertNoHistoricalModelBridgeMarkerComments(candidate);
+  if (hasProviderDefinition(candidate, HISTORICAL_MODEL_BRIDGE_PROVIDER_ID)) {
+    throw failure("UNINSTALL_CONFLICT", "Native restoration refuses an unowned historical provider.");
+  }
+  const previewToken = nativeRestorationToken(settings, current, ownership, backup);
+  if (options.expectedPreviewToken !== undefined && options.expectedPreviewToken !== previewToken) {
+    throw failure("UNINSTALL_CONFLICT", "The reviewed native restoration changed.");
+  }
+  const receipt = Object.freeze({ previewToken });
+  nativeRestorationReceiptDetails.set(receipt, {
+    settings, ownershipReceipt, current,
+    finalContents: Buffer.from(appendHistoricalModelBridgeCompatibility(candidate, state.configExisted !== false || candidate !== "")),
+  });
+  return receipt;
+}
+
+/** Recheck the proof before irreversible credential deletion and config CAS. */
+export async function revalidateNativeConfigRestoration(receipt, { readBackupImpl } = {}) {
+  const details = nativeRestorationReceiptDetails.get(receipt);
+  if (!details) throw failure("UNINSTALL_CONFLICT", "A verified native restoration receipt is required.");
+  await revalidateManagedConfigOwnership(details.ownershipReceipt, { readBackupImpl });
+  const ownership = ownershipDetails(details.ownershipReceipt);
+  const current = await readConfigFile(details.settings.configPath, { mustExist: true });
+  const backup = await readOwnershipBackup(details.ownershipReceipt, { cache: false });
+  if (nativeRestorationToken(details.settings, current, ownership, backup) !== receipt.previewToken) {
+    throw failure("UNINSTALL_CONFLICT", "The reviewed native restoration changed.");
+  }
+  return receipt;
+}
+
+async function uninstallNativeConfig(options) {
+  const settings = normalizeOwnershipOptions(options);
+  const receipt = options.nativeRestorationReceipt ?? await inventoryNativeConfigRestoration(options);
+  const details = nativeRestorationReceiptDetails.get(receipt);
+  if (!details || details.settings.configPath !== settings.configPath || details.settings.statePath !== settings.statePath ||
+    details.settings.backupDirectory !== settings.backupDirectory || options.force) {
+    throw failure("UNINSTALL_CONFLICT", "A matching native restoration receipt is required.");
+  }
+  await revalidateNativeConfigRestoration(receipt, { readBackupImpl: options.readBackupImpl });
+  await atomicWrite(settings.configPath, details.finalContents, details.current.mode, {
+    expectedSource: snapshotOf(details.current),
+    beforeCommit: async () => {
+      if (settings.beforeConfigCommit) await settings.beforeConfigCommit();
+      await revalidateNativeConfigRestoration(receipt, { readBackupImpl: options.readBackupImpl });
+    },
+  });
+  try {
+    await removeOwnedStateFile(details.ownershipReceipt);
+  } catch (cause) {
+    let rollbackCause;
+    try {
+      await rollbackConfigAfterStateRemovalFailure({
+        configPath: settings.configPath, installedConfig: details.current,
+        restoredContents: details.finalContents, configWasRemoved: false,
+      });
+    } catch (error) { rollbackCause = error; }
+    throw failure("STATE_REMOVE_FAILED", rollbackCause
+      ? "Native restoration state removal and configuration rollback both failed."
+      : "Native restoration could not remove its ownership state; prior configuration was restored.", { cause, rollbackCause });
+  }
+  return {
+    changed: true, installed: false, nativeRestored: true,
+    historicalCompatibility: true, restoredAssignments: [],
   };
 }
 
@@ -1574,6 +1698,7 @@ async function readConfigFile(path, { mustExist = false } = {}) {
       bytes,
       text: bytes.toString("utf8"),
       mode: confirmed.mode & 0o777,
+      identity: initialSnapshot,
     };
   } catch (error) {
     if (

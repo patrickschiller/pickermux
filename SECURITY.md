@@ -399,6 +399,28 @@ reviewed; the failure is not reported as a successful full removal.
 No uninstall mode reads, modifies, or deletes native Codex authentication. In
 particular, PickerMux never reads or removes `~/.codex/auth.json`.
 
+The companion's separate complete-removal action requires a fresh native
+removal preview and explicit consent to remove PickerMux, restore native Codex
+defaults, delete verified backups and delete registered provider credentials.
+It is available only through the receipt-validated installed backend, including
+a verified toggle-deactivated installation; the bundled setup backend cannot
+purge another distribution. No GUI request supplies arbitrary paths, provider
+IDs or force flags. Login startup is disabled before purge. After verified
+success, polling and queued background actions cannot run again, and cleanup
+targets only the app's named preferences and notification identifier. The app
+bundle is removed by the user in Finder rather than by recursive self-deletion.
+
+`uninstall --purge --restore-native` is an explicit alternative to restoring the
+original configuration. It omits only the receipt-recorded root model, provider,
+catalog, reasoning and gateway assignments and preserves current unrelated
+bytes. A native-only configuration candidate is validated and digest-bound to
+the configuration, state and verified backup before the first irreversible
+credential deletion. The binding is revalidated before configuration commit.
+Unowned routing overrides, an active profile, ambiguous syntax or concurrent
+changes block this mode instead of being removed. It cannot be combined with
+`--force`. Native account caches, authentication and chat data stay outside its
+removal authority; the inert historical provider alias remains.
+
 ## Release installer trust
 
 Official end-user installation assets are attached to versioned releases in

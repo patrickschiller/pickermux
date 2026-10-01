@@ -62,6 +62,7 @@ final class CompanionController: ObservableObject {
   @Published var preview: ConfigurationPreview?
   @Published var update: UpdateStatus?
   @Published var loginEnabled = SMAppService.mainApp.status == .enabled
+  @Published var removalState: CompanionRemovalState = .idle
   @Published var notificationsEnabled = UserDefaults.standard.bool(forKey: "statusNotifications")
   @Published var refreshOnClose = UserDefaults.standard.bool(forKey: "refreshOnClose") {
     didSet { UserDefaults.standard.set(refreshOnClose, forKey: "refreshOnClose") }
@@ -74,6 +75,17 @@ final class CompanionController: ObservableObject {
   private var helpWindow: NSWindow?
   private var confirmationWindow: ActionConfirmationWindow?
   private var lastTransition: String?
+  private lazy var removal: CompanionRemovalCoordinator = {
+    let coordinator = CompanionRemovalCoordinator()
+    coordinator.onStateChange = { [weak self] state in
+      self?.removalState = state
+      if let notice = state.notice { self?.message = notice }
+    }
+    return coordinator
+  }()
+
+  var activityAllowed: Bool { removalState.permitsActivity }
+  var canRemove: Bool { busy == nil && activityAllowed && CompanionRemovalCoordinator.canRemove(snapshot) }
 
   var menuAccessibilityLabel: String {
     "PickerMux, \(busy != nil ? "operation in progress" : statusLabel(snapshot?.state ?? "unknown"))"
@@ -84,7 +96,7 @@ final class CompanionController: ObservableObject {
   }
 
   var integrationState: IntegrationToggleState {
-    IntegrationToggleState(snapshot: snapshot, busy: busy != nil)
+    IntegrationToggleState(snapshot: snapshot, busy: busy != nil || !activityAllowed)
   }
 
   var lastSetupFailed: Bool {
@@ -92,6 +104,11 @@ final class CompanionController: ObservableObject {
   }
 
   init() {
+    startPolling()
+  }
+
+  private func startPolling() {
+    guard polling == nil, activityAllowed else { return }
     polling = Task { [weak self] in
       while !Task.isCancelled {
         await self?.refreshStatus()
@@ -103,20 +120,31 @@ final class CompanionController: ObservableObject {
   deinit { polling?.cancel() }
 
   func refreshStatus(manual: Bool = false) async {
+    let generation = removal.generation
+    guard removal.permitsActivity(generation) else { return }
     if manual {
       pendingManualChecks += 1
       isCheckingStatus = true
       statusCheckNotice = busy == nil ? "Checking status…" : "Status check queued until the current action finishes."
     } else if busy != nil || !operationQueue.isIdle { return }
     let lease = await operationQueue.acquire(.status)
+    defer {
+      if manual {
+        pendingManualChecks -= 1
+        isCheckingStatus = pendingManualChecks > 0
+      }
+      operationQueue.release(lease)
+    }
+    guard removal.permitsActivity(generation) else { return }
     if manual { statusCheckNotice = "Checking status…" }
     var autoRefresh = false
     do {
       let next = try await client.status()
+      guard removal.permitsActivity(generation) else { return }
       if snapshot?.integration.status != next.integration.status { preview = nil }
       let changed = lastTransition != nil && lastTransition != next.transitionIdentity
       let desktopJustClosed = ["running", "open"].contains(snapshot?.desktop.status ?? "") && ["stopped", "closed"].contains(next.desktop.status)
-      autoRefresh = (refreshQueued || (refreshOnClose && desktopJustClosed)) && busy == nil && next.state == "ready" && ["idle", "completed"].contains(next.recovery.status) && next.actions.contains(.refresh)
+      autoRefresh = removalState == .idle && (refreshQueued || (refreshOnClose && desktopJustClosed)) && busy == nil && next.state == "ready" && ["idle", "completed"].contains(next.recovery.status) && next.actions.contains(.refresh)
       let recoveryCompleted = shouldNotifyRecoveryCompletion(previous: snapshot, next: next)
       snapshot = next
       statusFailure = nil
@@ -125,29 +153,27 @@ final class CompanionController: ObservableObject {
       if manual { statusCheckNotice = "Status checked at \(checkedAt.formatted(date: .omitted, time: .standard))." }
       if busy == nil { message = statusLabel(next.state) }
       if changed && notificationsEnabled { await notifyIfActionable(next, recoveryCompleted: recoveryCompleted) }
+      guard removal.permitsActivity(generation) else { return }
       lastTransition = next.transitionIdentity
     } catch {
+      guard removal.permitsActivity(generation) else { return }
       snapshot = nil
       preview = nil
       statusFailure = error as? CompanionFailure
       if busy == nil { message = failureMessage(error) }
       if manual { statusCheckNotice = "Status check failed: \(failureMessage(error))" }
     }
-    if manual {
-      pendingManualChecks -= 1
-      isCheckingStatus = pendingManualChecks > 0
-    }
-    operationQueue.release(lease)
-    if autoRefresh { refreshQueued = false; perform(.refresh) }
+    if autoRefresh && removal.permitsActivity(generation) { refreshQueued = false; perform(.refresh) }
   }
 
   func canRun(_ action: CompanionAction) -> Bool {
-    guard busy == nil, snapshot?.actions.contains(action) == true else { return false }
+    guard activityAllowed, busy == nil, snapshot?.actions.contains(action) == true else { return false }
     return true
   }
 
   func setIntegrationEnabled(_ enabled: Bool, reviewInstalledSetup: Bool = false) {
-    guard busy == nil else { return }
+    guard activityAllowed, busy == nil else { return }
+    let generation = removal.generation
     if reviewInstalledSetup {
       guard enabled, integrationState.needsSetupUpgrade, integrationState.canReviewSetup else { return }
     } else {
@@ -161,6 +187,7 @@ final class CompanionController: ObservableObject {
     message = enabled ? "Installing and activating PickerMux… Keep Codex closed and configured provider models available." : "Turning off PickerMux…"
     Task {
       let lease = await operationQueue.acquire(.action)
+      guard removal.permitsActivity(generation) else { operationQueue.release(lease); return }
       do {
         let outcome = try await changePickerMuxIntegration(enabled, reviewInstalledSetup: reviewInstalledSetup,
           client: client, consent: .toggleIntent)
@@ -188,9 +215,12 @@ final class CompanionController: ObservableObject {
   }
 
   func perform(_ action: CompanionAction) {
+    if action == .uninstall { removeCompletely(); return }
+    guard ![.uninstallPreview].contains(action) else { return }
     if action == .configurationApply { setIntegrationEnabled(true); return }
     if action == .integrationDeactivate { setIntegrationEnabled(false); return }
     guard canRun(action) else { return }
+    let generation = removal.generation
     if action == .refresh && ["running", "open"].contains(snapshot?.desktop.status ?? "") {
       refreshQueued.toggle()
       operationNoticeAction = .refresh
@@ -206,6 +236,7 @@ final class CompanionController: ObservableObject {
     message = action == .certify ? "Certification is running; keep configured provider models available." : "\(action.label)…"
     Task {
       let lease = await operationQueue.acquire(.action)
+      guard removal.permitsActivity(generation) else { operationQueue.release(lease); return }
       var confirmed = false
       if action == .recover {
         confirmed = await confirmation(title: "Repair the picker after a Codex update?",
@@ -243,7 +274,68 @@ final class CompanionController: ObservableObject {
     }
   }
 
+  func removeCompletely() {
+    guard canRemove, removal.beginReview() else { return }
+    polling?.cancel()
+    polling = nil
+    refreshQueued = false
+    busy = .uninstall
+    operationNotice = nil
+    operationNoticeAction = .uninstall
+    operationStartedAt = Date()
+    Task {
+      let lease = await operationQueue.acquire(.action)
+      await removal.remove(client: client,
+        confirm: { review in
+          await self.confirmation(title: review.title, text: review.text, button: review.button)
+        },
+        unregisterLogin: {
+          if SMAppService.mainApp.status != .notRegistered { try SMAppService.mainApp.unregister() }
+          self.loginEnabled = SMAppService.mainApp.status == .enabled
+          guard SMAppService.mainApp.status == .notRegistered else { throw CompanionFailure.processFailed }
+        }, cleanup: { try await self.cleanAppSettings() })
+      busy = nil
+      operationStartedAt = nil
+      preview = nil
+      operationFailed = { if case .failed = removalState { return true }; return false }()
+      if removalState.backendRemoved {
+        snapshot = nil
+        statusFailure = nil
+        statusCheckNotice = nil
+      } else {
+        operationNotice = removalState.notice ?? "Removal was cancelled. Nothing was removed."
+      }
+      operationQueue.release(lease)
+      if activityAllowed { startPolling() }
+    }
+  }
+
+  func retryAppCleanup() {
+    guard busy == nil, removalState == .cleanupRequired else { return }
+    busy = .uninstall
+    Task {
+      let lease = await operationQueue.acquire(.action)
+      await removal.retryCleanup { try await self.cleanAppSettings() }
+      busy = nil
+      operationQueue.release(lease)
+    }
+  }
+
+  private func cleanAppSettings() async throws {
+    refreshOnClose = false
+    notificationsEnabled = false
+    clearCompanionPreferences(.standard)
+    let center = UNUserNotificationCenter.current()
+    center.removePendingNotificationRequests(withIdentifiers: companionOwnedNotificationIdentifiers)
+    center.removeDeliveredNotifications(withIdentifiers: companionOwnedNotificationIdentifiers)
+  }
+
+  func showAppInFinder() {
+    NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL])
+  }
+
   func setLoginEnabled(_ enabled: Bool) {
+    guard activityAllowed else { return }
     do {
       if enabled { try SMAppService.mainApp.register() }
       else { try SMAppService.mainApp.unregister() }
@@ -288,6 +380,8 @@ final class CompanionController: ObservableObject {
   }
 
   func setNotificationsEnabled(_ enabled: Bool) {
+    guard activityAllowed else { return }
+    let generation = removal.generation
     if !enabled {
       notificationsEnabled = false
       UserDefaults.standard.set(false, forKey: "statusNotifications")
@@ -295,6 +389,7 @@ final class CompanionController: ObservableObject {
     }
     Task {
       let granted = (try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert])) ?? false
+      guard removal.permitsActivity(generation) else { return }
       notificationsEnabled = granted
       UserDefaults.standard.set(granted, forKey: "statusNotifications")
       if !granted { message = "Enable PickerMux notifications in System Settings to receive recovery notices." }
@@ -302,6 +397,7 @@ final class CompanionController: ObservableObject {
   }
 
   private func notifyIfActionable(_ snapshot: CompanionSnapshot, recoveryCompleted: Bool) async {
+    guard activityAllowed else { return }
     let body: String?
     if recoveryCompleted || snapshot.recovery.status == "completed" { body = "PickerMux recovery completed. The picker is ready to review." }
     else if ["failed", "interrupted"].contains(snapshot.recovery.status) { body = "PickerMux recovery needs attention. Open the menu to review its status." }
@@ -330,7 +426,7 @@ final class CompanionController: ObservableObject {
   private func resultMessage(_ result: CompanionResult, action: CompanionAction) -> String {
     if result.certificationIncomplete { return "PickerMux is installed, but model certification is incomplete. Keep configured provider models available and choose Certify models to retry." }
     if action == .configurationApply { return "PickerMux setup completed. Review the status, then reopen Codex to load the picker." }
-    if action == .integrationDeactivate { return "PickerMux was turned off. Reopen Codex to load the native picker. The app and PickerMux settings remain installed." }
+    if action == .integrationDeactivate { return "PickerMux was turned off. Fully quit and reopen Codex to remove its models from the picker. The app and PickerMux settings remain installed." }
     if let update = result.update {
       if update.status == "updated" || update.status == "installed" { return "PickerMux was updated. Open Codex after reviewing the status; install the matching companion app when its version changes." }
       if update.status == "available", let version = update.targetVersion { return "PickerMux \(version) is available." }
@@ -360,95 +456,99 @@ private struct CompanionPanel: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
-      HStack {
-        Text("Use PickerMux in Codex").font(CompanionTypography.label)
-        Spacer()
-        Toggle("Use PickerMux in Codex", isOn: Binding(
-          get: { controller.integrationState.isEnabled },
-          set: { controller.setIntegrationEnabled($0) }))
-          .labelsHidden()
-          .toggleStyle(.switch)
-          .controlSize(.small)
-          .disabled(!controller.integrationState.canChange)
-          .accessibilityHint(controller.integrationState.guidance)
-      }
-      Text(controller.lastSetupFailed ? "Last setup attempt failed" : controller.integrationState.label)
-        .font(CompanionTypography.label)
-      if controller.busy != nil {
-        OperationProgress(controller: controller)
+      if controller.removalState.backendRemoved {
+        RemovalCompletionView(controller: controller)
       } else {
-        Text(controller.integrationState.guidance)
-          .font(CompanionTypography.body).foregroundStyle(.secondary)
-          .fixedSize(horizontal: false, vertical: true)
-      }
-      if controller.integrationState.needsSetupUpgrade {
-        Button("Complete PickerMux setup") { controller.setIntegrationEnabled(true, reviewInstalledSetup: true) }
-          .disabled(!controller.integrationState.canReviewSetup)
-      }
-      if controller.snapshot == nil && controller.busy == nil {
-        Text(controller.message).font(CompanionTypography.body).fixedSize(horizontal: false, vertical: true)
-      }
-      if let notice = controller.operationNotice,
-         controller.operationNoticeAction != .updateCheck && controller.operationNoticeAction != .update {
-        Text(controller.lastSetupFailed ? "Last setup attempt: \(notice)" : notice).font(CompanionTypography.body)
-          .foregroundStyle(.primary)
-          .fixedSize(horizontal: false, vertical: true)
-        if controller.lastSetupFailed {
-          Text("After fixing the cause, turn the switch on again. Check status does not retry setup.")
-            .font(CompanionTypography.body)
+        HStack {
+          Text("Use PickerMux in Codex").font(CompanionTypography.label)
+          Spacer()
+          Toggle("Use PickerMux in Codex", isOn: Binding(
+            get: { controller.integrationState.isEnabled },
+            set: { controller.setIntegrationEnabled($0) }))
+            .labelsHidden()
+            .toggleStyle(.switch)
+            .controlSize(.small)
+            .disabled(!controller.integrationState.canChange)
+            .accessibilityHint(controller.integrationState.guidance)
+        }
+        Text(controller.lastSetupFailed ? "Last setup attempt failed" : controller.integrationState.label)
+          .font(CompanionTypography.label)
+        if controller.busy != nil {
+          OperationProgress(controller: controller)
+        } else {
+          Text(controller.integrationState.guidance)
+            .font(CompanionTypography.body).foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
         }
-      }
-      Divider()
-      HStack(spacing: 6) {
-        Button(controller.isCheckingStatus ? "Checking…" : "Check status") {
-          Task { await controller.refreshStatus(manual: true) }
+        if controller.integrationState.needsSetupUpgrade {
+          Button("Complete PickerMux setup") { controller.setIntegrationEnabled(true, reviewInstalledSetup: true) }
+            .disabled(!controller.integrationState.canReviewSetup)
         }
-        .disabled(controller.isCheckingStatus)
-        Spacer(minLength: 0)
-        Button("Settings…") { controller.showSettings() }
-        Button("Help…") { controller.showHelp() }
-        Button("Quit") { NSApp.terminate(nil) }
-      }
-      .buttonStyle(.bordered)
-      .controlSize(.regular)
-      if let notice = controller.statusCheckNotice {
-        Text(notice).font(CompanionTypography.progress).foregroundStyle(.secondary)
-          .fixedSize(horizontal: false, vertical: true)
-      }
-      if let snapshot = controller.snapshot {
-        DisclosureGroup("Installation details") {
-          VStack(alignment: .leading, spacing: 4) {
-            statusRow("Status", snapshot.state)
-            statusRow("Codex", snapshot.desktop.status)
-            statusRow("Bridge", snapshot.service.status)
-            statusRow("Compatibility", snapshot.compatibility.status)
-            statusRow("Account cache", snapshot.accountCache.status)
-            statusRow("Integration", snapshot.integration.status)
-            if snapshot.recovery.status != "idle" {
-              statusRow("Recovery", snapshot.recovery.phase ?? snapshot.recovery.status)
-            }
-            if !snapshot.issues.isEmpty {
-              Text("The installation needs attention. Check it or review the available repair.")
-                .font(CompanionTypography.body).foregroundStyle(.secondary)
-            }
+        if controller.snapshot == nil && controller.busy == nil {
+          Text(controller.message).font(CompanionTypography.body).fixedSize(horizontal: false, vertical: true)
+        }
+        if let notice = controller.operationNotice,
+           controller.operationNoticeAction != .updateCheck && controller.operationNoticeAction != .update {
+          Text(controller.lastSetupFailed ? "Last setup attempt: \(notice)" : notice).font(CompanionTypography.body)
+            .foregroundStyle(.primary)
+            .fixedSize(horizontal: false, vertical: true)
+          if controller.lastSetupFailed {
+            Text("After fixing the cause, turn the switch on again. Check status does not retry setup.")
+              .font(CompanionTypography.body)
+              .fixedSize(horizontal: false, vertical: true)
           }
         }
-        .font(CompanionTypography.body)
-      }
-      if controller.refreshQueued {
-        Text("Refresh queued until Codex fully quits.").font(CompanionTypography.body)
-      }
-      let actions = CompanionAction.allCases.filter {
-        ![.configurationPreview, .configurationApply, .integrationDeactivate, .updateCheck, .update].contains($0) && controller.snapshot?.actions.contains($0) == true
-      }
-      if !actions.isEmpty {
         Divider()
-        ForEach(actions, id: \.self) { action in
-          Button(action == .refresh && controller.refreshQueued ? "Cancel queued refresh" : action.label) { controller.perform(action) }
-            .disabled(!controller.canRun(action))
+        HStack(spacing: 6) {
+          Button(controller.isCheckingStatus ? "Checking…" : "Check status") {
+            Task { await controller.refreshStatus(manual: true) }
+          }
+          .disabled(controller.isCheckingStatus || !controller.activityAllowed)
+          Spacer(minLength: 0)
+          Button("Settings…") { controller.showSettings() }
+          Button("Help…") { controller.showHelp() }
+          Button("Quit") { NSApp.terminate(nil) }
         }
+        .buttonStyle(.bordered)
         .controlSize(.regular)
+        if let notice = controller.statusCheckNotice {
+          Text(notice).font(CompanionTypography.progress).foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        if let snapshot = controller.snapshot {
+          DisclosureGroup("Installation details") {
+            VStack(alignment: .leading, spacing: 4) {
+              statusRow("Status", snapshot.state)
+              statusRow("Codex", snapshot.desktop.status)
+              statusRow("Bridge", snapshot.service.status)
+              statusRow("Compatibility", snapshot.compatibility.status)
+              statusRow("Account cache", snapshot.accountCache.status)
+              statusRow("Integration", snapshot.integration.status)
+              if snapshot.recovery.status != "idle" {
+                statusRow("Recovery", snapshot.recovery.phase ?? snapshot.recovery.status)
+              }
+              if !snapshot.issues.isEmpty {
+                Text("The installation needs attention. Check it or review the available repair.")
+                  .font(CompanionTypography.body).foregroundStyle(.secondary)
+              }
+            }
+          }
+          .font(CompanionTypography.body)
+        }
+        if controller.refreshQueued {
+          Text("Refresh queued until Codex fully quits.").font(CompanionTypography.body)
+        }
+        let actions = CompanionAction.allCases.filter {
+          ![.configurationPreview, .configurationApply, .integrationDeactivate, .updateCheck, .update, .uninstallPreview, .uninstall].contains($0) && controller.snapshot?.actions.contains($0) == true
+        }
+        if !actions.isEmpty {
+          Divider()
+          ForEach(actions, id: \.self) { action in
+            Button(action == .refresh && controller.refreshQueued ? "Cancel queued refresh" : action.label) { controller.perform(action) }
+              .disabled(!controller.canRun(action))
+          }
+          .controlSize(.regular)
+        }
       }
     }
     .font(CompanionTypography.body)
@@ -490,55 +590,103 @@ private struct CompanionSettings: View {
   @ObservedObject var controller: CompanionController
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 16) {
-      Text("PickerMux Settings").font(.title2.weight(.semibold))
-      GroupBox("Updates") {
-        VStack(alignment: .leading, spacing: 8) {
-          Text("App \(controller.appVersion) · Backend \(controller.snapshot?.version ?? "unavailable")")
-            .font(CompanionTypography.metadata).foregroundStyle(.secondary)
-          if let update = controller.update {
-            Text(update.status == "available" ? "PickerMux \(update.targetVersion ?? "update") is available." : "Update status: \(statusLabel(update.status))")
-              .font(CompanionTypography.body)
-          }
-          HStack {
-            Button(controller.busy == .updateCheck ? "Checking updates…" : "Check for updates") { controller.perform(.updateCheck) }
-              .disabled(!controller.canRun(.updateCheck))
-            if controller.snapshot?.actions.contains(.update) == true {
-              Button("Update PickerMux…") { controller.perform(.update) }
-                .disabled(!controller.canRun(.update))
+    ScrollView {
+      VStack(alignment: .leading, spacing: 16) {
+        Text("PickerMux Settings").font(.title2.weight(.semibold))
+        if controller.removalState.backendRemoved {
+          RemovalCompletionView(controller: controller)
+        } else {
+          GroupBox("Updates") {
+            VStack(alignment: .leading, spacing: 8) {
+              Text("App \(controller.appVersion) · Backend \(controller.snapshot?.version ?? "unavailable")")
+                .font(CompanionTypography.metadata).foregroundStyle(.secondary)
+              if let update = controller.update {
+                Text(update.status == "available" ? "PickerMux \(update.targetVersion ?? "update") is available." : "Update status: \(statusLabel(update.status))")
+                  .font(CompanionTypography.body)
+              }
+              HStack {
+                Button(controller.busy == .updateCheck ? "Checking updates…" : "Check for updates") { controller.perform(.updateCheck) }
+                  .disabled(!controller.canRun(.updateCheck))
+                if controller.snapshot?.actions.contains(.update) == true {
+                  Button("Update PickerMux…") { controller.perform(.update) }
+                    .disabled(!controller.canRun(.update))
+                }
+              }
+              if let notice = controller.operationNotice,
+                 controller.operationNoticeAction == .updateCheck || controller.operationNoticeAction == .update {
+                Text(notice).font(CompanionTypography.body)
+                  .foregroundStyle(.primary)
+                  .fixedSize(horizontal: false, vertical: true)
+              }
+              Text("CLI updates and companion-app replacement are separate. Install the matching app when its version changes.")
+                .font(CompanionTypography.body).foregroundStyle(.secondary)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
           }
-          if let notice = controller.operationNotice,
-             controller.operationNoticeAction == .updateCheck || controller.operationNoticeAction == .update {
-            Text(notice).font(CompanionTypography.body)
-              .foregroundStyle(.primary)
-              .fixedSize(horizontal: false, vertical: true)
+          VStack(alignment: .leading, spacing: 10) {
+            Toggle("Start PickerMux companion at login", isOn: Binding(
+              get: { controller.loginEnabled }, set: { controller.setLoginEnabled($0) }))
+            Toggle("Refresh picker automatically when Codex closes", isOn: $controller.refreshOnClose)
+            Toggle("Notify when an update or repair needs attention", isOn: Binding(
+              get: { controller.notificationsEnabled }, set: { controller.setNotificationsEnabled($0) }))
           }
-          Text("CLI updates and companion-app replacement are separate. Install the matching app when its version changes.")
+          .disabled(!controller.activityAllowed)
+          Text("Status is checked every five seconds. Automatic refresh is off by default and runs after Codex fully closes. Updates, additional certification and recovery require explicit confirmation.")
             .font(CompanionTypography.body).foregroundStyle(.secondary)
+          if let checked = controller.lastStatusCheck {
+            Text("Last status check: \(checked.formatted(date: .omitted, time: .standard))")
+              .font(CompanionTypography.metadata).foregroundStyle(.secondary)
+          }
+          GroupBox("Remove PickerMux") {
+            VStack(alignment: .leading, spacing: 10) {
+              Text("Turning the Codex switch off is reversible. Fully quit and reopen Codex to load its native picker. Complete removal also deletes PickerMux's CLI, managed data, verified backups and registered provider credentials.")
+                .fixedSize(horizontal: false, vertical: true)
+              Button(controller.busy == .uninstall ? "Removing PickerMux…" : "Remove PickerMux completely…", role: .destructive) { controller.removeCompletely() }
+                .disabled(!controller.canRemove)
+              if controller.busy == .uninstall { OperationProgress(controller: controller) }
+              if let notice = controller.removalState.notice {
+                Text(notice).fixedSize(horizontal: false, vertical: true)
+              } else if !controller.canRemove {
+                Text(controller.snapshot?.usesBundledBackend == true || controller.snapshot?.supportsNativeUninstall == false ?
+                "Native-only app removal requires matching CLI 0.9.5 or newer. Explicitly update the CLI and app, or fully quit Codex and run ~/.local/bin/pickermux uninstall --purge in Terminal. An older CLI restores the previous configuration and may reactivate an earlier Ollama integration. Nothing is installed automatically for removal." :
+                  "Fully quit Codex with Command-Q, finish any pending repair and check status before removal.")
+                  .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+              }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+          }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        Text("PickerMux is an unofficial community project, unaffiliated with OpenAI, Codex or LM Studio.")
+          .font(CompanionTypography.body).foregroundStyle(.secondary)
       }
-      VStack(alignment: .leading, spacing: 10) {
-        Toggle("Start PickerMux companion at login", isOn: Binding(
-          get: { controller.loginEnabled }, set: { controller.setLoginEnabled($0) }))
-        Toggle("Refresh picker automatically when Codex closes", isOn: $controller.refreshOnClose)
-        Toggle("Notify when an update or repair needs attention", isOn: Binding(
-          get: { controller.notificationsEnabled }, set: { controller.setNotificationsEnabled($0) }))
+      .font(CompanionTypography.body)
+      .controlSize(.regular)
+      .padding(20)
+      .frame(maxWidth: .infinity, alignment: .leading)
+    }
+    .frame(width: 500, height: controller.removalState.backendRemoved ? 360 : 640)
+  }
+}
+
+private struct RemovalCompletionView: View {
+  @ObservedObject var controller: CompanionController
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      Text(controller.removalState == .removed ? "PickerMux removed" : "App cleanup needs attention")
+        .font(CompanionTypography.label)
+      Text(controller.removalState.notice ?? "").fixedSize(horizontal: false, vertical: true)
+      if controller.removalState == .cleanupRequired {
+        Button("Retry app cleanup") { controller.retryAppCleanup() }.disabled(controller.busy != nil)
       }
-      Text("Status is checked every five seconds. Automatic refresh is off by default and runs after Codex fully closes. Updates, additional certification and recovery require explicit confirmation.")
-        .font(CompanionTypography.body).foregroundStyle(.secondary)
-      if let checked = controller.lastStatusCheck {
-        Text("Last status check: \(checked.formatted(date: .omitted, time: .standard))")
-          .font(CompanionTypography.metadata).foregroundStyle(.secondary)
+      HStack {
+        Button("Show app in Finder") { controller.showAppInFinder() }
+        Button("Quit PickerMux") { NSApp.terminate(nil) }
       }
-      Text("PickerMux is an unofficial community project, unaffiliated with OpenAI, Codex or LM Studio.")
-        .font(CompanionTypography.body).foregroundStyle(.secondary)
+      Text("The inactive compatibility alias in Codex configuration supports old chats without a running PickerMux service. The app is ready to remove from this Mac after cleanup.")
+        .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
     }
     .font(CompanionTypography.body)
-    .controlSize(.regular)
-    .padding(20)
-    .frame(width: 500)
   }
 }
 
@@ -551,7 +699,7 @@ private struct CompanionHelp: View {
       if let failure = controller.statusFailure {
         Text(failure.message).font(CompanionTypography.body)
       }
-      Text("PickerMux adds models from configured providers using the OpenAI Responses API alongside native Codex models. Turn on Use PickerMux in Codex to install and activate automatically. Turn it off to return to native Codex models while retaining PickerMux settings and certifications.")
+      Text("PickerMux adds models from configured providers using the OpenAI Responses API alongside native Codex models. Turn on Use PickerMux in Codex to install and activate automatically. Turn it off, then fully quit and reopen Codex to load its native picker without PickerMux models. Settings and certifications are retained for reactivation. Use Remove PickerMux completely in Settings for full removal.")
       Text("Fully quit Codex with Command-Q and keep the configured provider and its models available during setup. New installations use LM Studio by default. Setup may send live certification test prompts.")
       Text("Requires Node.js 22.15 or newer at /opt/homebrew/bin/node, /usr/local/bin/node or /usr/bin/node. A runtime available only through a shell profile cannot be used.")
         .font(CompanionTypography.body).foregroundStyle(.secondary)
@@ -560,7 +708,7 @@ private struct CompanionHelp: View {
         Link("Troubleshooting", destination: URL(string: "https://github.com/patrickschiller/pickermux/blob/main/docs/TROUBLESHOOTING.md")!)
       }
       Button("Check status") { Task { await controller.refreshStatus(manual: true) } }
-        .disabled(controller.isCheckingStatus)
+        .disabled(controller.isCheckingStatus || !controller.activityAllowed)
       if let notice = controller.statusCheckNotice { Text(notice).font(CompanionTypography.body).foregroundStyle(.secondary) }
     }
     .font(CompanionTypography.body)

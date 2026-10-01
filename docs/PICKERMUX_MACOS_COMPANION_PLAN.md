@@ -1,7 +1,7 @@
 # PickerMux Optimierung und macOS Erweiterung
 
 Stand: 1. Oktober 2026. Ausgangsanalyse auf Basis von PickerMux v0.8.3,
-Repository-Commit `bb4a02d`; Umsetzung für v0.9.4 auf dem Topic-Branch.
+Repository-Commit `bb4a02d`; Umsetzung für v0.9.5 auf dem Topic-Branch.
 Der Maintainer hat v0.8.3 selbst live getestet und die Umsetzung aller sechs
 Phasen ausdrücklich freigegeben. Diese Rückmeldung gilt als funktionierende
 Ausgangsbasis; sie ersetzt nicht die Live-Abnahme der neuen App und Recovery.
@@ -259,7 +259,7 @@ zeigen und vorab prüfen; die Aktivierung wird bewusst gestartet. Sie bleibt
 von der Recovery nach einem Codex-Update getrennt.
 
 Der Companion-Build erzeugt zusätzlich zum Universal-Archiv ein versioniertes
-`PickerMux-v0.9.4-macos-universal.dmg`. Das Image enthält ausschließlich
+`PickerMux-v0.9.5-macos-universal.dmg`. Das Image enthält ausschließlich
 `PickerMux.app` und einen `Applications`-Link auf `/Applications`. Nutzer
 kopieren die App nach „Programme“, werfen das Image aus und öffnen die
 kopierte App. Node.js 22.15+ bleibt eine externe Voraussetzung. Das Kopieren
@@ -347,6 +347,19 @@ Loaded-Erkennung, Efficient Fidelity und lokaler Kompaktierung. Weitere
 Responses-Provider werden explizit über eine CLI-Konfiguration aktiviert;
 die App übernimmt diese Konfiguration. Dies erweitert die Providerunterstützung
 nicht, sondern bildet die bereits vorhandenen Fähigkeiten in Produkttexten ab.
+
+v0.9.5 ergänzt in Settings „Remove PickerMux completely…“ mit frischem,
+tokengebundenem Entfernungsplan und ausdrücklicher Bestätigung. Die bestehende
+Purge-Transaktion erhält einen separat angeforderten nativen
+Wiederherstellungsmodus: Frühere Gateway-/Katalog-Overrides werden dabei nicht
+wieder aktiviert. Der bisherige CLI-Uninstall stellt weiterhin die ursprüngliche
+Konfiguration wieder her. Login-Start wird vor der Entfernung deaktiviert;
+danach werden nur App-eigene Einstellungen und Benachrichtigungen bereinigt,
+und wartende Status-/Refresh-Aktionen werden verworfen. Die App löscht sich
+nicht selbst; die Abschlussansicht erklärt das Entfernen über den Finder.
+Native Anmeldung, Konto-Katalog und Chats bleiben erhalten. Der inaktive
+historische Provider-Eintrag trägt keine Modelle bei. Die reale GUI-Abnahme
+dieser Entfernung gehört weiterhin zum ausdrücklich bestätigten Live-Test.
 
 Die Code-Umsetzung aller sechs Phasen liegt vor. Die Abnahme von Phase 4
 benötigt noch den realen GUI-/TCC-Recovery-Test mit der neuen App. Für die
