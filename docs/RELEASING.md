@@ -85,6 +85,13 @@ relabeled as production signing or used to bypass `--release`.
 
 ## Automated release workflow
 
+The tag always runs hosted macOS source verification. Automated signing and
+publication require the repository-global variable
+`PICKERMUX_SIGNING_RUNNER_ENABLED` to be exactly `true`, set only after the
+signing runner and protected environment are provisioned. When unset or
+disabled, both jobs are skipped; use the local production route below.
+Skipping automation does not waive any production release requirement.
+
 The tag workflow in `.github/workflows/release.yml` performs these gates:
 
 1. Require the tag to match `package.json` and the exact current `origin/main`
@@ -103,8 +110,9 @@ The tag workflow in `.github/workflows/release.yml` performs these gates:
 
 The separately dispatched signing job in `companion.yml` remains useful for
 reviewing a signed candidate before tagging. It does not publish a Release.
-A missing signing runner or environment blocks publication and must be
-provisioned before pushing the tag. Do not substitute an unsigned hosted build.
+Do not enable automation with a missing runner or environment, or substitute
+an unsigned hosted build. Signing credentials can remain entirely on a
+maintainer's Mac when using the local production route.
 
 After the exact approved commit is on main and all gates are ready:
 
@@ -115,6 +123,35 @@ git push origin v0.10.0
 
 Watch the workflow through publication. If a candidate is wrong, fix the
 source and publish a new version; do not replace immutable published bytes.
+
+## Local production release
+
+Use this route when Developer ID signing and the validated notary profile are
+available on the maintainer's Mac, without a GitHub signing runner. Leave the
+automation opt-in disabled. All preflight, acceptance, source ownership and
+production signing requirements above remain mandatory.
+
+1. Build and stage with `--release` using the commands above. Retain the actual
+   Apple acceptance, signature, stapled-ticket, Gatekeeper and mounted-image
+   verification evidence. The reviewed backend bytes must match the exact
+   release source on protected `main`.
+2. Confirm that exact `main` commit has green required CI, create its annotated
+   version tag, and wait for the tag's hosted Node and Swift verification.
+3. Verify the staged publication directory again, then create the release with
+   one explicit DMG and its generated notes. Refuse an existing release; never
+   replace its assets.
+
+```bash
+node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.10.0 --tag v0.10.0
+gh release create v0.10.0 /tmp/pickermux-public-0.10.0/PickerMux-macos-universal.dmg \
+  --verify-tag --title "PickerMux v0.10.0" \
+  --notes-file /tmp/pickermux-public-0.10.0/release-notes.md
+```
+
+Complete the independent public-download verification below before announcing
+the release. Record hosted source checks as passed, automated signing and
+publication as skipped, and the actual local production checks separately.
+A skipped GitHub signing job is not evidence that notarization passed.
 
 ## Public verification
 

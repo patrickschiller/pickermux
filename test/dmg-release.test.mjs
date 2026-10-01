@@ -134,6 +134,7 @@ test("tag release workflow gates one explicit DMG on exact main, tests and prote
   assert.match(workflow, /run: npm run verify/u);
   assert.match(workflow, /run: swift test --package-path macos/u);
   assert.match(workflow, /runs-on: \[self-hosted, macOS, pickermux-signing\]/u);
+  assert.match(workflow, /signed-dmg:\n    name: [^\n]+\n    needs: verify\n    if: vars\.PICKERMUX_SIGNING_RUNNER_ENABLED == 'true'/u);
   assert.match(workflow, /environment: companion-signing/u);
   assert.match(workflow, /scripts\/build-companion\.mjs --release/u);
   assert.match(workflow, /needs: signed-dmg/u);

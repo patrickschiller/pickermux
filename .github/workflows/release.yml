@@ -40,6 +40,9 @@ jobs:
   signed-dmg:
     name: Build Developer ID signed and notarized DMG
     needs: verify
+    if: vars.PICKERMUX_SIGNING_RUNNER_ENABLED == 'true'
+    # Opt in only after provisioning the runner and protected environment.
+    # Local production releases follow the same gates in docs/RELEASING.md.
     # Signing is confined to the provisioned runner and protected environment.
     # Apple Development and unsigned builds are never publication candidates.
     runs-on: [self-hosted, macOS, pickermux-signing]
