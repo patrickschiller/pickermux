@@ -8,12 +8,13 @@ import test from "node:test";
 
 import { prepareDmgRelease, verifyDmgPublication } from "../scripts/prepare-dmg-release.mjs";
 import { PICKERMUX_DMG_ASSET, dmgReleaseMarker, parseDmgReleaseRecord } from "../src/companion-release.mjs";
+import { checkForCompanionUpdate } from "../src/companion-update.mjs";
 
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const version = "1.2.3";
 const tag = `v${version}`;
 
-async function fixture(t) {
+async function fixture(t, releaseVersion = version) {
   const root = await mkdtemp(path.join(tmpdir(), "pickermux-dmg-publication-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const sourceDirectory = path.join(root, "source");
@@ -21,11 +22,11 @@ async function fixture(t) {
   await mkdir(sourceDirectory);
   const diskImage = Buffer.from("fixture immutable signed and notarized disk image");
   const manifest = {
-    schemaVersion: 1, product: "pickermux-companion", version, minimumMacOS: "13.0",
+    schemaVersion: 1, product: "pickermux-companion", version: releaseVersion, minimumMacOS: "13.0",
     architectures: ["arm64", "x86_64"], signing: "developer-id-notarized",
     backendManifestSha256: "c".repeat(64),
-    archive: `PickerMux-v${version}-macos-universal.tar.gz`, archiveSha256: "b".repeat(64),
-    diskImage: { file: `PickerMux-v${version}-macos-universal.dmg`, sha256: hash(diskImage), format: "UDZO", filesystem: "HFS+", installation: "drag-to-applications" },
+    archive: `PickerMux-v${releaseVersion}-macos-universal.tar.gz`, archiveSha256: "b".repeat(64),
+    diskImage: { file: `PickerMux-v${releaseVersion}-macos-universal.dmg`, sha256: hash(diskImage), format: "UDZO", filesystem: "HFS+", installation: "drag-to-applications" },
   };
   const saveManifest = async () => {
     const bytes = Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`);
@@ -47,6 +48,41 @@ test("publication stages exactly one unchanged DMG with a bound body checksum", 
   assert.deepEqual(parseDmgReleaseRecord(body, { version, file: PICKERMUX_DMG_ASSET }), { version, file: PICKERMUX_DMG_ASSET, sha256: result.sha256, signing: result.signing });
   assert.deepEqual(await verifyDmgPublication({ directory: value.outputDirectory, tag }), result);
   assert.deepEqual(await readFile(path.join(value.sourceDirectory, value.manifest.diskImage.file)), value.diskImage);
+  assert.doesNotMatch(body, /introduces the macOS menu-bar app|previous public release|v0\.8\.3/u);
+});
+
+test("0.20.0 publication describes provider tokens and retains one canonical updater record", async (t) => {
+  const value = await fixture(t, "0.20.0");
+  const result = await prepareDmgRelease({ ...value, tag: "v0.20.0" });
+  const body = await readFile(path.join(value.outputDirectory, "release-notes.md"), "utf8");
+  assert.match(body, /Changes in v0\.20\.0/u);
+  assert.match(body, /each external provider's input, output and total tokens/u);
+  assert.match(body, /last finalized request/u);
+  assert.match(body, /since bridge start/u);
+  assert.match(body, /Missing counts are never treated as zero/u);
+  assert.match(body, /no prompts, response text, credentials or request identifiers are persisted/u);
+  assert.match(body, /For a first installation.*Use PickerMux in Codex.*to install the bundled backend/u);
+  assert.match(body, /Existing users quit PickerMux, replace the app in Applications, eject the disk image and reopen PickerMux from Applications/u);
+  assert.match(body, /Keep Codex fully quit and your provider models available, then choose \*\*Settings → Update installed backend…\*\*/u);
+  assert.doesNotMatch(body, /Use PickerMux in Codex.*install or upgrade/u);
+  assert.doesNotMatch(body, /introduces the macOS menu-bar app|previous public release|v0\.8\.3/u);
+  assert.equal(body.split("pickermux-dmg-release-v1").length, 2);
+  assert.deepEqual(parseDmgReleaseRecord(body, { version: "0.20.0", file: PICKERMUX_DMG_ASSET }), {
+    version: "0.20.0", file: PICKERMUX_DMG_ASSET, sha256: hash(value.diskImage), signing: "developer-id-notarized",
+  });
+  assert.equal(await readFile(path.join(value.outputDirectory, "SHA256SUMS"), "utf8"), `${result.sha256}  ${PICKERMUX_DMG_ASSET}\n`);
+  assert.deepEqual(await verifyDmgPublication({ directory: value.outputDirectory, tag: "v0.20.0" }), result);
+  const update = await checkForCompanionUpdate({
+    currentVersion: "0.10.0",
+    fetchImpl: async () => Response.json({
+      tag_name: "v0.20.0", draft: false, prerelease: false, body,
+      assets: [{ name: PICKERMUX_DMG_ASSET, browser_download_url: `https://github.com/patrickschiller/pickermux/releases/download/v0.20.0/${PICKERMUX_DMG_ASSET}` }],
+    }),
+  });
+  assert.equal(update.status, "available");
+  assert.equal(update.distribution, "dmg");
+  assert.equal(update.targetVersion, "0.20.0");
+  assert.equal(update.diskImageSha256, result.sha256);
 });
 
 test("unsigned and Apple Development builds cannot become public releases", async (t) => {

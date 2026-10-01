@@ -11,6 +11,19 @@ published as GitHub Releases.
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-10-02
+
+### Added
+
+- Show provider-reported input, output, and total tokens in the menu-bar panel,
+  grouped by external provider for the last model request and since bridge
+  start. Include tool rounds and context summaries, mark unavailable usage and
+  partial totals, and reset the in-memory counters when the bridge restarts.
+- Add the finite `token-usage-v1` companion status capability while retaining
+  support for older backends. Observe bounded JSON and SSE replies without
+  changing provider requests or response bytes; native routes, standalone
+  search, and recognized certification requests are excluded.
+
 ## [0.10.0] - 2026-10-01
 
 ### Added
@@ -765,7 +778,8 @@ confirm the release date before tagging. See the
   paths and file types, refuses root execution and foreign launchers, and
   restores the previous distribution state when activation fails.
 
-[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.20.0...HEAD
+[0.20.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.20.0
 [0.10.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.10.0
 [0.9.6]: #096---2026-10-01
 [0.9.5]: #095---2026-10-01

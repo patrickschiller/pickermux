@@ -12,6 +12,7 @@ import { isCodexDesktopRunning } from "./codex-desktop-state.mjs";
 import { validateDistributionInstallation } from "./distribution-installer.mjs";
 import { FULL_REFRESH_PHASES, readFullRefreshCheckpoint } from "./full-refresh.mjs";
 import { readPickerMuxMetadata } from "./version.mjs";
+import { projectTokenUsageSnapshot } from "./token-usage.mjs";
 
 const execFile = promisify(execFileCallback);
 const executeReadOnlyProbe = (file, argumentsList, options = {}) => execFile(file, argumentsList, { ...options, timeout: 4_000 });
@@ -325,7 +326,13 @@ export async function collectCompanionStatus({ probes = {}, probeTimeoutMs = 5_0
   if (!isPlainRecord(probes) || !Number.isSafeInteger(probeTimeoutMs) || probeTimeoutMs < 1 || probeTimeoutMs > 30_000) throw requestError();
   const names = ["metadata", ...Object.keys(STATUS_ENUMS)];
   const observed = await Promise.allSettled(names.map((name) => boundedProbe(probes[name], probeTimeoutMs)));
-  const snapshot = { schemaVersion: COMPANION_SCHEMA_VERSION, capabilities: ["integration-toggle-v1", "native-uninstall-v1"], version: "unknown", state: "degraded" };
+  const snapshot = {
+    schemaVersion: COMPANION_SCHEMA_VERSION,
+    capabilities: ["integration-toggle-v1", "native-uninstall-v1", "token-usage-v1"],
+    version: "unknown",
+    state: "degraded",
+    tokenUsage: { schemaVersion: 1, status: "unavailable", providers: [] },
+  };
   const issues = [];
   function issue(code) { issues.push({ code, message: ISSUE_MESSAGES[code] }); }
   names.forEach((name, index) => {
@@ -351,6 +358,15 @@ export async function collectCompanionStatus({ probes = {}, probeTimeoutMs = 5_0
       else status = name === "installation" ? "invalid" : "unknown";
     }
     snapshot[name] = { status };
+    if (name === "service" && status === "running" && raw?.healthy === true) {
+      // Only the instance-attested health payload may supply usage. Rebuild
+      // its numeric projection so capability coordinates and provider content
+      // cannot enter the companion's observational status protocol.
+      try {
+        const usage = projectTokenUsageSnapshot(raw.health?.tokenUsage);
+        if (usage) snapshot.tokenUsage = usage;
+      } catch { /* Optional telemetry cannot change lifecycle permissions. */ }
+    }
     if (name === "recovery") {
       snapshot.recovery.phase = FULL_REFRESH_PHASES.includes(raw?.phase) ? raw.phase : null;
       snapshot.recovery.operationId = safeOperationId(raw?.operationId) ?? null;

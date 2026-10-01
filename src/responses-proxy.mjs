@@ -19,6 +19,8 @@ import {
   normalizeLmStudioToolRequest,
 } from "./tool-normalization.mjs";
 import { isCertificationRequest } from "./certification-transport.mjs";
+import { isValidProviderId } from "./provider-id.mjs";
+import { createTokenUsageObserver } from "./token-usage.mjs";
 import {
   createCompactionEnvelopeCodec,
   isCompactionEnvelope,
@@ -1323,6 +1325,7 @@ function relayUpstream({
   responseCodec,
   webSearchResponse = false,
   compactionResponse,
+  tokenUsageObserver,
 }) {
   return new Promise((resolve) => {
     // Body decoding and admission can await work before these listeners exist.
@@ -1340,7 +1343,7 @@ function relayUpstream({
     let transformMode;
     let sseTransformer;
 
-    const finish = () => {
+    const finish = (success = false) => {
       if (settled) return;
       settled = true;
       clearTimeout(headersTimer);
@@ -1348,6 +1351,7 @@ function relayUpstream({
       clearTimeout(totalTimer);
       request.off("aborted", onClientAbort);
       response.off("close", onClientClose);
+      tokenUsageObserver?.finish(success);
       resolve();
     };
 
@@ -1411,6 +1415,7 @@ function relayUpstream({
       },
       (incoming) => {
         upstreamResponse = incoming;
+        tokenUsageObserver?.headers(incoming.statusCode, incoming.headers);
         clearTimeout(headersTimer);
         idleTimer = setTimeout(
           () => timeout("UPSTREAM_IDLE_TIMEOUT"),
@@ -1501,6 +1506,7 @@ function relayUpstream({
 
         incoming.on("data", (chunk) => {
           if (settled || terminating) return;
+          tokenUsageObserver?.push(chunk);
           clearTimeout(idleTimer);
           idleTimer = setTimeout(
             () => timeout("UPSTREAM_IDLE_TIMEOUT"),
@@ -1568,7 +1574,7 @@ function relayUpstream({
               for (const transformed of sseTransformer.finish()) writeChunk(transformed);
             }
             if (!response.destroyed && !response.writableEnded) response.end();
-            finish();
+            finish(!request.aborted && !response.destroyed);
           } catch (error) {
             fail(error);
           }
@@ -1629,6 +1635,7 @@ export function createResponsesProxy({
   compactionSecret,
   externalRequestGate = async () => {},
   onTextOnlyCompaction,
+  onTokenUsage,
 } = {}) {
   if (!registry || typeof registry.resolve !== "function") {
     throw new TypeError("A model registry with resolve(model) is required");
@@ -1641,6 +1648,9 @@ export function createResponsesProxy({
   }
   if (typeof externalRequestGate !== "function") {
     throw new TypeError("externalRequestGate must be a function");
+  }
+  if (onTokenUsage !== undefined && typeof onTokenUsage !== "function") {
+    throw new TypeError("onTokenUsage must be a function");
   }
   const limits = normalizeLimits(configuredLimits);
   const nativeBase = assertApiBaseUrl(nativeBaseUrl);
@@ -1806,18 +1816,28 @@ export function createResponsesProxy({
         }
       }
 
-      await relayUpstream({
-        request,
-        response,
-        target,
-        headers,
-        body: outboundBody,
-        limits,
-        transports,
-        lookup,
-        responseCodec,
-        compactionResponse,
-      });
+      const tokenUsageObserver = kind === "external" && !certificationRequest &&
+          onTokenUsage && isValidProviderId(route.providerId)
+        ? createTokenUsageObserver({ onUsage: (usage) => onTokenUsage(route.providerId, usage) })
+        : undefined;
+      try {
+        await relayUpstream({
+          request,
+          response,
+          target,
+          headers,
+          body: outboundBody,
+          limits,
+          transports,
+          lookup,
+          responseCodec,
+          compactionResponse,
+          tokenUsageObserver,
+        });
+      } catch (error) {
+        tokenUsageObserver?.finish();
+        throw error;
+      }
     } catch (error) {
       sendProxyError(response, error);
     }

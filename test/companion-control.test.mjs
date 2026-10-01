@@ -176,6 +176,110 @@ test("healthy status projects only bounded public values from private probes", a
   assert.ok(result.actions.includes("certify"));
   assert.equal(result.actions.includes("recover"), false);
   assert.ok(result.actions.includes("configuration-apply"));
+  assert.deepEqual(result.tokenUsage, { schemaVersion: 1, status: "unavailable", providers: [] });
+});
+
+function tokenUsageSnapshot() {
+  return {
+    schemaVersion: 1,
+    status: "available",
+    providers: [{
+      providerId: "lmstudio",
+      requests: 3,
+      unavailableRequests: 1,
+      last: { status: "available", inputTokens: 100, outputTokens: 20, totalTokens: 120 },
+      totals: { inputTokens: 200, outputTokens: 40, totalTokens: 240 },
+    }, {
+      providerId: "remote-provider",
+      requests: 1,
+      unavailableRequests: 1,
+      last: { status: "unavailable" },
+      totals: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+    }],
+  };
+}
+
+test("companion exposes only projected usage from an attested running bridge", async () => {
+  const usage = tokenUsageSnapshot();
+  const privateUsage = structuredClone(usage);
+  privateUsage.capability = SECRET;
+  privateUsage.providers[0].model = SECRET;
+  privateUsage.providers[0].baseUrl = SECRET;
+  privateUsage.providers[0].last.prompt = SECRET;
+  privateUsage.providers[0].totals.credential = SECRET;
+  const result = await collectCompanionStatus({ probes: probes({
+    service: async () => ({ status: "running", healthy: true, health: {
+      tokenUsage: privateUsage, capability: SECRET, prompt: SECRET,
+    } }),
+  }) });
+  assert.deepEqual(result.tokenUsage, usage);
+  assert.equal(JSON.stringify(result).includes(SECRET), false);
+  assert.equal(result.state, "ready");
+  assert.deepEqual(result.actions, (await collectCompanionStatus({ probes: probes() })).actions);
+  assert.deepEqual(result.issues, []);
+});
+
+test("usage remains unavailable for old, unverified, stopped or unreachable bridges", async () => {
+  for (const service of [
+    { status: "running", healthy: true, health: {} },
+    { status: "running", health: { tokenUsage: tokenUsageSnapshot() } },
+    { status: "running", healthy: false, health: { tokenUsage: tokenUsageSnapshot() } },
+    { status: "unhealthy", healthy: true, health: { tokenUsage: tokenUsageSnapshot() } },
+    { status: "stopped", healthy: true, health: { tokenUsage: tokenUsageSnapshot() } },
+    { status: "unreachable" },
+  ]) {
+    const result = await collectCompanionStatus({ probes: probes({ service: async () => service }) });
+    assert.deepEqual(result.tokenUsage, { schemaVersion: 1, status: "unavailable", providers: [] });
+  }
+});
+
+test("malformed usage cannot disclose payloads or alter companion permissions", async () => {
+  const malformed = [null, [], {}, { ...tokenUsageSnapshot(), schemaVersion: 2 },
+    { ...tokenUsageSnapshot(), status: SECRET }];
+  const mutations = [
+    (value) => { value.providers[0].providerId = SECRET; },
+    (value) => { value.providers[0].providerId = "../private-provider"; },
+    (value) => { value.providers[0].requests = -1; },
+    (value) => { value.providers[0].requests = 0; },
+    (value) => { value.providers[0].unavailableRequests = 4; },
+    (value) => { value.providers[0].last.inputTokens = 1.5; },
+    (value) => { value.providers[0].last.inputTokens = "100"; },
+    (value) => { value.providers[0].last.totalTokens = 121; },
+    (value) => { value.providers[0].totals.inputTokens = Number.MAX_SAFE_INTEGER + 1; },
+    (value) => { value.providers[0].totals.totalTokens = 241; },
+    (value) => { value.providers[0].last.inputTokens = 300; value.providers[0].last.totalTokens = 320; },
+    (value) => { value.providers.push(structuredClone(value.providers[0])); },
+    (value) => { value.status = "unavailable"; },
+    (value) => { value.providers = Array.from({ length: 129 }, (_, index) => ({ ...value.providers[0], providerId: `provider-${index}` })); },
+  ];
+  for (const mutate of mutations) {
+    const value = tokenUsageSnapshot();
+    mutate(value);
+    malformed.push(value);
+  }
+  const baseline = await collectCompanionStatus({ probes: probes() });
+  for (const tokenUsage of malformed) {
+    const result = await collectCompanionStatus({ probes: probes({
+      service: async () => ({ status: "running", healthy: true, health: { tokenUsage } }),
+    }) });
+    assert.deepEqual(result.tokenUsage, { schemaVersion: 1, status: "unavailable", providers: [] });
+    assert.equal(result.state, baseline.state);
+    assert.deepEqual(result.actions, baseline.actions);
+    assert.deepEqual(result.issues, baseline.issues);
+    assert.equal(JSON.stringify(result).includes(SECRET), false);
+  }
+});
+
+test("empty session usage and overflow totals retain their explicit meanings", async () => {
+  for (const usage of [
+    { schemaVersion: 1, status: "available", providers: [] },
+    { ...tokenUsageSnapshot(), providers: [{ ...tokenUsageSnapshot().providers[0], totals: null }] },
+  ]) {
+    const result = await collectCompanionStatus({ probes: probes({
+      service: async () => ({ status: "running", healthy: true, health: { tokenUsage: usage } }),
+    }) });
+    assert.deepEqual(result.tokenUsage, usage);
+  }
 });
 
 test("status isolates failed probes and never serializes their raw errors", async () => {
@@ -407,7 +511,7 @@ test("toggle capability is server-owned and OFF remains possible without provide
     accountCache: async () => ({ status: "refresh-required" }),
     service: async () => ({ status: "stopped" }),
   }) });
-  assert.deepEqual(result.capabilities, ["integration-toggle-v1", "native-uninstall-v1"]);
+  assert.deepEqual(result.capabilities, ["integration-toggle-v1", "native-uninstall-v1", "token-usage-v1"]);
   assert.ok(result.actions.includes("integration-deactivate"));
   assert.equal(JSON.stringify(result).includes(SECRET), false);
   for (const override of [

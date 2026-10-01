@@ -73,6 +73,12 @@ optional login startup, refresh after Codex closes, and notifications. After a
 Codex update, **Repair after a Codex update…** explains the recovery and asks
 before quitting and reopening Codex. Catalog changes require a full restart.
 
+The panel's **Token usage** section shows input, output, and total tokens per
+external provider for the last model request and since the bridge started.
+It uses provider-reported counts from requests through PickerMux, including
+tool rounds and context summaries. Missing counts are marked unavailable;
+partial sums are labelled. See [token usage](docs/MACOS_COMPANION.md#token-usage).
+
 ## Switch off or remove
 
 Turning **Use PickerMux in Codex** off restores the native picker while retaining

@@ -17,6 +17,32 @@ final class FixtureTests: XCTestCase {
     XCTAssertEqual(partial.state, "degraded")
   }
 
+  func testActualCliTokenUsagePreservesLatestPartialUnknownAndOverflowCounts() throws {
+    let snapshot = try CompanionSnapshot.decode(fixture("token-status"))
+    XCTAssertTrue(snapshot.supportsTokenUsage)
+    let usage = try XCTUnwrap(snapshot.tokenUsage)
+    XCTAssertEqual(usage.status, .available)
+    XCTAssertEqual(usage.providers.count, 3)
+    let lmstudio = try XCTUnwrap(usage.providers.first { $0.providerId == "lmstudio" })
+    XCTAssertEqual(lmstudio.requests, 3)
+    XCTAssertEqual(lmstudio.unavailableRequests, 1)
+    XCTAssertEqual(lmstudio.last.counts?.inputTokens, 100)
+    XCTAssertEqual(lmstudio.last.counts?.outputTokens, 20)
+    XCTAssertEqual(lmstudio.last.counts?.totalTokens, 120)
+    XCTAssertEqual(lmstudio.displayTotals?.inputTokens, 200)
+    XCTAssertEqual(lmstudio.displayTotals?.outputTokens, 40)
+    XCTAssertEqual(lmstudio.displayTotals?.totalTokens, 240)
+    XCTAssertNotNil(lmstudio.missingUsageMessage)
+    let unknown = try XCTUnwrap(usage.providers.first { $0.providerId == "remote-provider" })
+    XCTAssertEqual(unknown.last.status, .unavailable)
+    XCTAssertNil(unknown.last.counts)
+    XCTAssertNil(unknown.displayTotals)
+    let overflow = try XCTUnwrap(usage.providers.first { $0.providerId == "overflow-provider" })
+    XCTAssertEqual(overflow.last.counts?.totalTokens, 120)
+    XCTAssertNil(overflow.totals)
+    XCTAssertNil(overflow.displayTotals)
+  }
+
   func testActualCliPreviewEnvelopeHasNoNestedVersionRequirement() throws {
     let result = try CompanionResult.decode(fixture("preview"))
     XCTAssertTrue(result.ok)

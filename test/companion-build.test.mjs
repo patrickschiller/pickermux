@@ -654,9 +654,28 @@ test("Swift protocol fixtures match the actual projected companion CLI", async (
     return output;
   };
   const probes = Object.fromEntries(Object.entries({ metadata: { version: "0.9.0" }, desktop: "stopped", installation: "installed", managedConfig: "installed", service: "running", compatibility: "compatible", accountCache: "ready", recovery: null, integration: "pickermux" }).map(([name, value]) => [name, async () => value]));
+  const tokenProbes = {
+    ...probes,
+    service: async () => ({ status: "running", healthy: true, health: { tokenUsage: {
+      schemaVersion: 1, status: "available", providers: [{
+        providerId: "lmstudio", requests: 3, unavailableRequests: 1,
+        last: { status: "available", inputTokens: 100, outputTokens: 20, totalTokens: 120 },
+        totals: { inputTokens: 200, outputTokens: 40, totalTokens: 240 },
+      }, {
+        providerId: "remote-provider", requests: 1, unavailableRequests: 1,
+        last: { status: "unavailable" },
+        totals: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+      }, {
+        providerId: "overflow-provider", requests: 2, unavailableRequests: 0,
+        last: { status: "available", inputTokens: 100, outputTokens: 20, totalTokens: 120 },
+        totals: null,
+      }],
+    } } }),
+  };
   const cases = [
     ["status", ["status"], await collectCompanionStatus({ probes })],
     ["partial-status", ["status"], await collectCompanionStatus({ probes: {} })],
+    ["token-status", ["status"], await collectCompanionStatus({ probes: tokenProbes })],
     ["preview", ["run"], { schemaVersion: 1, status: "ollama", canApply: true, requiresConfirmation: true, changes: ["replace-integration", "preserve-user-settings", "preserve-historical-chats", "create-backup", "restore-on-failure", "retain-explicit-provider"], previewToken: "a".repeat(64) }, "configuration-preview"],
     ["update", ["run"], { status: "updated", currentVersion: "0.8.3", targetVersion: "0.9.0", updated: true, restartRequired: true, certificationIncomplete: true }, "update"],
   ];

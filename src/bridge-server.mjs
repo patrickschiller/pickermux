@@ -3,6 +3,7 @@ import http from "node:http";
 import { hasDisallowedOrigin, isExpectedHost } from "./header-policy.mjs";
 import { createResponsesProxy, createWebSearchProxy } from "./responses-proxy.mjs";
 import { WEB_SEARCH_CONTRACT_VERSION, WEB_SEARCH_PATH } from "./web-search-wire.mjs";
+import { createTokenUsageTelemetry } from "./token-usage.mjs";
 
 const LOOPBACK_HOST = "127.0.0.1";
 export const CERTIFICATION_PENDING_GATE_VERSION = 1;
@@ -277,6 +278,7 @@ export function createBridgeServer({
     throw new TypeError("onTextOnlyCompaction must be a function");
   }
   const textOnlyContextTelemetry = createTextOnlyContextTelemetry();
+  const tokenUsageTelemetry = createTokenUsageTelemetry();
   const certificationPendingGateActive =
     typeof externalRequestGate === "function";
   const captureTextOnlyCompaction = (event) => {
@@ -297,6 +299,7 @@ export function createBridgeServer({
     compactionSecret: capabilityToken,
     externalRequestGate,
     onTextOnlyCompaction: captureTextOnlyCompaction,
+    onTokenUsage: (providerId, usage) => tokenUsageTelemetry.record(providerId, usage),
   });
   const handleWebSearch = createWebSearchProxy({
     registry,
@@ -347,6 +350,7 @@ export function createBridgeServer({
         ok: compatibility === null || compatibility.status === "compatible",
         webSearchContractVersion: WEB_SEARCH_CONTRACT_VERSION,
         instanceId,
+        tokenUsage: tokenUsageTelemetry.snapshot(),
         ...(certificationPendingGateActive
           ? {
               certificationPendingGateVersion:

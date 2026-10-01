@@ -241,6 +241,22 @@ explicit schema of fixed enums, booleans, and non-negative byte/part counters.
 It excludes prompt text, raw annotation kinds, roles, hashes, model/provider
 names, URLs, paths, and request, message, turn, or conversation identifiers.
 Telemetry sink failures cannot change request routing or upstream bytes.
+Provider token telemetry is a separate in-memory projection. Only ordinary
+external inference admitted upstream is observed; native responses, standalone
+search, and recognized certification traffic remain outside it. The bounded
+observer cannot change forwarding, resolve credentials, execute tools, or send
+additional requests. Invalid, unavailable, interrupted, or unsupported usage
+is represented as unavailable rather than inferred from content.
+
+The private health and companion projections expose only canonical configured
+provider IDs, fixed availability states, and non-negative safe integer counters.
+They exclude model identifiers, endpoints, capability paths, request/response
+IDs, prompt and response content, credentials, and arbitrary upstream metadata.
+The companion accepts token counts only from an instance-attested running
+service and reconstructs the allowlisted schema. Numeric overflow invalidates
+cumulative totals. Statistics are never persisted or written to logs, and
+observer failures cannot affect routing or lifecycle permissions.
+
 Every external text-only route also rejects secondary `additional_tools`
 inventory items before credential resolution; schemas cannot bypass the
 top-level tool stripping boundary through conversation input.
