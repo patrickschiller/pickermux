@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key><string>com.pickermux.companion</string>
+  <key>CFBundleName</key><string>PickerMux</string>
+  <key>CFBundleDisplayName</key><string>PickerMux</string>
+  <key>CFBundleExecutable</key><string>PickerMuxCompanion</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>__PICKERMUX_VERSION__</string>
+  <key>CFBundleVersion</key><string>__PICKERMUX_VERSION__</string>
+  <key>LSMinimumSystemVersion</key><string>13.0</string>
+  <key>LSUIElement</key><true/>
+  <key>NSHighResolutionCapable</key><true/>
+  <key>NSAppleEventsUsageDescription</key><string>PickerMux closes and opens Codex only after you confirm a repair that may interrupt active tasks.</string>
+  <key>NSHumanReadableCopyright</key><string>PickerMux contributors. MIT license. Unofficial community project.</string>
+</dict>
+</plist>
