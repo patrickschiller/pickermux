@@ -1,6 +1,6 @@
 # macOS companion
 
-PickerMux 0.9.5 includes an optional SwiftUI menu-bar app for inspecting and
+PickerMux 0.9.6 includes an optional SwiftUI menu-bar app for inspecting and
 operating the existing PickerMux installation. It requires macOS 13 or newer,
 Apple silicon or Intel, and Node.js 22.15.0 or newer. The supported Node
 locations are `/opt/homebrew/bin/node`, `/usr/local/bin/node`, and
@@ -15,7 +15,7 @@ with OpenAI, Codex, or LM Studio.
 
 ## Install from a disk image
 
-The companion build produces `PickerMux-v0.9.5-macos-universal.dmg` alongside
+The companion build produces `PickerMux-v0.9.6-macos-universal.dmg` alongside
 the app archive. The planned release includes a Developer ID signed and
 notarized image for macOS 13+ on Apple silicon and Intel. Development images
 are labelled `unsigned-development` and remain local test artifacts.
@@ -156,9 +156,14 @@ defaults instead of bringing back a former Ollama gateway/catalog. The action
 works with a verified active or toggle-deactivated installation. Provider
 availability and a current account cache are not required for removal.
 
-Login startup is unregistered before purge; if that fails, removal does not
-start. A purge failure retains the app for recovery and leaves login startup
-disabled. After verified success, the app clears only its own refresh and
+Login startup is disabled before purge. The app skips an explicitly
+unregistered service, otherwise awaits macOS unregister completion and
+recognizes its documented already-absent response. A `notFound` status alone
+does not authorize removal. A bounded status check must confirm the service
+is no longer registered; permission, signature, unknown-service errors and a
+still-registered service retain the integration and CLI. A purge failure
+retains the app for recovery and leaves login startup disabled. After verified
+success, the app clears only its own refresh and
 notification preferences and its named notification, and stops polling and
 queued automatic actions. A local-cleanup retry never reruns a successful
 backend purge. Quit the app, move **PickerMux.app** from Applications to the
@@ -298,7 +303,7 @@ integration with Codex stopped. It is available only through the receipt-owned
 installed CLI. The app detects older backends even when both versions are
 labelled 0.9.0; the missing capability marker selects its pinned setup backend
 before any mutation. Confirm setup to upgrade that CLI before deactivating.
-The current 0.9.5 payload installs into its own version directory; the older
+The current 0.9.6 payload installs into its own version directory; the older
 0.9.0 contents are never overwritten to add this feature.
 
 `uninstall-preview` returns only fixed removal changes and a digest token.
@@ -355,11 +360,11 @@ node scripts/build-companion.mjs --output /tmp/pickermux-companion-development
 
 Choose a new output directory for each build; the builder refuses to replace
 one. The output contains `PickerMux.app`,
-`PickerMux-v0.9.5-macos-universal.tar.gz`,
-`PickerMux-v0.9.5-macos-universal.dmg`, `companion-manifest.json`, and
+`PickerMux-v0.9.6-macos-universal.tar.gz`,
+`PickerMux-v0.9.6-macos-universal.dmg`, `companion-manifest.json`, and
 `SHA256SUMS`. The universal binary contains `arm64` and `x86_64` slices
-targeting macOS 13. The manifest distinguishes `unsigned-development` from
-`developer-id-notarized` artifacts and binds the bundled backend manifest,
+targeting macOS 13. The manifest distinguishes `unsigned-development`,
+`apple-development` and `developer-id-notarized` artifacts and binds the bundled backend manifest,
 archive, and disk image. Its `diskImage` entry records the versioned filename,
 SHA-256 digest, `UDZO` format, `HFS+` filesystem, and
 `drag-to-applications` installation method. Unsigned development output is for
@@ -372,6 +377,21 @@ selection:
 ```bash
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer node scripts/build-companion.mjs --output /tmp/pickermux-companion-xcode
 ```
+
+Login startup uses Apple's ServiceManagement API, which requires a signed app
+bundle. A linker-signed executable inside an unsigned bundle is insufficient.
+For a local test with an existing Apple Development identity, configure it
+outside the repository and choose a fresh output directory:
+
+```bash
+PICKERMUX_DEVELOPMENT_SIGNING_IDENTITY="Apple Development: Developer Name (TEAMID1234)" node scripts/build-companion.mjs --development-signed --output /tmp/pickermux-companion-development-signed
+```
+
+This mode signs and verifies the complete app before packaging and verifies
+its signature again in the read-only mounted DMG. It does not notarize or
+claim a Developer ID release. `--development-signed` and `--release` are
+mutually exclusive. The default unsigned build remains available for offline
+packaging checks; it does not establish working login-startup operations.
 
 For a release, configure an existing Developer ID Application identity and
 existing `notarytool` Keychain profile outside the repository.

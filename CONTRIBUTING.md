@@ -54,6 +54,10 @@ installed Node.js runtime. A development build does not establish release
 signing or notarization. The builder mounts its newly created image read-only,
 validates the app and Applications shortcut, and unmounts it without installing
 the app. Tests must inject these tool operations rather than mounting images.
+For local login-service acceptance, use `--development-signed` with an existing
+Apple Development identity via `PICKERMUX_DEVELOPMENT_SIGNING_IDENTITY`. The
+complete bundle is verified before packaging and in the mounted DMG. This
+mode is not notarized and cannot replace the Developer ID release gates.
 See [the companion guide](docs/MACOS_COMPANION.md#development-and-distribution)
 for the protected signing workflow and outstanding live acceptance checks.
 

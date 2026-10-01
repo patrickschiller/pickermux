@@ -18,7 +18,12 @@ public enum CompanionRemovalState: Equatable {
     case .cleanupRequired: return "The PickerMux integration, CLI and managed data were removed. App settings cleanup still needs attention. Retry app cleanup before quitting."
     case .removed: return "PickerMux was removed and native Codex configuration restored. Quit this app, move PickerMux.app from Applications to the Trash, then reopen Codex. Historical chats remain readable; choose a native model to continue them."
     case .failed(let code):
-      if code == "LOGIN_UNREGISTER_FAILED" { return "PickerMux could not disable login startup. Nothing was removed. Review Login Items in System Settings, then retry removal." }
+      if code == "LOGIN_UNREGISTER_FAILED" { return "macOS could not verify login startup as disabled. PickerMux's integration and CLI were retained. Review Login Items in System Settings, then retry removal." }
+      if code == "LOGIN_SIGNATURE_INVALID" { return "macOS rejected the app signature during login cleanup. PickerMux's integration and CLI were retained. Use a correctly signed matching app, then retry removal." }
+      if code == "LOGIN_PERMISSION_DENIED" { return "macOS denied login startup cleanup. PickerMux's integration and CLI were retained. Review Login Items in System Settings and your permissions, then retry removal." }
+      if code == "LOGIN_SERVICE_UNAVAILABLE" { return "macOS ServiceManagement was unavailable during login cleanup. PickerMux's integration and CLI were retained. Retry removal when the service is available." }
+      if code == "LOGIN_STARTUP_STILL_REGISTERED" { return "Login startup still appears registered after cleanup. PickerMux's integration and CLI were retained. Review Login Items in System Settings, then retry removal." }
+      if code == "LOGIN_STARTUP_UNVERIFIED" { return "The login startup status could not be verified. PickerMux's integration and CLI were retained. Review Login Items in System Settings, then retry removal." }
       if code == "UNINSTALL_UNSUPPORTED" { return "Native-only app removal requires a matching CLI version 0.9.5 or newer. Explicitly update the CLI and app, or fully quit Codex and use ~/.local/bin/pickermux uninstall --purge in Terminal. An older CLI restores the previous configuration and may reactivate an earlier Ollama integration. No setup or update was started." }
       if code == "UNINSTALL_PROTOCOL_INVALID" { return "The removal result could not be verified. Keep the app installed, keep Codex closed, and review the installation before retrying. No operation is retried automatically." }
       return companionActionFailureMessage(code)
@@ -79,7 +84,7 @@ public final class CompanionRemovalCoordinator {
       try Task.checkCancellation()
       transition(.removing)
       do { try await unregisterLogin() }
-      catch { transition(.failed("LOGIN_UNREGISTER_FAILED")); return }
+      catch { transition(.failed((error as? CompanionLoginStartupFailure)?.code ?? "LOGIN_UNREGISTER_FAILED")); return }
       try Task.checkCancellation()
       let removed = try await client.run(.uninstall, confirmed: true, previewToken: token)
       guard removed.ok else { transition(.failed(removed.code)); return }

@@ -142,6 +142,14 @@ export function releaseSigning(environment) {
   return { identity, profile };
 }
 
+export function developmentSigning(environment) {
+  const identity = environment.PICKERMUX_DEVELOPMENT_SIGNING_IDENTITY;
+  if (typeof identity !== "string" || /[\x00-\x1f\x7f]/u.test(identity) || !/^Apple Development: [^\x00-\x1f\x7f]{1,160} \([A-Z0-9]{10}\)$/u.test(identity)) {
+    throw new Error("Development signing requires PICKERMUX_DEVELOPMENT_SIGNING_IDENTITY for an Apple Development certificate");
+  }
+  return { identity };
+}
+
 async function notarize(target, command, profile, product) {
   const result = await command("/usr/bin/xcrun", ["notarytool", "submit", target, "--keychain-profile", profile, "--wait", "--output-format", "json"], 1200000);
   let receipt;
@@ -204,7 +212,7 @@ async function detachDiskImage(diskImage, mountpoint, command, work) {
   if (await attachedImage(diskImage, command, work, 3)) throw new Error("Disk-image verification volume could not be detached");
 }
 
-export async function verifyCompanionDiskImage({ diskImage, bundle, work, command, release = false }) {
+export async function verifyCompanionDiskImage({ diskImage, bundle, work, command, release = false, developmentSigned = false }) {
   await regular(diskImage);
   await command("/usr/bin/hdiutil", ["verify", diskImage]);
   if ((await command("/usr/bin/hdiutil", ["imageinfo", diskImage, "-format"])).trim() !== "UDZO") {
@@ -229,9 +237,11 @@ export async function verifyCompanionDiskImage({ diskImage, bundle, work, comman
     }
     const actual = await bundleInventory(path.join(mountpoint, "PickerMux.app"));
     if (JSON.stringify(actual) !== JSON.stringify(expected)) throw new Error("Disk-image app differs from the verified companion bundle");
-    if (release) {
-      const mountedBundle = path.join(mountpoint, "PickerMux.app");
+    const mountedBundle = path.join(mountpoint, "PickerMux.app");
+    if (release || developmentSigned) {
       await command("/usr/bin/codesign", ["--verify", "--strict", "--deep", mountedBundle]);
+    }
+    if (release) {
       await command("/usr/bin/xcrun", ["stapler", "validate", mountedBundle]);
       await command("/usr/sbin/spctl", ["--assess", "--type", "execute", mountedBundle]);
     }
@@ -247,12 +257,14 @@ export async function verifyCompanionDiskImage({ diskImage, bundle, work, comman
   }
 }
 
-export async function buildCompanion({ projectDirectory, outputDirectory, release = false, environment = process.env, execute = executeCommand }) {
+export async function buildCompanion({ projectDirectory, outputDirectory, release = false, developmentSigned = false, environment = process.env, execute = executeCommand }) {
+  if (release && developmentSigned) throw new Error("--release and --development-signed are mutually exclusive");
   if (process.platform !== "darwin" && execute === executeCommand) throw new Error("Companion builds require macOS and Apple command-line tools");
   if (!outputDirectory) throw new Error("--output is required");
   const project = path.resolve(projectDirectory);
   const output = path.resolve(outputDirectory);
-  const signing = release ? releaseSigning(environment) : null;
+  const signing = release ? releaseSigning(environment) : developmentSigned ? developmentSigning(environment) : null;
+  const signingStatus = release ? "developer-id-notarized" : developmentSigned ? "apple-development" : "unsigned-development";
   if (await exists(output)) throw new Error("Companion output already exists; choose a new output directory");
   await regular(path.join(project, "package.json"));
   const metadata = JSON.parse(await readFile(path.join(project, "package.json"), "utf8"));
@@ -335,6 +347,11 @@ export async function buildCompanion({ projectDirectory, outputDirectory, releas
       await command("/usr/bin/xcrun", ["stapler", "validate", bundle]);
       await command("/usr/bin/codesign", ["--verify", "--strict", "--deep", bundle]);
       await command("/usr/sbin/spctl", ["--assess", "--type", "execute", bundle]);
+    } else if (developmentSigned) {
+      // A sealed app bundle is required by Service Management even for local
+      // testing. Apple Development signing does not establish release trust.
+      await command("/usr/bin/codesign", ["--force", "--sign", signing.identity, "--entitlements", entitlements, "--timestamp=none", bundle]);
+      await command("/usr/bin/codesign", ["--verify", "--strict", "--deep", bundle]);
     }
     const diskImageName = `PickerMux-v${version}-macos-universal.dmg`;
     const diskImage = path.join(staged, diskImageName);
@@ -357,13 +374,13 @@ export async function buildCompanion({ projectDirectory, outputDirectory, releas
       await command("/usr/bin/codesign", ["--verify", "--strict", diskImage]);
       await command("/usr/sbin/spctl", ["--assess", "--type", "open", "--context", "context:primary-signature", diskImage]);
     }
-    await verifyCompanionDiskImage({ diskImage, bundle, work, command, release });
+    await verifyCompanionDiskImage({ diskImage, bundle, work, command, release, developmentSigned });
     const diskImageSha256 = sha256(await readFile(diskImage));
     const archiveName = `PickerMux-v${version}-macos-universal.tar.gz`;
     const archive = await companionArchive(bundle);
     const archiveSha256 = sha256(archive);
     await writeFile(path.join(staged, archiveName), archive, { flag: "wx", mode: 0o644 });
-    const releaseManifest = `${JSON.stringify({ schemaVersion: 1, product: "pickermux-companion", version, minimumMacOS: "13.0", architectures: ["arm64", "x86_64"], signing: release ? "developer-id-notarized" : "unsigned-development", backendManifestSha256: sha256(manifestData), icon, menuBarIcon, archive: archiveName, archiveSha256, diskImage: { file: diskImageName, sha256: diskImageSha256, format: "UDZO", filesystem: "HFS+", installation: "drag-to-applications" } }, null, 2)}\n`;
+    const releaseManifest = `${JSON.stringify({ schemaVersion: 1, product: "pickermux-companion", version, minimumMacOS: "13.0", architectures: ["arm64", "x86_64"], signing: signingStatus, backendManifestSha256: sha256(manifestData), icon, menuBarIcon, archive: archiveName, archiveSha256, diskImage: { file: diskImageName, sha256: diskImageSha256, format: "UDZO", filesystem: "HFS+", installation: "drag-to-applications" } }, null, 2)}\n`;
     await writeFile(path.join(staged, "companion-manifest.json"), releaseManifest, { flag: "wx", mode: 0o644 });
     await writeFile(path.join(staged, "SHA256SUMS"), `${archiveSha256}  ${archiveName}\n${diskImageSha256}  ${diskImageName}\n${sha256(releaseManifest)}  companion-manifest.json\n`, { flag: "wx", mode: 0o644 });
     // mkdir is the no-clobber commit boundary: an output concurrently created by
@@ -371,7 +388,7 @@ export async function buildCompanion({ projectDirectory, outputDirectory, releas
     await mkdir(output);
     createdOutput = true;
     for (const name of await readdir(staged)) await rename(path.join(staged, name), path.join(output, name));
-    return { version, outputDirectory: output, archiveName, archiveSha256, diskImageName, diskImageSha256, signing: release ? "developer-id-notarized" : "unsigned-development" };
+    return { version, outputDirectory: output, archiveName, archiveSha256, diskImageName, diskImageSha256, signing: signingStatus };
   } catch (error) {
     if (error?.preserveBuildDirectory === true) cleanupWork = false;
     if (createdOutput) await rm(output, { recursive: true, force: true });
@@ -384,17 +401,19 @@ export async function buildCompanion({ projectDirectory, outputDirectory, releas
 async function main() {
   const argv = process.argv.slice(2);
   if (argv.includes("--help")) {
-    process.stdout.write("Build a universal macOS 13+ PickerMux companion app, drag-to-Applications DMG and tar.gz.\nUsage: node scripts/build-companion.mjs --output PATH [--release]\nRelease requires Developer ID Application identity and notarytool Keychain profile via PICKERMUX_SIGNING_IDENTITY and PICKERMUX_NOTARY_PROFILE; both app and DMG are signed, notarized and stapled.\n");
+    process.stdout.write("Build a universal macOS 13+ PickerMux companion app, drag-to-Applications DMG and tar.gz.\nUsage: node scripts/build-companion.mjs --output PATH [--development-signed | --release]\nDevelopment signing requires an Apple Development identity via PICKERMUX_DEVELOPMENT_SIGNING_IDENTITY; the app is signed for local testing and is not notarized.\nRelease requires Developer ID Application identity and notarytool Keychain profile via PICKERMUX_SIGNING_IDENTITY and PICKERMUX_NOTARY_PROFILE; both app and DMG are signed, notarized and stapled.\n");
     return;
   }
   let outputDirectory;
   let release = false;
+  let developmentSigned = false;
   for (let index = 0; index < argv.length; index += 1) {
     if (argv[index] === "--release" && !release) release = true;
+    else if (argv[index] === "--development-signed" && !developmentSigned) developmentSigned = true;
     else if (argv[index] === "--output" && !outputDirectory && argv[index + 1] && !argv[index + 1].startsWith("--")) outputDirectory = argv[++index];
     else throw new Error("Unknown, duplicated or incomplete companion build option");
   }
-  const result = await buildCompanion({ projectDirectory: path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."), outputDirectory, release });
+  const result = await buildCompanion({ projectDirectory: path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."), outputDirectory, release, developmentSigned });
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 }
 

@@ -7,6 +7,19 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [0.9.6] - 2026-10-01
+
+### Fixed
+
+- Correct companion removal when login startup has never been registered or
+  was already removed. Await macOS unregister completion, recognize only its
+  documented already-absent response, and verify registration before purge.
+- Keep removal blocked on real login-service errors or a still-registered
+  service, and distinguish that failure from removal of the integration/CLI.
+- Add an explicit local Apple Development signing mode with full bundle and
+  mounted-DMG signature checks; production releases still require Developer ID
+  signing and notarization.
+
 ## [0.9.5] - 2026-10-01
 
 ### Added
@@ -721,7 +734,8 @@ confirm the release date before tagging. See the
   paths and file types, refuses root execution and foreign launchers, and
   restores the previous distribution state when activation fails.
 
-[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.9.5...HEAD
+[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.9.6...HEAD
+[0.9.6]: https://github.com/patrickschiller/pickermux/releases/tag/v0.9.6
 [0.9.5]: https://github.com/patrickschiller/pickermux/releases/tag/v0.9.5
 [0.9.4]: https://github.com/patrickschiller/pickermux/releases/tag/v0.9.4
 [0.9.3]: https://github.com/patrickschiller/pickermux/releases/tag/v0.9.3

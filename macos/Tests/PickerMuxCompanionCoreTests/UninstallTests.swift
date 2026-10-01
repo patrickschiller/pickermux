@@ -1,4 +1,5 @@
 import Foundation
+import ServiceManagement
 import XCTest
 @testable import PickerMuxCompanionCore
 
@@ -46,6 +47,36 @@ final class UninstallTests: XCTestCase {
     XCTAssertEqual(coordinator.state, .failed("LOGIN_UNREGISTER_FAILED"))
     XCTAssertEqual(client.calls, [.uninstallPreview])
     XCTAssertEqual(cleanups, 0)
+  }
+
+  func testNeverRegisteredLoginStartupCanCompleteRemovalAfterAuthoritativeAbsentProof() async throws {
+    let coordinator = CompanionRemovalCoordinator()
+    let client = try RemovalClient()
+    var unregisters = 0
+    coordinator.beginReview()
+    await coordinator.remove(client: client, confirm: { _ in true }, unregisterLogin: {
+      try await unregisterCompanionLoginStartup(status: { .notFound }, unregister: {
+        unregisters += 1
+        throw NSError(domain: companionServiceManagementErrorDomain(), code: kSMErrorJobNotFound)
+      }, pause: { XCTFail("Already absent") })
+    }, cleanup: {})
+    XCTAssertEqual(unregisters, 1)
+    XCTAssertEqual(coordinator.state, .removed)
+    XCTAssertEqual(client.calls, [.uninstallPreview, .uninstall])
+  }
+
+  func testSignatureFailureDoesNotCallPurgeAndReportsRetainedIntegration() async throws {
+    let coordinator = CompanionRemovalCoordinator()
+    let client = try RemovalClient()
+    coordinator.beginReview()
+    await coordinator.remove(client: client, confirm: { _ in true }, unregisterLogin: {
+      try await unregisterCompanionLoginStartup(status: { .notFound }, unregister: {
+        throw NSError(domain: companionServiceManagementErrorDomain(), code: kSMErrorInvalidSignature)
+      }, pause: { XCTFail("Invalid signature") })
+    }, cleanup: { XCTFail("Failed login cleanup must not delete settings") })
+    XCTAssertEqual(coordinator.state, .failed("LOGIN_SIGNATURE_INVALID"))
+    XCTAssertEqual(client.calls, [.uninstallPreview])
+    XCTAssertTrue(coordinator.state.notice?.contains("integration and CLI were retained") == true)
   }
 
   func testFailedAndPartialBackendRemovalNeverReportsSuccessOrCleansApp() async throws {

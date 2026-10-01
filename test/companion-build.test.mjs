@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { chmod, cp, link, mkdir, mkdtemp, readFile, readdir, readlink, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { deflateSync, gunzipSync } from "node:zlib";
-import { buildCompanion, companionArchive, releaseSigning } from "../scripts/build-companion.mjs";
+import { buildCompanion, companionArchive, developmentSigning, releaseSigning } from "../scripts/build-companion.mjs";
 import { validateCompanionIcns, validateIconPng, validateMenuBarIconPng } from "../scripts/build-companion-icon.mjs";
 
 const hash = (value) => createHash("sha256").update(value).digest("hex");
@@ -134,7 +136,7 @@ function tarEntries(archive) {
 test("companion build pins its complete backend, builds both architectures and produces deterministic unsigned archives", async (t) => {
   const { root, project } = await fixture(t);
   const calls = [];
-  const first = await buildCompanion({ projectDirectory: project, outputDirectory: path.join(root, "first"), execute: fakeTools(calls), environment: { HOME: root, PRIVATE_TOKEN: "must-not-propagate" } });
+  const first = await buildCompanion({ projectDirectory: project, outputDirectory: path.join(root, "first"), execute: fakeTools(calls), environment: { HOME: root, PRIVATE_TOKEN: "must-not-propagate", PICKERMUX_DEVELOPMENT_SIGNING_IDENTITY: "Apple Development: Fixture (ABCDEFGHIJ)" } });
   const second = await buildCompanion({ projectDirectory: project, outputDirectory: path.join(root, "second"), execute: fakeTools(), environment: { HOME: root } });
   const archive = await readFile(path.join(first.outputDirectory, first.archiveName));
   assert.deepEqual(archive, await readFile(path.join(second.outputDirectory, second.archiveName)));
@@ -194,6 +196,129 @@ test("release builds require explicit Developer ID and existing notarytool profi
   assert.equal(calls.length, 0);
   assert.throws(() => releaseSigning({ PICKERMUX_SIGNING_IDENTITY: "-", PICKERMUX_NOTARY_PROFILE: "profile" }), /SIGNING_IDENTITY/u);
   assert.throws(() => releaseSigning({ PICKERMUX_SIGNING_IDENTITY: "Developer ID Application: Fixture (ABCDEFGHIJ)", PICKERMUX_NOTARY_PROFILE: "profile\nsecret" }), /NOTARY_PROFILE/u);
+});
+
+test("development signing requires an explicit Apple Development identity and excludes release mode", async (t) => {
+  const { root, project } = await fixture(t);
+  for (const identity of [
+    undefined, "", "-", "--sign -", "a".repeat(40),
+    "Developer ID Application: Fixture (ABCDEFGHIJ)",
+    "Apple Development: Fixture", "Apple Development: Fixture (abcde12345)",
+    "Apple Development: Fixture (ABCDEFGHIJK)",
+    "Apple Development: Fixture\nSecret (ABCDEFGHIJ)",
+    "Apple Development: Fixture (ABCDEFGHIJ)\n",
+    "Apple Development: Fixture\0Secret (ABCDEFGHIJ)",
+    "Apple Development: Fixture\tSecret (ABCDEFGHIJ)",
+    `Apple Development: ${"a".repeat(161)} (ABCDEFGHIJ)`,
+  ]) {
+    const calls = [];
+    const environment = { PICKERMUX_DEVELOPMENT_SIGNING_IDENTITY: identity };
+    assert.throws(() => developmentSigning(environment), /DEVELOPMENT_SIGNING_IDENTITY/u);
+    await assert.rejects(buildCompanion({ projectDirectory: project, outputDirectory: path.join(root, "out"), developmentSigned: true, environment, execute: fakeTools(calls) }), /DEVELOPMENT_SIGNING_IDENTITY/u);
+    assert.equal(calls.length, 0);
+    assert.ok(!(await readdir(root)).includes("out"));
+  }
+  const identity = "Apple Development: Fixture (ABCDEFGHIJ)";
+  assert.deepEqual(developmentSigning({ PICKERMUX_DEVELOPMENT_SIGNING_IDENTITY: identity }), { identity });
+  const calls = [];
+  await assert.rejects(buildCompanion({ projectDirectory: project, outputDirectory: path.join(root, "out"), release: true, developmentSigned: true, environment: {}, execute: fakeTools(calls) }), /mutually exclusive/u);
+  assert.equal(calls.length, 0);
+  assert.equal((await readdir(root)).filter((name) => name.startsWith(".pickermux-companion-")).length, 0);
+});
+
+test("development build signs and verifies the complete app before packaging and verifies its mounted copy", async (t) => {
+  const { root, project } = await fixture(t);
+  const calls = [];
+  const identity = "Apple Development: Fixture (ABCDEFGHIJ)";
+  const environment = {
+    HOME: root,
+    PICKERMUX_DEVELOPMENT_SIGNING_IDENTITY: identity,
+    PICKERMUX_SIGNING_IDENTITY: "must-not-be-used",
+    PICKERMUX_NOTARY_PROFILE: "must-not-be-used",
+    PRIVATE_TOKEN: "must-not-propagate",
+  };
+  const execute = fakeTools(calls, async (tool, args) => {
+    if (tool === "/usr/bin/codesign" && args.includes("--sign")) {
+      const bundle = args.at(-1);
+      assert.ok((await readFile(path.join(bundle, "Contents", "Resources", "Backend", "release-manifest.json"))).length > 0);
+      assert.ok((await readFile(path.join(bundle, "Contents", "Resources", "MenuBarIcon.icns"))).length > 0);
+      await mkdir(path.join(bundle, "Contents", "_CodeSignature"));
+      await writeFile(path.join(bundle, "Contents", "_CodeSignature", "CodeResources"), "fixture-bundle-seal");
+    }
+  });
+  const result = await buildCompanion({ projectDirectory: project, outputDirectory: path.join(root, "development-signed"), developmentSigned: true, environment, execute });
+  assert.equal(result.signing, "apple-development");
+  const signing = calls.filter(({ tool, args }) => tool === "/usr/bin/codesign" && args.includes("--sign"));
+  assert.equal(signing.length, 1);
+  assert.deepEqual(signing[0].args.slice(0, -1), ["--force", "--sign", identity, "--entitlements", path.join(project, "macos", "Resources", "Companion.entitlements"), "--timestamp=none"]);
+  assert.ok(signing[0].args.at(-1).endsWith("assets/PickerMux.app"));
+  const verifications = calls.filter(({ tool, args }) => tool === "/usr/bin/codesign" && args.includes("--verify"));
+  assert.equal(verifications.length, 2);
+  for (const { args } of verifications) assert.deepEqual(args.slice(0, 3), ["--verify", "--strict", "--deep"]);
+  assert.equal(verifications[0].args.at(-1), signing[0].args.at(-1));
+  assert.ok(verifications[1].args.at(-1).endsWith("disk-image-mount/PickerMux.app"));
+  const copied = calls.find(({ tool, args }) => tool === "/usr/bin/ditto" && args.at(-1).endsWith("disk-image-source/PickerMux.app"));
+  assert.ok(calls.indexOf(signing[0]) < calls.indexOf(verifications[0]));
+  assert.ok(calls.indexOf(verifications[0]) < calls.indexOf(copied));
+  const attached = calls.find(({ tool, args }) => tool === "/usr/bin/hdiutil" && args[0] === "attach");
+  const detached = calls.find(({ tool, args }) => tool === "/usr/bin/hdiutil" && args[0] === "detach");
+  assert.ok(calls.indexOf(attached) < calls.indexOf(verifications[1]));
+  assert.ok(calls.indexOf(verifications[1]) < calls.indexOf(detached));
+  assert.ok(!calls.some(({ tool, args }) => tool === "/usr/sbin/spctl" || ["notarytool", "stapler"].includes(args[0])));
+  assert.ok(calls.every(({ options }) => options.environment.PICKERMUX_DEVELOPMENT_SIGNING_IDENTITY === undefined && options.environment.PRIVATE_TOKEN === undefined));
+  const manifestText = await readFile(path.join(result.outputDirectory, "companion-manifest.json"), "utf8");
+  const manifest = JSON.parse(manifestText);
+  assert.equal(manifest.signing, "apple-development");
+  assert.ok(!manifestText.includes(identity));
+  assert.ok(!JSON.stringify(result).includes(identity));
+  const archive = await readFile(path.join(result.outputDirectory, result.archiveName));
+  const entries = tarEntries(archive);
+  assert.equal(entries.find(({ path: name }) => name === "PickerMux.app/Contents/_CodeSignature/CodeResources").contents.toString("utf8"), "fixture-bundle-seal");
+  for (const line of (await readFile(path.join(result.outputDirectory, "SHA256SUMS"), "utf8")).trim().split("\n")) {
+    const [digest, name] = line.split("  ");
+    assert.equal(hash(await readFile(path.join(result.outputDirectory, name))), digest);
+  }
+});
+
+test("development signing and signature verification failures never produce output", async (t) => {
+  for (const stage of ["sign", "bundle verification", "mounted verification"]) {
+    await t.test(stage, async (child) => {
+      const { root, project } = await fixture(child);
+      const calls = [];
+      const environment = { PICKERMUX_DEVELOPMENT_SIGNING_IDENTITY: "Apple Development: Fixture (ABCDEFGHIJ)" };
+      const execute = fakeTools(calls, async (tool, args) => {
+        if (tool !== "/usr/bin/codesign") return;
+        const mounted = args.at(-1).endsWith("disk-image-mount/PickerMux.app");
+        if ((stage === "sign" && args.includes("--sign")) || (stage === "bundle verification" && args.includes("--verify") && !mounted) || (stage === "mounted verification" && args.includes("--verify") && mounted)) {
+          throw new Error("fixture signature failure");
+        }
+      });
+      await assert.rejects(buildCompanion({ projectDirectory: project, outputDirectory: path.join(root, "out"), developmentSigned: true, environment, execute }), /fixture signature failure/u);
+      assert.ok(!(await readdir(root)).includes("out"));
+      assert.equal((await readdir(root)).filter((name) => name.startsWith(".pickermux-companion-")).length, 0);
+      if (stage === "mounted verification") {
+        assert.ok(calls.some(({ tool, args }) => tool === "/usr/bin/hdiutil" && args[0] === "detach"));
+      } else {
+        assert.ok(!calls.some(({ tool, args }) => tool === "/usr/bin/hdiutil" && args[0] === "create"));
+      }
+    });
+  }
+});
+
+test("companion build CLI documents development signing and rejects conflicting or duplicate modes", async (t) => {
+  const { root } = await fixture(t);
+  const script = fileURLToPath(new URL("../scripts/build-companion.mjs", import.meta.url));
+  const help = spawnSync(process.execPath, [script, "--help"], { encoding: "utf8" });
+  assert.equal(help.status, 0);
+  assert.match(help.stdout, /--development-signed \| --release/u);
+  assert.match(help.stdout, /PICKERMUX_DEVELOPMENT_SIGNING_IDENTITY/u);
+  for (const args of [["--release", "--development-signed"], ["--development-signed", "--release"], ["--development-signed", "--development-signed"]]) {
+    const output = path.join(root, "out");
+    const result = spawnSync(process.execPath, [script, "--output", output, ...args], { encoding: "utf8" });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /mutually exclusive|duplicated/u);
+    assert.ok(!(await readdir(root)).includes("out"));
+  }
 });
 
 test("release build requires notarization acceptance then staples and validates before packaging", async (t) => {

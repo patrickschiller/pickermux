@@ -290,9 +290,10 @@ final class CompanionController: ObservableObject {
           await self.confirmation(title: review.title, text: review.text, button: review.button)
         },
         unregisterLogin: {
-          if SMAppService.mainApp.status != .notRegistered { try SMAppService.mainApp.unregister() }
-          self.loginEnabled = SMAppService.mainApp.status == .enabled
-          guard SMAppService.mainApp.status == .notRegistered else { throw CompanionFailure.processFailed }
+          defer { self.loginEnabled = SMAppService.mainApp.status == .enabled }
+          try await unregisterCompanionLoginStartup(
+            status: { CompanionLoginStartupStatus(SMAppService.mainApp.status) },
+            unregister: { try await SMAppService.mainApp.unregister() })
         }, cleanup: { try await self.cleanAppSettings() })
       busy = nil
       operationStartedAt = nil

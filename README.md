@@ -7,7 +7,7 @@
 
 **Use local and remote models from compatible Responses providers in Codex Desktop.**
 
-**Version 0.9.5 includes a native macOS menu-bar companion with a Codex toggle.**
+**Version 0.9.6 includes a native macOS menu-bar companion with a Codex toggle.**
 Check the picker, refresh it after Codex closes, preview a switch from Ollama,
 and start confirmed recovery after a Codex update. The app uses PickerMux's
 existing installation and routing core. See the
@@ -215,13 +215,14 @@ external-provider inference check. Once `~/.local/bin` is in `PATH`, the shorter
 ## macOS companion
 
 The companion build includes an installable
-`PickerMux-v0.9.5-macos-universal.dmg` for the planned release. Open the disk
+`PickerMux-v0.9.6-macos-universal.dmg` for the planned release. Open the disk
 image, drag **PickerMux.app** to **Applications**, eject the image, and open the
 copied app. Node.js remains a prerequisite. Copying the app does not install
 the CLI or change Codex configuration; turn on **Use PickerMux in Codex** to
 install or activate the integration automatically. Use a signed and
-notarized release image for distribution; unsigned development images are
-local test builds. See [installation details](docs/MACOS_COMPANION.md#install-from-a-disk-image).
+notarized release image for distribution; unsigned and Apple Development
+images are local test builds. Login startup requires a fully signed app
+bundle. See [installation details](docs/MACOS_COMPANION.md#install-from-a-disk-image).
 
 Open `PickerMux.app` to inspect the bridge, Codex compatibility, account cache,
 and active integration from the menu bar. Available actions use the same
@@ -280,6 +281,11 @@ and stops background actions. Quit the app and move **PickerMux.app** to the
 Trash in Finder. Native Codex sign-in, chats, projects and unrelated settings
 are preserved. An inert provider alias keeps older chats readable and
 contributes no models.
+
+Companion 0.9.6 handles an already-absent login registration without the earlier
+false removal failure. It still retains the integration and CLI if macOS cannot
+confirm login startup is disabled. Complete removal works with an installed
+CLI advertising native removal (0.9.5 or newer).
 
 The update action verifies the CLI release before
 activating its existing setup transaction. App and CLI versions are shown separately; install a matching app

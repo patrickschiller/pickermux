@@ -812,7 +812,11 @@ A separate Settings removal action uses finite `uninstall-preview` and
 intent; removal requires four exact consent fields and the receipt-owned
 installed backend. Status can offer removal for both active and correctly
 deactivated installations without requiring current provider availability or a
-healthy account cache. The GUI unregisters login startup before purge and
+healthy account cache. The GUI verifies login startup is disabled before purge:
+an explicit unregistered state skips the call; otherwise it awaits unregister
+completion and accepts only success or the exact documented ServiceManagement
+already-absent error. A final lookup failure alone never proves absence, and
+unknown or persistently registered states block removal. The GUI then
 verifies a specific completed-removal result before clearing app-owned defaults
 and notifications. Activity generations prevent queued polls or auto-refresh
 from invoking the backend after removal. Local cleanup retries never rerun a

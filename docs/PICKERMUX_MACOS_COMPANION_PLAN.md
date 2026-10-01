@@ -1,7 +1,7 @@
 # PickerMux Optimierung und macOS Erweiterung
 
 Stand: 1. Oktober 2026. Ausgangsanalyse auf Basis von PickerMux v0.8.3,
-Repository-Commit `bb4a02d`; Umsetzung für v0.9.5 auf dem Topic-Branch.
+Repository-Commit `bb4a02d`; Umsetzung für v0.9.6 auf dem Topic-Branch.
 Der Maintainer hat v0.8.3 selbst live getestet und die Umsetzung aller sechs
 Phasen ausdrücklich freigegeben. Diese Rückmeldung gilt als funktionierende
 Ausgangsbasis; sie ersetzt nicht die Live-Abnahme der neuen App und Recovery.
@@ -259,7 +259,7 @@ zeigen und vorab prüfen; die Aktivierung wird bewusst gestartet. Sie bleibt
 von der Recovery nach einem Codex-Update getrennt.
 
 Der Companion-Build erzeugt zusätzlich zum Universal-Archiv ein versioniertes
-`PickerMux-v0.9.5-macos-universal.dmg`. Das Image enthält ausschließlich
+`PickerMux-v0.9.6-macos-universal.dmg`. Das Image enthält ausschließlich
 `PickerMux.app` und einen `Applications`-Link auf `/Applications`. Nutzer
 kopieren die App nach „Programme“, werfen das Image aus und öffnen die
 kopierte App. Node.js 22.15+ bleibt eine externe Voraussetzung. Das Kopieren
@@ -453,3 +453,11 @@ Die genaue Aufteilung neuer Module und CLI-Befehle wird im Detailplan der
 ersten beiden Phasen festgelegt. Vorgesehen ist ein separates macOS-App-Modul
 im Repository, ohne Änderungen am installierten `runtime-app` aus dem
 Entwicklungscheckout heraus.
+
+### Korrektur der Login-Abmeldung (v0.9.6)
+
+Die vollständige Entfernung wartet auf die asynchrone macOS-Abmeldung. Ein
+explizit unregistrierter Login-Dienst oder Apples genau erkannte Antwort für
+eine bereits fehlende Registrierung erlauben die Entfernung; `notFound`
+allein tut dies nicht. Echte Fehler und weiterhin registrierte Dienste stoppen
+den Backend-Purge. Offline-Tests ersetzen keine Live-Abnahme der Login-API.

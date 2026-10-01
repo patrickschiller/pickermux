@@ -75,6 +75,12 @@ Gatekeeper assessments. Complete real drag-to-install, launch after ejecting,
 upgrade and GUI/TCC recovery acceptance before distribution. Unsigned CI
 artifacts cannot fulfill these release gates.
 
+The explicit `--development-signed` builder mode uses an existing Apple
+Development identity for local login-service testing and labels its manifest
+`apple-development`. It verifies the complete bundle and mounted-DMG bundle
+signatures, but performs no notarization. This output does not fulfill the
+Developer ID release gates.
+
 From a fresh directory containing only the downloaded signed artifact, the
 following version-specific example adds new assets after the matching CLI
 release has been verified. Adapt every version to the approved tag:
@@ -83,9 +89,9 @@ release has been verified. Adapt every version to the approved tag:
 shasum -a 256 --check SHA256SUMS
 cp -n SHA256SUMS companion-SHA256SUMS
 cmp SHA256SUMS companion-SHA256SUMS
-gh release upload v0.9.5 --repo patrickschiller/pickermux \
-  PickerMux-v0.9.5-macos-universal.dmg \
-  PickerMux-v0.9.5-macos-universal.tar.gz \
+gh release upload v0.9.6 --repo patrickschiller/pickermux \
+  PickerMux-v0.9.6-macos-universal.dmg \
+  PickerMux-v0.9.6-macos-universal.tar.gz \
   companion-manifest.json companion-SHA256SUMS
 ```
 
@@ -290,7 +296,10 @@ At minimum, record:
   cleanup, and no queued polling/refresh after success. Verify native sign-in,
   account cache and chats are untouched; manually quit and delete the app in
   Finder only after successful removal. Check cancellation and failure before
-  purge separately, without discarding retained recovery evidence;
+  purge separately, without discarding retained recovery evidence. Exercise
+  never-enabled, already-unregistered, enabled and approval-pending login
+  startup with a fully signed bundle; confirm genuine signature/permission
+  failures retain the integration and CLI;
 - runtime removal with a byte-identical installed payload, plus refusal of a
   modified payload, an added or symbolic-link entry, and a residual
   `runtime-app.previous-*` package without recursive deletion;

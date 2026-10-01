@@ -405,7 +405,10 @@ defaults, delete verified backups and delete registered provider credentials.
 It is available only through the receipt-validated installed backend, including
 a verified toggle-deactivated installation; the bundled setup backend cannot
 purge another distribution. No GUI request supplies arbitrary paths, provider
-IDs or force flags. Login startup is disabled before purge. After verified
+IDs or force flags. Login startup is disabled before purge. An unregistered
+status or a narrowly verified unregister outcome is required; a lookup error
+alone does not establish absence. Real errors and a persistently registered
+service block purge. After verified
 success, polling and queued background actions cannot run again, and cleanup
 targets only the app's named preferences and notification identifier. The app
 bundle is removed by the user in Finder rather than by recursive self-deletion.

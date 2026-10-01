@@ -168,6 +168,14 @@ instead of assuming the old version remains active.
 
 ## Companion login startup, notifications, or Apple events are denied
 
+If complete removal reports that login startup could not be disabled or
+verified, the backend purge has not run: the integration and CLI are retained.
+Companion 0.9.6 fixes the earlier false failure for an already-absent login
+registration. It waits for macOS unregister completion and still stops on
+permission, signature or registration errors. Install the corrected app and
+retry **Settings → Remove PickerMux completely…** with Codex fully closed.
+The installed CLI must support native removal (0.9.5 or newer).
+
 Enable login startup and notifications only through the app's settings.
 Review **System Settings > General > Login Items**, notification authorization,
 or **Privacy & Security > Automation** when macOS asks for approval. A refused
