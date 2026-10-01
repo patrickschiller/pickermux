@@ -37,6 +37,26 @@ public struct CompanionRemovalReview {
   public let text = "PickerMux will restore native Codex configuration and remove its integration, service, CLI, certifications, verified backups and registered provider credentials. Your Codex login, chats and unrelated settings stay intact. An inert provider alias keeps historical chats readable. Login startup will be disabled. After removal, quit PickerMux, move PickerMux.app to the Trash and reopen Codex. A previous gateway such as Ollama is not reactivated."
 }
 
+public enum CompanionRemovalAvailability: Equatable {
+  case available, statusUnavailable, notInstalled, installationUnverified, backendUnsupported
+  case codexRunning, codexUnknown, recoveryPending, recoveryUnknown, actionUnavailable
+
+  public var notice: String? {
+    switch self {
+    case .available: return nil
+    case .statusUnavailable: return "Removal status is unavailable. Check status before removal."
+    case .notInstalled: return "PickerMux's integration and CLI are not installed. There is nothing left to uninstall here. Quit PickerMux and move PickerMux.app from Applications to the Trash."
+    case .installationUnverified: return "The installed PickerMux state could not be verified. Check installation before removal; retained data must not be deleted without verified ownership."
+    case .backendUnsupported: return "The app could not use an installed CLI with native removal support (0.9.5 or newer). Check installation and the CLI version. The bundled setup backend cannot remove an installation."
+    case .codexRunning: return "Fully quit Codex with Command-Q before removal."
+    case .codexUnknown: return "Codex's running status could not be verified. Fully quit Codex and check status before removal."
+    case .recoveryPending: return "Finish the pending Codex repair before removal."
+    case .recoveryUnknown: return "The repair status could not be verified. Check installation before removal."
+    case .actionUnavailable: return "The installed backend does not currently allow complete removal. Check installation and its reported issues."
+    }
+  }
+}
+
 // The generation invalidates tasks waiting on the shared queue and late status
 // observations. Removing the CLI must never trigger bootstrap or auto-refresh.
 @MainActor
@@ -60,10 +80,25 @@ public final class CompanionRemovalCoordinator {
   }
 
   public static func canRemove(_ snapshot: CompanionSnapshot?) -> Bool {
-    guard let snapshot else { return false }
-    return !snapshot.usesBundledBackend && snapshot.supportsNativeUninstall && snapshot.installation.status == "installed" &&
-      ["stopped", "closed"].contains(snapshot.desktop.status) && ["idle", "completed"].contains(snapshot.recovery.status) &&
-      snapshot.actions.contains(.uninstallPreview) && snapshot.actions.contains(.uninstall)
+    availability(snapshot) == .available
+  }
+
+  public static func availability(_ snapshot: CompanionSnapshot?) -> CompanionRemovalAvailability {
+    guard let snapshot else { return .statusUnavailable }
+    // Absence is a display state, never authority to purge through a fallback.
+    if snapshot.installation.status == "not-installed" && snapshot.managedConfig.status == "not-installed" &&
+       snapshot.service.status == "not-installed" && snapshot.integration.status == "none" &&
+       ["idle", "completed"].contains(snapshot.recovery.status) { return .notInstalled }
+    guard snapshot.installation.status == "installed" else { return .installationUnverified }
+    guard !snapshot.usesBundledBackend && snapshot.supportsNativeUninstall else { return .backendUnsupported }
+    guard ["stopped", "closed"].contains(snapshot.desktop.status) else {
+      return snapshot.desktop.status == "running" ? .codexRunning : .codexUnknown
+    }
+    guard ["idle", "completed"].contains(snapshot.recovery.status) else {
+      return snapshot.recovery.status == "pending" ? .recoveryPending : .recoveryUnknown
+    }
+    guard snapshot.actions.contains(.uninstallPreview) && snapshot.actions.contains(.uninstall) else { return .actionUnavailable }
+    return .available
   }
 
   public func remove(client: any CompanionControlling,

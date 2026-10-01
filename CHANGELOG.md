@@ -7,6 +7,13 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Fixed
+
+- Explain disabled companion removal using its actual status. An absent
+  integration and CLI now show that only the app remains to be deleted, rather
+  than incorrectly requesting an older CLI update. Partial or unverified
+  installations remain blocked and are not labelled removed.
+
 ## [0.9.6] - 2026-10-01
 
 ### Fixed

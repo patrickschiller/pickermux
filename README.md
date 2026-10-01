@@ -282,6 +282,10 @@ Trash in Finder. Native Codex sign-in, chats, projects and unrelated settings
 are preserved. An inert provider alias keeps older chats readable and
 contributes no models.
 
+If removal is disabled after the integration and CLI have already been removed,
+only the app bundle remains: quit PickerMux and move it to the Trash. Settings
+identifies this separately from an unsupported CLI or an unverified installation.
+
 Companion 0.9.6 handles an already-absent login registration without the earlier
 false removal failure. It still retains the integration and CLI if macOS cannot
 confirm login startup is disabled. Complete removal works with an installed

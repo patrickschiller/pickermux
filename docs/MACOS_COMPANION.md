@@ -169,6 +169,12 @@ queued automatic actions. A local-cleanup retry never reruns a successful
 backend purge. Quit the app, move **PickerMux.app** from Applications to the
 Trash in Finder, and reopen Codex. The app does not delete its own bundle.
 
+After reopening an app whose integration and CLI are already absent, removal
+is disabled because there is nothing left to uninstall. The Settings message
+directs you to quit and delete the remaining app in Finder. It does not ask you
+to reinstall or update the CLI. Partial or unknown installation state is
+reported separately and never treated as confirmed absence.
+
 Native sign-in, the account model cache, projects, chats and unrelated settings
 are preserved. One inert `model_bridge` provider table remains so older chats
 can open; it contains no catalog models or usable provider route. Select a

@@ -648,9 +648,8 @@ private struct CompanionSettings: View {
               if let notice = controller.removalState.notice {
                 Text(notice).fixedSize(horizontal: false, vertical: true)
               } else if !controller.canRemove {
-                Text(controller.snapshot?.usesBundledBackend == true || controller.snapshot?.supportsNativeUninstall == false ?
-                "Native-only app removal requires matching CLI 0.9.5 or newer. Explicitly update the CLI and app, or fully quit Codex and run ~/.local/bin/pickermux uninstall --purge in Terminal. An older CLI restores the previous configuration and may reactivate an earlier Ollama integration. Nothing is installed automatically for removal." :
-                  "Fully quit Codex with Command-Q, finish any pending repair and check status before removal.")
+                Text(controller.busy != nil ? "Wait for the current operation to finish before removal." :
+                  CompanionRemovalCoordinator.availability(controller.snapshot).notice ?? "Check status before removal.")
                   .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
               }
             }

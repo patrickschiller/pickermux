@@ -5,6 +5,52 @@ import XCTest
 
 @MainActor
 final class UninstallTests: XCTestCase {
+  func testAbsentInstallationExplainsAppDeletionInsteadOfRequestingCliUpdate() throws {
+    let absent = try removalSnapshot([
+      "installation": ["status": "not-installed"], "managedConfig": ["status": "not-installed"],
+      "service": ["status": "not-installed"], "integration": ["status": "none"],
+      "actions": ["configuration-preview"],
+    ]).allowingOnly([.configurationPreview], bundledBackend: true)
+    XCTAssertEqual(CompanionRemovalCoordinator.availability(absent), .notInstalled)
+    XCTAssertFalse(CompanionRemovalCoordinator.canRemove(absent))
+    XCTAssertTrue(CompanionRemovalCoordinator.availability(absent).notice?.contains("nothing left to uninstall") == true)
+    XCTAssertFalse(CompanionRemovalCoordinator.availability(absent).notice?.contains("0.9.5") == true)
+  }
+
+  func testPartialOrUnknownInstallationCannotBePresentedAsAlreadyRemoved() throws {
+    for changes in [
+      ["managedConfig": ["status": "unknown"]], ["managedConfig": ["status": "installed"]],
+      ["service": ["status": "running"]], ["service": ["status": "unknown"]],
+      ["integration": ["status": "pickermux"]], ["recovery": ["status": "pending", "phase": "prepared", "operationId": "11111111-1111-4111-8111-111111111111"]],
+    ] as [[String: Any]] {
+      var fields: [String: Any] = ["installation": ["status": "not-installed"], "managedConfig": ["status": "not-installed"],
+        "service": ["status": "not-installed"], "integration": ["status": "none"]]
+      fields.merge(changes) { _, new in new }
+      let partial = try removalSnapshot(fields).allowingOnly([.configurationPreview], bundledBackend: true)
+      XCTAssertNotEqual(CompanionRemovalCoordinator.availability(partial), .notInstalled)
+      XCTAssertFalse(CompanionRemovalCoordinator.canRemove(partial))
+    }
+  }
+
+  func testRemovalAvailabilityIdentifiesEachBlockingCondition() throws {
+    XCTAssertEqual(CompanionRemovalCoordinator.availability(nil), .statusUnavailable)
+    XCTAssertEqual(CompanionRemovalCoordinator.availability(try removalSnapshot()), .available)
+    for (changes, expected) in [
+      (["capabilities": ["integration-toggle-v1"], "actions": ["configuration-preview"]], CompanionRemovalAvailability.backendUnsupported),
+      (["desktop": ["status": "running"]], .codexRunning),
+      (["desktop": ["status": "unknown"]], .codexUnknown),
+      (["installation": ["status": "invalid"]], .installationUnverified),
+      (["recovery": ["status": "pending", "phase": "prepared", "operationId": "11111111-1111-4111-8111-111111111111"]], .recoveryPending),
+      (["recovery": ["status": "unknown"]], .recoveryUnknown),
+      (["actions": ["uninstall-preview"]], .actionUnavailable),
+    ] as [([String: Any], CompanionRemovalAvailability)] {
+      let snapshot = try removalSnapshot(changes)
+      XCTAssertEqual(CompanionRemovalCoordinator.availability(snapshot), expected)
+      XCTAssertFalse(CompanionRemovalCoordinator.canRemove(snapshot))
+      XCTAssertNotNil(expected.notice)
+    }
+  }
+
   func testReviewCancellationDoesNotDisableLoginOrRemoveAnything() async throws {
     let coordinator = CompanionRemovalCoordinator()
     let client = try RemovalClient()

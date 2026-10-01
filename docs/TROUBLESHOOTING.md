@@ -168,6 +168,13 @@ instead of assuming the old version remains active.
 
 ## Companion login startup, notifications, or Apple events are denied
 
+An unavailable removal button does not always mean the CLI needs an update.
+When installation, managed configuration and service are absent and no
+integration is active, there is nothing left for the backend to remove. Quit
+PickerMux, move the remaining app to the Trash and reopen Codex. Unknown or
+partial state, a running Codex, pending repair and missing backend capabilities
+have distinct removal messages and retain their safety checks.
+
 If complete removal reports that login startup could not be disabled or
 verified, the backend purge has not run: the integration and CLI are retained.
 Companion 0.9.6 fixes the earlier false failure for an already-absent login
