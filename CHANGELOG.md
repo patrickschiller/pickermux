@@ -5,6 +5,10 @@ All notable changes to PickerMux will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+The 0.9.x entries describe local companion development builds. Their features
+are included in the first public companion release, 0.10.0; they were not
+published as GitHub Releases.
+
 ## [Unreleased]
 
 ## [0.10.0] - 2026-10-01
@@ -13,6 +17,9 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 - Make the macOS menu-bar app the primary installation and distribution: a
   universal DMG with the pinned CLI/backend bundled inside the app.
+- Add one-switch Codex activation, visible status, provider-model certification,
+  reviewed recovery after Codex updates, optional login startup and notifications,
+  full removal with native picker restoration, and app/menu-bar icons.
 - Add DMG update discovery and an explicit app-bundled backend upgrade that
   preserves installed provider settings through the existing setup transaction.
 - Replace the long README with a concise app guide, side-by-side app/picker
@@ -760,13 +767,13 @@ confirm the release date before tagging. See the
 
 [Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.10.0...HEAD
 [0.10.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.10.0
-[0.9.6]: https://github.com/patrickschiller/pickermux/releases/tag/v0.9.6
-[0.9.5]: https://github.com/patrickschiller/pickermux/releases/tag/v0.9.5
-[0.9.4]: https://github.com/patrickschiller/pickermux/releases/tag/v0.9.4
-[0.9.3]: https://github.com/patrickschiller/pickermux/releases/tag/v0.9.3
-[0.9.2]: https://github.com/patrickschiller/pickermux/releases/tag/v0.9.2
-[0.9.1]: https://github.com/patrickschiller/pickermux/releases/tag/v0.9.1
-[0.9.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.9.0
+[0.9.6]: #096---2026-10-01
+[0.9.5]: #095---2026-10-01
+[0.9.4]: #094---2026-10-01
+[0.9.3]: #093---2026-10-01
+[0.9.2]: #092---2026-10-01
+[0.9.1]: #091---2026-10-01
+[0.9.0]: #090---2026-10-01
 [0.8.3]: https://github.com/patrickschiller/pickermux/releases/tag/v0.8.3
 [0.8.2]: https://github.com/patrickschiller/pickermux/releases/tag/v0.8.2
 [0.8.1]: https://github.com/patrickschiller/pickermux/releases/tag/v0.8.1
