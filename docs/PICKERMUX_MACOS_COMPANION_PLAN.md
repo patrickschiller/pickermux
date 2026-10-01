@@ -276,7 +276,7 @@ Artefakte zur Review auf; eine Veröffentlichung ist ein eigener Schritt.
 Unsignierte Entwicklungsimages bleiben als Testartefakte gekennzeichnet.
 
 Der Implementierungsstand besteht `npm run verify` mit 1.201 Offline-Tests
-und den Syntaxprüfungen. Zusätzliche Swift-Tests prüfen die echten
+und den Syntaxprüfungen. 39 Swift-Tests prüfen die echten
 Protokoll-Fixtures, Receipt-/Datei-/Runtime-Prüfungen, Bestätigungen und
 begrenzte Subprozesse. Der Universal-Build wird für `arm64` und `x86_64`
 erstellt; seine eingebetteten Backend-Dateien müssen dem geprüften Source-Stand
@@ -285,6 +285,21 @@ Die DMG-Erstellung besteht zusätzlich 20 isolierte Packaging-Prüfungen.
 Der reale Universal-Build mit Xcode 27.0 sowie die Prüfsummen, UDZO-Format-
 und gemountete Inhaltsprüfung einschließlich aller Dateiberechtigungen
 bestehen; das Image wurde anschließend erfolgreich ausgeworfen.
+
+Die erste manuelle App-Installation zeigte einen Fehler in der Node-Erkennung:
+Homebrews übliche Admin-Gruppenrechte an `bin` und `Cellar` wurden abgelehnt.
+Die Korrektur erlaubt ausschließlich diese exakten Verzeichnisse unter
+`/opt/homebrew` und `/usr/local` mit Modus `0775`, passendem Eigentümer und
+der vom Betriebssystem aufgelösten Gruppe `admin`. Andere beschreibbare
+Verzeichnisse, unsichere Symlink-Eltern und ungeprüfte Runtime-Ziele bleiben
+gesperrt. Neun isolierte Tests prüfen die positiven und negativen Grenzen.
+Die korrigierte Startkette erkennt den vorhandenen Node 26.10.0 und liefert
+Status und Konfigurationsvorschau mit dem neu gebauten Backend erfolgreich
+in einem temporären Benutzerverzeichnis. Codex erzeugt dabei seine temporären
+CLI-Starthelfer; PickerMux-Konfiguration, Distribution und LaunchAgent bleiben
+unangelegt. Statusprüfung, Hilfe, Einstellungen und Beenden sind auch bei
+einem Startfehler erreichbar. Die neue DMG muss noch manuell als GUI geprüft
+werden.
 
 Die Code-Umsetzung aller sechs Phasen liegt vor. Die Abnahme von Phase 4
 benötigt noch den realen GUI-/TCC-Recovery-Test mit der neuen App. Für die

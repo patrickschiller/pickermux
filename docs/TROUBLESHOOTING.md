@@ -15,8 +15,32 @@ is needed.
 The optional menu-bar app requires macOS 13+ and Node.js 22.15.0+ installed in
 `/opt/homebrew/bin`, `/usr/local/bin`, or `/usr/bin`. A Node runtime added only
 by a shell profile is unavailable to the app's narrow process environment.
-Install a supported runtime in one of the documented locations and reopen the
-app. Keep credentials out of shell workarounds and app launch arguments.
+The panel keeps **Retry status**, **Help…**, **Settings…**, and **Quit** visible
+even before a backend status is available. **Help…** explains the supported
+locations and links to the official Node.js downloads and this guide.
+
+If Node.js is missing or too old, install a supported runtime from
+[Node.js downloads](https://nodejs.org/en/download) or through the existing
+Homebrew installation, then choose **Retry status**. The app does not start a
+terminal or install Node.js automatically. An installed runtime that cannot
+be verified needs review of its installation rather than repeated setup.
+Keep credentials out of shell workarounds and app launch arguments.
+
+Standard Homebrew Node.js installations are supported, including the
+administrator-group-writable Homebrew `bin` and `Cellar` directories. Earlier
+companion builds incorrectly rejected that normal layout and displayed an install-Node
+message even when a supported version was present. The corrected validator
+recognizes only those exact standard directories under `/opt/homebrew` or
+`/usr/local`; it continues to reject unsafe executable ownership,
+world-writable directories, unsafe link targets, and untrusted ancestors.
+Update the companion and retry status instead of
+changing Homebrew permissions to work around the old check.
+
+Bridge actions appear only after a validated status grants them. A Node.js
+failure does not authorize configuration setup, refresh, recovery, or an
+update. Copying the app from the DMG installs its bundle; use the confirmed
+configuration preview/setup once status is available if the integration is
+not installed yet.
 
 The app validates the receipt-owned launcher, current pointer, source
 inventory, and bounded protocol output. It can fall back to its verified

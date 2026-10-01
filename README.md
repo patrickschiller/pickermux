@@ -209,6 +209,9 @@ and active integration from the menu bar. Available actions use the same
 receipt checks, installation locks, certification gates, and rollback as the
 CLI. A bundled backend can preview and set up the integration when the
 installed CLI is missing or too old; it cannot control another CLI's service.
+If Node.js cannot be found or validated, **Retry status**, **Help…**,
+**Settings…**, and **Quit** stay available. Help links to Node.js setup and
+[troubleshooting](docs/TROUBLESHOOTING.md#companion-cannot-find-or-validate-the-cli-or-nodejs).
 
 Choose **Refresh picker** with Codex fully closed, then **Open Codex** to load
 the updated catalog. The settings offer an optional refresh when Codex closes,

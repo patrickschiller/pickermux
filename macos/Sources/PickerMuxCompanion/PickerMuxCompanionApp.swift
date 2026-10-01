@@ -25,6 +25,7 @@ struct PickerMuxCompanionApp: App {
 @MainActor
 final class CompanionController: ObservableObject {
   @Published var snapshot: CompanionSnapshot?
+  @Published var statusFailure: CompanionFailure?
   @Published var message = "Checking PickerMux…"
   @Published var busy: CompanionAction?
   @Published var refreshQueued = false
@@ -73,6 +74,7 @@ final class CompanionController: ObservableObject {
       let shouldRefresh = (refreshQueued || (refreshOnClose && desktopJustClosed)) && busy == nil && next.state == "ready" && ["idle", "completed"].contains(next.recovery.status) && next.actions.contains(.refresh)
       let recoveryCompleted = shouldNotifyRecoveryCompletion(previous: snapshot, next: next)
       snapshot = next
+      statusFailure = nil
       if busy == nil { message = statusLabel(next.state) }
       if changed && notificationsEnabled { await notifyIfActionable(next, recoveryCompleted: recoveryCompleted) }
       lastTransition = next.transitionIdentity
@@ -80,6 +82,7 @@ final class CompanionController: ObservableObject {
     } catch {
       snapshot = nil
       preview = nil
+      statusFailure = error as? CompanionFailure
       message = failureMessage(error)
     }
   }
@@ -146,6 +149,32 @@ final class CompanionController: ObservableObject {
     } catch {
       loginEnabled = SMAppService.mainApp.status == .enabled
       message = "The login setting could not be changed. Review System Settings > General > Login Items."
+    }
+  }
+
+  func showHelp() {
+    let alert = NSAlert()
+    let nodeRequirement = "The companion requires Node.js 22.15 or newer at /opt/homebrew/bin/node, /usr/local/bin/node or /usr/bin/node. A runtime available only through a shell profile cannot be used."
+    if statusFailure == .unsafeNode {
+      alert.messageText = "Review the Node.js installation"
+      alert.informativeText = "Node.js is installed at a supported location, but its executable or directory ownership could not be verified. Review the installation using the troubleshooting guide, then retry status. \(nodeRequirement)"
+    } else if statusFailure == .missingNode {
+      alert.messageText = "Set up Node.js for PickerMux"
+      alert.informativeText = "\(nodeRequirement) If Node.js is already installed, review its version and location before installing again. The official Node.js installer provides a supported runtime. Choose Retry status after setup."
+    } else {
+      alert.messageText = "PickerMux setup and troubleshooting"
+      alert.informativeText = "\(nodeRequirement) Once status loads, preview and confirm the configuration setup when needed. Copying the app from the disk image does not install the bridge. Use the troubleshooting guide for a refused status or action."
+    }
+    alert.alertStyle = .informational
+    alert.addButton(withTitle: "Close")
+    alert.addButton(withTitle: "Node.js downloads")
+    alert.addButton(withTitle: "Troubleshooting")
+    NSApp.activate(ignoringOtherApps: true)
+    let response = alert.runModal()
+    if response == .alertSecondButtonReturn {
+      if let url = URL(string: "https://nodejs.org/en/download") { NSWorkspace.shared.open(url) }
+    } else if response == .alertThirdButtonReturn {
+      if let url = URL(string: "https://github.com/patrickschiller/pickermux/blob/main/docs/TROUBLESHOOTING.md#companion-cannot-find-or-validate-the-cli-or-nodejs") { NSWorkspace.shared.open(url) }
     }
   }
 
@@ -229,7 +258,29 @@ private struct CompanionPanel: View {
         Spacer()
         if controller.busy != nil { ProgressView().controlSize(.small) }
       }
+      HStack(spacing: 8) {
+        Button(controller.snapshot == nil ? "Retry status" : "Check status") { Task { await controller.refreshStatus() } }
+        Button("Help…") { controller.showHelp() }
+        Spacer(minLength: 0)
+        if #available(macOS 14.0, *) {
+          SettingsLink { Text("Settings…") }
+        } else {
+          Button("Settings…") {
+            NSApp.activate(ignoringOtherApps: true)
+            NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+          }
+        }
+        Button("Quit") { NSApp.terminate(nil) }
+      }
+      .buttonStyle(.bordered)
+      .controlSize(.small)
+      Divider()
       Text(controller.message).font(.callout).fixedSize(horizontal: false, vertical: true)
+      if controller.snapshot == nil {
+        Text("Open Help to review setup, then retry status. Bridge actions become available after the installation status is verified.")
+          .font(.caption).foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+      }
       if let notice = controller.operationNotice {
         Text(notice).font(.caption).fixedSize(horizontal: false, vertical: true)
       }
@@ -271,26 +322,18 @@ private struct CompanionPanel: View {
       if controller.refreshQueued {
         Text("Refresh queued until Codex fully quits.").font(.caption)
       }
-      Divider()
-      ForEach(CompanionAction.allCases, id: \.self) { action in
-        if controller.snapshot?.actions.contains(action) == true {
-          Button(action == .refresh && controller.refreshQueued ? "Cancel queued refresh" : action.label) { controller.perform(action) }
-            .disabled(!controller.canRun(action))
+      if controller.snapshot != nil {
+        Divider()
+        ForEach(CompanionAction.allCases, id: \.self) { action in
+          if controller.snapshot?.actions.contains(action) == true {
+            Button(action == .refresh && controller.refreshQueued ? "Cancel queued refresh" : action.label) { controller.perform(action) }
+              .disabled(!controller.canRun(action))
+          }
         }
       }
-      HStack {
-        Button("Check status") { Task { await controller.refreshStatus() } }
-        Spacer()
-        if #available(macOS 14.0, *) {
-          SettingsLink { Text("Settings…") }
-        } else {
-          Button("Settings…") { NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil) }
-        }
-        Button("Quit") { NSApp.terminate(nil) }
-      }.font(.caption)
     }
     .padding(16)
-    .frame(width: 350)
+    .frame(width: 380)
   }
 
   private func statusRow(_ label: String, _ status: String) -> some View {

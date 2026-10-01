@@ -53,6 +53,13 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Fixed
 
+- Keep retry, help, settings, and quit controls accessible when companion
+  status fails. Node.js guidance also covers an installed runtime that cannot
+  be validated, while bridge actions continue to require authoritative status.
+- Accept the standard administrator-group-writable Homebrew `bin` and
+  `Cellar` directories for a validated Node.js executable instead of reporting
+  a missing runtime. Other ownership, ancestor, link, and world-write checks
+  remain enforced.
 - Show the regular installer first in the README's installation section and
   move the repair-only `--repair-chats` command into its own subsection.
 

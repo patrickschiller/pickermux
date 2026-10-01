@@ -73,28 +73,6 @@ public struct BundledBackendValidator {
   }
 }
 
-public struct NodeValidator {
-  public init() {}
-
-  public func validatedNode() throws -> URL {
-    for candidate in ["/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node"] {
-      let original = URL(fileURLWithPath: candidate)
-      let resolved = original.resolvingSymlinksInPath()
-      guard ["/opt/homebrew/", "/usr/local/", "/usr/bin/"].contains(where: { resolved.path.hasPrefix($0) }) else { continue }
-      var info = stat()
-      guard lstat(resolved.path, &info) == 0, info.st_mode & S_IFMT == S_IFREG,
-            info.st_uid == 0 || info.st_uid == getuid(), info.st_mode & 0o022 == 0,
-            info.st_mode & 0o111 != 0, info.st_nlink == 1
-      else { continue }
-      do {
-        try realOwnedParents(of: resolved, stopAt: URL(fileURLWithPath: "/"))
-        return resolved
-      } catch { continue }
-    }
-    throw CompanionFailure.missingNode
-  }
-}
-
 private func realOwnedParents(of file: URL, stopAt root: URL) throws {
   var directory = file.deletingLastPathComponent().standardizedFileURL
   while true {

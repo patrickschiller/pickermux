@@ -1,12 +1,13 @@
 import Foundation
 
 public enum CompanionFailure: Error, Equatable {
-  case missingLauncher, missingNode, unsafeLauncher, timeout, outputLimit, processFailed, incompatibleProtocol
+  case missingLauncher, missingNode, unsafeNode, unsafeLauncher, timeout, outputLimit, processFailed, incompatibleProtocol
 
   public var message: String {
     switch self {
     case .missingLauncher: return "Install the current PickerMux CLI before using the companion."
-    case .missingNode: return "Install Node.js 22.15 or newer in /opt/homebrew/bin or /usr/local/bin before using the companion."
+    case .missingNode: return "Node.js 22.15 or newer could not be validated at a supported location. Open Help for setup instructions, then retry status."
+    case .unsafeNode: return "An installed Node.js runtime could not be trusted. Open Help to review its installation, then retry status."
     case .unsafeLauncher: return "PickerMux launcher ownership could not be verified. Review the CLI installation."
     case .timeout: return "PickerMux did not finish in time. Check the current status before retrying."
     case .outputLimit: return "PickerMux returned too much output. Review the CLI installation."

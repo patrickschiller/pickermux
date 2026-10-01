@@ -47,6 +47,14 @@ any recovery phase. Status is checked on a five-second polling cycle; slow
 checks can extend that interval. The backend isolates failed probes so one
 broken component does not disclose raw diagnostics or discard other results.
 
+**Retry status**, **Help…**, **Settings…**, and **Quit** remain visible at the
+top when a status check fails. Help explains the Node.js requirement and opens
+only the fixed official download or troubleshooting links you choose.
+Homebrew-installed Node.js is supported; an existing runtime that fails
+validation needs review rather than an automatic reinstallation. See
+[Node.js troubleshooting](TROUBLESHOOTING.md#companion-cannot-find-or-validate-the-cli-or-nodejs).
+Bridge actions remain unavailable until a validated status permits them.
+
 The menu offers actions according to the current validated state:
 
 | Action | Behavior |

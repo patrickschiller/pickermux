@@ -3,6 +3,15 @@ import XCTest
 @testable import PickerMuxCompanionCore
 
 final class ProtocolTests: XCTestCase {
+  func testNodeFailureGuidanceDistinguishesAbsentAndRejectedInstallations() {
+    XCTAssertNotEqual(CompanionFailure.missingNode.message, CompanionFailure.unsafeNode.message)
+    XCTAssertTrue(CompanionFailure.missingNode.message.contains("22.15"))
+    XCTAssertTrue(CompanionFailure.unsafeNode.message.contains("installed"))
+    XCTAssertTrue(CompanionFailure.unsafeNode.message.contains("review"))
+    XCTAssertFalse(CompanionFailure.unsafeNode.message.contains("Install Node"))
+    XCTAssertFalse(CompanionFailure.unsafeNode.message.contains("/"))
+  }
+
   func snapshot(_ changes: [String: Any] = [:]) throws -> Data {
     var value: [String: Any] = [
       "schemaVersion": 1, "version": "0.8.3", "state": "ready",
