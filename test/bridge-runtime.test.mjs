@@ -819,3 +819,96 @@ test("service status distinguishes installation, process, and health states", as
     assert.match(status.error.message, /connection refused/u);
   });
 });
+
+
+test("preserved runtime startup retains exact bytes, inode and private installation identity", async (t) => {
+  const fixture = await makeFixture(t, "preserved-success-");
+  await writeRuntime(fixture.runtimePath, fixture.runtime);
+  const bytes = await readFile(fixture.runtimePath);
+  const before = await stat(fixture.runtimePath);
+  await startBridgeService({
+    ...fixture, preserveRuntime: true, workingDirectory: fixture.directory,
+    execFileImpl: async (_file, args) => { if (args[0] === "print") throw new Error("not loaded"); return { stdout: "" }; },
+    fetchImpl: async () => response({ ok: true, instanceId: fixture.runtime.instanceId }),
+  });
+  assert.deepEqual(await readFile(fixture.runtimePath), bytes);
+  assert.equal((await stat(fixture.runtimePath)).ino, before.ino);
+});
+
+test("preserved start refuses runtime changes during load probe and immediately before bootstrap without clobbering", async (t) => {
+  for (const stage of ["print", "before-bootstrap"]) {
+    const fixture = await makeFixture(t, `preserved-race-${stage}-`);
+    await writeRuntime(fixture.runtimePath, fixture.runtime);
+    const changed = { ...fixture.runtime, capability: "b".repeat(32) };
+    let calls = [];
+    const replace = () => writeRuntime(fixture.runtimePath, changed);
+    await assert.rejects(startBridgeService({
+      ...fixture, preserveRuntime: true, workingDirectory: fixture.directory,
+      beforeBootstrap: async () => { if (stage === "before-bootstrap") await replace(); },
+      execFileImpl: async (_file, args) => {
+        calls.push(args[0]);
+        if (args[0] === "print") { if (stage === "print") await replace(); throw new Error("not loaded"); }
+        assert.fail("A replaced runtime must stop before bootstrap or bootout");
+      },
+      fetchImpl: async () => assert.fail("Health must not run"),
+    }), /Preserved runtime/u);
+    assert.equal((await readRuntime(fixture.runtimePath)).capability, changed.capability);
+    assert.deepEqual(calls, ["print"]);
+    await assertMissing(fixture.launchAgentPath);
+  }
+});
+
+test("preserved start rollback does not unlink its retained runtime after failed bootstrap", async (t) => {
+  const fixture = await makeFixture(t, "preserved-failure-");
+  await writeRuntime(fixture.runtimePath, fixture.runtime);
+  const before = await readFile(fixture.runtimePath);
+  const calls = [];
+  await assert.rejects(startBridgeService({
+    ...fixture, preserveRuntime: true, workingDirectory: fixture.directory,
+    execFileImpl: async (_file, args) => { calls.push(args[0]); if (args[0] === "print") throw new Error("not loaded"); if (args[0] === "bootstrap") throw new Error("bootstrap denied"); return { stdout: "" }; },
+    fetchImpl: async () => assert.fail("Health must not run"),
+  }), /bootstrap denied/u);
+  assert.deepEqual(calls, ["print", "bootstrap", "bootout"]);
+  assert.deepEqual(await readFile(fixture.runtimePath), before);
+  await assertMissing(fixture.launchAgentPath);
+});
+
+test("preserved start retains foreign launch-agent replacements and only cleans its own unchanged plist", async (t) => {
+  for (const stage of ["print", "before-bootstrap", "bootstrap"]) {
+    const fixture = await makeFixture(t, `preserved-plist-${stage}-`);
+    await writeRuntime(fixture.runtimePath, fixture.runtime);
+    const before = await readFile(fixture.runtimePath);
+    const foreign = "foreign plist is preserved\n";
+    const replace = async () => {
+      await mkdir(path.dirname(fixture.launchAgentPath), { recursive: true, mode: 0o700 });
+      const replacement = `${fixture.launchAgentPath}.replacement`;
+      await writeFile(replacement, foreign, { mode: 0o600 });
+      await rename(replacement, fixture.launchAgentPath);
+    };
+    await assert.rejects(startBridgeService({
+      ...fixture, preserveRuntime: true, workingDirectory: fixture.directory,
+      beforeBootstrap: async () => { if (stage === "before-bootstrap") await replace(); },
+      execFileImpl: async (_file, args) => {
+        if (args[0] === "print") { if (stage === "print") await replace(); throw new Error("not loaded"); }
+        if (args[0] === "bootstrap") { assert.equal(stage, "bootstrap"); await replace(); throw new Error("bootstrap interrupted"); }
+        assert.equal(args[0], "bootout"); return { stdout: "" };
+      },
+      fetchImpl: async () => assert.fail("Health must not run"),
+    }));
+    assert.equal(await readFile(fixture.launchAgentPath, "utf8"), foreign);
+    assert.deepEqual(await readFile(fixture.runtimePath), before);
+  }
+});
+
+test("preserved start rejects absent runtime and auth aliases before invoking launchctl", async (t) => {
+  for (const kind of ["missing", "symlink", "hardlink"]) {
+    const fixture = await makeFixture(t, `preserved-auth-${kind}-`);
+    const authPath = path.join(fixture.directory, "auth.json");
+    await writeFile(authPath, "test auth sentinel", { mode: 0o600 });
+    await mkdir(path.dirname(fixture.runtimePath), { recursive: true, mode: 0o700 });
+    if (kind === "symlink") await symlink(authPath, fixture.runtimePath);
+    if (kind === "hardlink") await link(authPath, fixture.runtimePath);
+    await assert.rejects(startBridgeService({ ...fixture, preserveRuntime: true, execFileImpl: async () => assert.fail("No process may run") }));
+    assert.equal(await readFile(authPath, "utf8"), "test auth sentinel");
+  }
+});

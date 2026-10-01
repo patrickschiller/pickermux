@@ -28,6 +28,7 @@ export const COMPANION_ACTIONS = Object.freeze([
   "update",
   "configuration-preview",
   "configuration-apply",
+  "integration-deactivate",
 ]);
 export const COMPANION_CONFIGURATION_CHANGES = Object.freeze([
   "replace-integration",
@@ -37,6 +38,7 @@ export const COMPANION_CONFIGURATION_CHANGES = Object.freeze([
   "restore-on-failure",
   "retain-explicit-provider",
   "normalize-owned-blocks",
+  "reactivate-integration",
 ]);
 
 // Root-only configuration inherits transport defaults that cannot express the
@@ -68,9 +70,9 @@ const PREVIEW_TOKEN_PATTERN = /^[0-9a-f]{64}$/u;
 const STATUS_ENUMS = Object.freeze({
   desktop: ["running", "stopped", "unknown"],
   installation: ["installed", "not-installed", "invalid", "unknown"],
-  managedConfig: ["installed", "installed-marker-recovered", "not-installed", "suspended", "suspension-conflict", "integration-conflict", "modified", "inconsistent", "invalid-state", "unreadable-config", "orphaned-managed-block", "unknown"],
+  managedConfig: ["installed", "installed-marker-recovered", "not-installed", "deactivated", "suspended", "suspension-conflict", "integration-conflict", "modified", "inconsistent", "invalid-state", "unreadable-config", "orphaned-managed-block", "unknown"],
   service: ["running", "stopped", "not-installed", "runtime-missing", "unhealthy", "unreachable", "update-required", "unavailable", "unknown"],
-  compatibility: ["compatible", "update-required", "unavailable", "unknown"],
+  compatibility: ["not-installed", "compatible", "update-required", "unavailable", "unknown"],
   accountCache: ["ready", "refresh-required", "unavailable", "unknown"],
   recovery: ["idle", "pending", "completed", "unavailable", "unknown"],
   integration: ["pickermux", "ollama", "foreign", "none", "conflict", "unknown"],
@@ -107,6 +109,10 @@ const ERROR_MESSAGES = Object.freeze({
   UPDATE_UNAVAILABLE: "The update service could not be reached. Try again later.",
   UPDATE_UNSUPPORTED: "No supported update package is available for this system.",
   CERTIFICATION_INCOMPLETE: "Certification did not complete. Unverified models remain conservative.",
+  PROVIDER_UNAVAILABLE: "The configured external provider could not be reached. Start LM Studio and load a model, then retry activation.",
+  NO_LOADED_MODELS: "No usable external model is loaded. Load a model in the configured provider, then retry activation.",
+  DEACTIVATION_FAILED: "Deactivation failed. The previous integration was retained or restored.",
+  DEACTIVATION_ROLLBACK_FAILED: "Deactivation could not safely restore the previous integration. Keep Codex closed and inspect status before retrying.",
   ACTION_FAILED: "The PickerMux action could not complete. Inspect companion status.",
 });
 
@@ -213,6 +219,10 @@ export function parseCompanionRequest(input) {
       throw requestError("CONFIRMATION_REQUIRED");
     }
     if (typeof request.previewToken !== "string" || !PREVIEW_TOKEN_PATTERN.test(request.previewToken)) throw requestError();
+  } else if (request.action === "integration-deactivate") {
+    if (!exactKeys(request.confirmation, ["deactivateIntegration"], ["deactivateIntegration"]) || request.confirmation.deactivateIntegration !== true) {
+      throw requestError("CONFIRMATION_REQUIRED");
+    }
   } else if (Object.hasOwn(request, "confirmation")) {
     throw requestError();
   }
@@ -293,7 +303,7 @@ export async function collectCompanionStatus({ probes = {}, probeTimeoutMs = 5_0
   if (!isPlainRecord(probes) || !Number.isSafeInteger(probeTimeoutMs) || probeTimeoutMs < 1 || probeTimeoutMs > 30_000) throw requestError();
   const names = ["metadata", ...Object.keys(STATUS_ENUMS)];
   const observed = await Promise.allSettled(names.map((name) => boundedProbe(probes[name], probeTimeoutMs)));
-  const snapshot = { schemaVersion: COMPANION_SCHEMA_VERSION, version: "unknown", state: "degraded" };
+  const snapshot = { schemaVersion: COMPANION_SCHEMA_VERSION, capabilities: ["integration-toggle-v1"], version: "unknown", state: "degraded" };
   const issues = [];
   function issue(code) { issues.push({ code, message: ISSUE_MESSAGES[code] }); }
   names.forEach((name, index) => {
@@ -343,8 +353,12 @@ export async function collectCompanionStatus({ probes = {}, probeTimeoutMs = 5_0
   const knownRecovery = ["idle", "completed"].includes(snapshot.recovery.status);
   const safeToMutate = installed && healthyConfig && knownDesktop && knownRecovery && !configurationConflict;
   const ready = safeToMutate && snapshot.service.status === "running" && snapshot.compatibility.status === "compatible" && snapshot.accountCache.status === "ready";
-  snapshot.state = pendingRecovery ? "recovery-pending" : configurationConflict ? "configuration-conflict" : updateRequired || refreshRequired ? "update-required" : ready ? "ready" :
-    snapshot.installation.status === "not-installed" && snapshot.managedConfig.status === "not-installed" ? "not-installed" : "degraded";
+  const deactivated = installed && snapshot.managedConfig.status === "deactivated" && snapshot.integration.status === "none" && knownRecovery;
+  const notInstalled = snapshot.installation.status === "not-installed" && snapshot.managedConfig.status === "not-installed";
+  // A fresh native home has no account cache yet. Initialization still blocks
+  // activation, but does not imply an installed bridge needs an update.
+  snapshot.state = pendingRecovery ? "recovery-pending" : configurationConflict ? "configuration-conflict" : deactivated ? "inactive" :
+    notInstalled ? "not-installed" : updateRequired || refreshRequired ? "update-required" : ready ? "ready" : "degraded";
   snapshot.actions = ["diagnose", "update-check", "configuration-preview"];
   if (safeToMutate && !updateRequired && !refreshRequired) {
     snapshot.actions.push("refresh");
@@ -353,10 +367,12 @@ export async function collectCompanionStatus({ probes = {}, probeTimeoutMs = 5_0
   }
   if (installed && (healthyConfig || suspendedRecovery || legacySuspendedRecovery) && knownDesktop && !configurationConflict &&
     (pendingRecovery || (knownRecovery && (refreshRequired || updateRequired)))) snapshot.actions.push("recover");
-  if (installed && healthyConfig && !configurationConflict && snapshot.desktop.status === "stopped" && knownRecovery) snapshot.actions.push("update");
+  if (installed && healthyConfig && !configurationConflict && snapshot.desktop.status === "stopped" && knownRecovery) {
+    snapshot.actions.push("update", "integration-deactivate");
+  }
   if (snapshot.desktop.status === "stopped" && knownRecovery && snapshot.accountCache.status === "ready" &&
     ["installed", "not-installed"].includes(snapshot.installation.status) &&
-    ["installed", "installed-marker-recovered", "not-installed"].includes(snapshot.managedConfig.status) &&
+    ["installed", "installed-marker-recovered", "not-installed", "deactivated"].includes(snapshot.managedConfig.status) &&
     ["pickermux", "ollama", "foreign", "none"].includes(snapshot.integration.status)) snapshot.actions.push("configuration-apply");
   snapshot.issues = issues;
   return snapshot;
@@ -380,8 +396,14 @@ export function createCompanionReadOnlyProbes({ paths, distributionPaths, fullRe
       return validateDistributionInstallation({ paths: distributionPaths });
     },
     managedConfig: managed,
-    service: async () => getBridgeServiceStatus({ config: await loadConfig(), runtimePath: paths.runtimePath, launchAgentLabel: paths.launchAgentLabel, execFileImpl: executeReadOnlyProbe }),
+    service: async () => {
+      const status = await managed();
+      if (status.healthy === true && ["not-installed", "deactivated"].includes(status.status)) return { status: "not-installed" };
+      return getBridgeServiceStatus({ config: await loadConfig(), runtimePath: paths.runtimePath, launchAgentLabel: paths.launchAgentLabel, execFileImpl: executeReadOnlyProbe });
+    },
     compatibility: async () => {
+      const status = await managed();
+      if (status.healthy === true && ["not-installed", "deactivated"].includes(status.status)) return { status: "not-installed" };
       const [codexClientVersion, bundledCatalog] = await Promise.all([client(), loadBundledCatalog({ codexPath, execFileImpl: executeReadOnlyProbe })]);
       return checkCurrentCompatibility({
         manifestPath: paths.compatibilityPath,
@@ -399,7 +421,7 @@ export function createCompanionReadOnlyProbes({ paths, distributionPaths, fullRe
   };
 }
 
-export function companionFailure(error) {
+function companionErrorCode(error) {
   let code = "ACTION_FAILED";
   if (error instanceof CompanionControlError) code = error.code;
   else if (Object.hasOwn(ERROR_MESSAGES, error?.code)) code = error.code;
@@ -407,14 +429,30 @@ export function companionFailure(error) {
   else if (error?.code === "CODEX_ACCOUNT_CACHE_REFRESH_REQUIRED") code = "ACCOUNT_CACHE_REFRESH_REQUIRED";
   else if (error?.code === "CONFIGURATION_SUSPENDED") code = "RECOVERY_PENDING";
   else if (["DESKTOP_COMPATIBILITY_UPDATE_REQUIRED", "CODEX_IDENTITY_CHANGED"].includes(error?.code)) code = "UPDATE_REQUIRED";
-  else if (["CONFIG_CHANGED_CONCURRENTLY", "CONFIG_MODIFIED", "MANAGED_CONFIG_MODIFIED", "STATE_CONFIG_MISMATCH", "WEB_SEARCH_CONFIG_CONFLICT", "INTEGRATION_CONFLICT", "INTEGRATION_PREVIEW_CHANGED", "INTEGRATION_SWITCH_CONFLICT", "FOREIGN_INTEGRATION_CONFLICT", "CONFIG_SUSPENSION_CONFLICT", "CONFIG_SUSPENSION_CHANGED", "CONFIG_SUSPENSION_INVALID", "CONFIG_SUSPENSION_RECEIPT_REQUIRED", "CONFIG_SUSPENSION_ROLLBACK_FAILED", "CONFIGURATION_NOT_SUSPENDED", "CONFIGURATION_SUSPENSION_CONFLICT"].includes(error?.code)) code = "CONFIGURATION_CONFLICT";
+  else if (["CONFIG_CHANGED_CONCURRENTLY", "CONFIG_MODIFIED", "MANAGED_CONFIG_MODIFIED", "STATE_CONFIG_MISMATCH", "WEB_SEARCH_CONFIG_CONFLICT", "INTEGRATION_CONFLICT", "INTEGRATION_PREVIEW_CHANGED", "INTEGRATION_SWITCH_CONFLICT", "FOREIGN_INTEGRATION_CONFLICT", "CONFIG_SUSPENSION_CONFLICT", "CONFIG_SUSPENSION_CHANGED", "CONFIG_SUSPENSION_INVALID", "CONFIG_SUSPENSION_RECEIPT_REQUIRED", "CONFIG_SUSPENSION_ROLLBACK_FAILED", "CONFIGURATION_NOT_SUSPENDED", "CONFIGURATION_SUSPENSION_CONFLICT", "REACTIVATION_RECEIPT_REQUIRED", "STATE_PROVIDER_MISMATCH", "HISTORICAL_PROVIDER_CONFLICT", "HISTORICAL_MARKER_CONFLICT"].includes(error?.code)) code = "CONFIGURATION_CONFLICT";
+  return code;
+}
+
+export function companionFailure(error) {
+  let code = "ACTION_FAILED";
+  let current = error;
+  const seen = new Set();
+  for (let depth = 0; depth < 8 && current && typeof current === "object" && !seen.has(current); depth += 1) {
+    seen.add(current);
+    code = companionErrorCode(current);
+    if (code !== "ACTION_FAILED") break;
+    // Aggregate rollback failures contain multiple competing causes. Never
+    // turn their original guard into a claim that restoration succeeded.
+    if (current instanceof AggregateError || /ROLLBACK_FAILED$/u.test(current.code ?? "")) break;
+    current = current.cause;
+  }
   return { schemaVersion: COMPANION_SCHEMA_VERSION, ok: false, code, message: ERROR_MESSAGES[code] };
 }
 
 export function companionSuccess(action, result = {}) {
   if (!COMPANION_ACTIONS.includes(action)) throw requestError();
   const response = { schemaVersion: COMPANION_SCHEMA_VERSION, ok: true, code: "COMPLETE", action };
-  for (const name of ["started", "resumed", "updated", "updateAvailable", "restartRequired", "certificationIncomplete"]) {
+  for (const name of ["started", "resumed", "updated", "updateAvailable", "restartRequired", "certificationIncomplete", "deactivated"]) {
     if (typeof result?.[name] === "boolean") response[name] = result[name];
   }
   for (const name of ["version", "currentVersion", "latestVersion", "targetVersion"]) {
@@ -431,6 +469,7 @@ export function companionSuccess(action, result = {}) {
     if (Array.isArray(result?.changes)) response.changes = [...new Set(result.changes.filter((change) => COMPANION_CONFIGURATION_CHANGES.includes(change)))];
     if (action === "configuration-preview" && typeof result?.previewToken === "string" && PREVIEW_TOKEN_PATTERN.test(result.previewToken)) response.previewToken = result.previewToken;
   }
+  if (action === "integration-deactivate" && result?.status === "deactivated") response.status = "deactivated";
   if (["update", "update-check"].includes(action) && ["current", "unavailable", "unsupported", "up-to-date", "available", "updated", "installed", "no-update", "update-available"].includes(result?.status)) response.status = result.status;
   return response;
 }

@@ -18,6 +18,8 @@ import test from "node:test";
 
 import {
   CONFIG_MARKERS,
+  deactivateManagedConfiguration,
+  inventoryDeactivatedConfigReactivation,
   enableManagedStandaloneWebSearch,
   getConfigStatus,
   installConfig,
@@ -2978,3 +2980,90 @@ async function snapshotFile(target) {
     mtimeMs: metadata.mtimeMs,
   };
 }
+
+
+test("intentional deactivation retains baseline, inert history and CAS-bound reactivation", async (t) => {
+  for (const original of [undefined, 'model = "gpt-5.6-sol"\n[features]\nother = true\n', 'openai_base_url = "http://127.0.0.1:11434/api/codex/v1"\n[features]\nother = true\n']) {
+    await t.test(original === undefined ? "absent" : original.startsWith("openai") ? "Ollama" : "native", async (subtest) => {
+      const fixture = await makeFixture(subtest);
+      if (original !== undefined) await writeFile(fixture.configPath, original);
+      const options = fixture.options();
+      options.modelProvider = options.provider.id = "model_bridge";
+      const preview = await previewConfigIntegration(fixture.paths());
+      if (["ollama", "foreign"].includes(preview.status)) options.integrationSwitchReceipt = await inventoryConfigIntegrationSwitch({ ...fixture.paths(), expectedPreviewToken: preview.previewToken });
+      await installConfig(options);
+      const baseline = JSON.parse(await readFile(fixture.statePath));
+      const backup = await readFile(baseline.backupPath);
+      await deactivateManagedConfiguration(fixture.paths());
+      assert.deepEqual(pickStatus(await getConfigStatus(fixture.paths())), { installed: false, healthy: true, status: "deactivated" });
+      const paused = await readFile(fixture.configPath, "utf8");
+      assert.match(paused, /model_providers.model_bridge/u);
+      assert.match(paused, /127\.0\.0\.1:0\/v1/u);
+      assert.doesNotMatch(paused, /openai_base_url|model_provider =|model_catalog_json|lm-studio-model-router:p2/u);
+      assert.equal((await getConfigStatus(fixture.paths())).recoveryRequired, false);
+      const pausedState = JSON.parse(await readFile(fixture.statePath));
+      assert.equal(pausedState.suspension.kind, "integration-toggle-v1");
+      assert.equal(pausedState.backupPath, baseline.backupPath);
+      assert.equal(pausedState.sourceSha256, baseline.sourceSha256);
+      assert.deepEqual(await readFile(baseline.backupPath), backup);
+      const next = await previewConfigIntegration(fixture.paths());
+      assert.equal(next.status, "none");
+      assert.equal(next.canApply, true);
+      assert.ok(next.changes.includes("reactivate-integration"));
+      await assert.rejects(inventoryDeactivatedConfigReactivation({ ...fixture.paths(), expectedPreviewToken: "0".repeat(64) }), { code: "INTEGRATION_PREVIEW_CHANGED" });
+      await assert.rejects(inventoryManagedConfigReactivation(fixture.paths()), { code: "CONFIGURATION_SUSPENDED" });
+      await assert.rejects(suspendManagedConfiguration(fixture.paths()), { code: "CONFIGURATION_SUSPENDED" });
+      const receipt = await inventoryDeactivatedConfigReactivation({ ...fixture.paths(), expectedPreviewToken: next.previewToken });
+      const changedProvider = { ...options.provider, baseUrl: "http://127.0.0.1:1234/rotated/v1" };
+      await assert.rejects(installConfig({ ...options, integrationSwitchReceipt: undefined, provider: changedProvider, reactivationReceipt: receipt }), { code: "STATE_PROVIDER_MISMATCH" });
+      const installed = await installConfig({ ...options, integrationSwitchReceipt: undefined, reactivationReceipt: receipt });
+      assert.equal((await getConfigStatus(fixture.paths())).installed, true);
+      await installed.rollback();
+      assert.equal(await readFile(fixture.configPath, "utf8"), paused);
+      const retry = await inventoryDeactivatedConfigReactivation(fixture.paths());
+      await installConfig({ ...options, integrationSwitchReceipt: undefined, reactivationReceipt: retry });
+      await uninstallConfig(fixture.paths());
+      if (original === undefined) await assert.rejects(readFile(fixture.configPath), { code: "ENOENT" });
+      else assert.equal(await readFile(fixture.configPath, "utf8"), original);
+    });
+  }
+});
+
+test("deactivation preserves edits outside owned blocks during reactivation and direct uninstall", async (t) => {
+  for (const reactivate of [false, true]) {
+    const fixture = await makeFixture(t);
+    const original = 'model = "gpt-5.6-sol"\n[features]\nother = true\n';
+    await writeFile(fixture.configPath, original);
+    const options = fixture.options();
+    options.modelProvider = options.provider.id = "model_bridge";
+    await installConfig(options);
+    await writeFile(fixture.configPath, `${await readFile(fixture.configPath, "utf8")}user_added = true\n`);
+    await deactivateManagedConfiguration(fixture.paths());
+    if (reactivate) await installConfig({ ...options, reactivationReceipt: await inventoryDeactivatedConfigReactivation(fixture.paths()) });
+    await uninstallConfig(fixture.paths());
+    assert.equal(await readFile(fixture.configPath, "utf8"), `${original}user_added = true\n`);
+  }
+});
+
+test("deactivation rejects full-refresh collision, custom historical identity and concurrent changes", async (t) => {
+  const fixture = await makeFixture(t);
+  const options = fixture.options();
+  await installConfig(options);
+  const active = await readFile(fixture.configPath);
+  await assert.rejects(deactivateManagedConfiguration(fixture.paths()), { code: "INTEGRATION_CONFLICT" });
+  assert.deepEqual(await readFile(fixture.configPath), active);
+  await suspendManagedConfiguration(fixture.paths());
+  await assert.rejects(deactivateManagedConfiguration(fixture.paths()), { code: "CONFIGURATION_SUSPENDED" });
+  await assert.rejects(inventoryDeactivatedConfigReactivation(fixture.paths()), { code: "CONFIGURATION_SUSPENDED" });
+  const canonical = await makeFixture(t);
+  const settings = canonical.options();
+  settings.modelProvider = settings.provider.id = "model_bridge";
+  await installConfig(settings);
+  const pause = await deactivateManagedConfiguration(canonical.paths());
+  const changed = `${await readFile(canonical.configPath, "utf8")}# contributor edit\n`;
+  await writeFile(canonical.configPath, changed);
+  await assert.rejects(pause.rollback(), { code: "CONFIG_CHANGED_CONCURRENTLY" });
+  await assert.rejects(inventoryDeactivatedConfigReactivation(canonical.paths()), { code: "CONFIGURATION_SUSPENSION_CONFLICT" });
+  assert.equal((await previewConfigIntegration(canonical.paths())).canApply, false);
+  assert.equal(await readFile(canonical.configPath, "utf8"), changed);
+});

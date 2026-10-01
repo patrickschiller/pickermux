@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { loadCompanionServiceConfig, readCompanionPrivateFile } from "../src/companion-config.mjs";
+import { getConfigStatus, installConfig } from "../src/config-manager.mjs";
 import { createCompanionReadOnlyProbes } from "../src/companion-control.mjs";
 
 const CONFIG = {
@@ -125,10 +126,26 @@ test("only fixed installed artifact paths are eligible", async (t) => {
 });
 
 test("new companion service probe rejects private aliases before LaunchServices or provider I/O", async (t) => {
-  const { paths } = await fixture(t);
-  const auth = path.join(paths.codexHome, "auth.json");
-  await writeFile(auth, JSON.stringify(CONFIG), { mode: 0o600 });
-  await rm(paths.serviceConfigPath);
-  await symlink(auth, paths.serviceConfigPath);
-  await assert.rejects(createCompanionReadOnlyProbes({ paths }).service(), { code: "COMPANION_CONFIG_INVALID" });
+  for (const makeAlias of [symlink, link]) {
+    const { paths } = await fixture(t);
+    Object.assign(paths, {
+      configPath: path.join(paths.codexHome, "config.toml"),
+      statePath: path.join(paths.installDirectory, "state.json"),
+      backupDirectory: path.join(paths.installDirectory, "backups"),
+      catalogPath: path.join(paths.installDirectory, "models.json"),
+    });
+    await installConfig({
+      configPath: paths.configPath, statePath: paths.statePath, backupDirectory: paths.backupDirectory,
+      model: CONFIG.bridge.defaultModel, modelProvider: CONFIG.bridge.providerId, modelCatalogJson: paths.catalogPath,
+      provider: { id: CONFIG.bridge.providerId, name: "OpenAI", baseUrl: "http://127.0.0.1:4210/c/test-only-capability/v1", wireApi: "responses", requiresOpenAiAuth: true, supportsWebsockets: false },
+    });
+    assert.equal((await getConfigStatus(paths)).status, "installed");
+    const auth = path.join(paths.codexHome, "auth.json");
+    await writeFile(auth, JSON.stringify(CONFIG), { mode: 0o600 });
+    const before = await readFile(auth);
+    await rm(paths.serviceConfigPath);
+    await makeAlias(auth, paths.serviceConfigPath);
+    await assert.rejects(createCompanionReadOnlyProbes({ paths }).service(), { code: "COMPANION_CONFIG_INVALID" });
+    assert.deepEqual(await readFile(auth), before);
+  }
 });

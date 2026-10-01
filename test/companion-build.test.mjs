@@ -4,10 +4,51 @@ import { chmod, cp, link, mkdir, mkdtemp, readFile, readdir, readlink, realpath,
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { gunzipSync } from "node:zlib";
+import { deflateSync, gunzipSync } from "node:zlib";
 import { buildCompanion, companionArchive, releaseSigning } from "../scripts/build-companion.mjs";
+import { validateCompanionIcns, validateIconPng } from "../scripts/build-companion-icon.mjs";
 
 const hash = (value) => createHash("sha256").update(value).digest("hex");
+
+function iconPng(pixels, colorType = 6) {
+  const crc32 = (bytes) => {
+    let value = 0xffffffff;
+    for (const byte of bytes) {
+      value ^= byte;
+      for (let bit = 0; bit < 8; bit += 1) value = (value >>> 1) ^ (value & 1 ? 0xedb88320 : 0);
+    }
+    return (value ^ 0xffffffff) >>> 0;
+  };
+  const chunk = (type, contents) => {
+    const data = Buffer.concat([Buffer.from(type, "ascii"), contents]);
+    const length = Buffer.alloc(4);
+    length.writeUInt32BE(contents.length);
+    const checksum = Buffer.alloc(4);
+    checksum.writeUInt32BE(crc32(data));
+    return Buffer.concat([length, data, checksum]);
+  };
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(pixels, 0);
+  header.writeUInt32BE(pixels, 4);
+  header[8] = 8;
+  header[9] = colorType;
+  const raster = Buffer.alloc((pixels * 4 + 1) * pixels);
+  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", header), chunk("IDAT", deflateSync(raster)), chunk("IEND", Buffer.alloc(0))]);
+}
+
+function iconIcns() {
+  const chunks = [["ic04", 16], ["ic05", 32], ["ic07", 128], ["ic08", 256], ["ic09", 512], ["ic10", 1024], ["ic11", 32], ["ic12", 64], ["ic13", 256], ["ic14", 512]].map(([type, pixels]) => {
+    const contents = iconPng(pixels);
+    const record = Buffer.alloc(8);
+    record.write(type, "ascii");
+    record.writeUInt32BE(contents.length + 8, 4);
+    return Buffer.concat([record, contents]);
+  });
+  const header = Buffer.alloc(8);
+  header.write("icns", "ascii");
+  header.writeUInt32BE(chunks.reduce((sum, chunk) => sum + chunk.length, 8), 4);
+  return Buffer.concat([header, ...chunks]);
+}
 
 async function fixture(t) {
   const root = await mkdtemp(path.join(os.tmpdir(), "pickermux-companion-build-test-"));
@@ -21,8 +62,9 @@ async function fixture(t) {
     "bin/pickermux.mjs": "// deterministic fixture\n",
     "src/control.mjs": "export const schemaVersion = 1;\n",
     "macos/Sources/Core/App.swift": "// fixture\n",
-    "macos/Resources/Info.plist.in": "<plist>__PICKERMUX_VERSION__</plist>\n",
+    "macos/Resources/Info.plist.in": "<plist>__PICKERMUX_VERSION__<key>CFBundleIconFile</key><string>AppIcon</string></plist>\n",
     "macos/Resources/Companion.entitlements": "<plist/>\n",
+    "macos/Resources/AppIcon.png": iconPng(1024),
     "CHANGELOG.md": "## [1.2.3] - 2026-10-01\n\n[1.2.3]: https://github.com/patrickschiller/pickermux/releases/tag/v1.2.3\n",
     "scripts/install.sh.in": "#!/bin/sh\nversion=__PICKERMUX_VERSION__\narchive=__PICKERMUX_ARCHIVE__\ndigest=__PICKERMUX_SHA256__\n",
   };
@@ -41,6 +83,8 @@ function fakeTools(calls = [], override = async () => {}) {
     if (tool === "/usr/bin/lipo" && args.includes("-create")) await writeFile(args[args.indexOf("-output") + 1], "fixture-universal");
     if (tool === "/usr/bin/lipo" && args.includes("-archs")) return "arm64 x86_64\n";
     if (args[0] === "notarytool") return JSON.stringify({ status: "Accepted" });
+    if (tool === "/usr/bin/sips") await writeFile(args.at(-1), iconPng(Number(args[args.indexOf("--resampleHeightWidth") + 1])), { flag: "wx" });
+    if (tool === "/usr/bin/iconutil") await writeFile(args[args.indexOf("--output") + 1], iconIcns(), { flag: "wx" });
     if (tool === "/usr/bin/ditto" && !args.includes("-c")) await cp(args[0], args[1], { recursive: true, force: false, errorOnExist: true, verbatimSymlinks: true });
     if (tool === "/usr/bin/hdiutil") {
       if (args[0] === "create") {
@@ -106,6 +150,15 @@ test("companion build pins its complete backend, builds both architectures and p
   const distribution = JSON.parse(await readFile(path.join(first.outputDirectory, "companion-manifest.json"), "utf8"));
   assert.equal(distribution.signing, "unsigned-development");
   assert.equal(distribution.backendManifestSha256, hash(entries.find(({ path: name }) => name.endsWith("Backend/release-manifest.json")).contents));
+  const packagedIcon = entries.find(({ path: name }) => name === "PickerMux.app/Contents/Resources/AppIcon.icns");
+  assert.ok(packagedIcon);
+  assert.equal(packagedIcon.mode, 0o644);
+  validateCompanionIcns(packagedIcon.contents);
+  assert.deepEqual(distribution.icon, { file: "AppIcon.icns", sha256: hash(packagedIcon.contents), source: "macos/Resources/AppIcon.png", sourceSha256: hash(await readFile(path.join(project, "macos", "Resources", "AppIcon.png"))), pixels: 1024 });
+  assert.match(entries.find(({ path: name }) => name === "PickerMux.app/Contents/Info.plist").contents.toString("utf8"), /<key>CFBundleIconFile<\/key><string>AppIcon<\/string>/u);
+  const iconSizes = calls.filter(({ tool }) => tool === "/usr/bin/sips").map(({ args }) => Number(args[args.indexOf("--resampleHeightWidth") + 1]));
+  assert.deepEqual(iconSizes, [16, 32, 32, 64, 128, 256, 256, 512, 512, 1024]);
+  assert.ok(calls.some(({ tool, args }) => tool === "/usr/bin/iconutil" && args[0] === "--convert" && args[1] === "icns"));
   assert.deepEqual(distribution.diskImage, { file: "PickerMux-v1.2.3-macos-universal.dmg", sha256: hash(await readFile(path.join(first.outputDirectory, first.diskImageName))), format: "UDZO", filesystem: "HFS+", installation: "drag-to-applications" });
   assert.equal(first.diskImageSha256, distribution.diskImage.sha256);
   const checksumLines = (await readFile(path.join(first.outputDirectory, "SHA256SUMS"), "utf8")).trim().split("\n");
@@ -189,6 +242,78 @@ test("companion sources and archives reject symlink substitution", async (t) => 
   await mkdir(bundle);
   await symlink(path.join(project, "LICENSE"), path.join(bundle, "link"));
   await assert.rejects(companionArchive(bundle), /symbolic links/u);
+});
+
+test("app icon requires a complete square RGBA master and valid native ICNS representations", async (t) => {
+  for (const [name, source, expected] of [
+    ["non-PNG", Buffer.from("not a PNG"), /RGBA alpha/u],
+    ["wrong master size", iconPng(512), /1024x1024/u],
+    ["no alpha", iconPng(1024, 2), /RGBA alpha/u],
+    ["truncated PNG", iconPng(1024).subarray(0, 35), /truncated|checksum/u],
+    ["corrupt PNG CRC", Buffer.from(iconPng(1024)), /checksum/u],
+  ]) {
+    await t.test(name, async (child) => {
+      const { root, project } = await fixture(child);
+      if (name === "corrupt PNG CRC") source[32] ^= 1;
+      await writeFile(path.join(project, "macos", "Resources", "AppIcon.png"), source);
+      const calls = [];
+      await assert.rejects(buildCompanion({ projectDirectory: project, outputDirectory: path.join(root, "out"), execute: fakeTools(calls) }), expected);
+      assert.equal(calls.length, 0);
+      assert.ok(!(await readdir(root)).includes("out"));
+    });
+  }
+  validateIconPng(iconPng(1024), 1024);
+  validateCompanionIcns(iconIcns());
+  for (const [small, medium] of [["icp4", "icp5"], ["is32", "il32"]]) {
+    const legacy = iconIcns();
+    const second = 8 + legacy.readUInt32BE(12);
+    legacy.write(small, 8, "ascii");
+    legacy.write(medium, second, "ascii");
+    validateCompanionIcns(legacy);
+  }
+  assert.throws(() => validateCompanionIcns(Buffer.from("not icns")), /ICNS/u);
+  const truncated = iconIcns().subarray(0, 32);
+  assert.throws(() => validateCompanionIcns(truncated), /complete ICNS/u);
+  const missing = iconIcns();
+  missing.write("zzzz", 8, "ascii");
+  assert.throws(() => validateCompanionIcns(missing), /missing required/u);
+  const empty = iconIcns();
+  empty.writeUInt32BE(8, 12);
+  assert.throws(() => validateCompanionIcns(empty), /malformed or duplicated/u);
+  const duplicate = iconIcns();
+  duplicate.write("ic04", 8 + duplicate.readUInt32BE(12), "ascii");
+  assert.throws(() => validateCompanionIcns(duplicate), /malformed or duplicated/u);
+});
+
+test("app icon rejects missing or linked sources, wrong icon declaration and malformed native output", async (t) => {
+  const cases = [
+    ["missing source", async (project) => rm(path.join(project, "macos", "Resources", "AppIcon.png")), async () => {}, /ENOENT/u],
+    ["linked source", async (project) => {
+      const source = path.join(project, "macos", "Resources", "AppIcon.png");
+      await rm(source);
+      await symlink(path.join(project, "LICENSE"), source);
+    }, async () => {}, /regular file without links/u],
+    ["hardlinked source", async (project) => {
+      const source = path.join(project, "macos", "Resources", "AppIcon.png");
+      await link(source, source + ".alias");
+    }, async () => {}, /regular file without links/u],
+    ["wrong plist icon", async (project) => writeFile(path.join(project, "macos", "Resources", "Info.plist.in"), "<plist>__PICKERMUX_VERSION__<key>CFBundleIconFile</key><string>Other</string></plist>"), async () => {}, /declare the packaged AppIcon/u],
+    ["wrong resized PNG", async () => {}, async (tool, args) => {
+      if (tool === "/usr/bin/sips") { await writeFile(args.at(-1), iconPng(1024)); return ""; }
+    }, /16x16/u],
+    ["malformed ICNS", async () => {}, async (tool, args) => {
+      if (tool === "/usr/bin/iconutil") { await writeFile(args[args.indexOf("--output") + 1], "invalid native output"); return ""; }
+    }, /complete ICNS/u],
+  ];
+  for (const [name, prepare, override, expected] of cases) {
+    await t.test(name, async (child) => {
+      const { root, project } = await fixture(child);
+      await prepare(project);
+      await assert.rejects(buildCompanion({ projectDirectory: project, outputDirectory: path.join(root, "out"), execute: fakeTools([], override) }), expected);
+      assert.ok(!(await readdir(root)).includes("out"));
+      assert.equal((await readdir(root)).filter((entry) => entry.startsWith(".pickermux-companion-")).length, 0);
+    });
+  }
 });
 
 test("disk-image verification rejects changed contents, permissions, links and extra payloads and always detaches", async (t) => {

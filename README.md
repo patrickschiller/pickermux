@@ -7,7 +7,7 @@
 
 **Use local LM Studio models directly from the Codex Desktop picker.**
 
-**Version 0.9.0 adds a native macOS menu-bar companion.**
+**Version 0.9.1 includes a native macOS menu-bar companion with a Codex toggle.**
 Check the picker, refresh it after Codex closes, preview a switch from Ollama,
 and start confirmed recovery after a Codex update. The app uses PickerMux's
 existing installation and routing core. See the
@@ -196,11 +196,11 @@ LM Studio inference check. Once `~/.local/bin` is in `PATH`, the shorter
 ## macOS companion
 
 The companion build includes an installable
-`PickerMux-v0.9.0-macos-universal.dmg` for the planned release. Open the disk
+`PickerMux-v0.9.1-macos-universal.dmg` for the planned release. Open the disk
 image, drag **PickerMux.app** to **Applications**, eject the image, and open the
 copied app. Node.js remains a prerequisite. Copying the app does not install
-the CLI or change Codex configuration; use the app's explicit preview and
-setup action when the integration needs installation. Use a signed and
+the CLI or change Codex configuration; turn on **Use PickerMux in Codex** and
+confirm the reviewed setup when the integration needs installation. Use a signed and
 notarized release image for distribution; unsigned development images are
 local test builds. See [installation details](docs/MACOS_COMPANION.md#install-from-a-disk-image).
 
@@ -212,6 +212,13 @@ installed CLI is missing or too old; it cannot control another CLI's service.
 If Node.js cannot be found or validated, **Retry status**, **Help…**,
 **Settings…**, and **Quit** stay available. Help links to Node.js setup and
 [troubleshooting](docs/TROUBLESHOOTING.md#companion-cannot-find-or-validate-the-cli-or-nodejs).
+
+**Use PickerMux in Codex** shows the verified integration state. Turning it on
+reviews and confirms installation or reactivation. Turning it off confirms
+deactivation and stops the bridge while keeping the CLI, provider settings,
+certifications and backups for later use. The native Codex picker and an inert
+historical-chat provider alias remain available. Changes require Codex to be
+fully closed; the switch does not quit it automatically.
 
 Choose **Refresh picker** with Codex fully closed, then **Open Codex** to load
 the updated catalog. The settings offer an optional refresh when Codex closes,

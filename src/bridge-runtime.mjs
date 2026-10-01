@@ -436,6 +436,15 @@ export async function waitForBridge({
   throw new Error(`Bridge did not become healthy: ${lastError?.message ?? "timeout"}`);
 }
 
+async function capturePreservedRuntime(runtimePath, runtime) {
+  const captured = await readIdentityBoundManagedFile(runtimePath, { assertFile: assertPrivateRuntimeFile });
+  const recorded = validateRuntime(JSON.parse(captured.contents.toString("utf8")));
+  if (recorded.capability !== runtime.capability || recorded.instanceId !== runtime.instanceId || recorded.configPath !== runtime.configPath) {
+    throw new Error("Preserved runtime identity changed before service start");
+  }
+  return captured;
+}
+
 export async function startBridgeService({
   config,
   configPath,
@@ -449,13 +458,28 @@ export async function startBridgeService({
   execFileImpl = execFile,
   fetchImpl = globalThis.fetch,
   runtime = createRuntimeRecord({ configPath }),
+  preserveRuntime = false,
+  beforeBootstrap = async () => {},
 }) {
+  if (typeof preserveRuntime !== "boolean" || typeof beforeBootstrap !== "function") throw new TypeError("Invalid bridge startup preservation options");
+  const preservedRuntime = preserveRuntime ? await capturePreservedRuntime(runtimePath, runtime) : null;
+  const revalidateRuntime = async () => {
+    if (!preservedRuntime) return;
+    const current = await capturePreservedRuntime(runtimePath, runtime);
+    if (!sameManagedFileSnapshot(preservedRuntime.snapshot, current.snapshot) || !current.contents.equals(preservedRuntime.contents)) {
+      throw new Error("Preserved runtime record changed during service start");
+    }
+  };
   if (await serviceLoaded({ label: launchAgentLabel, execFileImpl })) {
     throw new Error(`Bridge launch agent is already loaded: ${launchAgentLabel}`);
   }
 
+  await revalidateRuntime();
+  let bootstrapAttempted = false;
+  let createdAgent;
+  let retainedAgent;
   try {
-    await writeRuntime(runtimePath, runtime);
+    if (!preserveRuntime) await writeRuntime(runtimePath, runtime);
     await mkdir(path.dirname(launchAgentPath), { recursive: true, mode: 0o700 });
     await mkdir(path.dirname(logPath), { recursive: true, mode: 0o700 });
     await writeFile(logPath, "", { flag: "a", mode: 0o600 });
@@ -469,7 +493,29 @@ export async function startBridgeService({
       workingDirectory,
       logPath,
     });
-    await writePrivateAtomic(launchAgentPath, plist);
+    if (preserveRuntime) {
+      const existingAgent = await readIdentityBoundManagedFile(launchAgentPath, { allowMissing: true, assertFile: assertPrivateLaunchAgentFile });
+      if (existingAgent) {
+        retainedAgent = existingAgent;
+        if (existingAgent.contents.toString("utf8") !== plist) throw new Error("Preserved service found a modified or foreign launch agent");
+      } else {
+        await writeFile(launchAgentPath, plist, { flag: "wx", mode: 0o600 });
+        createdAgent = await readIdentityBoundManagedFile(launchAgentPath, { assertFile: assertPrivateLaunchAgentFile });
+        if (createdAgent.contents.toString("utf8") !== plist) throw new Error("Launch agent changed after exclusive creation");
+      }
+    } else {
+      await writePrivateAtomic(launchAgentPath, plist);
+    }
+    await beforeBootstrap();
+    await revalidateRuntime();
+    if (preserveRuntime) {
+      const expectedAgent = createdAgent ?? retainedAgent;
+      const currentAgent = await readIdentityBoundManagedFile(launchAgentPath, { assertFile: assertPrivateLaunchAgentFile });
+      if (!sameManagedFileSnapshot(expectedAgent.snapshot, currentAgent.snapshot) || !expectedAgent.contents.equals(currentAgent.contents)) {
+        throw new Error("Preserved launch agent changed before bootstrap");
+      }
+    }
+    bootstrapAttempted = true;
     await execFileImpl(
       "/bin/launchctl",
       ["bootstrap", `gui/${process.getuid()}`, launchAgentPath],
@@ -482,13 +528,22 @@ export async function startBridgeService({
     });
     return { runtime, health, launchAgentPath, launchAgentLabel };
   } catch (error) {
-    await execFileImpl(
-      "/bin/launchctl",
-      ["bootout", `gui/${process.getuid()}/${launchAgentLabel}`],
-      { encoding: "utf8", timeout: 10_000 },
-    ).catch(() => {});
-    await unlink(launchAgentPath).catch(() => {});
-    await unlink(runtimePath).catch(() => {});
+    if (!preserveRuntime || bootstrapAttempted) {
+      await execFileImpl(
+        "/bin/launchctl",
+        ["bootout", `gui/${process.getuid()}/${launchAgentLabel}`],
+        { encoding: "utf8", timeout: 10_000 },
+      ).catch(() => {});
+    }
+    if (preserveRuntime) {
+      if (createdAgent) {
+        const currentAgent = await lstat(launchAgentPath).catch(() => null);
+        if (currentAgent && sameManagedFileSnapshot(createdAgent.snapshot, managedFileSnapshot(currentAgent))) await unlink(launchAgentPath).catch(() => {});
+      }
+    } else {
+      await unlink(launchAgentPath).catch(() => {});
+      await unlink(runtimePath).catch(() => {});
+    }
     throw new Error(`Could not start bridge service: ${error.message}`, { cause: error });
   }
 }

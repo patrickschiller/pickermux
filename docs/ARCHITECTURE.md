@@ -1,6 +1,6 @@
 # PickerMux Architecture
 
-This document describes PickerMux v0.9.0.
+This document describes PickerMux v0.9.1.
 It is intended for contributors, security reviewers, and users who want to
 understand what runs on their Mac.
 
@@ -740,7 +740,7 @@ The private health endpoint remains available with fixed safe status/reason
 enums so the LaunchAgent does not enter a restart loop and diagnostics can
 direct the user to refresh.
 
-Versions 0.6.0 through 0.9.0 use bridge contract
+Versions 0.6.0 through 0.9.1 use bridge contract
 `codex-responses-bridge/p6-v1`.
 The managed publisher emits the search claim only from valid model-bound
 evidence, and the runtime accepts it only on entries generated under that exact
@@ -773,6 +773,17 @@ display, explicit dialogs, optional `SMAppService` login startup, notifications,
 and an opt-in refresh after a fully observed Codex close. Swift never edits
 TOML, certification files, receipts, or LaunchAgents. Node.js 22.15+ remains an
 external prerequisite.
+
+The Codex integration toggle reads its value from verified configuration
+ownership. Activation obtains a fresh preview and sends its exact token after
+confirmation. Deactivation has a separate explicit consent field and invokes
+the installed lifecycle under the existing lock. It retains the private
+configuration receipt, provider settings, runtime, certifications, CLI and
+original backup, and stops the service. A receipt-bound `integration-toggle-v1`
+suspension contains native root configuration plus the exact inert historical
+provider alias. Reactivation rejects edited suspension bytes and preserves the
+original eventual-uninstall baseline. This suspension does not authorize the
+full-refresh helper or replace its checkpoint.
 
 `companion status` collects independent read-only probes and projects only
 bounded status enums, booleans, safe issues, a version, allowed next actions,
@@ -824,6 +835,11 @@ distribution manifest and checksums bind both archive and DMG. A protected
 signing job retains reviewed artifacts. Build configuration alone does not
 establish signing or live macOS acceptance; see
 [the companion guide](MACOS_COMPANION.md).
+
+The universal app includes an `AppIcon.icns` resource declared by
+`CFBundleIconFile`. Native `sips` and `iconutil` compile the versioned RGBA
+master into standard macOS icon sizes. Missing or malformed artwork fails the
+build before packaging; app and disk-image validation include the icon file.
 
 ## Private local data
 

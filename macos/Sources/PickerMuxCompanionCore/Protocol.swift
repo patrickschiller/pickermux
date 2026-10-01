@@ -22,6 +22,7 @@ public enum CompanionAction: String, Codable, CaseIterable {
   case updateCheck = "update-check"
   case configurationPreview = "configuration-preview"
   case configurationApply = "configuration-apply"
+  case integrationDeactivate = "integration-deactivate"
 
   public var label: String {
     switch self {
@@ -32,15 +33,16 @@ public enum CompanionAction: String, Codable, CaseIterable {
     case .diagnose: return "Check installation"
     case .updateCheck: return "Check for PickerMux updates"
     case .update: return "Update PickerMux…"
-    case .configurationPreview: return "Preview configuration changes"
-    case .configurationApply: return "Apply configuration changes…"
+    case .configurationPreview: return "Review PickerMux setup"
+    case .configurationApply: return "Install and enable PickerMux…"
+    case .integrationDeactivate: return "Turn off PickerMux in Codex…"
     }
   }
 
   public var timeout: TimeInterval {
     switch self {
     case .certify, .update, .configurationApply: return 3600
-    case .recover, .refresh: return 600
+    case .recover, .refresh, .integrationDeactivate: return 600
     default: return 45
     }
   }
@@ -64,6 +66,7 @@ public struct CompanionIssue: Decodable, Equatable {
 
 public struct CompanionSnapshot: Decodable {
   public let schemaVersion: Int
+  public let capabilities: [String]
   public let version: String
   public let state: String
   public let desktop: ComponentStatus
@@ -76,24 +79,33 @@ public struct CompanionSnapshot: Decodable {
   public let integration: ComponentStatus
   public let actions: [CompanionAction]
   public let issues: [CompanionIssue]
+  public var usesBundledBackend = false
+
+  enum CodingKeys: String, CodingKey {
+    case schemaVersion, capabilities, version, state, desktop, installation, managedConfig,
+         service, compatibility, accountCache, recovery, integration, actions, issues
+  }
 
   public var transitionIdentity: String {
     "\(state):\(compatibility.status):\(accountCache.status):\(recovery.status):\(recovery.phase ?? "idle"):\(issues.map(\.code).sorted().joined(separator: ","))"
   }
 
-  public func allowingOnly(_ allowed: [CompanionAction]) -> CompanionSnapshot {
-    CompanionSnapshot(schemaVersion: schemaVersion, version: version, state: state, desktop: desktop,
+  public func allowingOnly(_ allowed: [CompanionAction], bundledBackend: Bool = false) -> CompanionSnapshot {
+    var filtered = CompanionSnapshot(schemaVersion: schemaVersion, capabilities: capabilities, version: version, state: state, desktop: desktop,
       installation: installation, managedConfig: managedConfig, service: service, compatibility: compatibility,
       accountCache: accountCache, recovery: recovery, integration: integration,
       actions: actions.filter(allowed.contains), issues: issues)
+    filtered.usesBundledBackend = bundledBackend
+    return filtered
   }
 
   public static func decode(_ data: Data) throws -> CompanionSnapshot {
     guard data.count <= 262144,
           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-          Set(object.keys) == Set(["schemaVersion", "version", "state", "desktop", "installation", "managedConfig", "service", "compatibility", "accountCache", "recovery", "integration", "actions", "issues"]),
+          Set(object.keys) == Set(["schemaVersion", "capabilities", "version", "state", "desktop", "installation", "managedConfig", "service", "compatibility", "accountCache", "recovery", "integration", "actions", "issues"]),
           let value = try? JSONDecoder().decode(CompanionSnapshot.self, from: data),
-          value.schemaVersion == 1, (isVersion(value.version) || value.version == "unknown"),
+          value.schemaVersion == 1, value.capabilities == ["integration-toggle-v1"],
+          (isVersion(value.version) || value.version == "unknown"),
           safeToken(value.state), value.actions.count <= CompanionAction.allCases.count,
           Set(value.actions).count == value.actions.count, value.issues.count <= 32,
           value.issues.allSatisfy({ safeCode($0.code) && $0.message.utf8.count <= 256 }),
@@ -183,6 +195,10 @@ public func actionRequest(_ action: CompanionAction, confirmed: Bool = false, pr
     object["previewToken"] = previewToken
     object["confirmation"] = ["replaceIntegration": true]
   }
+  if action == .integrationDeactivate {
+    guard confirmed else { throw CompanionFailure.incompatibleProtocol }
+    object["confirmation"] = ["deactivateIntegration": true]
+  }
   return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
 }
 
@@ -222,10 +238,36 @@ public func statusLabel(_ value: String) -> String {
     "prepared": "Preparing recovery", "first-quit-complete": "Codex closed", "suspended": "Picker suspended",
     "native-opened": "Waiting for Codex account cache", "cache-refreshed": "Account cache refreshed",
     "second-quit-complete": "Restoring picker", "reactivated": "Picker restored",
+    "inactive": "PickerMux is off", "deactivated": "Turned off",
   ]
   return labels[value] ?? "Needs review"
 }
 
 public func shouldNotifyRecoveryCompletion(previous: CompanionSnapshot?, next: CompanionSnapshot) -> Bool {
   previous?.recovery.status == "pending" && next.state == "ready" && ["idle", "completed"].contains(next.recovery.status)
+}
+
+public func companionActionFailureMessage(_ code: String) -> String {
+  let messages = [
+    "CONFIRMATION_REQUIRED": "Confirm the operation before retrying.",
+    "ACTION_NOT_ALLOWED": "This action is unavailable in the current state. Check status and review the setup guidance.",
+    "BUSY": "Another PickerMux operation is active. Wait for it to finish, then check status.",
+    "CODEX_RUNNING": "Fully quit Codex with Command-Q, then retry the setup or action.",
+    "CONFIGURATION_CONFLICT": "The current integration changed or needs review. Check status and review setup again before enabling PickerMux.",
+    "PREVIEW_STALE": "The reviewed setup changed. Toggle PickerMux on again to review a fresh preview.",
+    "COMPATIBILITY_MISMATCH": "Codex changed. Review the required repair before using the picker.",
+    "ACCOUNT_CACHE_REFRESH_REQUIRED": "Open Codex while signed in and wait for its native model picker to load. Fully quit Codex, then check status again.",
+    "RECOVERY_PENDING": "An earlier repair is still pending. Review and resume it before changing PickerMux.",
+    "NOT_INSTALLED": "Turn on Use PickerMux in Codex to review installation and activation.",
+    "DISTRIBUTION_INVALID": "The installed PickerMux CLI could not be verified. Review its installation in Help before retrying.",
+    "UPDATE_INVALID": "The update could not be verified. Check status and retry only with a verified release.",
+    "UPDATE_UNAVAILABLE": "The update service is unavailable. Check your connection and try again later.",
+    "UPDATE_UNSUPPORTED": "No supported update is available for this system. Review the release requirements in Help.",
+    "CERTIFICATION_INCOMPLETE": "PickerMux is installed, but model certification is incomplete. Leave models loaded and choose Certify loaded models to retry.",
+    "PROVIDER_UNAVAILABLE": "The model server is unavailable. Start LM Studio's server, keep your models loaded, then retry setup.",
+    "NO_LOADED_MODELS": "Load at least one model in LM Studio and start its server, then retry setup.",
+    "DEACTIVATION_FAILED": "PickerMux could not be turned off. Check status before retrying; review the installation in Help.",
+    "DEACTIVATION_ROLLBACK_FAILED": "Turning PickerMux off could not finish or fully restore its prior state. Check status and review the pending repair in Help before changing it again.",
+  ]
+  return messages[code] ?? "PickerMux could not complete this action. Check status and open Help to review the installation."
 }

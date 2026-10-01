@@ -7,6 +7,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { gzipSync } from "node:zlib";
 import { buildRelease } from "./build-release.mjs";
+import { buildCompanionIcon } from "./build-companion-icon.mjs";
 
 const VERSION_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/u;
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
@@ -267,6 +268,7 @@ export async function buildCompanion({ projectDirectory, outputDirectory, releas
   if (!template.includes("__PICKERMUX_VERSION__")) throw new Error("Companion Info.plist version placeholder is missing");
   const info = template.replaceAll("__PICKERMUX_VERSION__", version);
   if (/__PICKERMUX_[A-Z_]+__/u.test(info)) throw new Error("Companion Info.plist has an unresolved placeholder");
+  if (!/<key>CFBundleIconFile<\/key>\s*<string>AppIcon<\/string>/u.test(info)) throw new Error("Companion Info.plist must declare the packaged AppIcon");
   await mkdir(path.dirname(output), { recursive: true });
   const work = await realpath(await mkdtemp(path.join(path.dirname(output), ".pickermux-companion-")));
   let createdOutput = false;
@@ -310,6 +312,7 @@ export async function buildCompanion({ projectDirectory, outputDirectory, releas
       buildEnvironment.DEVELOPER_DIR = environment.DEVELOPER_DIR;
     }
     const command = (tool, args, timeout) => execute(tool, args, { cwd: project, environment: buildEnvironment, timeout });
+    const icon = await buildCompanionIcon({ source: path.join(project, "macos", "Resources", "AppIcon.png"), resources, work, command });
     const slices = [];
     for (const architecture of ["arm64", "x86_64"]) {
       const slice = path.join(work, `PickerMuxCompanion-${architecture}`);
@@ -359,7 +362,7 @@ export async function buildCompanion({ projectDirectory, outputDirectory, releas
     const archive = await companionArchive(bundle);
     const archiveSha256 = sha256(archive);
     await writeFile(path.join(staged, archiveName), archive, { flag: "wx", mode: 0o644 });
-    const releaseManifest = `${JSON.stringify({ schemaVersion: 1, product: "pickermux-companion", version, minimumMacOS: "13.0", architectures: ["arm64", "x86_64"], signing: release ? "developer-id-notarized" : "unsigned-development", backendManifestSha256: sha256(manifestData), archive: archiveName, archiveSha256, diskImage: { file: diskImageName, sha256: diskImageSha256, format: "UDZO", filesystem: "HFS+", installation: "drag-to-applications" } }, null, 2)}\n`;
+    const releaseManifest = `${JSON.stringify({ schemaVersion: 1, product: "pickermux-companion", version, minimumMacOS: "13.0", architectures: ["arm64", "x86_64"], signing: release ? "developer-id-notarized" : "unsigned-development", backendManifestSha256: sha256(manifestData), icon, archive: archiveName, archiveSha256, diskImage: { file: diskImageName, sha256: diskImageSha256, format: "UDZO", filesystem: "HFS+", installation: "drag-to-applications" } }, null, 2)}\n`;
     await writeFile(path.join(staged, "companion-manifest.json"), releaseManifest, { flag: "wx", mode: 0o644 });
     await writeFile(path.join(staged, "SHA256SUMS"), `${archiveSha256}  ${archiveName}\n${diskImageSha256}  ${diskImageName}\n${sha256(releaseManifest)}  companion-manifest.json\n`, { flag: "wx", mode: 0o644 });
     // mkdir is the no-clobber commit boundary: an output concurrently created by

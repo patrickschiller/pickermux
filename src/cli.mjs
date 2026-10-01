@@ -61,11 +61,13 @@ import {
   providerOverrides,
 } from "./codex.mjs";
 import {
+  deactivateManagedConfiguration,
   enableManagedStandaloneWebSearch,
   getConfigStatus,
   inventoryManagedConfigOwnership,
   inventoryConfigIntegrationSwitch,
   inventoryManagedConfigReactivation,
+  inventoryDeactivatedConfigReactivation,
   installConfig,
   migrateManagedConfiguration,
   previewConfigIntegration,
@@ -195,6 +197,10 @@ Usage:
   pickermux uninstall [--force] [--remove-cli | --purge] [--json]
   pickermux version | pickermux --version
 
+Companion schema 1 advertises integration-toggle-v1. configuration-apply requires
+its previewToken and replaceIntegration:true; integration-deactivate requires
+deactivateIntegration:true. Deactivation retains setup, historical aliases and
+private runtime identity for confirmed reactivation without full-refresh purge.
 repair-chats restores only the inert model_bridge table used to open historical
 chats after uninstall. Select a native model before sending a new turn.
 refresh --full (also --FULL) recovers an account cache after a Codex update.
@@ -497,6 +503,7 @@ async function rollbackInstallation({
   compatibilityPromoted,
   previousCompatibility = null,
   servicePackage,
+  previousRuntime,
   cause,
 }) {
   const failures = [];
@@ -518,10 +525,15 @@ async function rollbackInstallation({
         runtimePath: paths.runtimePath,
         launchAgentPath: paths.launchAgentPath,
         launchAgentLabel: paths.launchAgentLabel,
+        removeRuntime: !previousRuntime,
+        ...(previousRuntime ? { expectedLaunchAgent: expectedManagedLaunchAgent(paths) } : {}),
       });
     } catch (error) {
       failures.push(error);
     }
+  }
+  if (previousRuntime) {
+    try { await assertRetainedIntegrationRuntime({ paths, runtime: previousRuntime }); } catch (error) { failures.push(error); }
   }
   if (catalogPromoted) {
     try {
@@ -558,6 +570,21 @@ async function rollbackInstallation({
   throw new Error(`PickerMux installation failed; all managed changes were rolled back: ${cause.message}`, { cause });
 }
 
+export async function resolveIntegrationReactivationRuntime({ paths, status, reactivationReceipt, runtimeImpl = readRuntime } = {}) {
+  if (status?.status !== "deactivated") return createRuntimeRecord({ configPath: paths.serviceConfigPath });
+  if (!reactivationReceipt) throw new CompanionControlError("CONFIGURATION_CONFLICT");
+  const runtime = await runtimeImpl(paths.runtimePath);
+  if (path.resolve(runtime.configPath) !== path.resolve(paths.serviceConfigPath)) throw new CompanionControlError("CONFIGURATION_CONFLICT");
+  return runtime;
+}
+
+export async function assertRetainedIntegrationRuntime({ paths, runtime, runtimeImpl = readRuntime } = {}) {
+  const current = await runtimeImpl(paths.runtimePath);
+  if (current.capability !== runtime.capability || current.instanceId !== runtime.instanceId || current.configPath !== runtime.configPath) {
+    throw new CompanionControlError("CONFIGURATION_CONFLICT");
+  }
+}
+
 async function install({
   config,
   configPath,
@@ -566,6 +593,7 @@ async function install({
   sourceRoot = projectRoot,
   integrationSwitchReceipt,
   reactivationReceipt,
+  beforeConfigCommit = async () => {},
 }) {
   assertRuntimeCompressionSupport();
   assertPersistentCredentialSupport(config);
@@ -580,7 +608,8 @@ async function install({
     paths.installDirectory,
     `.models.install-${process.pid}-${randomUUID()}.json`,
   );
-  const runtime = createRuntimeRecord({ configPath: paths.serviceConfigPath });
+  const runtime = await resolveIntegrationReactivationRuntime({ paths, status: existing, reactivationReceipt });
+  const previousRuntime = existing.status === "deactivated" ? runtime : undefined;
   let serviceStarted = false;
   let configInstalled = false;
   let configRollback;
@@ -646,10 +675,12 @@ async function install({
       workingDirectory: servicePackage.serviceDirectory,
       nodePath: resolveLaunchAgentNodePath(),
       runtime,
+      preserveRuntime: existing.status === "deactivated",
+      beforeBootstrap: beforeConfigCommit,
     });
     serviceStarted = true;
     assertBridgeWebSearchCompatibility(started.health);
-    const installed = await installConfig({ ...installationOptions({ config, paths, runtime }), integrationSwitchReceipt, reactivationReceipt });
+    const installed = await installConfig({ ...installationOptions({ config, paths, runtime }), integrationSwitchReceipt, reactivationReceipt, beforeConfigCommit });
     configInstalled = true;
     configRollback = installed.rollback;
 
@@ -699,6 +730,7 @@ async function install({
         compatibilityPromoted,
         previousCompatibility,
         servicePackage,
+        previousRuntime,
         cause: error,
       });
     } catch (installationError) {
@@ -1854,6 +1886,7 @@ async function restoreFullRefreshBridgeService({
   nodePath,
   serviceStatusImpl = getBridgeServiceStatus,
   startServiceImpl = startBridgeService,
+  preserveRuntime = false,
 }) {
   const service = await serviceStatusImpl({
     config,
@@ -1877,6 +1910,7 @@ async function restoreFullRefreshBridgeService({
     workingDirectory: paths.serviceDirectory,
     nodePath,
     runtime,
+    preserveRuntime,
   });
 }
 
@@ -1886,7 +1920,25 @@ async function restoreFullRefreshBridgeService({
  * The service is stopped first so a configuration failure can restore it
  * without ever exposing native Codex traffic to a half-removed bridge.
  */
-export async function suspendPickerMuxForFullRefresh({
+export async function suspendPickerMuxForFullRefresh(options = {}) {
+  return suspendPickerMuxIntegration(options, false);
+}
+
+/** Deliberate pause has no purge/checkpoint and never quits Codex on its behalf. */
+export async function deactivatePickerMuxIntegration({
+  desktopRunningImpl = isCodexDesktopRunning,
+  assertNoPendingFullRefreshImpl = () => assertNoPendingFullRefresh({ fullRefreshPaths: resolveFullRefreshPaths() }),
+  ...options
+} = {}) {
+  const guard = async () => {
+    await assertNoPendingFullRefreshImpl();
+    if (await desktopRunningImpl()) throw new CompanionControlError("CODEX_RUNNING");
+  };
+  await guard();
+  return suspendPickerMuxIntegration({ ...options, beforeSuspensionCommit: guard, uninstallConfigImpl: options.uninstallConfigImpl ?? deactivateManagedConfiguration }, true);
+}
+
+async function suspendPickerMuxIntegration({
   config,
   paths,
   sourceRoot,
@@ -1900,7 +1952,8 @@ export async function suspendPickerMuxForFullRefresh({
   stopServiceImpl = stopBridgeService,
   serviceStatusImpl = getBridgeServiceStatus,
   startServiceImpl = startBridgeService,
-} = {}) {
+  beforeSuspensionCommit = async () => {},
+}, deactivation) {
   if (!config || !paths || typeof sourceRoot !== "string") {
     throw new TypeError("Full refresh suspension requires config, paths, and sourceRoot");
   }
@@ -1914,13 +1967,15 @@ export async function suspendPickerMuxForFullRefresh({
     );
   }
 
+  if (deactivation && (!status.installed || !["installed", "installed-marker-recovered"].includes(status.status))) throw new CompanionControlError("CONFIGURATION_CONFLICT");
+  if (!deactivation && status.status === "deactivated") throw new CompanionControlError("CONFIGURATION_CONFLICT");
   if (!status.installed) {
     const service = await stopServiceImpl({
       runtimePath: paths.runtimePath,
       launchAgentPath: paths.launchAgentPath,
       launchAgentLabel: paths.launchAgentLabel,
       expectedLaunchAgent: expectedManagedLaunchAgent(paths),
-      removeRuntime: true,
+      removeRuntime: !deactivation,
     });
     return {
       suspended: true,
@@ -1962,12 +2017,16 @@ export async function suspendPickerMuxForFullRefresh({
   let serviceStopped = false;
   let removedConfig;
   try {
+    await beforeSuspensionCommit();
+    // bootout may commit before plist removal fails. Any stop attempt requires
+    // ownership-safe restoration, even when the stop function rejects.
+    if (deactivation) serviceStopped = true;
     const service = await stopServiceImpl({
       runtimePath: paths.runtimePath,
       launchAgentPath: paths.launchAgentPath,
       launchAgentLabel: paths.launchAgentLabel,
       expectedLaunchAgent: expectedManagedLaunchAgent(paths),
-      removeRuntime: true,
+      removeRuntime: !deactivation,
     });
     serviceStopped = true;
     await inventoryRuntimeImpl({
@@ -1980,22 +2039,27 @@ export async function suspendPickerMuxForFullRefresh({
       statePath: paths.statePath,
       backupDirectory: paths.backupDirectory,
       ownershipReceipt: configOwnership,
+      beforeConfigCommit: beforeSuspensionCommit,
     });
     const suspendedStatus = await configStatusImpl({
       configPath: paths.configPath,
       statePath: paths.statePath,
     });
-    if (suspendedStatus.installed || suspendedStatus.healthy !== true) {
+    if (suspendedStatus.installed || suspendedStatus.healthy !== true || (deactivation && suspendedStatus.status !== "deactivated")) {
       throw new Error("Native Codex configuration was not restored cleanly");
     }
     return {
+      ...(deactivation ? { deactivated: true, status: "deactivated", restartRequired: true } : {}),
       suspended: true,
       alreadySuspended: false,
       removedConfig,
       service,
     };
   } catch (cause) {
-    if (!serviceStopped) throw cause;
+    if (!serviceStopped) {
+      if (deactivation) throw new CompanionControlError("DEACTIVATION_FAILED");
+      throw cause;
+    }
     try {
       if (removedConfig?.changed && typeof removedConfig.rollback === "function") await removedConfig.rollback();
       const rollbackStatus = await configStatusImpl({
@@ -2011,19 +2075,37 @@ export async function suspendPickerMuxForFullRefresh({
         serviceDirectory: paths.serviceDirectory,
         sourceRoot,
       });
+      if (deactivation) {
+        const preservedRuntime = await runtimeImpl(paths.runtimePath);
+        if (preservedRuntime.capability !== runtime.capability || preservedRuntime.instanceId !== runtime.instanceId || preservedRuntime.configPath !== runtime.configPath) {
+          throw new CompanionControlError("CONFIGURATION_CONFLICT");
+        }
+        const currentAgent = await validateLaunchAgentImpl(managedLaunchAgentOptions(paths));
+        if (currentAgent.present && (currentAgent.nodePath !== launchAgent.nodePath ||
+          (launchAgent.device !== undefined && currentAgent.device !== launchAgent.device) ||
+          (launchAgent.inode !== undefined && currentAgent.inode !== launchAgent.inode))) {
+          throw new CompanionControlError("CONFIGURATION_CONFLICT");
+        }
+      }
       await restoreFullRefreshBridgeService({
         config,
         paths,
         runtime,
         nodePath: launchAgent.nodePath,
+        preserveRuntime: deactivation,
         serviceStatusImpl,
         startServiceImpl,
       });
     } catch (rollbackError) {
+      if (deactivation) throw new CompanionControlError("DEACTIVATION_ROLLBACK_FAILED");
       throw new Error(
         `PickerMux full refresh suspension failed and service rollback was incomplete. Original: ${cause.message}; rollback: ${rollbackError.message}`,
         { cause: new AggregateError([cause, rollbackError]) },
       );
+    }
+    if (deactivation) {
+      if (cause instanceof CompanionControlError) throw cause;
+      throw new CompanionControlError("DEACTIVATION_FAILED");
     }
     throw new Error(
       `PickerMux full refresh suspension failed; the managed bridge service was restored: ${cause.message}`,
@@ -2054,6 +2136,7 @@ export async function reactivatePickerMuxAfterFullRefresh({
       `PickerMux full refresh refuses inconsistent integration state (${status.status ?? "unknown"})`,
     );
   }
+  if (status.status === "deactivated") throw new CompanionControlError("CONFIGURATION_CONFLICT");
   if (!status.installed) {
     const reactivationReceipt = status.status === "suspended"
       ? await reactivationImpl({ configPath: paths.configPath, statePath: paths.statePath, backupDirectory: paths.backupDirectory })
@@ -2961,6 +3044,7 @@ export async function setupPickerMux({
   installImpl = install,
   refreshImpl = refresh,
   certifyInstallationImpl = certifyForInstallation,
+  reactivationImpl = inventoryDeactivatedConfigReactivation,
   onProgress,
   integrationSwitchReceipt,
   configurationPreflightImpl = async () => {},
@@ -3040,26 +3124,44 @@ export async function setupPickerMux({
       const stateResult = markerRestored
         ? "The receipt-verified missing provider end marker was restored so the installed PickerMux CLI can uninstall safely; CLI and runtime state were not changed."
         : "No active PickerMux state was changed.";
-      throw new Error(
+      const failure = new Error(
         `PickerMux setup stopped before activation because Codex ${error.codexClientVersion ?? "Desktop"} has no matching account model cache. ${stateResult} ${recovery}`,
         { cause: error },
       );
+      failure.code = "CODEX_ACCOUNT_CACHE_REFRESH_REQUIRED";
+      throw failure;
     }
   };
   await assertAccountCacheReady({ allowMarkerRepair: true });
+  const reactivationReceipt = initialStatus.status === "deactivated"
+    ? await reactivationImpl({ configPath: paths.configPath, statePath: paths.statePath, backupDirectory: paths.backupDirectory })
+    : undefined;
   const effectiveConfigPath = setupConfigPath
     ? path.resolve(setupConfigPath)
-    : initialStatus.installed
+    : initialStatus.installed || initialStatus.status === "deactivated"
       ? paths.serviceConfigPath
       : path.join(path.resolve(sourceRoot), "lmstudio-picker.config.json");
   const preflightConfig = await loadConfigImpl(effectiveConfigPath);
-  const discovery = await discoverImpl({ config: preflightConfig });
+  let discovery;
+  try {
+    discovery = await discoverImpl({ config: preflightConfig });
+  } catch {
+    throw new CompanionControlError("PROVIDER_UNAVAILABLE");
+  }
   if (!Array.isArray(discovery?.models) || discovery.models.length === 0) {
-    throw new Error(
-      "PickerMux setup requires LM Studio to be running with at least one loaded external LLM",
-    );
+    throw new CompanionControlError(discovery?.providers?.some((provider) => provider.unavailableReason === "connection-refused")
+      ? "PROVIDER_UNAVAILABLE" : "NO_LOADED_MODELS");
   }
 
+  const assertActivationAllowed = async () => {
+    await assertNoPendingFullRefreshImpl();
+    await configurationPreflightImpl();
+    const status = await configStatusImpl({ configPath: paths.configPath, statePath: paths.statePath });
+    if (status.healthy !== true || status.installed !== initialStatus.installed || status.status !== initialStatus.status) throw new CompanionControlError("CONFIGURATION_CONFLICT");
+    await assertAccountCacheReady();
+    await assertNoPendingFullRefreshImpl();
+    if (await desktopRunningImpl()) throw new CompanionControlError("CODEX_RUNNING");
+  };
   let certification;
   let activatedConfig;
   const result = await setupImpl({
@@ -3123,6 +3225,8 @@ export async function setupPickerMux({
         codexPath,
         sourceRoot: distributionRoot,
         integrationSwitchReceipt,
+        ...(reactivationReceipt ? { reactivationReceipt } : {}),
+        beforeConfigCommit: assertActivationAllowed,
       });
       return { action: "install", integration: result };
     },
@@ -3204,6 +3308,14 @@ export async function runPickerMuxCompanion(argv, {
       await closed();
       const metadata = await readPickerMuxMetadata(sourceRoot);
       return applyCompanionUpdate({ currentVersion: metadata.version, onProgress });
+    },
+    async "integration-deactivate"() {
+      await noRecovery();
+      await closed();
+      return deactivatePickerMuxIntegration({
+        config: await installedConfig(), paths, sourceRoot,
+        assertNoPendingFullRefreshImpl: noRecovery,
+      });
     },
     "configuration-preview"() {
       return previewConfigIntegration(configurationPaths);

@@ -224,7 +224,7 @@ public struct PickerMuxClient {
       guard invocation.executable == runtime else { throw CompanionFailure.unsafeLauncher }
       let result = try await execute(invocation, arguments: ["companion", "status"], timeout: 45, runtime: runtime)
       guard result.exitCode == 0 else { throw CompanionFailure.processFailed }
-      return (try CompanionSnapshot.decode(result.stdout).allowingOnly([.configurationPreview, .configurationApply, .updateCheck, .diagnose]), invocation, true, runtime)
+      return (try CompanionSnapshot.decode(result.stdout).allowingOnly([.configurationPreview, .configurationApply, .updateCheck, .diagnose], bundledBackend: true), invocation, true, runtime)
     }
   }
 

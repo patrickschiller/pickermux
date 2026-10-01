@@ -4,18 +4,23 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { bridgeBaseUrl } from "../src/bridge-runtime.mjs";
+import { bridgeBaseUrl, readRuntime, writeRuntime } from "../src/bridge-runtime.mjs";
 import {
+  deactivatePickerMuxIntegration,
+  resolveIntegrationReactivationRuntime,
+  assertRetainedIntegrationRuntime,
   reactivatePickerMuxAfterFullRefresh,
   setupPickerMux,
   suspendPickerMuxForFullRefresh,
 } from "../src/cli.mjs";
-import { CompanionControlError } from "../src/companion-control.mjs";
+import { createCompactionEnvelopeCodec } from "../src/compaction-envelope.mjs";
+import { CompanionControlError, companionFailure } from "../src/companion-control.mjs";
 import {
   CONFIG_MARKERS,
   getConfigStatus,
   installConfig,
   inventoryConfigIntegrationSwitch,
+  inventoryDeactivatedConfigReactivation,
   previewConfigIntegration,
   restoreRecoveredProviderEndMarker,
   uninstallConfig,
@@ -372,3 +377,246 @@ async function makeFixture(t) {
     }),
   };
 }
+
+
+function deactivationOptions(fixture, overrides = {}) {
+  return { ...fixture.lifecycle(), desktopRunningImpl: async () => false, assertNoPendingFullRefreshImpl: async () => null, ...overrides };
+}
+
+test("OFF retains service settings, runtime capability and compaction key across confirmed setup reactivation", async (t) => {
+  const fixture = await makeFixture(t);
+  await installForeignPicker(fixture);
+  await writeRuntime(fixture.paths.runtimePath, fixture.runtime);
+  await writeFile(fixture.paths.serviceConfigPath, JSON.stringify(fixture.config), { mode: 0o600 });
+  const runtimeBytes = await readFile(fixture.paths.runtimePath);
+  const configBytes = await readFile(fixture.paths.serviceConfigPath);
+  const baseline = JSON.parse(await readFile(fixture.paths.statePath));
+  const binding = JSON.stringify({ provider: "fixture", model: "example/model", context: 32768 });
+  const summary = "A test-only preserved decision.";
+  const envelope = createCompactionEnvelopeCodec(fixture.runtime.capability).seal(summary, binding);
+  let stops = 0;
+  const result = await deactivatePickerMuxIntegration(deactivationOptions(fixture, {
+    stopServiceImpl: async (options) => { stops += 1; assert.equal(options.removeRuntime, false); return { stopped: true }; },
+  }));
+  assert.equal(result.deactivated, true);
+  assert.equal(result.status, "deactivated");
+  assert.equal(stops, 1);
+  assert.deepEqual(await readFile(fixture.paths.runtimePath), runtimeBytes);
+  assert.deepEqual(await readFile(fixture.paths.serviceConfigPath), configBytes);
+  let sourceConfig;
+  let installs = 0;
+  await setupPickerMux({
+    ...fixture.lifecycle(), codexPath: "/fixture/codex", distributionPaths: {},
+    desktopRunningImpl: async () => false, accountCacheImpl: async () => ({ status: "ready" }),
+    loadConfigImpl: async (selected) => { sourceConfig = selected; return fixture.config; },
+    discoverImpl: async () => ({ models: [{ id: "fixture/model" }] }),
+    setupImpl: async ({ beforeControlCommit, activate }) => { await beforeControlCommit(); await activate({ distributionRoot: fixture.sourceRoot, version: "0.9.0" }); return { version: "0.9.0" }; },
+    installImpl: async ({ reactivationReceipt }) => {
+      installs += 1;
+      const runtime = await resolveIntegrationReactivationRuntime({ paths: fixture.paths, status: await getConfigStatus(fixture.configPaths()), reactivationReceipt });
+      assert.equal(runtime.capability, fixture.runtime.capability);
+      assert.equal(createCompactionEnvelopeCodec(runtime.capability).open(envelope, binding), summary);
+      return installConfig(fixture.installOptions({ reactivationReceipt, runtime }));
+    },
+  });
+  assert.equal(sourceConfig, fixture.paths.serviceConfigPath);
+  assert.equal(installs, 1);
+  const state = JSON.parse(await readFile(fixture.paths.statePath));
+  assert.equal(state.backupPath, baseline.backupPath);
+  assert.deepEqual(state.priorAssignments, baseline.priorAssignments);
+  assert.deepEqual(await readFile(fixture.paths.runtimePath), runtimeBytes);
+  await uninstallConfig(fixture.configPaths());
+  assert.equal(await readFile(fixture.paths.configPath, "utf8"), fixture.original);
+});
+
+test("failed OFF rolls back configuration before restoring the same runtime and service", async (t) => {
+  const fixture = await makeFixture(t);
+  await installForeignPicker(fixture);
+  const original = await readFile(fixture.paths.configPath);
+  let reads = 0;
+  let starts = 0;
+  await assert.rejects(deactivatePickerMuxIntegration(deactivationOptions(fixture, {
+    configStatusImpl: async (options) => {
+      const status = await getConfigStatus(options);
+      reads += 1;
+      return reads === 2 ? { ...status, healthy: false } : status;
+    },
+    startServiceImpl: async ({ runtime }) => { starts += 1; assert.equal(runtime, fixture.runtime); assert.deepEqual(await readFile(fixture.paths.configPath), original); return { healthy: true }; },
+  })), { code: "DEACTIVATION_FAILED" });
+  assert.equal(starts, 1);
+  assert.equal((await getConfigStatus(fixture.configPaths())).installed, true);
+});
+
+test("OFF rollback never overwrites contributor edits or starts an unproven configuration", async (t) => {
+  const fixture = await makeFixture(t);
+  await installForeignPicker(fixture);
+  let reads = 0;
+  let starts = 0;
+  let changed;
+  await assert.rejects(deactivatePickerMuxIntegration(deactivationOptions(fixture, {
+    configStatusImpl: async (options) => {
+      const status = await getConfigStatus(options);
+      reads += 1;
+      if (reads === 2) { changed = `${await readFile(fixture.paths.configPath, "utf8")}# concurrent edit\n`; await writeFile(fixture.paths.configPath, changed); return { ...status, healthy: false }; }
+      return status;
+    },
+    startServiceImpl: async () => { starts += 1; },
+  })), { code: "DEACTIVATION_ROLLBACK_FAILED" });
+  assert.equal(starts, 0);
+  assert.equal(await readFile(fixture.paths.configPath, "utf8"), changed);
+});
+
+test("OFF refuses running Desktop, pending recovery and suspension collisions before stopping service", async (t) => {
+  const fixture = await makeFixture(t);
+  await installForeignPicker(fixture);
+  for (const override of [
+    { desktopRunningImpl: async () => true },
+    { assertNoPendingFullRefreshImpl: async () => { throw new CompanionControlError("RECOVERY_PENDING"); } },
+  ]) {
+    let stops = 0;
+    await assert.rejects(deactivatePickerMuxIntegration(deactivationOptions(fixture, { ...override, stopServiceImpl: async () => { stops += 1; } })));
+    assert.equal(stops, 0);
+  }
+  await suspendPickerMuxForFullRefresh(fixture.lifecycle());
+  let stops = 0;
+  await assert.rejects(deactivatePickerMuxIntegration(deactivationOptions(fixture, { stopServiceImpl: async () => { stops += 1; } })), { code: "CONFIGURATION_CONFLICT" });
+  assert.equal(stops, 0);
+});
+
+test("OFF repeats stopped-Desktop and recovery checks before its configuration CAS commit", async (t) => {
+  for (const collision of ["desktop", "recovery"]) {
+    const fixture = await makeFixture(t);
+    await installForeignPicker(fixture);
+    const before = await readFile(fixture.paths.configPath);
+    let checks = 0;
+    let starts = 0;
+    await assert.rejects(deactivatePickerMuxIntegration(deactivationOptions(fixture, {
+      assertNoPendingFullRefreshImpl: async () => { if (collision === "recovery" && ++checks === 3) throw new CompanionControlError("RECOVERY_PENDING"); },
+      desktopRunningImpl: async () => collision === "desktop" && ++checks === 3,
+      startServiceImpl: async () => { starts += 1; return { healthy: true }; },
+    })), { code: collision === "desktop" ? "CODEX_RUNNING" : "RECOVERY_PENDING" });
+    assert.equal(starts, 1);
+    assert.deepEqual(await readFile(fixture.paths.configPath), before);
+  }
+});
+
+test("fresh setup emits actionable provider, loaded-model and account-cache failures without activation", async (t) => {
+  for (const [discoverImpl, code] of [
+    [async () => { throw new Error("PRIVATE_ENDPOINT_CANARY"); }, "PROVIDER_UNAVAILABLE"],
+    [async () => ({ models: [], providers: [{ unavailableReason: "connection-refused" }] }), "PROVIDER_UNAVAILABLE"],
+    [async () => ({ models: [] }), "NO_LOADED_MODELS"],
+  ]) {
+    const fixture = await makeFixture(t);
+    await assert.rejects(setupPickerMux({
+      ...fixture.lifecycle(), codexPath: "/fixture/codex", distributionPaths: {},
+      desktopRunningImpl: async () => false, accountCacheImpl: async () => ({ status: "ready" }),
+      loadConfigImpl: async () => fixture.config, discoverImpl,
+      setupImpl: async () => assert.fail("Provider preflight must precede activation"),
+    }), (error) => error.code === code && !error.message.includes("PRIVATE_ENDPOINT_CANARY"));
+    await assert.rejects(readFile(fixture.paths.statePath), { code: "ENOENT" });
+  }
+  const fixture = await makeFixture(t);
+  await assert.rejects(setupPickerMux({
+    ...fixture.lifecycle(), desktopRunningImpl: async () => false,
+    accountCacheImpl: async () => { throw Object.assign(new Error("PRIVATE_CACHE_CANARY"), { code: "CODEX_ACCOUNT_CACHE_REFRESH_REQUIRED" }); },
+    setupImpl: async () => assert.fail("Cache preflight must precede activation"),
+  }), { code: "CODEX_ACCOUNT_CACHE_REFRESH_REQUIRED" });
+});
+
+test("runtime reactivation and rollback reject missing, redirected or concurrently replaced identity without recreating state", async (t) => {
+  const fixture = await makeFixture(t);
+  await installForeignPicker(fixture);
+  await deactivatePickerMuxIntegration(deactivationOptions(fixture));
+  const receipt = await inventoryDeactivatedConfigReactivation(fixture.configPaths());
+  const status = await getConfigStatus(fixture.configPaths());
+  await assert.rejects(resolveIntegrationReactivationRuntime({ paths: fixture.paths, status }), { code: "CONFIGURATION_CONFLICT" });
+  await assert.rejects(resolveIntegrationReactivationRuntime({ paths: fixture.paths, status, reactivationReceipt: receipt, runtimeImpl: async () => ({ ...fixture.runtime, configPath: "/foreign/config" }) }), { code: "CONFIGURATION_CONFLICT" });
+  await assert.rejects(resolveIntegrationReactivationRuntime({ paths: fixture.paths, status, reactivationReceipt: receipt }));
+  await assert.rejects(assertRetainedIntegrationRuntime({ paths: fixture.paths, runtime: fixture.runtime }));
+  await assert.rejects(readFile(fixture.paths.runtimePath), { code: "ENOENT" });
+  await writeRuntime(fixture.paths.runtimePath, fixture.runtime);
+  assert.equal((await readRuntime(fixture.paths.runtimePath)).capability, fixture.runtime.capability);
+  const before = await readFile(fixture.paths.runtimePath);
+  await assertRetainedIntegrationRuntime({ paths: fixture.paths, runtime: fixture.runtime });
+  assert.deepEqual(await readFile(fixture.paths.runtimePath), before);
+  await writeRuntime(fixture.paths.runtimePath, { ...fixture.runtime, capability: "b".repeat(32) });
+  const changed = await readFile(fixture.paths.runtimePath);
+  await assert.rejects(assertRetainedIntegrationRuntime({ paths: fixture.paths, runtime: fixture.runtime }), { code: "CONFIGURATION_CONFLICT" });
+  assert.deepEqual(await readFile(fixture.paths.runtimePath), changed);
+});
+
+
+test("partial OFF service-stop failure restores only proven owned service and runtime", async (t) => {
+  for (const replacement of ["none", "foreign-agent", "new-runtime"]) {
+    const fixture = await makeFixture(t);
+    await installForeignPicker(fixture);
+    const before = await readFile(fixture.paths.configPath);
+    let starts = 0;
+    let stopped = false;
+    await assert.rejects(deactivatePickerMuxIntegration(deactivationOptions(fixture, {
+      stopServiceImpl: async () => { stopped = true; throw new Error("injected post-bootout failure"); },
+      runtimeImpl: async () => stopped && replacement === "new-runtime" ? { ...fixture.runtime, capability: "b".repeat(32) } : fixture.runtime,
+      validateLaunchAgentImpl: async () => {
+        if (stopped && replacement === "foreign-agent") throw new Error("foreign plist must be retained");
+        return { present: true, nodePath: "/fixture/node", device: 1, inode: 2 };
+      },
+      startServiceImpl: async ({ runtime }) => { starts += 1; assert.equal(runtime, fixture.runtime); return { healthy: true }; },
+    })), { code: replacement === "none" ? "DEACTIVATION_FAILED" : "DEACTIVATION_ROLLBACK_FAILED" });
+    assert.equal(starts, replacement === "none" ? 1 : 0);
+    assert.deepEqual(await readFile(fixture.paths.configPath), before);
+    assert.equal((await getConfigStatus(fixture.configPaths())).installed, true);
+  }
+});
+
+
+test("ON forwards stopped-Desktop/recovery guards to the final configuration CAS", async (t) => {
+  for (const collision of ["desktop", "recovery"]) {
+    const fixture = await makeFixture(t);
+    await installForeignPicker(fixture);
+    await deactivatePickerMuxIntegration(deactivationOptions(fixture));
+    const beforeConfig = await readFile(fixture.paths.configPath);
+    const beforeState = await readFile(fixture.paths.statePath);
+    let installing = false;
+    let bootstrap = false;
+    await assert.rejects(setupPickerMux({
+      ...fixture.lifecycle(), codexPath: "/fixture/codex", distributionPaths: {},
+      desktopRunningImpl: async () => installing && collision === "desktop",
+      assertNoPendingFullRefreshImpl: async () => { if (installing && collision === "recovery") throw new CompanionControlError("RECOVERY_PENDING"); },
+      accountCacheImpl: async () => ({ status: "ready" }), loadConfigImpl: async () => fixture.config,
+      discoverImpl: async () => ({ models: [{ id: "fixture/model" }] }),
+      setupImpl: async ({ beforeControlCommit, activate }) => { await beforeControlCommit(); return activate({ distributionRoot: fixture.sourceRoot }); },
+      installImpl: async ({ reactivationReceipt, beforeConfigCommit }) => {
+        installing = true;
+        await installConfig(fixture.installOptions({ reactivationReceipt, beforeConfigCommit }));
+        bootstrap = true;
+      },
+    }), (error) => companionFailure(error).code === (collision === "desktop" ? "CODEX_RUNNING" : "RECOVERY_PENDING"));
+    assert.equal(bootstrap, false);
+    assert.deepEqual(await readFile(fixture.paths.configPath), beforeConfig);
+    assert.deepEqual(await readFile(fixture.paths.statePath), beforeState);
+  }
+});
+
+
+test("ON checks Desktop after the final awaited account-cache preflight", async (t) => {
+  const fixture = await makeFixture(t);
+  await installForeignPicker(fixture);
+  await deactivatePickerMuxIntegration(deactivationOptions(fixture));
+  const before = await readFile(fixture.paths.configPath);
+  const state = await readFile(fixture.paths.statePath);
+  let finalCommit = false;
+  let desktopRunning = false;
+  await assert.rejects(setupPickerMux({
+    ...fixture.lifecycle(), distributionPaths: {}, codexPath: "/fixture/codex",
+    desktopRunningImpl: async () => desktopRunning,
+    accountCacheImpl: async () => { if (finalCommit) desktopRunning = true; return { status: "ready" }; },
+    loadConfigImpl: async () => fixture.config, discoverImpl: async () => ({ models: [{ id: "fixture/model" }] }),
+    setupImpl: async ({ beforeControlCommit, activate }) => { await beforeControlCommit(); return activate({ distributionRoot: fixture.sourceRoot }); },
+    installImpl: async ({ reactivationReceipt, beforeConfigCommit }) => {
+      finalCommit = true;
+      return installConfig(fixture.installOptions({ reactivationReceipt, beforeConfigCommit }));
+    },
+  }), (error) => companionFailure(error).code === "CODEX_RUNNING");
+  assert.deepEqual(await readFile(fixture.paths.configPath), before);
+  assert.deepEqual(await readFile(fixture.paths.statePath), state);
+});

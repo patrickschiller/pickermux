@@ -42,7 +42,7 @@ function probes(overrides = {}) {
 test("companion request grammar accepts only named actions with their exact consent", () => {
   for (const action of COMPANION_ACTIONS) {
     const additional = action === "recover" ? { confirmation: consent } : action === "configuration-apply"
-      ? { confirmation: { replaceIntegration: true }, previewToken: "f".repeat(64) } : {};
+      ? { confirmation: { replaceIntegration: true }, previewToken: "f".repeat(64) } : action === "integration-deactivate" ? { confirmation: { deactivateIntegration: true } } : {};
     assert.deepEqual(parseCompanionRequest(request(action, additional)), { schemaVersion: 1, action, ...additional });
   }
   assert.deepEqual(parseCompanionRequest(Buffer.from(request("refresh"))), { schemaVersion: 1, action: "refresh" });
@@ -330,4 +330,92 @@ test("default integration inspector uses exact bounded config files and never fo
   assert.deepEqual(await createCompanionReadOnlyProbes({ paths: linkedPaths }).integration(), { status: "conflict" });
   const absentDistribution = createCompanionReadOnlyProbes({ distributionPaths: { applicationDirectory: path.join(directory, "absent") } });
   assert.deepEqual(await absentDistribution.installation(), { installed: false });
+});
+
+
+test("toggle capability is server-owned and OFF remains possible without provider, cache or compatibility", async () => {
+  const result = await collectCompanionStatus({ probes: probes({
+    metadata: async () => ({ version: "0.9.0", capabilities: [SECRET] }),
+    compatibility: async () => ({ status: "update-required" }),
+    accountCache: async () => ({ status: "refresh-required" }),
+    service: async () => ({ status: "stopped" }),
+  }) });
+  assert.deepEqual(result.capabilities, ["integration-toggle-v1"]);
+  assert.ok(result.actions.includes("integration-deactivate"));
+  assert.equal(JSON.stringify(result).includes(SECRET), false);
+  for (const override of [
+    { desktop: async () => true },
+    { installation: async () => ({ status: "invalid" }) },
+    { managedConfig: async () => ({ status: "modified" }) },
+    { recovery: async () => ({ phase: "prepared", operationId: OPERATION_ID }) },
+  ]) assert.equal((await collectCompanionStatus({ probes: probes(override) })).actions.includes("integration-deactivate"), false);
+});
+
+test("intentional OFF is inactive and offers confirmed reactivation only", async () => {
+  const result = await collectCompanionStatus({ probes: probes({
+    managedConfig: async () => ({ status: "deactivated" }), integration: async () => ({ status: "none" }),
+    service: async () => ({ status: "not-installed" }), compatibility: async () => ({ status: "not-installed" }),
+  }) });
+  assert.equal(result.state, "inactive");
+  assert.ok(result.actions.includes("configuration-apply"));
+  for (const action of ["recover", "refresh", "certify", "integration-deactivate", "update"]) assert.equal(result.actions.includes(action), false);
+});
+
+test("fresh configuration has no compatibility manifest obligation or service startup side effects", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "pickermux-fresh-status-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const paths = { configPath: path.join(directory, "config.toml"), statePath: path.join(directory, "state.json") };
+  const inspectors = createCompanionReadOnlyProbes({ paths, codexPath: "/must-never-execute" });
+  assert.deepEqual(await inspectors.compatibility(), { status: "not-installed" });
+  assert.deepEqual(await inspectors.service(), { status: "not-installed" });
+  await assert.rejects(readFile(paths.configPath), { code: "ENOENT" });
+});
+
+test("deactivation requires its own exact confirmation and never projects private result data", () => {
+  for (const confirmation of [undefined, {}, { deactivateIntegration: false }, { replaceIntegration: true }, { deactivateIntegration: true, force: true }, { deactivateIntegration: "true" }]) {
+    assert.throws(() => parseCompanionRequest(request("integration-deactivate", { confirmation })), { code: "CONFIRMATION_REQUIRED" });
+  }
+  assert.throws(() => parseCompanionRequest(request("integration-deactivate", { confirmation: { deactivateIntegration: true }, previewToken: "a".repeat(64) })), { code: "INVALID_REQUEST" });
+  assert.deepEqual(companionSuccess("integration-deactivate", { deactivated: true, status: "deactivated", restartRequired: true, runtime: SECRET }), {
+    schemaVersion: 1, ok: true, code: "COMPLETE", action: "integration-deactivate", restartRequired: true, deactivated: true, status: "deactivated",
+  });
+  for (const code of ["PROVIDER_UNAVAILABLE", "NO_LOADED_MODELS", "DEACTIVATION_FAILED", "DEACTIVATION_ROLLBACK_FAILED"]) {
+    const result = companionFailure(Object.assign(new Error(SECRET), { code }));
+    assert.equal(result.code, code);
+    assert.equal(JSON.stringify(result).includes(SECRET), false);
+  }
+});
+
+
+test("public failures preserve known guard codes through bounded successful rollback causes without private text", () => {
+  for (const [sourceCode, expected] of [["CODEX_RUNNING", "CODEX_RUNNING"], ["CODEX_ACCOUNT_CACHE_REFRESH_REQUIRED", "ACCOUNT_CACHE_REFRESH_REQUIRED"], ["CONFIGURATION_CONFLICT", "CONFIGURATION_CONFLICT"], ["RECOVERY_PENDING", "RECOVERY_PENDING"]]) {
+    const leaf = Object.assign(new Error(SECRET), { code: sourceCode });
+    const wrapped = new Error(SECRET, { cause: new Error(SECRET, { cause: Object.assign(new Error(SECRET, { cause: leaf }), { code: "INSTALL_FAILED" }) }) });
+    const result = companionFailure(wrapped);
+    assert.equal(result.code, expected);
+    assert.equal(JSON.stringify(result).includes(SECRET), false);
+    assert.equal(companionFailure(new Error(SECRET, { cause: new AggregateError([leaf, new Error(SECRET)]) })).code, "ACTION_FAILED");
+    assert.equal(companionFailure(Object.assign(new Error(SECRET, { cause: leaf }), { code: "INSTALL_ROLLBACK_FAILED" })).code, "ACTION_FAILED");
+  }
+  let deep = new CompanionControlError("CODEX_RUNNING");
+  for (let index = 0; index < 8; index += 1) deep = new Error(SECRET, { cause: deep });
+  assert.equal(companionFailure(deep).code, "ACTION_FAILED");
+  const cycle = new Error(SECRET); cycle.cause = cycle;
+  assert.equal(companionFailure(cycle).code, "ACTION_FAILED");
+});
+
+
+test("fresh HOME with no native account cache stays not-installed and cannot bypass initialization", async () => {
+  const result = await collectCompanionStatus({ probes: probes({
+    installation: async () => ({ installed: false }), managedConfig: async () => ({ status: "not-installed" }),
+    integration: async () => ({ status: "none" }), service: async () => ({ status: "not-installed" }),
+    compatibility: async () => ({ status: "not-installed" }),
+    accountCache: async () => { throw Object.assign(new Error(SECRET), { code: "CODEX_ACCOUNT_CACHE_REFRESH_REQUIRED" }); },
+  }) });
+  assert.equal(result.state, "not-installed");
+  assert.equal(result.accountCache.status, "refresh-required");
+  assert.ok(result.issues.some((issue) => issue.code === "account-cache-refresh-required"));
+  assert.equal(result.issues.some((issue) => issue.code === "update-required"), false);
+  assert.deepEqual(result.actions, ["diagnose", "update-check", "configuration-preview"]);
+  assert.equal(JSON.stringify(result).includes(SECRET), false);
 });

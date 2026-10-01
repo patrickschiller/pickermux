@@ -83,9 +83,9 @@ release has been verified. Adapt every version to the approved tag:
 shasum -a 256 --check SHA256SUMS
 cp -n SHA256SUMS companion-SHA256SUMS
 cmp SHA256SUMS companion-SHA256SUMS
-gh release upload v0.9.0 --repo patrickschiller/pickermux \
-  PickerMux-v0.9.0-macos-universal.dmg \
-  PickerMux-v0.9.0-macos-universal.tar.gz \
+gh release upload v0.9.1 --repo patrickschiller/pickermux \
+  PickerMux-v0.9.1-macos-universal.dmg \
+  PickerMux-v0.9.1-macos-universal.tar.gz \
   companion-manifest.json companion-SHA256SUMS
 ```
 

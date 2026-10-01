@@ -128,7 +128,7 @@ private final class BootstrapExecutor: CompanionExecuting {
     if arguments == ["--version"] { return ProcessOutput(stdout: Data(nodeVersion.utf8), exitCode: 0) }
     if arguments.last == "status" {
       let data = try JSONSerialization.data(withJSONObject: [
-        "schemaVersion": 1, "version": "0.9.0", "state": "not-installed",
+        "schemaVersion": 1, "capabilities": ["integration-toggle-v1"], "version": "0.9.0", "state": "not-installed",
         "desktop": ["status": "closed"], "installation": ["status": "absent"],
         "managedConfig": ["status": "unavailable"], "service": ["status": "stopped"],
         "compatibility": ["status": "unknown"], "accountCache": ["status": "valid"],

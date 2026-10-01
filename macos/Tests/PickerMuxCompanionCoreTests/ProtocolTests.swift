@@ -14,7 +14,7 @@ final class ProtocolTests: XCTestCase {
 
   func snapshot(_ changes: [String: Any] = [:]) throws -> Data {
     var value: [String: Any] = [
-      "schemaVersion": 1, "version": "0.8.3", "state": "ready",
+      "schemaVersion": 1, "capabilities": ["integration-toggle-v1"], "version": "0.8.3", "state": "ready",
       "desktop": ["status": "closed"], "installation": ["status": "installed"],
       "managedConfig": ["status": "managed"], "service": ["status": "running"],
       "compatibility": ["status": "compatible"], "accountCache": ["status": "valid"],
@@ -31,6 +31,8 @@ final class ProtocolTests: XCTestCase {
     XCTAssertEqual(value.state, "ready")
     for changes in [
       ["schemaVersion": 2], ["version": "/private/config"], ["unexpected": "value"],
+      ["capabilities": []], ["capabilities": ["integration-toggle-v2"]],
+      ["capabilities": ["integration-toggle-v1", "integration-toggle-v1"]], ["usesBundledBackend": true],
       ["actions": ["refresh", "refresh"]], ["actions": ["shell"]],
       ["service": ["status": "http://127.0.0.1/private"]],
       ["recovery": ["status": "active", "phase": "unknown"]],
@@ -56,6 +58,22 @@ final class ProtocolTests: XCTestCase {
     let request = try JSONSerialization.jsonObject(with: actionRequest(.configurationApply, confirmed: true, previewToken: token)) as? [String: Any]
     XCTAssertEqual(request?["previewToken"] as? String, token)
     XCTAssertEqual(request?["confirmation"] as? [String: Bool], ["replaceIntegration": true])
+  }
+
+  func testIntegrationDeactivationHasItsOwnExplicitConsent() throws {
+    XCTAssertThrowsError(try actionRequest(.integrationDeactivate))
+    let request = try XCTUnwrap(JSONSerialization.jsonObject(with: actionRequest(.integrationDeactivate, confirmed: true)) as? [String: Any])
+    XCTAssertEqual(Set(request.keys), Set(["schemaVersion", "action", "confirmation"]))
+    XCTAssertEqual(request["action"] as? String, "integration-deactivate")
+    XCTAssertEqual(request["confirmation"] as? [String: Bool], ["deactivateIntegration": true])
+  }
+
+  func testActionableFailuresUseFixedSafeGuidance() {
+    XCTAssertTrue(companionActionFailureMessage("PROVIDER_UNAVAILABLE").contains("LM Studio"))
+    XCTAssertTrue(companionActionFailureMessage("NO_LOADED_MODELS").contains("Load"))
+    XCTAssertTrue(companionActionFailureMessage("ACCOUNT_CACHE_REFRESH_REQUIRED").contains("signed in"))
+    XCTAssertTrue(companionActionFailureMessage("DEACTIVATION_ROLLBACK_FAILED").contains("Check status"))
+    XCTAssertFalse(companionActionFailureMessage("token=private-value").contains("private-value"))
   }
 
   func testPreviewAndUpdateDecodePublicDataOnly() throws {

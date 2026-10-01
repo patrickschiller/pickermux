@@ -67,7 +67,7 @@ const LEGACY_P1_MARKERS = Object.freeze([
 
 export class ConfigManagerError extends Error {
   constructor(code, message, details = undefined) {
-    super(message);
+    super(message, details?.cause === undefined ? undefined : { cause: details.cause });
     this.name = "ConfigManagerError";
     this.code = code;
     this.details = details;
@@ -94,6 +94,9 @@ export async function installConfig(options) {
   if (reactivation) {
     await revalidateManagedConfigOwnership(reactivation.ownership);
     await readOwnershipBackup(reactivation.ownership);
+    if (reactivation.state.suspension.kind === "integration-toggle-v1" && reactivation.state.providerBaseUrl !== settings.provider.baseUrl) {
+      throw failure("STATE_PROVIDER_MISMATCH", "Intentional reactivation must preserve its private runtime identity.");
+    }
     if (reactivation.state.providerId !== settings.provider.id) {
       throw failure("STATE_PROVIDER_MISMATCH", "Full-refresh reactivation must preserve the installed provider identity.");
     }
@@ -118,10 +121,9 @@ export async function installConfig(options) {
   } else if (options.integrationSwitchReceipt !== undefined) {
     throw failure("INTEGRATION_PREVIEW_CHANGED", "The confirmed picker integration is no longer active.");
   }
-  const priorConfig = removeHistoricalModelBridgeCompatibility(
-    current.text,
-    settings.provider.id,
-  );
+  const priorConfig = reactivation?.state.suspension.kind === "integration-toggle-v1"
+    ? removeDeactivatedHistoricalCompatibility(current.text, reactivation.state)
+    : removeHistoricalModelBridgeCompatibility(current.text, settings.provider.id);
   const sourceBytes = priorConfig.removed
     ? Buffer.from(priorConfig.text, "utf8")
     : current.bytes;
@@ -451,6 +453,11 @@ export async function previewConfigIntegration(options = {}) {
     if (stateFile) {
       const state = parseState(stateFile.contents, settings.statePath);
       assertStateMatchesConfig(state, settings.configPath);
+      if (state.suspension) {
+        assertSuspendedConfiguration(current, state);
+        if (state.suspension.kind !== "integration-toggle-v1") return integrationPreview("conflict", false, false, [], previewToken);
+        return integrationPreview("none", true, true, ["reactivate-integration", "retain-explicit-provider", "preserve-historical-chats"], previewToken);
+      }
       const located = locateHealthyManagedBlocks(current.text, state);
       const canonical = canonicalProviderBlock(located.provider, state);
       // A second gateway alongside an active owned provider has ambiguous
@@ -516,6 +523,15 @@ export async function inventoryConfigIntegrationSwitch(options = {}) {
 
 /** Keep the original ownership receipt while exposing a native-only root. */
 export async function suspendManagedConfiguration(options = {}) {
+  return suspendConfiguration(options, "full-refresh-v1");
+}
+
+/** Pause without discarding setup or the exact historical provider identity. */
+export async function deactivateManagedConfiguration(options = {}) {
+  return suspendConfiguration(options, "integration-toggle-v1");
+}
+
+async function suspendConfiguration(options, kind) {
   const settings = normalizeOwnershipOptions(options);
   const ownership = options.ownershipReceipt ?? await inventoryManagedConfigOwnership(settings);
   const details = ownershipDetails(ownership, settings);
@@ -526,7 +542,11 @@ export async function suspendManagedConfiguration(options = {}) {
   const current = await readConfigFile(settings.configPath, { mustExist: true });
   if (state.suspension) {
     assertSuspendedConfiguration(current, state);
+    if (state.suspension.kind !== kind) throw failure("CONFIGURATION_SUSPENDED", "The integration is suspended by another lifecycle operation.");
     return { changed: false, suspended: true };
+  }
+  if (kind === "integration-toggle-v1" && state.providerId !== HISTORICAL_MODEL_BRIDGE_PROVIDER_ID) {
+    throw failure("INTEGRATION_CONFLICT", "Deactivation requires the exact historical model_bridge provider identity.");
   }
   const located = locateHealthyManagedBlocks(current.text, state);
   if (inspectRootIntegration(current.text).gateway !== undefined) {
@@ -544,13 +564,18 @@ export async function suspendManagedConfiguration(options = {}) {
   if (native.foreign || containsAnyManagedMarker(suspendedText)) {
     throw failure("INTEGRATION_CONFLICT", "Full refresh could not prove a native-only configuration root.");
   }
+  if (kind === "integration-toggle-v1") {
+    if (hasProviderDefinition(suspendedText, HISTORICAL_MODEL_BRIDGE_PROVIDER_ID)) throw failure("HISTORICAL_PROVIDER_CONFLICT", "A historical provider already exists outside the owned block.");
+    assertNoHistoricalModelBridgeMarkerComments(suspendedText);
+    suspendedText = appendHistoricalModelBridgeCompatibility(suspendedText, state.configExisted);
+  }
   const pristineCandidate = located.provider.recoveredEnd
     ? current.text.slice(0, located.provider.start) + located.provider.text + current.text.slice(located.provider.end)
     : current.bytes;
   const updated = {
     ...state,
     suspension: {
-      kind: "full-refresh-v1",
+      kind,
       configSha256: sha256(suspendedText),
       pristine: sha256(pristineCandidate) === state.installedSha256,
     },
@@ -578,6 +603,14 @@ export async function suspendManagedConfiguration(options = {}) {
 
 /** Resume only a private, unchanged native suspension created by this module. */
 export async function inventoryManagedConfigReactivation(options = {}) {
+  return inventoryConfigurationReactivation(options, "full-refresh-v1");
+}
+
+export async function inventoryDeactivatedConfigReactivation(options = {}) {
+  return inventoryConfigurationReactivation(options, "integration-toggle-v1");
+}
+
+async function inventoryConfigurationReactivation(options, kind) {
   const settings = normalizeOwnershipOptions(options);
   const ownership = await inventoryManagedConfigOwnership(settings);
   await revalidateManagedConfigOwnership(ownership);
@@ -586,6 +619,13 @@ export async function inventoryManagedConfigReactivation(options = {}) {
   const state = parseState(stateFile.contents, settings.statePath);
   const current = await readConfigFile(settings.configPath, { mustExist: true });
   assertSuspendedConfiguration(current, state);
+  if (state.suspension.kind !== kind) throw failure("CONFIGURATION_SUSPENDED", "The integration is suspended by another lifecycle operation.");
+  if (options.expectedPreviewToken !== undefined) {
+    requirePreviewToken(options.expectedPreviewToken);
+    if (options.expectedPreviewToken !== integrationPreviewToken(current, settings.configPath, settings.statePath, stateFile.contents)) {
+      throw failure("INTEGRATION_PREVIEW_CHANGED", "Codex configuration changed after the reactivation preview.");
+    }
+  }
   await readOwnershipBackup(ownership);
   const receipt = Object.freeze({});
   reactivationReceiptDetails.set(receipt, { settings, ownership, state, stateFile });
@@ -948,8 +988,11 @@ export async function uninstallConfig(options) {
     assertSuspendedConfiguration(current, state);
     await readOwnershipBackup(ownershipReceipt);
   }
+  const restorationText = state.suspension?.kind === "integration-toggle-v1"
+    ? removeDeactivatedHistoricalCompatibility(current.text, state).text
+    : current.text;
   const located = state.suspension
-    ? locateSuspendedRestorationBoundary(current.text)
+    ? locateSuspendedRestorationBoundary(restorationText)
     : locateOwnedBlocks(current.text, state);
   const pickerRoot = state.suspension ? { safe: true } : inspectPickerMutableRoot(located.root, state);
 
@@ -1031,7 +1074,7 @@ export async function uninstallConfig(options) {
       ...(located.webSearch ? [{ ...located.webSearch, replacement: "" }] : []),
     ].sort((left, right) => right.start - left.start);
 
-    let restoredText = current.text;
+    let restoredText = restorationText;
     for (const block of replacements) {
       restoredText =
         restoredText.slice(0, block.start) +
@@ -1290,11 +1333,11 @@ export async function getConfigStatus(options) {
         return {
           installed: false,
           healthy: true,
-          status: "suspended",
+          status: state.suspension.kind === "integration-toggle-v1" ? "deactivated" : "suspended",
           configPath,
           statePath,
           providerId: state.providerId,
-          recoveryRequired: true,
+          recoveryRequired: state.suspension.kind !== "integration-toggle-v1",
         };
       } catch (error) {
         return {
@@ -1589,7 +1632,7 @@ function parseState(contents, path) {
   if (state.suspension && (
     typeof state.suspension !== "object" || Array.isArray(state.suspension) ||
     Object.keys(state.suspension).some((key) => !["kind", "configSha256", "pristine"].includes(key)) ||
-    state.suspension.kind !== "full-refresh-v1" ||
+    !["full-refresh-v1", "integration-toggle-v1"].includes(state.suspension.kind) ||
     !/^[a-f0-9]{64}$/u.test(state.suspension.configSha256) ||
     typeof state.suspension.pristine !== "boolean"
   )) {
@@ -1719,6 +1762,10 @@ function integrationPreview(status, canApply, requiresConfirmation, changes, pre
 function assertSuspendedConfiguration(current, state) {
   if (!state.suspension) {
     throw failure("CONFIGURATION_NOT_SUSPENDED", "The managed configuration has no full-refresh suspension receipt.");
+  }
+  if (state.suspension.kind === "integration-toggle-v1" &&
+    (state.providerId !== HISTORICAL_MODEL_BRIDGE_PROVIDER_ID || !removeDeactivatedHistoricalCompatibility(current.text, state).removed)) {
+    throw failure("CONFIGURATION_SUSPENSION_CONFLICT", "The exact historical provider alias could not be verified.");
   }
   if (!current.exists || sha256(current.bytes) !== state.suspension.configSha256 ||
     containsAnyManagedMarker(current.text) || inspectRootIntegration(current.text).foreign) {
@@ -2329,6 +2376,18 @@ function removeHistoricalModelBridgeCompatibility(source, providerId) {
     }
   }
   return { text: source, removed: false };
+}
+
+function removeDeactivatedHistoricalCompatibility(source, state) {
+  const historical = removeHistoricalModelBridgeCompatibility(source, state.providerId);
+  if (historical.removed || state.configExisted !== false) return historical;
+  // The opaque retained receipt proves absent-config provenance even when
+  // preserved user tables now precede the exact inert suffix.
+  const eol = detectEol(splitLines(source));
+  const suffix = `${eol}${renderHistoricalModelBridgeCompatibility(eol, false)}`;
+  return source.endsWith(suffix)
+    ? { text: source.slice(0, -suffix.length), removed: true, configExisted: false }
+    : historical;
 }
 
 function assertNoHistoricalModelBridgeMarkerComments(source) {

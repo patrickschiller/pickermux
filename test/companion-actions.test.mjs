@@ -145,3 +145,23 @@ test("configuration preview exposes exact CAS token in the shared envelope", asy
   });
   assert.deepEqual(result.data, { action: "configuration-preview", status: "ollama", canApply: true, requiresConfirmation: true, changes: ["create-backup"], previewToken: "f".repeat(64) });
 });
+
+
+test("OFF validates exact consent, current state, stopped Desktop and receipt-active distribution under lock", async () => {
+  const parsed = request("integration-deactivate", { confirmation: { deactivateIntegration: true } });
+  const { calls, options } = fixture();
+  await executeCompanionAction(parsed, options);
+  assert.deepEqual(calls, ["lock", "status", "distribution", "integration-deactivate"]);
+  for (const overrides of [
+    { snapshot: { desktop: { status: "running" } } },
+    { options: { validateDistributionImpl: async () => ({ installed: true, activeDirectory: "/bundled/source" }) } },
+    { snapshot: { actions: ["diagnose"], recovery: { status: "pending" } } },
+  ]) {
+    const blocked = fixture(overrides);
+    await assert.rejects(executeCompanionAction(parsed, blocked.options));
+    assert.equal(blocked.calls.includes("integration-deactivate"), false);
+  }
+  const rejected = fixture();
+  await assert.rejects(executeCompanionAction(request("integration-deactivate"), rejected.options), { code: "CONFIRMATION_REQUIRED" });
+  assert.deepEqual(rejected.calls, []);
+});

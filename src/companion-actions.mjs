@@ -3,7 +3,7 @@ import path from "node:path";
 import { CompanionControlError, parseCompanionRequest } from "./companion-control.mjs";
 
 const READ_ONLY = new Set(["diagnose", "update-check", "configuration-preview"]);
-const STOPPED_DESKTOP = new Set(["refresh", "certify", "update", "configuration-apply"]);
+const STOPPED_DESKTOP = new Set(["refresh", "certify", "update", "configuration-apply", "integration-deactivate"]);
 
 function unavailable(snapshot) {
   if (snapshot.recovery.status === "pending") return "RECOVERY_PENDING";

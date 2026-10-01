@@ -63,6 +63,34 @@ the installed client, and choose **Preview configuration changes** before
 applying the explicitly confirmed switch. The preview is bound to the inspected
 configuration and receipt; after any edit, request a fresh preview.
 
+## Companion cannot enable PickerMux in Codex
+
+Copying the app from a DMG installs the menu-bar utility. Turn on
+**Use PickerMux in Codex** to review and confirm CLI/bridge setup. First
+installation is shown as setup required; the absence of a compatibility
+manifest alone does not mean that Codex was updated.
+
+Setup needs Codex fully closed, its account model cache matching the installed
+client, and loaded external models at the configured provider. The default
+provider is LM Studio. If the app reports a provider unavailable, start its
+server; if it reports no loaded models, load a model before retrying. Installing
+Ollama alone does not satisfy the LM Studio default configuration.
+
+For an account-cache message, open signed-in Codex until the native picker has
+loaded, fully quit it with Command-Q, and check status again. Do not delete
+native authentication or replace ownership receipts to work around setup.
+
+The toggle follows the verified integration rather than a pending UI choice.
+Cancellation or a failure leaves its actual state visible. An installation can
+remain active after incomplete model certification; its unverified routes stay
+conservative and the app offers the existing certification recovery.
+
+An older CLI can lack toggle support even if its displayed version matches the
+app. The new app uses its pinned setup backend when the required feature marker
+is absent. Confirm the offered setup upgrade first; only the current
+receipt-owned CLI can deactivate its bridge. Edited suspended configuration
+and pending full-refresh recovery block toggle changes until reviewed.
+
 Modified managed blocks, ambiguous root assignments, unknown ownership state,
 or an interrupted recovery prevent automatic switching. Keep the original
 bytes and review the conflict. The app has no force option. Ordinary uninstall

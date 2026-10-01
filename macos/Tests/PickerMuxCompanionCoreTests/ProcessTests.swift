@@ -86,7 +86,7 @@ private final class RecordingExecutor: CompanionExecuting {
     if arguments == ["--version"] { return ProcessOutput(stdout: Data("v22.15.0\n".utf8), exitCode: 0) }
     if Array(arguments.suffix(2)) == ["companion", "status"] {
       let data = try JSONSerialization.data(withJSONObject: [
-        "schemaVersion": 1, "version": "0.8.3", "state": "ready",
+        "schemaVersion": 1, "capabilities": ["integration-toggle-v1"], "version": "0.8.3", "state": "ready",
         "desktop": ["status": "closed"], "installation": ["status": "installed"],
         "managedConfig": ["status": "managed"], "service": ["status": "running"],
         "compatibility": ["status": "compatible"], "accountCache": ["status": "valid"],

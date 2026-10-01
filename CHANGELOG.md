@@ -7,6 +7,26 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-10-01
+
+### Added
+
+- Add a prominent Codex integration toggle with reviewed first installation,
+  receipt-bound reactivation and confirmed deactivation that retains private
+  settings, certifications and backups. Keep historical chats readable while
+  inactive, and collapse advanced setup details in the companion panel.
+- Add an original macOS app icon and native iconset/ICNS compilation in the
+  universal app and DMG builder.
+
+### Fixed
+
+- Show first-install state instead of treating an absent compatibility
+  manifest as a detected Codex update. Return actionable setup errors for
+  unavailable providers, missing loaded models and stale native account cache.
+- Require the explicit toggle capability before selecting an installed
+  companion backend. Use reviewed bundled setup to upgrade older backends,
+  and keep immutable 0.9.0 contents intact in their version directory.
+
 ## [0.9.0] - 2026-10-01
 
 ### Added
@@ -632,7 +652,8 @@ confirm the release date before tagging. See the
   paths and file types, refuses root execution and foreign launchers, and
   restores the previous distribution state when activation fails.
 
-[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.9.1...HEAD
+[0.9.1]: https://github.com/patrickschiller/pickermux/releases/tag/v0.9.1
 [0.9.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.9.0
 [0.8.3]: https://github.com/patrickschiller/pickermux/releases/tag/v0.8.3
 [0.8.2]: https://github.com/patrickschiller/pickermux/releases/tag/v0.8.2

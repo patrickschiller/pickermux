@@ -10,6 +10,7 @@ on:
       - CHANGELOG.md
       - LICENSE
       - scripts/build-companion.mjs
+      - scripts/build-companion-icon.mjs
       - scripts/build-release.mjs
       - test/companion-build.test.mjs
       - package.json
@@ -23,6 +24,7 @@ on:
       - CHANGELOG.md
       - LICENSE
       - scripts/build-companion.mjs
+      - scripts/build-companion-icon.mjs
       - scripts/build-release.mjs
       - test/companion-build.test.mjs
       - package.json
