@@ -52,6 +52,48 @@ The installer and archive are release artifacts. Do not point the README at
 `raw.githubusercontent.com`, a branch archive, or GitHub's automatically
 generated source archives.
 
+### Optional macOS companion assets
+
+When offering the app, add the version-matching, Developer ID signed and
+notarized companion assets to the same GitHub Release:
+
+- `PickerMux-vX.Y.Z-macos-universal.dmg`: drag-to-Applications installation;
+- `PickerMux-vX.Y.Z-macos-universal.tar.gz`: the same verified app bundle;
+- `companion-manifest.json`: backend pin, signing status, archive/image digests;
+- `companion-SHA256SUMS`: the companion builder's checksum file, published
+  under a distinct name.
+
+The CLI's existing `SHA256SUMS` remains unchanged. Its strict updater expects
+the CLI archive, installer and manifest entries. Do not merge app entries
+into that file or replace it with the companion builder's checksum file.
+
+The protected `macOS companion` signing job retains reviewed artifacts; it
+does not publish them. Run that job for the exact approved release commit,
+verify the downloaded artifact's checksums and `developer-id-notarized`
+manifest status, then verify app/image signatures, stapled tickets and
+Gatekeeper assessments. Complete real drag-to-install, launch after ejecting,
+upgrade and GUI/TCC recovery acceptance before distribution. Unsigned CI
+artifacts cannot fulfill these release gates.
+
+From a fresh directory containing only the downloaded signed artifact, the
+following version-specific example adds new assets after the matching CLI
+release has been verified. Adapt every version to the approved tag:
+
+```bash
+shasum -a 256 --check SHA256SUMS
+cp -n SHA256SUMS companion-SHA256SUMS
+cmp SHA256SUMS companion-SHA256SUMS
+gh release upload v0.9.0 --repo patrickschiller/pickermux \
+  PickerMux-v0.9.0-macos-universal.dmg \
+  PickerMux-v0.9.0-macos-universal.tar.gz \
+  companion-manifest.json companion-SHA256SUMS
+```
+
+Do not use `--clobber`. After publication, download all four companion assets
+from the public version-pinned release and check `companion-SHA256SUMS`, the
+manifest digests, signatures and tickets again. The original CLI assets and
+their checksums must still match their already verified public bytes.
+
 ## Automated release workflow
 
 The release workflow runs only for semantic version tags and must complete

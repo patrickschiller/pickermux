@@ -283,6 +283,10 @@ signed-release job requires the protected `companion-signing` environment
 and provisioned macOS runner labeled `pickermux-signing`; it retains both
 assets for release review.
 The workflow does not publish a GitHub release automatically.
+When publishing alongside the CLI, retain its existing `SHA256SUMS` and
+publish the companion checksum file as `companion-SHA256SUMS`. See the
+[companion release procedure](RELEASING.md#optional-macos-companion-assets)
+for the version-matching assets and public-download verification.
 
 ## Acceptance status
 
