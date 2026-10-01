@@ -1,6 +1,6 @@
 # PickerMux Architecture
 
-This document describes PickerMux v0.20.0.
+This document describes PickerMux v0.20.1.
 It is intended for contributors, security reviewers, and users who want to
 understand what runs on their Mac.
 
@@ -799,7 +799,7 @@ The private health endpoint remains available with fixed safe status/reason
 enums so the LaunchAgent does not enter a restart loop and diagnostics can
 direct the user to refresh.
 
-Versions 0.6.0 through 0.20.0 use bridge contract
+Versions 0.6.0 through 0.20.1 use bridge contract
 `codex-responses-bridge/p6-v1`.
 The managed publisher emits the search claim only from valid model-bound
 evidence, and the runtime accepts it only on entries generated under that exact
@@ -879,6 +879,12 @@ elapsed time. Settings and Help use persistent native windows, and destructive
 recovery/update confirmations use asynchronous windows rather than a nested
 modal event loop in the transient menu panel. Account-cache age alone does not
 grant recovery authority.
+
+The menu content uses a shared vertical scroll view with an explicit
+400-by-600-point viewport. An explicit size prevents compressed `MenuBarExtra`
+layout proposals from collapsing the scroll surface; longer provider and
+installation sections remain reachable by scrolling. This presentation wrapper
+does not change polling, token observation, or lifecycle authority.
 
 `companion run` accepts one UTF-8 request capped at 4,096 bytes and a bounded
 input wait. Version 1 accepts only the fixed action set. Unknown or duplicate

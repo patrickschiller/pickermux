@@ -1,6 +1,6 @@
 # macOS companion
 
-PickerMux 0.20.0 includes a SwiftUI menu-bar app for inspecting and
+PickerMux 0.20.1 includes a SwiftUI menu-bar app for inspecting and
 operating the existing PickerMux installation. It requires macOS 13 or newer,
 Apple silicon or Intel, and Node.js 22.15.0 or newer. The supported Node
 locations are `/opt/homebrew/bin/node`, `/usr/local/bin/node`, and
@@ -57,6 +57,11 @@ Primary content and controls use 14-point text in a wider panel. A setup
 failure describes the last attempt. A successful status check inspects the
 installation and Codex state; it does not prove that the model server is
 reachable. After addressing the error, turn the switch on again to retry setup.
+
+The panel has an explicit 400-by-600-point viewport and scrolls vertically
+when its content is longer. This keeps the scroll surface from collapsing
+while token usage or installation details change. Scroll to reach lower
+provider totals, installation details, and available actions.
 
 **Retry status**, **Help…**, **Settings…**, and **Quit** remain visible at the
 top when a status check fails. Help explains the Node.js requirement and opens
@@ -365,7 +370,7 @@ integration with Codex stopped. It is available only through the receipt-owned
 installed CLI. The app detects older backends even when both versions are
 labelled 0.9.0; the missing capability marker selects its pinned setup backend
 before any mutation. Confirm setup to upgrade that CLI before deactivating.
-The current 0.20.0 payload installs into its own version directory; the older
+The current 0.20.1 payload installs into its own version directory; the older
 0.9.0 contents are never overwritten to add this feature.
 
 `uninstall-preview` returns only fixed removal changes and a digest token.
@@ -437,8 +442,8 @@ node scripts/build-companion.mjs --output /tmp/pickermux-companion-development
 
 Choose a new output directory for each build; the builder refuses to replace
 one. The output contains `PickerMux.app`,
-`PickerMux-v0.20.0-macos-universal.tar.gz`,
-`PickerMux-v0.20.0-macos-universal.dmg`, `companion-manifest.json`, and
+`PickerMux-v0.20.1-macos-universal.tar.gz`,
+`PickerMux-v0.20.1-macos-universal.dmg`, `companion-manifest.json`, and
 `SHA256SUMS`. The universal binary contains `arm64` and `x86_64` slices
 targeting macOS 13. The manifest distinguishes `unsigned-development`,
 `apple-development` and `developer-id-notarized` artifacts and binds the bundled backend manifest,
