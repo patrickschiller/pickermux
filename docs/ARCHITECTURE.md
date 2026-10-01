@@ -1,6 +1,6 @@
 # PickerMux Architecture
 
-This document describes PickerMux v0.8.3.
+This document describes PickerMux v0.9.5.
 It is intended for contributors, security reviewers, and users who want to
 understand what runs on their Mac.
 
@@ -53,6 +53,17 @@ flowchart TB
 The service is installed as a user LaunchAgent. Its runtime copy lives outside
 the source checkout so macOS privacy protection on folders such as Documents
 does not break login-time startup.
+
+Configured external providers have two supported kinds. `lmstudio-responses`
+adds LM Studio-specific metadata discovery and request adapters.
+`openai-responses` supports explicitly configured local or remote Responses
+providers with a model allowlist verified through `/models`. Both route model
+requests through the Responses API and require exact model-bound certification
+before tool access. Chat Completions compatibility alone does not establish
+this contract. Automatic loaded-model discovery, Efficient Fidelity, and the
+local context-compaction adapter remain LM Studio-specific. The companion's
+first-install default is LM Studio; it also controls other providers activated
+through the CLI's custom configuration.
 
 ## Catalog construction
 
@@ -518,6 +529,29 @@ and ownership state; activation requires health `webSearchContractVersion = 1`
 and failure restores the prior state. Uninstall removes the additional feature
 block only when PickerMux owns it, preserving pre-existing feature settings.
 
+### Configuration mode and gateway switching
+
+The supported layout remains the explicit provider. Its HTTP/SSE, WebSocket
+exclusion, zero request/stream retries, and timeout controls are part of the
+transport contract. A root-only built-in-provider mode inherits different retry
+defaults and does not qualify the required transport controls. The qualification
+report records that block without granting search, tools, context, or compaction
+authority. Model-bound certification remains unchanged.
+
+`previewConfigIntegration` scans only the exact configuration and private
+ownership state, returns a fixed classification and proposed change enums, and
+binds confirmation to a digest token. It recognizes the supported local Ollama
+gateway/catalog structure conservatively; unknown gateway owners remain
+foreign. No GUI request supplies a path, provider, credential, or executable.
+
+An explicitly confirmed switch receives an in-process ownership receipt and
+is revalidated before configuration commit. The original verified backup and
+prior root assignments remain the uninstall baseline. Concurrent state/config
+changes stop activation and enter the existing rollback boundary. Managed
+layout migration canonicalizes only receipt-proven provider bytes, preserves
+user-owned bytes and line endings, and maintains historical provider aliases.
+Unknown or modified state is not automatically reformatted.
+
 ### Full account-cache refresh
 
 `refresh --full` is a separate, explicitly confirmed recovery transaction. It
@@ -548,6 +582,16 @@ it stores neither catalog contents nor account identity. The helper:
 4. requests and verifies a second graceful quit before any integration write;
 5. reactivates the preserved configuration through the normal transactional
    refresh gates, then opens Codex so the new mixed catalog is loaded.
+
+In 0.9.0, suspension is a configuration transaction rather than an uninstall.
+It removes the owned active blocks into a neutral native configuration and
+retains the private ownership receipt with a `full-refresh-v1` suspension digest.
+The original backup, prior assignments, and later uninstall baseline survive
+reactivation. A previous Ollama or foreign gateway is therefore not reinstated
+during the native account-cache fetch. An unchanged receipt-bound suspension
+reports `suspended`; edited bytes or state report `suspension-conflict` and block
+reactivation. Legacy checkpoint state remains subject to the existing ownership
+and helper admission checks.
 
 All application-state and lock-handoff waits are bounded. A rejected or
 timed-out quit is never converted into `SIGKILL` or another forced termination.
@@ -641,6 +685,16 @@ paths, and invalid ownership state. Native Codex credentials and unrecognized
 files are always outside its scope; `~/.codex/auth.json` is never read,
 modified, or removed.
 
+The opt-in `uninstall --purge --restore-native` mode uses the same full-removal
+transaction but does not restore recorded prior picker overrides. This avoids
+reactivating an original Ollama gateway/catalog. Its native candidate removes
+only current receipt-owned integration blocks and omits the five recorded root
+assignments for model, provider, catalog, reasoning and gateway. Other current
+user bytes and historical chat parsing remain intact. A read-only plan binds
+the native candidate to configuration/state/verified backup before Keychain
+deletion, and the commit revalidates that binding. Unknown root/profile routing
+and concurrent changes fail closed. The default uninstall baseline is unchanged.
+
 All current CLI uninstall modes for the canonical `model_bridge` integration
 atomically retain its marker-bounded historical compatibility provider table.
 The temporary suspension during `refresh --full` is a separate lifecycle path
@@ -707,7 +761,7 @@ The private health endpoint remains available with fixed safe status/reason
 enums so the LaunchAgent does not enter a restart loop and diagnostics can
 direct the user to refresh.
 
-Versions 0.6.0 through 0.8.3 use bridge contract
+Versions 0.6.0 through 0.9.5 use bridge contract
 `codex-responses-bridge/p6-v1`.
 The managed publisher emits the search claim only from valid model-bound
 evidence, and the runtime accepts it only on entries generated under that exact
@@ -716,6 +770,142 @@ contract. Older or non-p6 catalog claims cannot grant the route capability.
 `doctor` also runs the account-cache inspection as an independent check. It can
 therefore report whether the signed-in account cache matches the current Codex
 client even when the bridge runtime or generated mixed catalog is absent.
+
+## macOS companion and control boundary
+
+```mermaid
+flowchart TB
+    App[SwiftUI menu-bar app]
+    Installed[Validated active CLI]
+    Bundled[Manifest-verified bundled backend]
+    Control[Versioned stdin control protocol]
+    Lifecycle[Existing locks and lifecycle transactions]
+    Helper[Independent recovery helper]
+    App --> Installed
+    App -->|Read-only checks and confirmed setup| Bundled
+    Installed --> Control
+    Bundled --> Control
+    Control --> Lifecycle
+    Lifecycle --> Helper
+```
+
+The `MenuBarExtra` app targets macOS 13+ on Apple silicon and Intel. Swift owns
+display, explicit dialogs, optional `SMAppService` login startup, notifications,
+and an opt-in refresh after a fully observed Codex close. Swift never edits
+TOML, certification files, receipts, or LaunchAgents. Node.js 22.15+ remains an
+external prerequisite.
+
+The Codex integration toggle reads its value from verified configuration
+ownership. Turning it on is explicit activation consent: it obtains a fresh
+preview and sends the exact token without a second modal dialog. Turning it
+off supplies the separate deactivation consent field and invokes
+the installed lifecycle under the existing lock. It retains the private
+configuration receipt, provider settings, runtime, certifications, CLI and
+original backup, and stops the service. A receipt-bound `integration-toggle-v1`
+suspension contains native root configuration plus the exact inert historical
+provider alias. Reactivation rejects edited suspension bytes and preserves the
+original eventual-uninstall baseline. This suspension does not authorize the
+full-refresh helper or replace its checkpoint.
+
+A separate Settings removal action uses finite `uninstall-preview` and
+`uninstall` protocol actions. The preview token binds the native restoration
+intent; removal requires four exact consent fields and the receipt-owned
+installed backend. Status can offer removal for both active and correctly
+deactivated installations without requiring current provider availability or a
+healthy account cache. The GUI verifies login startup is disabled before purge:
+an explicit unregistered state skips the call; otherwise it awaits unregister
+completion and accepts only success or the exact documented ServiceManagement
+already-absent error. A final lookup failure alone never proves absence, and
+unknown or persistently registered states block removal. The GUI then
+verifies a specific completed-removal result before clearing app-owned defaults
+and notifications. Activity generations prevent queued polls or auto-refresh
+from invoking the backend after removal. Local cleanup retries never rerun a
+successful purge. The final screen keeps Quit available and directs app-bundle
+removal through Finder.
+
+`companion status` collects independent read-only probes and projects only
+bounded status enums, booleans, safe issues, a version, allowed next actions,
+and a recovery phase/UUID. Failed probes produce partial results rather than
+raw errors. The app samples on a five-second polling cycle; backend deadlines
+and execution time can lengthen that cycle. A serial operation queue orders
+polling, manual status checks and actions, so a manual request waits instead
+of disappearing and older observations cannot replace newer results.
+Manual checks expose completion time; actions expose a busy indicator and
+elapsed time. Settings and Help use persistent native windows, and destructive
+recovery/update confirmations use asynchronous windows rather than a nested
+modal event loop in the transient menu panel. Account-cache age alone does not
+grant recovery authority.
+
+`companion run` accepts one UTF-8 request capped at 4,096 bytes and a bounded
+input wait. Version 1 accepts only the fixed action set. Unknown or duplicate
+keys, extra requests, arbitrary paths/providers/executables, and force flags
+are rejected. Recovery requires three explicit true consent fields; a gateway
+switch requires explicit replacement consent and its current preview token.
+The dispatcher reads fresh status and validates the active installed source
+before ordinary mutations. GUI confirmation cannot bypass ownership checks,
+locks, provider validation, certification, or rollback.
+
+Invocation uses argument arrays with a narrow environment and drains bounded
+stdout/stderr concurrently. There is no shell interpolation or HTTP control
+listener. Installed launcher receipts, ownership, symlinks, and digests are
+checked. The bundled backend's manifest hash is pinned into the app binary;
+file size/digest, parent directory, and complete inventory checks precede Node
+execution. It can inspect and explicitly set up an absent/older installation,
+but cannot control another installed source's service or arm its recovery helper.
+The app never retries a possibly committed action via a different backend.
+
+Progress is an observational versioned stderr stream containing only fixed
+phases, safe counters, and an optional operation UUID. The app shows a busy
+indicator and samples recovery checkpoints. Failed envelopes contain fixed
+codes and prose. Paths, capability state, account/model identities, prompts,
+native authentication, raw exception messages, and provider output do not cross
+this control boundary. `auth.json` is never read.
+
+The app checks releases through its pinned bundled backend. DMG releases
+require exactly one stable-named asset at an exact version-pinned URL and a
+single canonical release-body record binding version, name, SHA-256 and
+production signing status. The GUI derives the download URL locally and
+never opens a response-supplied URL. `update` refuses DMGs with
+`DOWNLOAD_REQUIRED` before asset download or activation. Replacing the app
+does not modify the installed backend.
+
+A separate reviewed setup client verifies that its pinned backend exactly
+matches the app and is canonically newer than the validated installed source.
+It permits only preview/apply and preserves the installed provider configuration
+through the existing setup transaction. Ordinary service, removal and toggle-off
+actions remain bound to the installed source; version differences alone do not
+switch their authority. No possibly committed mutation is retried via another
+backend.
+
+The historical CLI updater checks a fixed GitHub repository and exact versioned assets,
+restricts HTTPS redirects, and bounds downloaded/expanded data. Archive and
+manifest checksums, embedded-manifest equality, every file's mode/size/digest,
+allowlisted names, and package/runtime correspondence are verified before any
+downloaded entry point runs. Private extraction precedes the existing setup
+transaction; original activation rollback and retained incomplete-certification
+semantics remain authoritative. CLI updates and app replacement are separate.
+
+The universal builder embeds the verified backend and produces an unsigned
+development app, archive, and drag-to-install DMG by default. The DMG contains
+the app and an Applications shortcut; copying the app grants no configuration
+or CLI installation authority. Its explicit release mode requires Developer ID,
+hardened runtime, accepted notarization, stapling, and Gatekeeper assessment
+for the app, then signs, notarizes, staples, and verifies the disk image. The
+distribution manifest and checksums bind both archive and DMG. A protected
+signing job retains reviewed artifacts. The tag workflow runs the protected
+production signing path and publishes only the stable-named DMG, with its hash
+and version record in the release body. Build configuration alone does not
+establish signing or live macOS acceptance; see
+[the companion guide](MACOS_COMPANION.md).
+
+The universal app includes an `AppIcon.icns` resource declared by
+`CFBundleIconFile`. Native `sips` and `iconutil` compile the versioned RGBA
+master into standard macOS icon sizes. Missing or malformed artwork fails the
+build before packaging; app and disk-image validation include the icon file.
+The separate monochrome `MenuBarIcon.icns` is rendered from native vector
+paths and displayed as an 18-point template image. macOS applies its current
+appearance tint. Transparent geometry, source and packaged hashes are checked
+before packaging, including all resized PNG representations.
 
 ## Private local data
 

@@ -302,6 +302,20 @@ evidence and fails closed; it is not reported as a successful reactivation.
 
 ## Uninstall and purge boundary
 
+The companion's explicit integration toggle is separate from uninstall and
+full-refresh recovery. Deactivation retains the private ownership receipt,
+runtime/capability record, provider settings, certification receipts and
+original backup, while stopping the managed service and exposing native Codex
+root configuration. The exact inert historical provider alias keeps old chats
+readable. A distinct `integration-toggle-v1` suspension digest binds those
+bytes; edited aliases/configuration and foreign lifecycle suspensions cannot
+authorize reactivation. Deactivation requires Codex to be fully stopped,
+receipt-owned runtime/source validation and the installation lock. Service
+or configuration failures use the existing rollback boundary. Turning the
+toggle on or off supplies explicit consent without a second modal dialog;
+activation still obtains and revalidates a fresh exact preview token. GUI consent
+does not bypass any of these checks.
+
 The normal `pickermux uninstall` lifecycle restores Codex configuration and
 removes the managed bridge runtime while deliberately retaining verified
 PickerMux backups and provider credentials. Removing the receipt-owned CLI with
@@ -385,7 +399,49 @@ reviewed; the failure is not reported as a successful full removal.
 No uninstall mode reads, modifies, or deletes native Codex authentication. In
 particular, PickerMux never reads or removes `~/.codex/auth.json`.
 
-## Release installer trust
+The companion's separate complete-removal action requires a fresh native
+removal preview and explicit consent to remove PickerMux, restore native Codex
+defaults, delete verified backups and delete registered provider credentials.
+It is available only through the receipt-validated installed backend, including
+a verified toggle-deactivated installation; the bundled setup backend cannot
+purge another distribution. No GUI request supplies arbitrary paths, provider
+IDs or force flags. Login startup is disabled before purge. An unregistered
+status or a narrowly verified unregister outcome is required; a lookup error
+alone does not establish absence. Real errors and a persistently registered
+service block purge. After verified
+success, polling and queued background actions cannot run again, and cleanup
+targets only the app's named preferences and notification identifier. The app
+bundle is removed by the user in Finder rather than by recursive self-deletion.
+
+`uninstall --purge --restore-native` is an explicit alternative to restoring the
+original configuration. It omits only the receipt-recorded root model, provider,
+catalog, reasoning and gateway assignments and preserves current unrelated
+bytes. A native-only configuration candidate is validated and digest-bound to
+the configuration, state and verified backup before the first irreversible
+credential deletion. The binding is revalidated before configuration commit.
+Unowned routing overrides, an active profile, ambiguous syntax or concurrent
+changes block this mode instead of being removed. It cannot be combined with
+`--force`. Native account caches, authentication and chat data stay outside its
+removal authority; the inert historical provider alias remains.
+
+## Release distribution trust
+
+Starting with 0.10.0, the public installation asset is one universal DMG.
+Production builds require Developer ID signatures, accepted and stapled Apple
+notarization and Gatekeeper assessments for both app and image. Development
+signatures cannot authorize release publication. Internal manifests and
+checksums bind the final bytes; the public release body records the DMG hash
+and exact version in a single canonical metadata record.
+
+Update discovery rejects ambiguous assets, foreign URLs, invalid metadata and
+mixed CLI/DMG distributions. The GUI constructs a fixed-repository download URL
+from a validated canonical version. It does not execute downloaded images or
+accept browser URLs from response data. An explicit backend upgrade uses the
+app's pinned source through the existing setup transaction, preserving the
+installed configuration and rollback checks. Installed service and removal
+authority remain with the validated installed source.
+
+The following describes immutable earlier CLI installer releases.
 
 Official end-user installation assets are attached to versioned releases in
 this repository. The generated installer contains the expected SHA-256 digest

@@ -36,7 +36,7 @@ test("release metadata and both CLI entry points identify PickerMux", async () =
     await readFile(path.join(projectDirectory, "package.json"), "utf8"),
   );
   assert.equal(packageMetadata.name, "pickermux");
-  assert.equal(packageMetadata.version, "0.8.3");
+  assert.equal(packageMetadata.version, "0.10.0");
   assert.equal(packageMetadata.license, "MIT");
 
   for (const entryPoint of ["pickermux.mjs", "lmstudio-picker.mjs"]) {
@@ -51,6 +51,8 @@ test("release metadata and both CLI entry points identify PickerMux", async () =
       assert.match(stdout, /Setup and install automatically certify discovered models/u);
       assert.match(stdout, /several minutes per model/u);
       assert.match(stdout, /refresh --full \(also --FULL\)/u);
+      assert.match(stdout, /pickermux companion status/u);
+      assert.match(stdout, /pickermux companion run/u);
       assert.match(stdout, /After uninstall, fully restart Codex/u);
       assert.doesNotMatch(
         stdout,
@@ -65,7 +67,7 @@ test("release metadata and both CLI entry points identify PickerMux", async () =
         [path.join(projectDirectory, "bin", entryPoint), versionArgument],
         { encoding: "utf8" },
       );
-      assert.equal(stdout, "pickermux 0.8.3\n");
+      assert.equal(stdout, "pickermux 0.10.0\n");
     }
   }
 });

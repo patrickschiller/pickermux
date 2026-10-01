@@ -1,101 +1,179 @@
 # Releasing PickerMux
 
-This checklist is for maintainers publishing a versioned GitHub release and its
-one-line installer assets. PickerMux is distributed through GitHub Releases,
-not the npm registry.
+Starting with 0.10.0, end users receive one universal macOS DMG through GitHub
+Releases. The app bundles the verified Node.js backend; Node.js itself remains
+an external prerequisite. Earlier CLI archive releases remain available at
+their immutable version-pinned URLs. PickerMux is not published to npm.
 
 ## Preflight
 
-1. Confirm that all public documentation is in English and that private local
-   engineering records remain ignored.
-2. Keep the version identical in the Git tag, `package.json`, CLI output,
-   release manifest, and `CHANGELOG.md` heading.
-3. Inspect every staged file for credentials, account identifiers, private
-   prompts, capability paths, hostnames, and machine-specific paths.
-4. Run the complete verification suite on macOS:
+1. Keep the version identical in the proposed tag, `package.json`, CLI output,
+   app bundle, bundled backend, manifests, and `CHANGELOG.md` heading.
+2. Inspect staged files and images for private information. Exclude local
+   engineering notes, real configurations, prompts, credentials, account data,
+   and generated runtime artifacts.
+3. Run `npm run verify` and `swift test --package-path macos` on macOS. Build
+   the universal app from the exact reviewed source, never an older artifact.
+4. Verify README links and both images. A rendered app preview with synthetic
+   state must be labelled as a preview, rather than a live screenshot.
+5. Complete the applicable live acceptance checks below on an explicitly
+   authorized target installation. Offline tests do not prove TCC, login
+   startup, notarization, or current Codex/provider behavior.
+6. Confirm a usable **Developer ID Application** identity and existing
+   `notarytool` Keychain profile. **Apple Development** and unsigned builds
+   cannot satisfy this public release gate.
+7. Merge the approved change into protected `main`, synchronize it, and confirm
+   the exact new `main` commit has green required CI. Do not create a release
+   tag until the production signing path is provisioned and acceptance passes.
 
-   ```bash
-   npm run verify
-   ```
+## One public asset
 
-5. Build the release bundle locally and run its verification mode:
+Every new release publishes exactly this asset:
 
-   ```bash
-   node scripts/build-release.mjs --output dist
-   ```
+- `PickerMux-macos-universal.dmg`: Developer ID signed, notarized and stapled;
+  contains the universal app and an Applications shortcut.
 
-6. Confirm that `pickermux --version`, `help`, `--help`, and `-h` work from the
-   extracted archive.
-7. Verify README links and render the Mermaid architecture diagram.
-8. For lifecycle changes, complete a real clean install, same-version rerun,
-   upgrade, all three cache-mismatch preflight/race barriers, failed-upgrade
-   rollback, standard uninstall, CLI removal, and full purge on supported
-   macOS hardware.
+The stable asset name makes the README download URL independent of the version:
 
-## Release assets
+```text
+https://github.com/patrickschiller/pickermux/releases/latest/download/PickerMux-macos-universal.dmg
+```
 
-Every release must contain all four generated assets:
+The release tag still makes a download immutable:
 
-- `pickermux-vX.Y.Z.tar.gz`: deterministic allowlisted payload;
-- `install.sh`: release-specific bootstrap with the exact version, archive
-  name, and archive SHA-256 embedded;
-- `release-manifest.json`: machine-readable version, file allowlist, minimum
-  Node.js version, archive name, and per-file digests;
-- `SHA256SUMS`: digests for the payload, installer, and external manifest.
+```text
+https://github.com/patrickschiller/pickermux/releases/download/v0.10.0/PickerMux-macos-universal.dmg
+```
 
-The payload allowlist is limited to the runtime entry points and sources,
-default configuration, package metadata, release manifest, and license. Tests,
-Git metadata, private notes, local artifacts, and arbitrary repository files
-must not enter the archive.
+The build retains its versioned DMG, app archive, backend manifest, companion
+manifest and checksum files for internal verification. Do not upload those
+files to the public Release. GitHub's automatically generated source archives
+are repository links, not uploaded installation assets.
 
-The installer and archive are release artifacts. Do not point the README at
-`raw.githubusercontent.com`, a branch archive, or GitHub's automatically
-generated source archives.
+Release notes contain the public DMG's SHA-256 checksum and one canonical
+`pickermux-dmg-release-v1` metadata record. The staging helper writes this
+record from verified build output. It binds the exact version, stable filename,
+checksum and `developer-id-notarized` signing status. Do not edit its fields or
+add another record. Checksums complement signing and notarization; they still
+trust HTTPS, GitHub and the maintainer account.
+
+## Build and stage
+
+Configure `PICKERMUX_SIGNING_IDENTITY` and `PICKERMUX_NOTARY_PROFILE` outside
+Git. The identity must be Developer ID Application, with its matching private
+key available to `codesign`; the profile must already be usable by `notarytool`.
+Use fresh output directories, since the tools refuse to replace existing ones:
+
+```bash
+node scripts/build-companion.mjs --release --output /tmp/pickermux-signed-0.10.0
+node scripts/prepare-dmg-release.mjs --source /tmp/pickermux-signed-0.10.0 --output /tmp/pickermux-public-0.10.0 --tag v0.10.0
+node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.10.0 --tag v0.10.0
+```
+
+The release builder signs and notarizes the app and DMG separately, staples
+accepted tickets, assesses both with Gatekeeper, and validates the mounted
+image read-only. Staging copies the final DMG bytes under the stable public
+filename and checks version, production signing status, format, manifest and
+checksum correspondence. Its output contains exactly the DMG,
+`release-notes.md`, and `SHA256SUMS`. The latter two files are internal and
+must not be uploaded as release assets.
+
+A manifest alone is not proof of Apple's acceptance. Keep signature, stapled
+ticket, Gatekeeper and target-machine acceptance evidence with the reviewed
+build. Development signing is useful for local testing and must never be
+relabeled as production signing or used to bypass `--release`.
 
 ## Automated release workflow
 
-The release workflow runs only for semantic version tags and must complete
-these gates before publication:
+The tag always runs hosted macOS source verification. Automated signing and
+publication require the repository-global variable
+`PICKERMUX_SIGNING_RUNNER_ENABLED` to be exactly `true`, set only after the
+signing runner and protected environment are provisioned. When unset or
+disabled, both jobs are skipped; use the local production route below.
+Skipping automation does not waive any production release requirement.
 
-1. require the tagged commit to be part of `origin/main`;
-2. compare the tag with `package.json`, CLI version output, and the changelog;
-3. run `npm run verify` on macOS;
-4. build the allowlisted payload twice and require identical archives;
-5. generate the byte-identical internal and external release manifest, then
-   embed the exact finished payload digest in the installer;
-6. validate shell syntax, archive paths and file types, and required files;
-7. extract the finished asset and run CLI version/help smoke tests;
-8. upload the archive, installer, external release manifest, and checksum file
-   to the matching GitHub Release only after every earlier gate passes.
+The tag workflow in `.github/workflows/release.yml` performs these gates:
 
-Release assets must not be replaced after publication. If an artifact is wrong,
-fix the source and publish a new version so existing pinned URLs retain a clear
-security meaning.
+1. Require the tag to match `package.json` and the exact current `origin/main`
+   commit; run the complete Node and Swift tests on a hosted macOS runner.
+2. Build with `--release` on a provisioned macOS runner labelled
+   `pickermux-signing`, through the protected `companion-signing` environment.
+   That environment supplies the two signing variable names above; certificate
+   keys and the notary profile remain in the runner's Keychain.
+3. Stage and retain the verified DMG, notes and checksum as an internal Actions
+   artifact. This artifact is not a GitHub Release.
+4. Recheck the exact current main commit, download that candidate, and verify
+   its exact inventory, checksum and metadata record before publication.
+5. Create the versioned GitHub Release using one explicit DMG filename and the
+   generated notes file. An existing release is refused; assets are never
+   replaced with `--clobber`.
 
-## Initial `v0.4.0` release
+The separately dispatched signing job in `companion.yml` remains useful for
+reviewing a signed candidate before tagging. It does not publish a Release.
+Do not enable automation with a missing runner or environment, or substitute
+an unsigned hosted build. Signing credentials can remain entirely on a
+maintainer's Mac when using the local production route.
 
-The repository was published before a GitHub Release was created, so the
-one-line installer is part of the first `v0.4.0` release rather than being
-deferred to a later feature release.
-
-After the release commit is on protected `main` and CI passes, create and push
-the annotated tag:
+After the exact approved commit is on main and all gates are ready:
 
 ```bash
-git tag -a v0.4.0 -m "PickerMux v0.4.0"
-git push origin v0.4.0
+git tag -a v0.10.0 -m "PickerMux v0.10.0"
+git push origin v0.10.0
 ```
 
-Watch the release workflow. Do not publish announcements until the generated
-release exists and both the latest and version-pinned README installer URLs
-work from a logged-out environment.
+Watch the workflow through publication. If a candidate is wrong, fix the
+source and publish a new version; do not replace immutable published bytes.
 
-## Subsequent releases
+## Local production release
 
-For every release, require the release commit to be merged into and synchronized
-with `main`, confirm that neither the tag nor release already exists, and then
-create an annotated tag from that exact `main` commit. Never tag an unmerged PR
-head or replace already published release assets.
+Use this route when Developer ID signing and the validated notary profile are
+available on the maintainer's Mac, without a GitHub signing runner. Leave the
+automation opt-in disabled. All preflight, acceptance, source ownership and
+production signing requirements above remain mandatory.
+
+1. Build and stage with `--release` using the commands above. Retain the actual
+   Apple acceptance, signature, stapled-ticket, Gatekeeper and mounted-image
+   verification evidence. The reviewed backend bytes must match the exact
+   release source on protected `main`.
+2. Confirm that exact `main` commit has green required CI, create its annotated
+   version tag, and wait for the tag's hosted Node and Swift verification.
+3. Verify the staged publication directory again, then create the release with
+   one explicit DMG and its generated notes. Refuse an existing release; never
+   replace its assets.
+
+```bash
+node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.10.0 --tag v0.10.0
+gh release create v0.10.0 /tmp/pickermux-public-0.10.0/PickerMux-macos-universal.dmg \
+  --verify-tag --title "PickerMux v0.10.0" \
+  --notes-file /tmp/pickermux-public-0.10.0/release-notes.md
+```
+
+Complete the independent public-download verification below before announcing
+the release. Record hosted source checks as passed, automated signing and
+publication as skipped, and the actual local production checks separately.
+A skipped GitHub signing job is not evidence that notarization passed.
+
+## Public verification
+
+Download the sole DMG from the public, version-pinned URL into a fresh directory.
+Compare its SHA-256 with the approved final build and the release-body record.
+Verify the image signature, stapled ticket and Gatekeeper assessment; mount it
+read-only and verify the app's full signature, ticket, universal slices, version
+and pinned backend inventory. Unmount after inspection.
+
+Confirm that the release has exactly one uploaded asset, is the intended latest
+stable release, and the README's latest-download URL yields the same bytes.
+Check the app after copying to Applications and ejecting the image, including
+an explicit upgrade from the prior installation. Download verification must
+use public bytes, rather than the local build directory.
+
+DMG update checks hand off to a locally constructed, version-pinned GitHub URL.
+They do not execute the image or install a downloaded CLI. After replacing the
+app, users explicitly review **Update installed backend** in Settings. The
+pinned backend upgrades through the existing setup transaction, preserving
+installed provider settings. Cancellation and failed activation must retain
+usable prior state; ordinary removal and deactivation continue using the
+validated installed backend.
 
 ## Manual acceptance matrix
 
@@ -242,6 +320,16 @@ At minimum, record:
   backups and Keychain items remain;
 - full purge, confirming that only verified backups and registered PickerMux
   Keychain items are removed and foreign state is refused;
+- companion full removal from active and toggle-off states, confirming native
+  defaults without reactivating a prior Ollama gateway, retained historical
+  chat readability, disabled login startup, exact app-preference/notification
+  cleanup, and no queued polling/refresh after success. Verify native sign-in,
+  account cache and chats are untouched; manually quit and delete the app in
+  Finder only after successful removal. Check cancellation and failure before
+  purge separately, without discarding retained recovery evidence. Exercise
+  never-enabled, already-unregistered, enabled and approval-pending login
+  startup with a fully signed bundle; confirm genuine signature/permission
+  failures retain the integration and CLI;
 - runtime removal with a byte-identical installed payload, plus refusal of a
   modified payload, an added or symbolic-link entry, and a residual
   `runtime-app.previous-*` package without recursive deletion;
@@ -274,11 +362,10 @@ v0.5.4.
 
 Publish announcements only after:
 
-- the repository and release URLs work in a logged-out browser;
-- branch protection and CI are green;
-- `install.sh`, the archive, `release-manifest.json`, and `SHA256SUMS` are
-  present;
-- the archive digest matches the value embedded in `install.sh`;
-- the README's latest and pinned commands complete successfully;
-- the default branch contains the license and security policy;
-- announcement media contains no private account or machine information.
+- protected main, the exact tag and required CI are verified;
+- the public release has exactly the reviewed, signed and notarized DMG;
+- public bytes match the checksum, release-body record and approved build;
+- both latest and version-pinned DMG download links work;
+- app installation, explicit backend upgrade and applicable live acceptance
+  have passed on the target Mac;
+- screenshots contain no private account, prompt or machine information.

@@ -1,0 +1,123 @@
+name: macOS companion
+
+on:
+  push:
+    paths:
+      - macos/**
+      - src/**
+      - bin/**
+      - lmstudio-picker.config.json
+      - CHANGELOG.md
+      - LICENSE
+      - scripts/build-companion.mjs
+      - scripts/build-companion-icon.mjs
+      - scripts/render-menubar-icon.swift
+      - scripts/build-release.mjs
+      - test/companion-build.test.mjs
+      - package.json
+      - .github/workflows/companion.yml
+  pull_request:
+    paths:
+      - macos/**
+      - src/**
+      - bin/**
+      - lmstudio-picker.config.json
+      - CHANGELOG.md
+      - LICENSE
+      - scripts/build-companion.mjs
+      - scripts/build-companion-icon.mjs
+      - scripts/render-menubar-icon.swift
+      - scripts/build-release.mjs
+      - test/companion-build.test.mjs
+      - package.json
+      - .github/workflows/companion.yml
+  workflow_dispatch:
+    inputs:
+      signed_release:
+        description: Build and notarize release artifacts using the protected companion-signing environment
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: companion-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  companion:
+    name: Test and build universal companion
+    runs-on: macos-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Node.js 22.15
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.15.0
+      - name: Test build boundaries
+        run: node --test test/companion-build.test.mjs
+      - name: Test Swift protocol, launcher and subprocess boundaries
+        run: swift test --package-path macos --scratch-path "$RUNNER_TEMP/companion-swift-build" --cache-path "$RUNNER_TEMP/companion-swift-cache"
+      - name: Build unsigned development app and disk image
+        run: node scripts/build-companion.mjs --output "$RUNNER_TEMP/pickermux-companion"
+      - name: Verify checksums and universal architecture
+        shell: bash
+        run: |
+          cd "$RUNNER_TEMP/pickermux-companion"
+          shasum -a 256 --check SHA256SUMS
+          /usr/bin/hdiutil verify ./*.dmg
+          architecture_list="$(/usr/bin/lipo PickerMux.app/Contents/MacOS/PickerMuxCompanion -archs)"
+          case "$architecture_list" in
+            "x86_64 arm64"|"arm64 x86_64") ;;
+            *) exit 1 ;;
+          esac
+      - name: Retain development artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pickermux-companion-unsigned-development
+          path: |
+            ${{ runner.temp }}/pickermux-companion/*.tar.gz
+            ${{ runner.temp }}/pickermux-companion/*.dmg
+            ${{ runner.temp }}/pickermux-companion/companion-manifest.json
+            ${{ runner.temp }}/pickermux-companion/SHA256SUMS
+          if-no-files-found: error
+
+  signed-release:
+    name: Sign and notarize companion release artifacts
+    if: github.event_name == 'workflow_dispatch' && inputs.signed_release
+    # Provisioned macOS signing runner: the environment owns an existing
+    # Developer ID identity and notarytool Keychain profile. No key export,
+    # account password or notarization credential belongs in repository files.
+    runs-on: [self-hosted, macOS, pickermux-signing]
+    environment: companion-signing
+    needs: companion
+    timeout-minutes: 45
+    steps:
+      - name: Check out approved source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Node.js 22.15
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.15.0
+      - name: Build signed and notarized artifacts
+        env:
+          PICKERMUX_SIGNING_IDENTITY: ${{ vars.PICKERMUX_SIGNING_IDENTITY }}
+          PICKERMUX_NOTARY_PROFILE: ${{ vars.PICKERMUX_NOTARY_PROFILE }}
+        run: node scripts/build-companion.mjs --release --output "$RUNNER_TEMP/pickermux-companion-release-${{ github.run_id }}"
+      - name: Retain signed artifacts for release review
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pickermux-companion-developer-id-notarized
+          path: |
+            ${{ runner.temp }}/pickermux-companion-release-${{ github.run_id }}/*.tar.gz
+            ${{ runner.temp }}/pickermux-companion-release-${{ github.run_id }}/*.dmg
+            ${{ runner.temp }}/pickermux-companion-release-${{ github.run_id }}/companion-manifest.json
+            ${{ runner.temp }}/pickermux-companion-release-${{ github.run_id }}/SHA256SUMS
+          if-no-files-found: error

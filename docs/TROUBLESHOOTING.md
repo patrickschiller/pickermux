@@ -10,6 +10,194 @@ pickermux doctor
 Use `doctor --live` only when the static checks pass and a real model inference
 is needed.
 
+## Companion cannot find or validate the CLI or Node.js
+
+The optional menu-bar app requires macOS 13+ and Node.js 22.15.0+ installed in
+`/opt/homebrew/bin`, `/usr/local/bin`, or `/usr/bin`. A Node runtime added only
+by a shell profile is unavailable to the app's narrow process environment.
+The panel keeps **Retry status**, **Help…**, **Settings…**, and **Quit** visible
+even before a backend status is available. **Help…** explains the supported
+locations and links to the official Node.js downloads and this guide.
+
+If Node.js is missing or too old, install a supported runtime from
+[Node.js downloads](https://nodejs.org/en/download) or through the existing
+Homebrew installation, then choose **Retry status**. The app does not start a
+terminal or install Node.js automatically. An installed runtime that cannot
+be verified needs review of its installation rather than repeated setup.
+Keep credentials out of shell workarounds and app launch arguments.
+
+Standard Homebrew Node.js installations are supported, including the
+administrator-group-writable Homebrew `bin` and `Cellar` directories. Earlier
+companion builds incorrectly rejected that normal layout and displayed an install-Node
+message even when a supported version was present. The corrected validator
+recognizes only those exact standard directories under `/opt/homebrew` or
+`/usr/local`; it continues to reject unsafe executable ownership,
+world-writable directories, unsafe link targets, and untrusted ancestors.
+Update the companion and retry status instead of
+changing Homebrew permissions to work around the old check.
+
+Bridge actions appear only after a validated status grants them. A Node.js
+failure does not authorize configuration setup, refresh, recovery, or an
+update. Copying the app from the DMG installs its bundle; enable the top switch
+once status is available to authorize automatic setup if the integration is
+not installed yet.
+
+The app validates the receipt-owned launcher, current pointer, source
+inventory, and bounded protocol output. It can fall back to its verified
+bundled backend for read-only checks and explicitly authorized configuration
+setup when the installed CLI is absent or predates the protocol. Other
+mutations require the active installed CLI. If ownership validation fails,
+review the CLI installation; replacing receipts or disabling checks is not a
+recovery procedure.
+
+App and CLI version differences are shown in the panel. Install the matching
+reviewed app build after a CLI update. An unsigned development build does not
+prove that a signed/notarized app is available; see
+[the companion guide](MACOS_COMPANION.md#development-and-distribution).
+
+## Companion configuration preview is blocked or stale
+
+An Ollama or other gateway owns the same root catalog and gateway fields that
+PickerMux uses. Fully quit Codex, ensure its signed-in account cache matches
+the installed client, then enable **Use PickerMux in Codex** to authorize the
+switch. The automatically acquired preview is bound to the inspected
+configuration and receipt; after any edit, request a fresh preview.
+
+## Companion cannot enable PickerMux in Codex
+
+Copying the app from a DMG installs the menu-bar utility. Turn on
+**Use PickerMux in Codex** to authorize automatic CLI/bridge setup. First
+installation is shown as setup required; the absence of a compatibility
+manifest alone does not mean that Codex was updated.
+
+Setup needs Codex fully closed, its account model cache matching the installed
+client, and loaded external models at the configured provider. The default
+provider is LM Studio. If the app reports a provider unavailable, start its
+server; if it reports no loaded models, load a model before retrying. Installing
+Ollama alone does not satisfy the LM Studio default configuration.
+
+From 0.9.3, setup reports separate fixed messages for a refused connection,
+timeout, denied access during discovery, HTTP 401/403 authentication, and malformed or
+unsupported discovery responses. A general setup failure does not imply that
+the server is stopped. For authentication, review the configured provider's
+credential settings without changing native Codex authentication. For an
+invalid response, check that the configured endpoint serves a supported model
+API; setup stops rather than guessing a schema. For denied access, review the
+app's access before retrying; do not disable system protections.
+
+The displayed error records the last setup attempt. **Check status** checks
+the installation and Codex state without testing provider connectivity. After
+starting the server or fixing the reported prerequisite, turn the switch on
+again to retry setup. The 0.9.3 panel uses larger primary text and controls.
+
+For an account-cache message, open signed-in Codex until the native picker has
+loaded, fully quit it with Command-Q, and check status again. Do not delete
+native authentication or replace ownership receipts to work around setup.
+
+The toggle follows the verified integration rather than a pending UI choice.
+Cancellation or a failure leaves its actual state visible. An installation can
+remain active after incomplete model certification; its unverified routes stay
+conservative and the app offers the existing certification recovery.
+
+An older CLI can lack toggle support even if its displayed version matches the
+app. The new app uses its pinned setup backend when the required feature marker
+is absent. Confirm the offered setup upgrade first; only the current
+receipt-owned CLI can deactivate its bridge. Edited suspended configuration
+and pending full-refresh recovery block toggle changes until reviewed.
+
+## Companion buttons appear unresponsive
+
+Use the 0.9.2 companion or newer. Earlier builds could drop a manual status
+request during polling and open settings or modal alerts from the transient
+menu panel. The corrected app queues manual checks, always shows their result
+time, and opens Settings and Help in their own reusable windows. Enabling the
+top switch installs automatically without the old second popup. Recovery and
+software updates use a separate asynchronous confirmation window.
+
+A busy indicator and elapsed time mean the requested operation is still
+running. Installation can take several minutes while loaded models are
+certified. If a fixed model-server error appears, start the configured provider
+and load a model, then retry; reopening Settings or clicking status cannot
+satisfy that setup prerequisite. Update checks and their results are in
+Settings.
+
+Modified managed blocks, ambiguous root assignments, unknown ownership state,
+or an interrupted recovery prevent automatic switching. Keep the original
+bytes and review the conflict. The app has no force option. Ordinary uninstall
+uses the verified pre-switch backup to restore the former gateway. Historical
+`model_bridge` aliases remain necessary for old chats and must not be removed
+as cosmetic cleanup.
+
+An active root `profile` selector also blocks integration setup or migration.
+A fresh configuration reports `integration-conflict`; a managed one is
+inconsistent. Review the profile selection explicitly before retrying instead
+of deleting ownership markers or choosing a gateway by guesswork.
+
+## Companion refresh, update, or repair is unavailable
+
+Refresh, certification, updates, and configuration changes require Codex to be
+fully quit with `Command-Q`. Closing its last window does not establish that
+state. The optional automatic refresh runs only once after an observed full
+close while the installation is ready; it does not resolve a cache/version or
+configuration conflict.
+
+Use **Check status** or the safe structured CLI snapshot:
+
+```bash
+pickermux companion status
+```
+
+`CODEX_RUNNING` requires a normal full quit. `BUSY` requires waiting for the
+other lifecycle operation. `DISTRIBUTION_INVALID` requires review of the
+installed CLI ownership. `ACCOUNT_CACHE_REFRESH_REQUIRED` or `UPDATE_REQUIRED`
+directs you to confirmed account-cache recovery. `RECOVERY_PENDING` requires
+resuming that checkpoint, with renewed confirmation, before another mutation.
+`CONFIGURATION_CONFLICT` requires review or a fresh configuration preview.
+
+`UPDATE_UNAVAILABLE` can be retried after connectivity returns.
+`UPDATE_INVALID` means release integrity/schema validation failed; do not
+execute the refused payload or bypass checksums. `UPDATE_UNSUPPORTED` requires
+review of the runtime or available release package. Software updates do not
+automatically replace the running app bundle.
+`DOWNLOAD_REQUIRED` means the new release is distributed as a DMG. Download
+and replace the app, then review **Update installed backend** in Settings.
+An older installed CLI can remain the source for safe deactivation and removal.
+
+If an operation times out or the app closes, recheck status before retrying.
+The recovery helper runs independently once armed. Setup can also retain a
+committed installation when certification is incomplete; use the existing
+[certification recovery](#installation-completes-but-model-certification-does-not)
+instead of assuming the old version remains active.
+
+## Companion login startup, notifications, or Apple events are denied
+
+An unavailable removal button does not always mean the CLI needs an update.
+When installation, managed configuration and service are absent and no
+integration is active, there is nothing left for the backend to remove. Quit
+PickerMux, move the remaining app to the Trash and reopen Codex. Unknown or
+partial state, a running Codex, pending repair and missing backend capabilities
+have distinct removal messages and retain their safety checks.
+
+If complete removal reports that login startup could not be disabled or
+verified, the backend purge has not run: the integration and CLI are retained.
+Companion 0.9.6 fixes the earlier false failure for an already-absent login
+registration. It waits for macOS unregister completion and still stops on
+permission, signature or registration errors. Install the corrected app and
+retry **Settings → Remove PickerMux completely…** with Codex fully closed.
+The installed CLI must support native removal (0.9.5 or newer).
+
+Enable login startup and notifications only through the app's settings.
+Review **System Settings > General > Login Items**, notification authorization,
+or **Privacy & Security > Automation** when macOS asks for approval. A refused
+or timed-out graceful Codex quit leaves recovery pending or blocked; it never
+authorizes a forced Codex kill. Save work, quit Codex normally, check status,
+and explicitly resume the validated repair.
+
+The new companion's real TCC, login-start, notification, and Codex-update
+acceptance checks are separate from the maintainer-confirmed 0.8.3 live
+baseline. An offline test or unsigned build cannot establish those permissions
+or a successful signed/notarized distribution.
+
 ## Historical chats cannot load `model_bridge`
 
 An older `pickermux uninstall` or `uninstall --remove-cli` can remove the
@@ -31,8 +219,7 @@ From a trusted local 0.8.3 source checkout, you can instead run
 and the affected chat after repair. Choose a native model before sending
 another message. The inert `model_bridge` table points to loopback port zero
 and cannot serve a turn. If you want PickerMux again, first let the signed-in
-native picker refresh its account model cache, fully quit Codex, and then run
-the [regular installer](../README.md#install).
+native picker refresh its account model cache, fully quit Codex, and then install the [current DMG](../README.md#install) and enable its Codex switch.
 
 The installed 0.8.3 CLI also offers `pickermux repair-chats [--json]`.
 The installer mode helps when the old CLI lacks that command or setup is
@@ -58,7 +245,7 @@ the client version. You can check the newer bundled executable directly:
 /Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex --version
 ```
 
-Upgrade with the [latest release installer](../README.md#install).
+Upgrade using the [current DMG and reviewed backend setup](TECHNICAL_GUIDE.md#installation-and-upgrades).
 Rerunning the 0.7.5 installer does not include the fix. Version 0.7.6 detects
 both bundled layouts and continues to validate the exact client version and
 catalog. A successful version check alone does not establish full
@@ -97,7 +284,7 @@ This is fixed in [PickerMux 0.6.1](../CHANGELOG.md#061---2026-09-13).
 It incorporates top-level instructions into the existing leading system
 message and removes the separate field only when merged; instructions-only
 requests keep their existing shape. Fully quit Codex Desktop, follow the
-[regular upgrade procedure](../README.md#upgrade), and verify that
+[app and backend upgrade procedure](TECHNICAL_GUIDE.md#installation-and-upgrades), and verify that
 `pickermux --version` reports 0.6.1 or later before reopening Codex. Editing
 this source checkout does not update an installed runtime; do not patch the
 managed runtime directly.
@@ -222,8 +409,9 @@ traffic with HTTP 503 while keeping its capability-scoped health endpoint
 available, so `status` and `doctor` can report `update-required` without a
 LaunchAgent restart loop. If `managed-config` is also `modified`, follow
 [modified-configuration recovery](#uninstall-refuses-modified-configuration)
-before retrying the installer; do not use `refresh --full`. Otherwise, rerun
-the latest-release installer. Setup checks the Codex
+before retrying setup; do not use `refresh --full`. Otherwise, use the
+[reviewed app/backend upgrade](TECHNICAL_GUIDE.md#installation-and-upgrades).
+Setup checks the Codex
 account cache before staging the downloaded CLI, checks it again under the
 lifecycle lock before committing CLI controls, and checks it once more
 immediately before integration activation. A missing, malformed, or
@@ -329,7 +517,17 @@ account cache, PickerMux receipts, or `~/.codex/auth.json`, and do not use
 finishes the receipt-validated reactivation and opens Codex with the mixed
 catalog.
 
+In 0.9.0, `managedConfig.status` can be `suspended` while the verified recovery
+checkpoint is pending. The original ownership receipt and uninstall baseline
+remain present. A `suspension-conflict` means the temporary native config or
+receipt changed; preserve those files and review the conflict before retrying.
+Configuration migration is unavailable during recovery. The companion's
+**Repair after a Codex update…** resumes through the same helper after renewed
+confirmation; the capability replacement still invalidates earlier encrypted
+compaction continuations.
+
 ## LM Studio was stopped and local models disappeared
+
 
 This is expected in `loaded` mode. A refused connection means the local server
 is deliberately unavailable, so PickerMux publishes a native-only catalog. If
@@ -697,7 +895,11 @@ unredacted diagnostic wherever possible. A browser opening the Responses URL
 uses `GET`; `METHOD_NOT_ALLOWED` is expected because inference accepts only its
 validated request method and is not evidence that the bridge is healthy.
 
-## The release installer stops before setup
+## A legacy release installer stops before setup
+
+Starting with 0.10.0, the public distribution is a DMG. Use the app
+[installation and upgrade procedure](TECHNICAL_GUIDE.md#installation-and-upgrades).
+The following applies to immutable earlier CLI installer releases.
 
 The installer fails before mutation when macOS, the CPU architecture, Node.js,
 the archive digest, or the archive layout is unsupported. It also refuses root
@@ -728,8 +930,8 @@ outside the receipt-owned installation and would not be removed safely.
 
 ## Upgrade or downgrade is refused
 
-Rerunning the latest-release installer upgrades only a healthy managed
-installation. Modified, orphaned, or partially installed state fails closed;
+Reviewed app/backend setup, and legacy version-pinned installers, upgrade
+only a healthy managed installation. Modified, orphaned, or partially installed state fails closed;
 run `pickermux status` and `pickermux doctor` before deciding how to recover.
 
 An implicit downgrade is deliberately refused. If an older version is needed
@@ -737,6 +939,27 @@ for diagnosis, do not overwrite the active installation. Capture diagnostics
 and open an issue describing the compatibility problem instead.
 
 ## Complete CLI removal is refused
+
+For full removal with native Codex defaults, use **Remove PickerMux completely…**
+in companion Settings, or `pickermux uninstall --purge --restore-native` after
+fully quitting Codex. Unlike default uninstall, this explicit mode does not
+reactivate a gateway/catalog that preceded PickerMux. A fresh removal preview
+and ownership checks remain required; foreign configuration is never deleted
+to make restoration appear successful.
+
+If the companion asks for a matching CLI, removal is unavailable through an
+older or unverified backend. Update explicitly or use that CLI's documented
+manual uninstall. The bundled setup backend cannot purge another installed
+source. A login-startup failure stops removal before purge. If backend removal
+has succeeded but app cleanup needs retrying, use the cleanup-only retry; it
+does not rerun purge or reinstall PickerMux. The final screen directs you to
+quit and remove PickerMux.app in Finder.
+
+The toggle remains reversible deactivation. After successfully switching off,
+fully quit and reopen Codex to load the native catalog. The catalog retained on
+disk is inactive, and the historical provider alias adds no model entries.
+If external models remain after a full restart, inspect ownership/status rather
+than deleting Codex's account cache or configuration broadly.
 
 `pickermux uninstall --remove-cli` removes distribution files only when their
 paths and launcher match the private installation receipt. If that ownership

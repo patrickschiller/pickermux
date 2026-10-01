@@ -1527,7 +1527,7 @@ test("setup orchestration preflights desktop, loaded LLM, config, and lifecycle 
           setupCalled = true;
         },
       }),
-      /at least one loaded external LLM/iu,
+      { code: "NO_LOADED_MODELS" },
     );
     assert.equal(setupCalled, false);
   });
@@ -1912,3 +1912,56 @@ test("semantic version ordering rejects silent downgrade edge cases", () => {
   assert.equal(compareVersions("1.0.0-beta.2", "1.0.0-beta.10"), -1);
   assert.equal(compareVersions("1.0.0", "1.0.0-rc.1"), 1);
 });
+
+test("companion capability upgrade installs 0.9.1 from bundled source and preserves 0.9.0 on activation failure", async (t) => {
+  for (const fails of [false, true]) {
+    await t.test(fails ? "transaction rollback" : "verified upgrade", async (subtest) => {
+      const fixture = await temporaryFixture(subtest, "0.9.0", "pre-toggle");
+      await setupManagedDistribution({ sourceRoot: fixture.source, paths: fixture.distributionPaths, activate: async () => ({}) });
+      const before = await installationSnapshot(fixture.distributionPaths);
+      const release = await temporaryFixture(subtest, "0.9.1", "integration-toggle-v1");
+      let activatedRoot;
+      const operation = setupPickerMux({
+        sourceRoot: release.source, paths: fixture.installPaths, distributionPaths: fixture.distributionPaths,
+        configStatusImpl: async () => ({ installed: true, healthy: true, status: "installed" }),
+        desktopRunningImpl: async () => false, accountCacheImpl: async () => ({ status: "ready" }),
+        loadConfigImpl: async () => ({ fixture: true }), discoverImpl: async () => ({ models: [{ id: "fixture/model" }] }),
+        refreshImpl: async ({ sourceRoot }) => { activatedRoot = sourceRoot; if (fails) throw new Error("injected safe activation failure"); return {}; },
+        certifyInstallationImpl: async () => ({ status: "complete" }),
+      });
+      if (fails) {
+        await assert.rejects(operation, /injected safe activation failure/u);
+        assert.deepEqual(await installationSnapshot(fixture.distributionPaths), before);
+      } else {
+        const result = await operation;
+        assert.equal(result.version, "0.9.1");
+        const installed = await validateDistributionInstallation({ paths: fixture.distributionPaths });
+        assert.equal(installed.receipt.activeVersion, "0.9.1");
+        assert.equal(activatedRoot, installed.activeDirectory);
+        assert.equal(await readFile(path.join(installed.activeDirectory, "src", "main.mjs"), "utf8"), 'export const marker = "integration-toggle-v1";\n');
+      }
+    });
+  }
+});
+
+test("same-version companion payload mismatch remains immutable before activation", async (t) => {
+  const fixture = await temporaryFixture(t, "0.9.0", "old-companion");
+  await setupManagedDistribution({ sourceRoot: fixture.source, paths: fixture.distributionPaths, activate: async () => ({}) });
+  const replacement = await temporaryFixture(t, "0.9.0", "new-toggle");
+  const before = await installationSnapshot(fixture.distributionPaths);
+  await assert.rejects(setupManagedDistribution({
+    sourceRoot: replacement.source, paths: fixture.distributionPaths,
+    activate: async () => assert.fail("An immutable payload collision must stop before activation"),
+  }), /different immutable contents/u);
+  assert.deepEqual(await installationSnapshot(fixture.distributionPaths), before);
+});
+
+
+async function installationSnapshot(paths) {
+  return {
+    receipt: await readFile(paths.receiptPath),
+    launcher: await readFile(paths.launcherPath),
+    current: await readlink(paths.currentPath),
+    versions: (await readdir(paths.versionsDirectory)).sort(),
+  };
+}

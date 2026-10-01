@@ -5,12 +5,201 @@ All notable changes to PickerMux will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+The 0.9.x entries describe local companion development builds. Their features
+are included in the first public companion release, 0.10.0; they were not
+published as GitHub Releases.
+
 ## [Unreleased]
+
+## [0.10.0] - 2026-10-01
+
+### Added
+
+- Make the macOS menu-bar app the primary installation and distribution: a
+  universal DMG with the pinned CLI/backend bundled inside the app.
+- Add one-switch Codex activation, visible status, provider-model certification,
+  reviewed recovery after Codex updates, optional login startup and notifications,
+  full removal with native picker restoration, and app/menu-bar icons.
+- Add DMG update discovery and an explicit app-bundled backend upgrade that
+  preserves installed provider settings through the existing setup transaction.
+- Replace the long README with a concise app guide, side-by-side app/picker
+  images, a direct DMG download link and a separate technical guide.
+
+### Changed
+
+- Publish only the DMG as a release asset. Keep verification metadata internal
+  and publish the DMG SHA-256 in release notes. Production signing and
+  notarization remain mandatory.
 
 ### Fixed
 
+- Explain disabled companion removal using its actual status. An absent
+  integration and CLI now show that only the app remains to be deleted, rather
+  than incorrectly requesting an older CLI update. Partial or unverified
+  installations remain blocked and are not labelled removed.
+
+## [0.9.6] - 2026-10-01
+
+### Fixed
+
+- Correct companion removal when login startup has never been registered or
+  was already removed. Await macOS unregister completion, recognize only its
+  documented already-absent response, and verify registration before purge.
+- Keep removal blocked on real login-service errors or a still-registered
+  service, and distinguish that failure from removal of the integration/CLI.
+- Add an explicit local Apple Development signing mode with full bundle and
+  mounted-DMG signature checks; production releases still require Developer ID
+  signing and notarization.
+
+## [0.9.5] - 2026-10-01
+
+### Added
+
+- Add **Remove PickerMux completely…** in companion Settings with a fresh
+  removal preview and explicit consent to remove the integration, runtime,
+  CLI, certifications, verified backups and registered provider credentials.
+- Add `uninstall --purge --restore-native` to restore native Codex defaults
+  without reactivating a former Ollama gateway. Default uninstall behavior
+  still restores the previous configuration.
+- Disable companion login startup before removal, clear only app-owned
+  preferences and notifications after success, and stop queued/background
+  actions. The final screen explains how to quit and remove the app in Finder.
+
+### Security
+
+- Validate the native configuration plan before irreversible provider
+  credential deletion, revalidate ownership at commit, and retain existing
+  inventory, lock, rollback and exact-cleanup guards. Native authentication,
+  account model cache, chats and unrelated settings are preserved; an inert
+  provider alias keeps historical chats readable.
+- Keep complete removal restricted to the receipt-owned installed backend;
+  older or unverified CLI versions cannot silently use the bundled setup
+  backend for removal.
+
+## [0.9.4] - 2026-10-01
+
+### Changed
+
+- Describe PickerMux as a bridge from Codex Desktop to local and remote
+  compatible Responses providers in the README, package metadata, and companion.
+- Document the existing provider kinds, allowlist requirements, and model-bound
+  certification. Identify LM Studio as the first-install default with specific
+  loaded-model discovery, Efficient Fidelity, and local compaction adapters.
+- Generalize setup and certification copy to available configured-provider
+  models. Provider support, routing, credentials, and certification gates are
+  unchanged.
+
+## [0.9.3] - 2026-10-01
+
+### Fixed
+
+- Use larger 14-point text for the companion's primary content and controls,
+  widen its panel, and show setup errors with readable contrast.
+- Distinguish refused connections, timeouts, denied network access, provider
+  authentication and invalid discovery responses during setup. Unknown failures
+  no longer misleadingly instruct users to start their model server.
+- Identify a failed setup message as the last attempt rather than current
+  provider status; status polling does not test provider connectivity.
+
+## [0.9.2] - 2026-10-01
+
+### Added
+
+- Add an original monochrome menu-bar template symbol with standard/Retina
+  representations and light/dark appearance tinting.
+
+### Fixed
+
+- Queue manual status checks behind active polling/actions and always show
+  their progress and completion time, including unchanged results.
+- Open Settings and Help in persistent native windows instead of dispatching
+  them from the transient menu panel; use asynchronous confirmation windows
+  for recovery, additional certification and updates.
+- Put the small Codex switch first and install/reactivate automatically from
+  explicit toggle intent, retaining fresh status, preview-token and backend
+  ownership checks. Show busy/elapsed-time feedback and actionable failures.
+- Move update checks, update results and version information into Settings.
+
+## [0.9.1] - 2026-10-01
+
+### Added
+
+- Add a prominent Codex integration toggle with reviewed first installation,
+  receipt-bound reactivation and confirmed deactivation that retains private
+  settings, certifications and backups. Keep historical chats readable while
+  inactive, and collapse advanced setup details in the companion panel.
+- Add an original macOS app icon and native iconset/ICNS compilation in the
+  universal app and DMG builder.
+
+### Fixed
+
+- Show first-install state instead of treating an absent compatibility
+  manifest as a detected Codex update. Return actionable setup errors for
+  unavailable providers, missing loaded models and stale native account cache.
+- Require the explicit toggle capability before selecting an installed
+  companion backend. Use reviewed bundled setup to upgrade older backends,
+  and keep immutable 0.9.0 contents intact in their version directory.
+
+## [0.9.0] - 2026-10-01
+
+### Added
+
+- Add a native macOS 13+ menu-bar companion for installation status, picker
+  refresh, Codex opening, explicitly confirmed update recovery, live model
+  certification, configuration previews, and PickerMux update checks.
+- Add `pickermux companion status` and `pickermux companion run` with a
+  versioned, bounded JSON protocol. Partial status and fixed error codes omit
+  credentials, capability addresses, account/model identities, and raw logs.
+- Include a manifest-verified backend in the app for read-only inspection and
+  explicit setup when the installed CLI is absent or predates the protocol.
+  Other mutations require the active receipt-owned CLI.
+- Add an opt-in refresh after Codex closes, opt-in status notifications, and
+  optional login startup through macOS Service Management. Recovery,
+  certification, configuration switches, and updates remain user-started.
+- Add a universal Apple-silicon/Intel app build with separate unsigned
+  development and Developer ID/notarized release paths. A protected signing
+  workflow retains reviewed release artifacts rather than publishing them
+  automatically.
+- Package the companion as a versioned DMG with an Applications shortcut for
+  drag-to-install, alongside the existing archive. Both assets are bound by
+  the release manifest and checksums; release mode signs, notarizes, staples,
+  and verifies the app and disk image before retaining them for review.
+- Verify fixed-origin release assets, checksums, the embedded manifest, and
+  each archive file before executing an update through the existing setup
+  transaction. CLI updates retain the existing rollback and incomplete
+  certification boundaries.
+
+### Changed
+
+- Retain the explicit `model_bridge` provider and its HTTP/SSE and zero-retry
+  controls. The root-only built-in-provider mode remains blocked because its
+  transport defaults do not satisfy the required contract.
+- Canonicalize only receipt-owned provider configuration while preserving
+  user bytes and line endings. A confirmed preview token binds an Ollama or
+  other gateway replacement to the inspected configuration; verified backups,
+  concurrent-edit checks, rollback, and later uninstall preserve the previous
+  integration and historical chat compatibility.
+- Preserve configuration ownership receipts during full refresh and use
+  temporary native configuration instead of reinstating a previous gateway.
+  Edited suspension state blocks reactivation; a valid checkpoint resumes only
+  after renewed confirmation.
+
+### Fixed
+
+- Keep retry, help, settings, and quit controls accessible when companion
+  status fails. Node.js guidance also covers an installed runtime that cannot
+  be validated, while bridge actions continue to require authoritative status.
+- Accept the standard administrator-group-writable Homebrew `bin` and
+  `Cellar` directories for a validated Node.js executable instead of reporting
+  a missing runtime. Other ownership, ancestor, link, and world-write checks
+  remain enforced.
 - Show the regular installer first in the README's installation section and
   move the repair-only `--repair-chats` command into its own subsection.
+
+The maintainer confirmed the 0.8.3 live baseline. The new companion's real
+macOS Apple-event/TCC, recovery, login-start, and signed-release acceptance
+remain separate checks; signing and notarization are not established by an
+unsigned development build. See [the companion guide](docs/MACOS_COMPANION.md).
 
 ## [0.8.3] - 2026-09-30
 
@@ -576,7 +765,15 @@ confirm the release date before tagging. See the
   paths and file types, refuses root execution and foreign launchers, and
   restores the previous distribution state when activation fails.
 
-[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.8.3...HEAD
+[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.10.0
+[0.9.6]: #096---2026-10-01
+[0.9.5]: #095---2026-10-01
+[0.9.4]: #094---2026-10-01
+[0.9.3]: #093---2026-10-01
+[0.9.2]: #092---2026-10-01
+[0.9.1]: #091---2026-10-01
+[0.9.0]: #090---2026-10-01
 [0.8.3]: https://github.com/patrickschiller/pickermux/releases/tag/v0.8.3
 [0.8.2]: https://github.com/patrickschiller/pickermux/releases/tag/v0.8.2
 [0.8.1]: https://github.com/patrickschiller/pickermux/releases/tag/v0.8.1

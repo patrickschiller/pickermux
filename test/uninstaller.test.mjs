@@ -18,10 +18,11 @@ import {
   stopBridgeService,
   writeRuntime,
 } from "../src/bridge-runtime.mjs";
-import { installConfig, uninstallConfig } from "../src/config-manager.mjs";
+import { CONFIG_MARKERS, deactivateManagedConfiguration, installConfig, inventoryConfigIntegrationSwitch, previewConfigIntegration, uninstallConfig } from "../src/config-manager.mjs";
 import {
   credentialCommand,
   purgePickerMux,
+  previewPickerMuxUninstall,
   runCli,
   uninstallIntegration,
 } from "../src/cli.mjs";
@@ -1672,6 +1673,129 @@ test("credential lifecycle records ownership before set and unregisters after de
     source: "keychain",
     deleted: false,
   });
+});
+
+async function nativeRemovalFixture(t, off = false) {
+  const fixture = await realLifecycleFixture(t);
+  const original = [
+    'model = "prior-local-model"', 'model_provider = "openai"',
+    'model_catalog_json = "/private/fixture/ollama-launch-models.json"',
+    'openai_base_url = "http://127.0.0.1:11434/api/codex/v1"',
+    'model_reasoning_effort = "low"', "operator_setting = true", "",
+    "[features]", "other = true", "",
+  ].join("\n");
+  await writeFile(fixture.paths.configPath, original, { mode: 0o600 });
+  const distribution = await validateDistributionInstallation({ paths: fixture.distributionPaths });
+  await stageServicePackage({ sourceRoot: distribution.activeDirectory, installDirectory: fixture.paths.installDirectory, config: { schemaVersion: 2 } });
+  const preview = await previewConfigIntegration(fixture.paths);
+  const integrationSwitchReceipt = await inventoryConfigIntegrationSwitch({ ...fixture.paths, expectedPreviewToken: preview.previewToken });
+  await installConfig({
+    configPath: fixture.paths.configPath, statePath: fixture.paths.statePath,
+    backupDirectory: fixture.paths.backupDirectory,
+    model: "fixture/local", modelProvider: "model_bridge", modelCatalogJson: fixture.paths.catalogPath,
+    modelReasoningEffort: "low", integrationSwitchReceipt,
+    provider: { id: "model_bridge", name: "Fixture", baseUrl: "http://127.0.0.1:23456/v1", wireApi: "responses", requiresOpenAiAuth: false, supportsWebsockets: false, supportsStandaloneWebSearch: false },
+  });
+  await writeFile(fixture.paths.catalogPath, '{"models":[]}\n', { mode: 0o600 });
+  await writeFile(fixture.paths.logPath, "fixture log\n", { mode: 0o600 });
+  await registerKeychainProvider("fixture", { registryPath: fixture.paths.keychainRegistryPath });
+  if (off) await deactivateManagedConfiguration(fixture.paths);
+  const options = {
+    paths: fixture.paths, distributionPaths: fixture.distributionPaths,
+    desktopRunningImpl: async () => false, assertNoPendingFullRefreshImpl: async () => null,
+    uninstallIntegrationImpl: (argumentsList) => uninstallIntegration({ ...argumentsList, stopServiceImpl: async () => ({ stopped: true, launchAgentRemoved: true }) }),
+  };
+  return { ...fixture, original, options };
+}
+
+test("native full removal composes real active/OFF config, catalog, CLI and backup cleanup without native state loss", async (t) => {
+  for (const off of [false, true]) {
+    await t.test(off ? "OFF" : "active", async (subtest) => {
+      const fixture = await nativeRemovalFixture(subtest, off);
+      const nativeFiles = ["auth.json", "models_cache.json", "chat.json"].map((name) => path.join(fixture.paths.codexHome, name));
+      const nativeBytes = Buffer.from("test-only native state\n");
+      for (const target of nativeFiles) await writeFile(target, nativeBytes, { mode: 0o600 });
+      const identities = await Promise.all(nativeFiles.map((target) => stat(target)));
+      const preview = await previewPickerMuxUninstall(fixture.options);
+      assert.equal(preview.status, "ready");
+      assert.equal(preview.canApply, true);
+      assert.match(preview.previewToken, /^[a-f0-9]{64}$/u);
+      assert.doesNotMatch(JSON.stringify(preview), /prior-local-model|23456|fixture\/local|codex-home/u);
+      // Live logs are fresh inventory, not a new deletion scope or consent.
+      await writeFile(fixture.paths.logPath, "fixture log with a new heartbeat\n", { mode: 0o600 });
+      assert.equal((await previewPickerMuxUninstall(fixture.options)).previewToken, preview.previewToken);
+      const deleted = [];
+      const result = await purgePickerMux({ ...fixture.options, restoreNative: true, expectedPreviewToken: preview.previewToken, deleteCredentialImpl: async (id) => { deleted.push(id); return true; } });
+      assert.deepEqual(deleted, ["fixture"]);
+      assert.equal(result.beforeResult.integration.removedConfig.nativeRestored, true);
+      assert.equal(result.beforeResult.integration.removedConfig.historicalCompatibility, true);
+      const config = await readFile(fixture.paths.configPath, "utf8");
+      assert.match(config, /operator_setting = true/u);
+      assert.match(config, /127\.0\.0\.1:0\/v1/u);
+      assert.doesNotMatch(config, /prior-local-model|11434|model_catalog_json\s*=|model_provider\s*=|model_reasoning_effort\s*=/u);
+      await assert.rejects(stat(fixture.paths.installDirectory), { code: "ENOENT" });
+      await assert.rejects(stat(fixture.distributionPaths.applicationDirectory), { code: "ENOENT" });
+      await assert.rejects(stat(fixture.distributionPaths.launcherPath), { code: "ENOENT" });
+      for (const [index, target] of nativeFiles.entries()) {
+        assert.deepEqual(await readFile(target), nativeBytes);
+        const after = await stat(target);
+        for (const key of ["dev", "ino", "mode", "size", "mtimeMs"]) assert.equal(after[key], identities[index][key]);
+      }
+    });
+  }
+});
+
+test("native purge rejects stale preview and new foreign roots before deleting credentials", async (t) => {
+  for (const edit of ["comment", 'profile = "foreign"', '"model_catalog_json" = "/foreign.json"', 'model_catalog_json.extra = "foreign"']) {
+    const fixture = await nativeRemovalFixture(t);
+    const preview = await previewPickerMuxUninstall(fixture.options);
+    const before = await readFile(fixture.paths.configPath, "utf8");
+    const edited = edit === "comment" ? `${before}# concurrent contributor edit\n` : before.replace(CONFIG_MARKERS.rootBegin, `${edit}\n${CONFIG_MARKERS.rootBegin}`);
+    await writeFile(fixture.paths.configPath, edited);
+    let credentials = 0;
+    await assert.rejects(purgePickerMux({ ...fixture.options, restoreNative: true, expectedPreviewToken: preview.previewToken, deleteCredentialImpl: async () => { credentials += 1; } }));
+    assert.equal(credentials, 0);
+    assert.equal(await readFile(fixture.paths.configPath, "utf8"), edited);
+    assert.equal((await validateDistributionInstallation({ paths: fixture.distributionPaths })).installed, true);
+  }
+});
+
+test("native purge repeats candidate proof after backup quarantine before the first credential deletion", async (t) => {
+  const fixture = await nativeRemovalFixture(t);
+  const preview = await previewPickerMuxUninstall(fixture.options);
+  let credentials = 0;
+  let edited;
+  await assert.rejects(purgePickerMux({
+    ...fixture.options, restoreNative: true, expectedPreviewToken: preview.previewToken,
+    deleteCredentialImpl: async () => { credentials += 1; },
+    purgeBackupsImpl: (argumentsList) => purgePickerMuxBackups({ ...argumentsList, beforeCommit: async (context) => {
+      edited = `${await readFile(fixture.paths.configPath, "utf8")}# changed during quarantine\n`;
+      await writeFile(fixture.paths.configPath, edited);
+      return argumentsList.beforeCommit(context);
+    } }),
+  }), (error) => error.cause?.code === "UNINSTALL_CONFLICT");
+  assert.equal(credentials, 0);
+  assert.equal(await readFile(fixture.paths.configPath, "utf8"), edited);
+  assert.equal((await validateDistributionInstallation({ paths: fixture.distributionPaths })).installed, true);
+});
+
+test("native uninstall CLI option is explicit and does not alter default purge", async () => {
+  for (const argumentsList of [["uninstall", "--restore-native"], ["refresh", "--restore-native"], ["uninstall", "--purge", "--restore-native", "--force"]]) {
+    await assert.rejects(runCli(argumentsList), /--restore-native requires uninstall --purge/u);
+  }
+  let options;
+  let stdout = "";
+  const originalWrite = process.stdout.write;
+  process.stdout.write = (chunk) => { stdout += String(chunk); return true; };
+  try {
+    await runCli(["uninstall", "--purge", "--restore-native"], { purgeImpl: async (actual) => {
+      options = actual;
+      return { beforeResult: { installDirectoryRemoved: true, integration: { removedConfig: { nativeRestored: true, historicalCompatibility: true } } }, removed: { versionsDirectoryRemoved: true, applicationDirectoryRemoved: true } };
+    } });
+  } finally { process.stdout.write = originalWrite; }
+  assert.equal(options.restoreNative, true);
+  assert.equal(options.sourceRoot, PROJECT_ROOT);
+  assert.match(stdout, /Codex uses native defaults/u);
 });
 
 test("runCli dispatches --purge to the full-uninstall implementation", async () => {

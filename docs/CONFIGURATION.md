@@ -11,6 +11,34 @@ The schema is intentionally narrow. Unknown keys, inline secrets, ambiguous
 credential sources, wildcard model entries, and configurable native Codex
 destinations are rejected.
 
+## Supported provider kinds
+
+PickerMux connects Codex Desktop to local or remote external models through
+the Responses API. LM Studio is the default provider, and the core also
+supports explicitly configured compatible Responses providers.
+
+| Kind | Discovery | Required model information |
+| --- | --- | --- |
+| `lmstudio-responses` | Automatic loaded-model metadata or an explicit allowlist. | Loaded LM Studio instances supply metadata; configured entries may provide overrides. |
+| `openai-responses` | Explicit allowlist verified against `<baseUrl>/models`. | Each model must specify `type: "llm"` and a positive `contextWindow`. |
+
+A generic provider's model list must have the OpenAI-compatible
+`{"data": [{"id": "example-model"}]}` shape, and inference must implement
+`<baseUrl>/responses`. Chat Completions compatibility alone does not satisfy
+this contract. Provider credentials remain scoped to the configured provider;
+native Codex credentials are never reused for an external endpoint. Tool
+access requires the model-bound live certification matrix to pass.
+
+Automatic loaded-model discovery, Efficient Fidelity, and PickerMux's local
+context-compaction adapter are specific to LM Studio. Other providers use
+their explicit configuration and supported Responses behavior. Configure
+private-network access explicitly when the endpoint is local or on a trusted
+private network; the bridge itself always remains loopback-only.
+
+The companion's first installation uses the bundled LM Studio default.
+Activate a custom provider configuration through the CLI first; later
+companion actions reuse that installed configuration.
+
 For a first release installation with a custom configuration, pass the path to
 the shell that executes the installer:
 
@@ -28,8 +56,8 @@ do not replace it with a new release default.
 external models with missing, stale, or pending base receipts. This uses the
 activated provider configuration, including any explicitly configured remote
 provider. Valid Direct or Efficient Fidelity receipts are reused. Keep Codex
-closed and models loaded; allow several minutes per model. Progress and waiting
-updates go to stderr, including when `--json` is selected; stdout then contains
+closed and configured models available; allow several minutes per model.
+Progress and waiting updates go to stderr, including when `--json` is selected; stdout then contains
 one JSON result with a `certification.status` of `complete` or `incomplete`.
 An incomplete certification exits with status 1 while retaining the activated
 installation and the existing certification recovery boundary. Ordinary
@@ -302,7 +330,11 @@ Use a stable `.ts.net` MagicDNS name instead of an IP when appropriate.
 
 ## Authenticated Responses-compatible provider
 
-Persistent services should use the macOS Keychain:
+This adapter supports explicitly configured local or remote Responses
+providers. The example below uses a remote endpoint and an explicit model
+allowlist. Its model list and Responses behavior must satisfy the contract
+described above; it does not imply that every OpenAI-compatible service is
+supported. Persistent authenticated services should use the macOS Keychain:
 
 ```json
 {
@@ -386,6 +418,34 @@ symbolic links, special files, or a leftover `runtime-app.previous-*` package
 stop removal for explicit review; no unrecognized runtime directory is deleted
 recursively.
 
+### Full removal with native Codex defaults
+
+Ordinary uninstall, including `--purge`, restores the original configuration.
+After a switch from Ollama, this may restore Ollama's gateway and catalog.
+PickerMux 0.9.5 provides a separate explicit mode:
+
+```bash
+pickermux uninstall --purge --restore-native
+```
+
+It removes the verified integration without reinstating its recorded prior
+root `model`, `model_provider`, `model_catalog_json`, `model_reasoning_effort`
+or `openai_base_url`. Codex then selects its native defaults. Current unrelated
+settings, comments and provider tables are preserved. Unowned overrides,
+ambiguous configuration or concurrent edits stop the operation; this mode
+cannot be combined with `--force` or used without `--purge`.
+
+The native candidate and its ownership binding are checked before registered
+provider credentials are deleted and again before configuration commit. It works
+for an active or verified toggle-deactivated installation. It does not edit
+the native account cache, authentication or historical chats. The inert
+`model_bridge` provider alias remains solely to keep old chats readable.
+
+The companion exposes this mode as **Settings → Remove PickerMux completely…**,
+with explicit consent and a fresh removal preview. It also disables its login
+startup and clears only its own preferences and notifications. After success,
+quit the companion and move its app bundle to the Trash in Finder.
+
 ## Efficient Fidelity is not a provider setting
 
 Version 0.6.0 does not add an `agent`, `toolDelivery`, or similar provider-wide
@@ -407,6 +467,51 @@ the v0.6 Efficient Fidelity flow does not use `previous_response_id` to shorten
 conversation history. Native Codex routing and configuration are unaffected.
 
 ## Applying configuration changes
+
+### Codex integration ownership and companion previews
+
+PickerMux 0.9.0 retains an explicit `model_bridge` provider. Its additional
+transport fields are deliberate: WebSockets remain disabled, request/stream
+retries remain zero, and configured stream timeout controls are retained.
+The root-only built-in-provider mode is blocked because its defaults do not
+satisfy the required transport contract. A gateway switch cannot grant tools
+or substitute for exact model certification.
+
+The companion's **Preview configuration changes** action returns the active
+integration classification, a finite list of proposed changes, and a digest
+token bound to the inspected configuration/receipt bytes. It recognizes the
+supported local Ollama gateway and catalog; other unowned root overrides are
+classified as foreign. No private TOML, path, account, model, or gateway
+capability appears in the preview.
+
+An active root `profile` selector is outside this integration contract.
+Fresh setup reports `integration-conflict`, and an already managed profile
+configuration is inconsistent. Review and resolve the selector explicitly;
+PickerMux does not guess which profile-specific gateway or catalog wins.
+
+With Codex fully closed and a valid account cache, **Apply configuration
+changes…** requires explicit replacement confirmation and that exact token.
+Setup rechecks the preview before committing, retains a verified backup,
+preserves unrelated user bytes and line endings, and rolls back a failed
+activation. Concurrent edits require a fresh preview. Edited owned blocks or
+ambiguous state stop the operation. The bundled backend permits first setup
+or an upgrade from a CLI predating the protocol, using the same existing
+distribution ownership checks.
+
+An Ollama switch has one active gateway owner; it does not combine two
+independent integrations. Ordinary uninstall restores the verified prior
+root settings, including the Ollama gateway when it was the recorded baseline,
+and keeps the historical `model_bridge` compatibility alias. Subsequent full
+refreshes preserve this original uninstall baseline. Cleanup canonicalizes
+only PickerMux-owned provider layout, not arbitrary user TOML.
+
+The GUI accepts no custom configuration path. First setup uses the safe
+release default; an existing installation reuses its activated private
+configuration. Use the existing custom-config installer or CLI flow for
+provider configuration changes. See [the companion guide](MACOS_COMPANION.md)
+for its protocol and distribution limits.
+
+### Provider configuration changes
 
 If the provider identity and managed bridge contract remain compatible, apply
 the edited source file explicitly:
@@ -460,6 +565,20 @@ you to rerun `pickermux refresh --full`; after the confirmation, the
 receipt-active helper continues the validated checkpoint. Do not delete
 `models_cache.json`, modify the installed service configuration, or run purge
 as a shortcut.
+
+Version 0.9.0 also retains the configuration ownership receipt through temporary
+suspension. It removes the active owned blocks into neutral native settings
+instead of reinstating a previous Ollama or foreign gateway during the cache
+fetch. The unchanged temporary state is reported as `suspended`; changed
+configuration/state produces `suspension-conflict` and blocks reactivation.
+Successful reactivation keeps the original verified backup and uninstall
+baseline. Full refresh still changes the capability and invalidates earlier
+encrypted compaction continuations.
+
+The companion uses the same helper after its native confirmation; it does not
+feed the CLI's `FULL` word into a simulated terminal. Resume requires renewed
+confirmation. Pending recovery prevents configuration migration and ordinary
+mutations until the validated operation is resolved.
 
 `pickermux status` reports `full-refresh=idle` when no recovery is pending and
 the current phase otherwise. Its JSON form exposes the same information under
