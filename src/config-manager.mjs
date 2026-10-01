@@ -18,12 +18,16 @@ const STATE_VERSION = 1;
 const PRIVATE_READ_FLAGS =
   fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0);
 const ownershipReceiptDetails = new WeakMap();
+const integrationSwitchReceiptDetails = new WeakMap();
+const reactivationReceiptDetails = new WeakMap();
+const CONFIG_LAYOUT = "explicit-provider-v1";
 const MANAGED_KEYS = [
   "model",
   "model_provider",
   "model_catalog_json",
   "model_reasoning_effort",
 ];
+const INTEGRATION_KEYS = [...MANAGED_KEYS, "openai_base_url"];
 const PICKER_REASONING_EFFORTS = new Set([
   "none",
   "minimal",
@@ -82,7 +86,18 @@ export async function installConfig(options) {
   const settings = normalizeInstallOptions(options);
   const { configPath, statePath } = settings;
 
-  if (await pathExists(statePath)) {
+  const reactivation = reactivationReceiptDetails.get(options.reactivationReceipt);
+  if (options.reactivationReceipt !== undefined &&
+    (!reactivation || reactivation.settings.configPath !== configPath || reactivation.settings.statePath !== statePath || reactivation.settings.backupDirectory !== settings.backupDirectory)) {
+    throw failure("REACTIVATION_RECEIPT_REQUIRED", "A verified suspended configuration receipt is required.");
+  }
+  if (reactivation) {
+    await revalidateManagedConfigOwnership(reactivation.ownership);
+    await readOwnershipBackup(reactivation.ownership);
+    if (reactivation.state.providerId !== settings.provider.id) {
+      throw failure("STATE_PROVIDER_MISMATCH", "Full-refresh reactivation must preserve the installed provider identity.");
+    }
+  } else if (await pathExists(statePath)) {
     throw failure(
       "ALREADY_INSTALLED",
       `State file already exists: ${statePath}`,
@@ -90,6 +105,19 @@ export async function installConfig(options) {
   }
 
   const current = await readConfigFile(configPath);
+  if (reactivation) assertSuspendedConfiguration(current, reactivation.state);
+  const integration = inspectRootIntegration(current.text);
+  const integrationSwitchReceipt = integrationSwitchReceiptDetails.get(options.integrationSwitchReceipt);
+  if (integration.foreign) {
+    if (!integrationSwitchReceipt || integrationSwitchReceipt.configPath !== configPath || integrationSwitchReceipt.statePath !== statePath) {
+      throw failure("INTEGRATION_CONFLICT", "Another picker integration is active. Preview and explicitly confirm its replacement before installing PickerMux.");
+    }
+    if (integrationSwitchReceipt.previewToken !== integrationPreviewToken(current, configPath, statePath)) {
+      throw failure("INTEGRATION_PREVIEW_CHANGED", "Codex configuration changed after the integration switch was confirmed.");
+    }
+  } else if (options.integrationSwitchReceipt !== undefined) {
+    throw failure("INTEGRATION_PREVIEW_CHANGED", "The confirmed picker integration is no longer active.");
+  }
   const priorConfig = removeHistoricalModelBridgeCompatibility(
     current.text,
     settings.provider.id,
@@ -97,11 +125,14 @@ export async function installConfig(options) {
   const sourceBytes = priorConfig.removed
     ? Buffer.from(priorConfig.text, "utf8")
     : current.bytes;
-  const configExisted =
-    priorConfig.configExisted ?? current.exists;
+  const configExisted = reactivation
+    ? reactivation.state.configExisted
+    : priorConfig.configExisted ?? current.exists;
   assertNoManagedMarkers(current.text);
 
-  const analysis = analyzeConfig(priorConfig.text, settings.provider.id);
+  const analysis = analyzeConfig(priorConfig.text, settings.provider.id, {
+    includeGateway: integration.foreign,
+  });
   assertNoHistoricalModelBridgeMarkerComments(priorConfig.text);
   const eol = analysis.eol;
   const rootBlock = renderRootBlock(settings, eol);
@@ -117,19 +148,17 @@ export async function installConfig(options) {
     : { text: baseText };
   const installedText = webSearch.text;
 
-  const backupPath = await allocateBackupPath(
-    configPath,
-    settings.backupDirectory,
-    settings.now,
-  );
-  await writeExactBackup(backupPath, sourceBytes, current.mode);
+  const backupPath = reactivation
+    ? reactivation.state.backupPath
+    : await allocateBackupPath(configPath, settings.backupDirectory, settings.now);
+  if (!reactivation) await writeExactBackup(backupPath, sourceBytes, current.mode);
 
   const state = {
     version: STATE_VERSION,
     installedAt: settings.now.toISOString(),
     configPath,
     configExisted,
-    configMode: current.mode,
+    configMode: reactivation ? reactivation.state.configMode : current.mode,
     backupPath,
     providerId: settings.provider.id,
     providerName: settings.provider.name,
@@ -137,17 +166,14 @@ export async function installConfig(options) {
     model: settings.model,
     modelReasoningEffort: settings.modelReasoningEffort,
     catalog: settings.modelCatalogJson,
-    sourceSha256: sha256(sourceBytes),
+    sourceSha256: reactivation ? reactivation.state.sourceSha256 : sha256(sourceBytes),
     installedSha256: sha256(installedText),
     metadataPreservation: {
       mode: true,
       extendedAttributes: false,
     },
-    priorAssignments: analysis.assignments.map(({ key, raw, eol: lineEol }) => ({
-      key,
-      raw,
-      eol: lineEol,
-    })),
+    priorAssignments: reactivation ? reactivation.state.priorAssignments :
+      analysis.assignments.map(({ key, raw, eol: lineEol }) => ({ key, raw, eol: lineEol })),
     blocks: {
       root: {
         begin: CONFIG_MARKERS.rootBegin,
@@ -162,16 +188,29 @@ export async function installConfig(options) {
       ...(webSearch.block ? { webSearch: webSearch.block } : {}),
     },
   };
+  if (reactivation && !reactivation.state.suspension.pristine) {
+    delete state.installedSha256;
+  }
+  const expectedState = reactivation
+    ? { exists: true, sha256: reactivation.stateFile.sha256 }
+    : { exists: false, sha256: sha256("") };
+  const nextStateBytes = Buffer.from(`${JSON.stringify(state, null, 2)}\n`);
 
   let configWritten = false;
   try {
     await atomicWrite(configPath, installedText, current.mode, {
       expectedSource: snapshotOf(current),
-      beforeCommit: settings.beforeConfigCommit,
+      beforeCommit: async () => {
+        if (settings.beforeConfigCommit) await settings.beforeConfigCommit();
+        if (reactivation) await revalidateManagedConfigOwnership(reactivation.ownership);
+        await assertSourceUnchanged(statePath, expectedState);
+      },
     });
     configWritten = true;
     await ensurePrivateDirectory(dirname(statePath));
-    await atomicWrite(statePath, `${JSON.stringify(state, null, 2)}\n`, 0o600);
+    await atomicWrite(statePath, nextStateBytes, 0o600, {
+      expectedSource: expectedState,
+    });
     await chmod(statePath, 0o600);
   } catch (error) {
     if (configWritten) {
@@ -197,6 +236,7 @@ export async function installConfig(options) {
     );
   }
 
+  let reactivationActive = true;
   return {
     changed: true,
     installed: true,
@@ -211,6 +251,24 @@ export async function installConfig(options) {
     warnings: [
       "File mode is preserved; extended attributes are not preserved by the dependency-free atomic writer.",
     ],
+    ...(reactivation ? {
+      async rollback() {
+        if (!reactivationActive) return;
+        const rollbackOwnership = await inventoryManagedConfigOwnership(settings);
+        await readOwnershipBackup(rollbackOwnership);
+        await writeManagedConfigPair(settings, current.mode, {
+          config: Buffer.from(installedText),
+          state: nextStateBytes,
+        }, {
+          config: current.bytes,
+          state: reactivation.stateFile.contents,
+        }, async () => {
+          await revalidateManagedConfigOwnership(rollbackOwnership);
+          await readOwnershipBackup(reactivation.ownership, { cache: false });
+        }, "CONFIG_REACTIVATION_ROLLBACK_FAILED");
+        reactivationActive = false;
+      },
+    } : {}),
   };
 }
 
@@ -374,6 +432,225 @@ export async function restoreManagedPickerDefaults(options = {}) {
   });
 }
 
+/** Read-only, redacted preview. A token binds confirmation to the inspected bytes. */
+export async function previewConfigIntegration(options = {}) {
+  const settings = normalizePathOptions(options);
+  try {
+    const current = await readConfigFile(settings.configPath);
+    const stateFile = await readOwnedRegularFile(settings.statePath, {
+      allowMissing: true,
+      requirePrivate: true,
+      label: "PickerMux configuration state",
+    });
+    const previewToken = integrationPreviewToken(
+      current,
+      settings.configPath,
+      settings.statePath,
+      stateFile?.contents,
+    );
+    if (stateFile) {
+      const state = parseState(stateFile.contents, settings.statePath);
+      assertStateMatchesConfig(state, settings.configPath);
+      const located = locateHealthyManagedBlocks(current.text, state);
+      const canonical = canonicalProviderBlock(located.provider, state);
+      // A second gateway alongside an active owned provider has ambiguous
+      // ownership. Migration cannot adopt or remove that user-owned setting.
+      if (inspectRootIntegration(current.text).gateway) {
+        return integrationPreview("conflict", false, false, [], previewToken);
+      }
+      const changes = canonical !== located.provider.text || located.provider.recoveredEnd
+        ? ["normalize-owned-blocks", "retain-explicit-provider"]
+        : [];
+      return integrationPreview("pickermux", true, false, changes, previewToken);
+    }
+    if (containsAnyManagedMarker(current.text)) {
+      return integrationPreview("conflict", false, false, [], previewToken);
+    }
+    const integration = inspectRootIntegration(current.text);
+    const providerId = options.modelProvider ?? HISTORICAL_MODEL_BRIDGE_PROVIDER_ID;
+    requireNonEmptyString(providerId, "modelProvider");
+    const historical = removeHistoricalModelBridgeCompatibility(current.text, providerId);
+    analyzeConfig(historical.text, providerId, { includeGateway: integration.foreign });
+    assertNoHistoricalModelBridgeMarkerComments(historical.text);
+    const changes = [
+      "replace-integration",
+      "preserve-user-settings",
+      "create-backup",
+      "restore-on-failure",
+      "retain-explicit-provider",
+      ...(historical.removed ? ["preserve-historical-chats"] : []),
+    ];
+    return integrationPreview(
+      integration.foreign ? integration.ollama ? "ollama" : "foreign" : "none",
+      true,
+      integration.foreign,
+      changes,
+      previewToken,
+    );
+  } catch {
+    // Diagnostics may contain private paths or config values. GUI callers
+    // receive only the conflict projection and can separately run doctor.
+    return integrationPreview("conflict", false, false, [], sha256("unavailable-integration-preview"));
+  }
+}
+
+/** Issued only after confirmation; never accept a deserialized or forged receipt. */
+export async function inventoryConfigIntegrationSwitch(options = {}) {
+  const settings = normalizePathOptions(options);
+  requirePreviewToken(options.expectedPreviewToken);
+  const preview = await previewConfigIntegration(options);
+  if (!preview.canApply || !["ollama", "foreign"].includes(preview.status)) {
+    throw failure("INTEGRATION_CONFLICT", "The active picker integration cannot be safely replaced.");
+  }
+  if (preview.previewToken !== options.expectedPreviewToken) {
+    throw failure("INTEGRATION_PREVIEW_CHANGED", "Codex configuration changed after the integration preview.");
+  }
+  const receipt = Object.freeze({});
+  integrationSwitchReceiptDetails.set(receipt, {
+    configPath: settings.configPath,
+    statePath: settings.statePath,
+    previewToken: preview.previewToken,
+  });
+  return receipt;
+}
+
+/** Keep the original ownership receipt while exposing a native-only root. */
+export async function suspendManagedConfiguration(options = {}) {
+  const settings = normalizeOwnershipOptions(options);
+  const ownership = options.ownershipReceipt ?? await inventoryManagedConfigOwnership(settings);
+  const details = ownershipDetails(ownership, settings);
+  await revalidateManagedConfigOwnership(ownership);
+  if (!details.stateFile) throw failure("STATE_MISSING", "Full-refresh suspension requires an installed configuration.");
+  const state = parseState(details.stateFile.contents, settings.statePath);
+  assertStateMatchesConfig(state, settings.configPath);
+  const current = await readConfigFile(settings.configPath, { mustExist: true });
+  if (state.suspension) {
+    assertSuspendedConfiguration(current, state);
+    return { changed: false, suspended: true };
+  }
+  const located = locateHealthyManagedBlocks(current.text, state);
+  if (inspectRootIntegration(current.text).gateway !== undefined) {
+    throw failure("INTEGRATION_CONFLICT", "Full refresh cannot suspend a user-owned OpenAI gateway alongside PickerMux.");
+  }
+  await readOwnershipBackup(ownership);
+  const replacements = ownedBlockNames(state)
+    .map((name) => ({ ...located[name], replacement: "" }))
+    .sort((left, right) => right.start - left.start);
+  let suspendedText = current.text;
+  for (const block of replacements) {
+    suspendedText = suspendedText.slice(0, block.start) + suspendedText.slice(block.end);
+  }
+  const native = inspectRootIntegration(suspendedText);
+  if (native.foreign || containsAnyManagedMarker(suspendedText)) {
+    throw failure("INTEGRATION_CONFLICT", "Full refresh could not prove a native-only configuration root.");
+  }
+  const pristineCandidate = located.provider.recoveredEnd
+    ? current.text.slice(0, located.provider.start) + located.provider.text + current.text.slice(located.provider.end)
+    : current.bytes;
+  const updated = {
+    ...state,
+    suspension: {
+      kind: "full-refresh-v1",
+      configSha256: sha256(suspendedText),
+      pristine: sha256(pristineCandidate) === state.installedSha256,
+    },
+  };
+  const before = { config: current.bytes, state: details.stateFile.contents };
+  const after = {
+    config: Buffer.from(suspendedText),
+    state: Buffer.from(`${JSON.stringify(updated, null, 2)}\n`),
+  };
+  await writeManagedConfigPair(settings, current.mode, before, after, async () => {
+    if (settings.beforeConfigCommit) await settings.beforeConfigCommit();
+    await revalidateManagedConfigOwnership(ownership);
+  }, "CONFIG_SUSPENSION_ROLLBACK_FAILED");
+  let active = true;
+  return {
+    changed: true,
+    suspended: true,
+    async rollback() {
+      if (!active) return;
+      await writeManagedConfigPair(settings, current.mode, after, before, undefined, "CONFIG_SUSPENSION_ROLLBACK_FAILED");
+      active = false;
+    },
+  };
+}
+
+/** Resume only a private, unchanged native suspension created by this module. */
+export async function inventoryManagedConfigReactivation(options = {}) {
+  const settings = normalizeOwnershipOptions(options);
+  const ownership = await inventoryManagedConfigOwnership(settings);
+  await revalidateManagedConfigOwnership(ownership);
+  const stateFile = ownershipDetails(ownership, settings).stateFile;
+  if (!stateFile) throw failure("STATE_MISSING", "Full-refresh reactivation requires its retained configuration receipt.");
+  const state = parseState(stateFile.contents, settings.statePath);
+  const current = await readConfigFile(settings.configPath, { mustExist: true });
+  assertSuspendedConfiguration(current, state);
+  await readOwnershipBackup(ownership);
+  const receipt = Object.freeze({});
+  reactivationReceiptDetails.set(receipt, { settings, ownership, state, stateFile });
+  return receipt;
+}
+
+/** Canonicalize an unchanged receipt-owned provider without replacing the backup. */
+export async function migrateManagedConfiguration(options = {}) {
+  const settings = normalizeOwnershipOptions(options);
+  if (options.expectedPreviewToken !== undefined) requirePreviewToken(options.expectedPreviewToken);
+  const ownership = await inventoryManagedConfigOwnership(settings);
+  await revalidateManagedConfigOwnership(ownership);
+  const stateFile = ownershipDetails(ownership, settings).stateFile;
+  if (!stateFile) throw failure("STATE_MISSING", "Configuration migration requires an installed PickerMux configuration.");
+  const state = parseState(stateFile.contents, settings.statePath);
+  assertStateMatchesConfig(state, settings.configPath);
+  if (state.suspension) throw failure("CONFIGURATION_SUSPENDED", "Resume full refresh before migrating managed configuration.");
+  const current = await readConfigFile(settings.configPath, { mustExist: true });
+  if (options.expectedPreviewToken !== undefined &&
+    options.expectedPreviewToken !== integrationPreviewToken(current, settings.configPath, settings.statePath, stateFile.contents)) {
+    throw failure("INTEGRATION_PREVIEW_CHANGED", "Codex configuration changed after the migration preview.");
+  }
+  const located = locateHealthyManagedBlocks(current.text, state);
+  if (inspectRootIntegration(current.text).gateway) {
+    throw failure("INTEGRATION_CONFLICT", "A user-owned OpenAI gateway conflicts with the managed provider. Review the configuration before migrating.");
+  }
+  const providerText = canonicalProviderBlock(located.provider, state);
+  const updatedText = current.text.slice(0, located.provider.start) + providerText + current.text.slice(located.provider.end);
+  if (updatedText === current.text) return { changed: false, layout: CONFIG_LAYOUT };
+  const updated = {
+    ...state,
+    blocks: {
+      ...state.blocks,
+      provider: { ...state.blocks.provider, sha256: sha256(providerText) },
+    },
+  };
+  const pristineCandidate = located.provider.recoveredEnd
+    ? current.text.slice(0, located.provider.start) + located.provider.text + current.text.slice(located.provider.end)
+    : current.bytes;
+  if (sha256(pristineCandidate) === state.installedSha256) {
+    updated.installedSha256 = sha256(updatedText);
+  } else {
+    delete updated.installedSha256;
+  }
+  const before = { config: current.bytes, state: stateFile.contents };
+  const after = {
+    config: Buffer.from(updatedText),
+    state: Buffer.from(`${JSON.stringify(updated, null, 2)}\n`),
+  };
+  await writeManagedConfigPair(settings, current.mode, before, after, async () => {
+    if (settings.beforeConfigCommit) await settings.beforeConfigCommit();
+    await revalidateManagedConfigOwnership(ownership);
+  }, "CONFIG_MIGRATION_ROLLBACK_FAILED");
+  let active = true;
+  return {
+    changed: true,
+    layout: CONFIG_LAYOUT,
+    async rollback() {
+      if (!active) return;
+      await writeManagedConfigPair(settings, current.mode, after, before, undefined, "CONFIG_MIGRATION_ROLLBACK_FAILED");
+      active = false;
+    },
+  };
+}
+
 /** Upgrade only receipt-owned search settings, retaining the original backup. */
 export async function enableManagedStandaloneWebSearch(options = {}) {
   const settings = normalizeOwnershipOptions(options);
@@ -444,7 +721,7 @@ export async function enableManagedStandaloneWebSearch(options = {}) {
   };
 }
 
-async function writeManagedConfigPair(settings, configMode, before, after, beforeCommit) {
+async function writeManagedConfigPair(settings, configMode, before, after, beforeCommit, rollbackCode = "WEB_SEARCH_CONFIG_ROLLBACK_FAILED") {
   const previousConfig = { exists: true, sha256: sha256(before.config) };
   const previousState = { exists: true, sha256: sha256(before.state) };
   const nextConfig = { exists: true, sha256: sha256(after.config) };
@@ -464,7 +741,7 @@ async function writeManagedConfigPair(settings, configMode, before, after, befor
     try {
       await atomicWrite(settings.configPath, before.config, configMode, { expectedSource: nextConfig });
     } catch (rollbackError) {
-      throw failure("WEB_SEARCH_CONFIG_ROLLBACK_FAILED", "Managed search settings could not be rolled back after a concurrent change.", {
+      throw failure(rollbackCode, "Managed settings could not be rolled back after a concurrent change.", {
         cause: new AggregateError([error, rollbackError]),
       });
     }
@@ -667,11 +944,22 @@ export async function uninstallConfig(options) {
   const state = stateResult;
   assertStateMatchesConfig(state, configPath);
   const current = await readConfigFile(configPath, { mustExist: true });
-  const located = locateOwnedBlocks(current.text, state);
-  const pickerRoot = inspectPickerMutableRoot(located.root, state);
+  if (state.suspension) {
+    assertSuspendedConfiguration(current, state);
+    await readOwnershipBackup(ownershipReceipt);
+  }
+  const located = state.suspension
+    ? locateSuspendedRestorationBoundary(current.text)
+    : locateOwnedBlocks(current.text, state);
+  const pickerRoot = state.suspension ? { safe: true } : inspectPickerMutableRoot(located.root, state);
+
+  if (state.priorAssignments.some(({ key }) => key === "openai_base_url") &&
+    inspectRootIntegration(current.text).gateway !== undefined) {
+    throw failure("INTEGRATION_CONFLICT", "A user-owned OpenAI gateway was added after installation. Review it before restoring the previous picker integration.");
+  }
 
   const modified = [];
-  for (const name of ownedBlockNames(state)) {
+  for (const name of state.suspension ? [] : ownedBlockNames(state)) {
     if (
       sha256(located[name].text) !== state.blocks[name].sha256 &&
       !(name === "root" && pickerRoot.safe)
@@ -700,9 +988,9 @@ export async function uninstallConfig(options) {
         "utf8",
       )
     : current.bytes;
-  const pristineInstall =
-    typeof state.installedSha256 === "string" &&
-    sha256(pristineCandidate) === state.installedSha256;
+  const pristineInstall = state.suspension
+    ? state.suspension.pristine
+    : typeof state.installedSha256 === "string" && sha256(pristineCandidate) === state.installedSha256;
   let restoredContents;
 
   if (pristineInstall && state.configExisted !== false) {
@@ -972,6 +1260,18 @@ export async function getConfigStatus(options) {
 
   if (!state) {
     const orphaned = containsAnyManagedMarker(current.text);
+    try {
+      inspectRootIntegration(current.text);
+    } catch (error) {
+      return {
+        installed: orphaned,
+        healthy: false,
+        status: orphaned ? "orphaned-managed-block" : "integration-conflict",
+        configPath,
+        statePath,
+        error,
+      };
+    }
     return {
       installed: orphaned,
       healthy: !orphaned,
@@ -983,6 +1283,31 @@ export async function getConfigStatus(options) {
 
   try {
     assertStateMatchesConfig(state, configPath);
+    inspectRootIntegration(current.text);
+    if (state.suspension) {
+      try {
+        assertSuspendedConfiguration(current, state);
+        return {
+          installed: false,
+          healthy: true,
+          status: "suspended",
+          configPath,
+          statePath,
+          providerId: state.providerId,
+          recoveryRequired: true,
+        };
+      } catch (error) {
+        return {
+          installed: false,
+          healthy: false,
+          status: "suspension-conflict",
+          configPath,
+          statePath,
+          recoveryRequired: true,
+          error,
+        };
+      }
+    }
     const located = locateOwnedBlocks(current.text, state);
     const pickerRoot = inspectPickerMutableRoot(located.root, state);
     const modifiedBlocks = ownedBlockNames(state).filter((name) => {
@@ -1261,6 +1586,15 @@ function parseState(contents, path) {
   )) {
     throw failure("INVALID_STATE", "Invalid managed web search feature receipt.");
   }
+  if (state.suspension && (
+    typeof state.suspension !== "object" || Array.isArray(state.suspension) ||
+    Object.keys(state.suspension).some((key) => !["kind", "configSha256", "pristine"].includes(key)) ||
+    state.suspension.kind !== "full-refresh-v1" ||
+    !/^[a-f0-9]{64}$/u.test(state.suspension.configSha256) ||
+    typeof state.suspension.pristine !== "boolean"
+  )) {
+    throw failure("INVALID_STATE", "Invalid managed configuration suspension receipt.");
+  }
   return state;
 }
 
@@ -1378,7 +1712,188 @@ function addStandaloneWebSearchFeature(source) {
   };
 }
 
-function analyzeConfig(source, providerId) {
+function integrationPreview(status, canApply, requiresConfirmation, changes, previewToken) {
+  return { schemaVersion: 1, status, canApply, requiresConfirmation, changes, previewToken };
+}
+
+function assertSuspendedConfiguration(current, state) {
+  if (!state.suspension) {
+    throw failure("CONFIGURATION_NOT_SUSPENDED", "The managed configuration has no full-refresh suspension receipt.");
+  }
+  if (!current.exists || sha256(current.bytes) !== state.suspension.configSha256 ||
+    containsAnyManagedMarker(current.text) || inspectRootIntegration(current.text).foreign) {
+    throw failure("CONFIGURATION_SUSPENSION_CONFLICT", "Native configuration changed after full-refresh suspension. Review it before resuming.");
+  }
+}
+
+function locateSuspendedRestorationBoundary(source) {
+  // A retained full-file suspension digest authorizes restoration at exactly
+  // the native root/table boundary; no managed marker is inferred or repaired.
+  const lines = scanTomlLexicalLines(source).lines;
+  const start = lines.find((line) => isTableHeader(line.code.trim()))?.start ?? source.length;
+  const boundary = { start, end: start, text: "", eol: detectEol(lines), recoveredEnd: false };
+  return { root: boundary, provider: boundary, recoveredMarkers: [] };
+}
+
+function integrationPreviewToken(current, configPath, statePath, stateContents) {
+  return sha256(JSON.stringify([
+    "pickermux-integration-preview-v1",
+    configPath,
+    statePath,
+    current.exists,
+    current.mode,
+    sha256(current.bytes),
+    stateContents ? sha256(stateContents) : null,
+  ]));
+}
+
+function requirePreviewToken(token) {
+  if (typeof token !== "string" || !/^[a-f0-9]{64}$/u.test(token)) {
+    throw failure("INVALID_ARGUMENT", "An exact integration preview token is required.");
+  }
+}
+
+function parseSimpleTomlString(value) {
+  if (value.startsWith("'")) {
+    return /^'[^'\r\n]*'$/u.test(value) ? value.slice(1, -1) : undefined;
+  }
+  if (!value.startsWith('"')) return undefined;
+  const parsed = parseTomlBasicKeySegment(value, 0);
+  return parsed?.end === value.length ? parsed.value : undefined;
+}
+
+function inspectRootIntegration(source) {
+  const values = new Map();
+  for (const line of scanTomlLexicalLines(source).lines) {
+    const code = line.code.trim();
+    if (!code) continue;
+    if (isTableHeader(code)) break;
+    const key = parseTomlDottedKey(code);
+    if (key?.path[0] === "profile") {
+      throw failure("INTEGRATION_CONFLICT", "An active Codex profile requires manual review before changing the picker integration.");
+    }
+    if (!key || !INTEGRATION_KEYS.includes(key.path[0])) continue;
+    if (values.has(key.path[0])) {
+      throw failure("DUPLICATE_MANAGED_KEY", "Picker integration root assignments are duplicated.");
+    }
+    if (key.path.length !== 1 || code[key.end] !== "=") {
+      throw failure("MALFORMED_MANAGED_KEY", "Picker integration root assignments are malformed.");
+    }
+    const value = parseSimpleTomlString(code.slice(key.end + 1).trim());
+    if (value === undefined || value.length === 0 || /[\u0000-\u001f\u007f]/u.test(value)) {
+      throw failure("MALFORMED_MANAGED_KEY", "Picker integration root assignments must be unambiguous strings.");
+    }
+    values.set(key.path[0], value);
+  }
+  const gateway = values.get("openai_base_url");
+  const provider = values.get("model_provider");
+  const catalog = values.get("model_catalog_json");
+  const foreign = gateway !== undefined || catalog !== undefined || (provider !== undefined && provider !== "openai");
+  let ollama = false;
+  if (gateway && catalog && (provider === undefined || provider === "openai")) {
+    try {
+      const url = new URL(gateway);
+      ollama = ["http:", "https:"].includes(url.protocol) &&
+        ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) &&
+        !url.username && !url.password && !url.search && !url.hash &&
+        url.pathname.replace(/\/+$/u, "").endsWith("/api/codex/v1") &&
+        basename(catalog) === "ollama-launch-models.json";
+    } catch {
+      // A malformed user-owned URL is still a foreign setting, never authority
+      // to contact a provider or to infer an Ollama ownership claim.
+    }
+  }
+  return { gateway, foreign, ollama };
+}
+
+function locateHealthyManagedBlocks(source, state) {
+  const located = locateOwnedBlocks(source, state);
+  const pickerRoot = inspectPickerMutableRoot(located.root, state);
+  for (const name of ownedBlockNames(state)) {
+    if (sha256(located[name].text) !== state.blocks[name].sha256 && !(name === "root" && pickerRoot.safe)) {
+      throw failure("MANAGED_BLOCK_MODIFIED", "Refusing to migrate edited managed configuration.");
+    }
+  }
+  if (!hasSafeProviderScopeTail(source, located.provider.end)) {
+    throw failure("MANAGED_BLOCK_MODIFIED", "Managed provider table scope changed.");
+  }
+  return located;
+}
+
+function canonicalProviderBlock(block, state) {
+  const stringFields = new Map([
+    ["name", "name"],
+    ["base_url", "baseUrl"],
+    ["wire_api", "wireApi"],
+    ["env_key", "envKey"],
+    ["env_key_instructions", "envKeyInstructions"],
+  ]);
+  const booleanFields = new Map([
+    ["requires_openai_auth", "requiresOpenAIAuth"],
+    ["supports_websockets", "supportsWebsockets"],
+    ["supports_standalone_web_search", "supportsStandaloneWebSearch"],
+  ]);
+  const integerFields = new Map([
+    ["request_max_retries", "requestMaxRetries"],
+    ["stream_max_retries", "streamMaxRetries"],
+    ["stream_idle_timeout_ms", "streamIdleTimeoutMs"],
+  ]);
+  if (typeof state.providerId !== "string" || !/^[A-Za-z0-9_-]+$/u.test(state.providerId)) {
+    throw failure("MANAGED_PROVIDER_SCHEMA_CONFLICT", "The managed provider identity is unsupported.");
+  }
+  const provider = { id: state.providerId };
+  const found = new Set();
+  let tableFound = false;
+  for (const line of scanTomlLexicalLines(block.text).lines) {
+    const code = line.code.trim();
+    if (!code) continue;
+    if (isTableHeader(code)) {
+      if (tableFound || code !== `[model_providers.${state.providerId}]`) {
+        throw failure("MANAGED_PROVIDER_SCHEMA_CONFLICT", "The managed provider table is unsupported.");
+      }
+      tableFound = true;
+      continue;
+    }
+    const key = parseTomlDottedKey(code);
+    const field = key?.path[0];
+    if (!tableFound || key?.path.length !== 1 || code[key.end] !== "=" || found.has(field)) {
+      throw failure("MANAGED_PROVIDER_SCHEMA_CONFLICT", "The managed provider contains an ambiguous assignment.");
+    }
+    found.add(field);
+    const value = code.slice(key.end + 1).trim();
+    if (stringFields.has(field)) {
+      const parsed = parseSimpleTomlString(value);
+      if (parsed === undefined || parsed.length === 0) {
+        throw failure("MANAGED_PROVIDER_SCHEMA_CONFLICT", "The managed provider contains an unsupported string.");
+      }
+      provider[stringFields.get(field)] = parsed;
+    } else if (booleanFields.has(field)) {
+      if (value !== "true" && value !== "false") {
+        throw failure("MANAGED_PROVIDER_SCHEMA_CONFLICT", "The managed provider contains an unsupported boolean.");
+      }
+      provider[booleanFields.get(field)] = value === "true";
+    } else if (integerFields.has(field)) {
+      const parsed = Number(value);
+      if (!/^(?:0|[1-9][0-9]*)$/u.test(value) || !Number.isSafeInteger(parsed)) {
+        throw failure("MANAGED_PROVIDER_SCHEMA_CONFLICT", "The managed provider contains an unsupported integer.");
+      }
+      provider[integerFields.get(field)] = parsed;
+    } else {
+      throw failure("MANAGED_PROVIDER_SCHEMA_CONFLICT", "The managed provider contains an unknown setting.");
+    }
+  }
+  for (const required of ["name", "base_url", "wire_api", ...booleanFields.keys()]) {
+    if (!found.has(required)) {
+      throw failure("MANAGED_PROVIDER_SCHEMA_CONFLICT", "The managed provider is missing a required control.");
+    }
+  }
+  if (provider.name !== state.providerName || provider.baseUrl !== state.providerBaseUrl || provider.wireApi !== "responses") {
+    throw failure("MANAGED_PROVIDER_SCHEMA_CONFLICT", "The managed provider does not match its recorded identity and transport.");
+  }
+  return renderProviderBlock(provider, block.eol);
+}
+
+function analyzeConfig(source, providerId, { includeGateway = false } = {}) {
   const lines = splitLines(source);
   const lexicalLines = scanTomlLexicalLines(source).lines;
   const eol = detectEol(lines);
@@ -1393,7 +1908,7 @@ function analyzeConfig(source, providerId) {
 
   for (let index = 0; index < rootEnd; index += 1) {
     const line = lines[index];
-    const parsed = parseManagedRootLine(lexicalLines[index].code);
+    const parsed = parseManagedRootLine(lexicalLines[index].code, { includeGateway });
     if (!parsed) continue;
     if (parsed.malformed) {
       throw failure(
@@ -1412,7 +1927,7 @@ function analyzeConfig(source, providerId) {
     });
   }
 
-  for (const key of MANAGED_KEYS) {
+  for (const key of includeGateway ? INTEGRATION_KEYS : MANAGED_KEYS) {
     const matches = assignments.filter((assignment) => assignment.key === key);
     if (matches.length > 1) {
       throw failure(
@@ -1434,11 +1949,11 @@ function analyzeConfig(source, providerId) {
   return { lines, eol, firstTable, assignments, tableStarts };
 }
 
-function parseManagedRootLine(raw) {
+function parseManagedRootLine(raw, { includeGateway = false } = {}) {
   const code = stripTomlComment(raw).trim();
   if (code === "") return null;
 
-  const keyPattern = String.raw`(?:model_reasoning_effort|model_catalog_json|model_provider|model)`;
+  const keyPattern = `(?:${(includeGateway ? INTEGRATION_KEYS : MANAGED_KEYS).join("|")})`;
   const candidate = code.match(
     new RegExp(String.raw`^(?:"(${keyPattern})"|'(${keyPattern})'|(${keyPattern}))(?=\s|=|$)`),
   );
