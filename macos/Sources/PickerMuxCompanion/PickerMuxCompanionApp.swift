@@ -99,6 +99,22 @@ final class CompanionController: ObservableObject {
     IntegrationToggleState(snapshot: snapshot, busy: busy != nil || !activityAllowed)
   }
 
+  var backendUpgradeAvailable: Bool {
+    companionBackendUpgradeAvailable(appVersion: appVersion, snapshot: snapshot)
+  }
+
+  var canReviewBackendUpgrade: Bool {
+    backendUpgradeAvailable && integrationState.canReviewSetup
+  }
+
+  var canReviewBundledBootstrap: Bool {
+    snapshot?.usesBundledBackend == true && integrationState.needsSetupUpgrade && integrationState.canReviewSetup
+  }
+
+  var diskImageDownloadURL: URL? {
+    update.flatMap(companionDiskImageDownloadURL)
+  }
+
   var lastSetupFailed: Bool {
     operationFailed && busy == nil && operationNoticeAction == .configurationApply
   }
@@ -167,7 +183,9 @@ final class CompanionController: ObservableObject {
   }
 
   func canRun(_ action: CompanionAction) -> Bool {
-    guard activityAllowed, busy == nil, snapshot?.actions.contains(action) == true else { return false }
+    guard activityAllowed, busy == nil, snapshot != nil else { return false }
+    if action == .updateCheck { return true }
+    guard action != .update, snapshot?.actions.contains(action) == true else { return false }
     return true
   }
 
@@ -175,22 +193,29 @@ final class CompanionController: ObservableObject {
     guard activityAllowed, busy == nil else { return }
     let generation = removal.generation
     if reviewInstalledSetup {
-      guard enabled, integrationState.needsSetupUpgrade, integrationState.canReviewSetup else { return }
+      guard enabled, canReviewBackendUpgrade || canReviewBundledBootstrap else { return }
     } else {
       guard integrationState.canChange, integrationState.isEnabled != enabled else { return }
     }
+    let upgradingBundledBackend = reviewInstalledSetup && backendUpgradeAvailable
     busy = enabled ? .configurationApply : .integrationDeactivate
     operationNotice = nil
     operationNoticeAction = busy
     operationFailed = false
     operationStartedAt = Date()
-    message = enabled ? "Installing and activating PickerMux… Keep Codex closed and configured provider models available." : "Turning off PickerMux…"
+    message = reviewInstalledSetup ? "Reviewing the bundled backend upgrade…" :
+      enabled ? "Installing and activating PickerMux… Keep Codex closed and configured provider models available." : "Turning off PickerMux…"
     Task {
       let lease = await operationQueue.acquire(.action)
       guard removal.permitsActivity(generation) else { operationQueue.release(lease); return }
       do {
+        let setupClient: any CompanionControlling = upgradingBundledBackend ?
+          client.bundledSetupClient(appVersion: appVersion) : client
         let outcome = try await changePickerMuxIntegration(enabled, reviewInstalledSetup: reviewInstalledSetup,
-          client: client, consent: .toggleIntent)
+          client: setupClient, consent: reviewInstalledSetup ? .review : .toggleIntent,
+          confirm: { review in
+            await self.confirmation(title: review.title, text: review.text, button: review.button)
+          })
         switch outcome {
         case .unchanged: operationNotice = "The integration already has the requested state."
         case .cancelled: operationNotice = "The integration change was cancelled."
@@ -216,7 +241,7 @@ final class CompanionController: ObservableObject {
 
   func perform(_ action: CompanionAction) {
     if action == .uninstall { removeCompletely(); return }
-    guard ![.uninstallPreview].contains(action) else { return }
+    guard ![.uninstallPreview, .update].contains(action) else { return }
     if action == .configurationApply { setIntegrationEnabled(true); return }
     if action == .integrationDeactivate { setIntegrationEnabled(false); return }
     guard canRun(action) else { return }
@@ -245,15 +270,13 @@ final class CompanionController: ObservableObject {
       } else if action == .certify {
         confirmed = await confirmation(title: "Certify models?",
           text: "PickerMux sends live test prompts to the configured providers. Certification can take several minutes per model. Finish active model tasks and keep the configured models available until it completes.", button: "Start certification")
-      } else if action == .update {
-        confirmed = await confirmation(title: "Update PickerMux?",
-          text: "PickerMux will verify the release download and activate it through its existing distribution transaction. The CLI remains responsible for ownership checks and rollback. Review the current status after the update.", button: "Update")
       }
-      if [.recover, .certify, .update].contains(action) && !confirmed {
+      if [.recover, .certify].contains(action) && !confirmed {
         operationNotice = "The action was cancelled."
       } else {
         do {
-          let result = try await client.run(action, confirmed: confirmed, previewToken: preview?.previewToken)
+          let result = action == .updateCheck ? try await client.checkUpdatesFromBundledBackend() :
+            try await client.run(action, confirmed: confirmed, previewToken: preview?.previewToken)
           if result.ok {
             if let returnedPreview = result.preview { preview = returnedPreview }
             if let returnedUpdate = result.update { update = returnedUpdate }
@@ -481,9 +504,9 @@ private struct CompanionPanel: View {
             .font(CompanionTypography.body).foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
         }
-        if controller.integrationState.needsSetupUpgrade {
+        if controller.snapshot?.usesBundledBackend == true && controller.integrationState.needsSetupUpgrade {
           Button("Complete PickerMux setup") { controller.setIntegrationEnabled(true, reviewInstalledSetup: true) }
-            .disabled(!controller.integrationState.canReviewSetup)
+            .disabled(!controller.canReviewBundledBootstrap)
         }
         if controller.snapshot == nil && controller.busy == nil {
           Text(controller.message).font(CompanionTypography.body).fixedSize(horizontal: false, vertical: true)
@@ -608,18 +631,27 @@ private struct CompanionSettings: View {
               HStack {
                 Button(controller.busy == .updateCheck ? "Checking updates…" : "Check for updates") { controller.perform(.updateCheck) }
                   .disabled(!controller.canRun(.updateCheck))
-                if controller.snapshot?.actions.contains(.update) == true {
-                  Button("Update PickerMux…") { controller.perform(.update) }
-                    .disabled(!controller.canRun(.update))
+                if let url = controller.diskImageDownloadURL {
+                  Link("Download DMG…", destination: url)
+                    .disabled(!controller.activityAllowed || controller.busy != nil)
                 }
               }
+              if controller.backendUpgradeAvailable {
+                Button(controller.busy == .configurationApply ? "Updating installed backend…" : "Update installed backend…") {
+                  controller.setIntegrationEnabled(true, reviewInstalledSetup: true)
+                }
+                .disabled(!controller.canReviewBackendUpgrade)
+                Text("Use this app's bundled version to update the installed CLI and bridge. Provider settings are retained. This also enables PickerMux if it is off and may send live certification prompts. Fully quit Codex before reviewing the upgrade.")
+                  .font(CompanionTypography.body).foregroundStyle(.secondary)
+                  .fixedSize(horizontal: false, vertical: true)
+              }
               if let notice = controller.operationNotice,
-                 controller.operationNoticeAction == .updateCheck || controller.operationNoticeAction == .update {
+                 controller.operationNoticeAction == .updateCheck || controller.operationNoticeAction == .update || controller.operationNoticeAction == .configurationApply {
                 Text(notice).font(CompanionTypography.body)
                   .foregroundStyle(.primary)
                   .fixedSize(horizontal: false, vertical: true)
               }
-              Text("CLI updates and companion-app replacement are separate. Install the matching app when its version changes.")
+              Text("Updates are distributed as a DMG. Quit PickerMux before replacing the app, then reopen it to review an installed backend upgrade. Nothing updates automatically.")
                 .font(CompanionTypography.body).foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, alignment: .leading)

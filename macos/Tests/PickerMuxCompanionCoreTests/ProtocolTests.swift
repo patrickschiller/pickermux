@@ -140,6 +140,37 @@ final class ProtocolTests: XCTestCase {
     XCTAssertThrowsError(try CompanionResult.decode(Data(#"{"schemaVersion":1,"ok":false,"code":"token=private"}"#.utf8)))
   }
 
+  func testUpdateDistributionAcceptsOnlyKnownKindsAndRejectsMalformedOptionalDecode() throws {
+    let base: [String: Any] = ["action": "update-check", "status": "available", "currentVersion": "0.10.0", "targetVersion": "0.11.0"]
+    for distribution in ["dmg", "cli-archive"] {
+      var fields = base
+      fields["distribution"] = distribution
+      let result = try CompanionResult.decode(JSONSerialization.data(withJSONObject: ["schemaVersion": 1, "ok": true, "code": "COMPLETE", "data": fields]))
+      XCTAssertEqual(result.update?.distribution, distribution)
+    }
+    for changes in [
+      ["distribution": "https://evil.example/download.dmg"], ["distribution": "cli"], ["distribution": true], ["distribution": ["dmg"]],
+      ["url": "https://evil.example/download.dmg"], ["downloadUrl": "https://evil.example/download.dmg"],
+      ["currentVersion": 10], ["targetVersion": "0.11.0/private"], ["status": false],
+    ] as [[String: Any]] {
+      var fields = base
+      fields.merge(changes) { _, new in new }
+      XCTAssertThrowsError(try CompanionResult.decode(JSONSerialization.data(withJSONObject: ["schemaVersion": 1, "ok": true, "code": "COMPLETE", "data": fields])))
+    }
+    let legacy = try CompanionResult.decode(JSONSerialization.data(withJSONObject: ["schemaVersion": 1, "ok": true, "code": "COMPLETE", "data": base]))
+    XCTAssertNil(legacy.update?.distribution)
+    for changes in [["targetVersion": NSNull()], ["targetVersion": "0.10.0"], ["targetVersion": "0.9.6"],
+      ["targetVersion": "0.11.0-beta"], ["targetVersion": "00.11.0"], ["currentVersion": "0.10.0-beta"],
+      ["currentVersion": "00.10.0"]] as [[String: Any]] {
+      var fields = base
+      fields["distribution"] = "dmg"
+      fields.merge(changes) { _, new in new }
+      XCTAssertThrowsError(try CompanionResult.decode(JSONSerialization.data(withJSONObject: ["schemaVersion": 1, "ok": true, "code": "COMPLETE", "data": fields])))
+    }
+    XCTAssertTrue(companionActionFailureMessage("DOWNLOAD_REQUIRED").contains("DMG"))
+    XCTAssertFalse(companionActionFailureMessage("DOWNLOAD_REQUIRED").contains("force"))
+  }
+
   func testUnknownStatusDoesNotExposeRawContent() {
     XCTAssertEqual(statusLabel("/private/secret"), "Needs review")
     XCTAssertEqual(statusLabel("future-safe-token"), "Needs review")

@@ -861,7 +861,23 @@ codes and prose. Paths, capability state, account/model identities, prompts,
 native authentication, raw exception messages, and provider output do not cross
 this control boundary. `auth.json` is never read.
 
-The updater checks a fixed GitHub repository and exact versioned assets,
+The app checks releases through its pinned bundled backend. DMG releases
+require exactly one stable-named asset at an exact version-pinned URL and a
+single canonical release-body record binding version, name, SHA-256 and
+production signing status. The GUI derives the download URL locally and
+never opens a response-supplied URL. `update` refuses DMGs with
+`DOWNLOAD_REQUIRED` before asset download or activation. Replacing the app
+does not modify the installed backend.
+
+A separate reviewed setup client verifies that its pinned backend exactly
+matches the app and is canonically newer than the validated installed source.
+It permits only preview/apply and preserves the installed provider configuration
+through the existing setup transaction. Ordinary service, removal and toggle-off
+actions remain bound to the installed source; version differences alone do not
+switch their authority. No possibly committed mutation is retried via another
+backend.
+
+The historical CLI updater checks a fixed GitHub repository and exact versioned assets,
 restricts HTTPS redirects, and bounds downloaded/expanded data. Archive and
 manifest checksums, embedded-manifest equality, every file's mode/size/digest,
 allowlisted names, and package/runtime correspondence are verified before any
@@ -876,7 +892,9 @@ or CLI installation authority. Its explicit release mode requires Developer ID,
 hardened runtime, accepted notarization, stapling, and Gatekeeper assessment
 for the app, then signs, notarizes, staples, and verifies the disk image. The
 distribution manifest and checksums bind both archive and DMG. A protected
-signing job retains reviewed artifacts. Build configuration alone does not
+signing job retains reviewed artifacts. The tag workflow runs the protected
+production signing path and publishes only the stable-named DMG, with its hash
+and version record in the release body. Build configuration alone does not
 establish signing or live macOS acceptance; see
 [the companion guide](MACOS_COMPANION.md).
 

@@ -141,6 +141,17 @@ public struct UpdateStatus: Decodable {
   public let targetVersion: String?
   public let certificationIncomplete: Bool?
   public let restartRequired: Bool?
+  public let distribution: String?
+
+  public init(status: String, currentVersion: String, targetVersion: String? = nil,
+              certificationIncomplete: Bool? = nil, restartRequired: Bool? = nil, distribution: String? = nil) {
+    self.status = status
+    self.currentVersion = currentVersion
+    self.targetVersion = targetVersion
+    self.certificationIncomplete = certificationIncomplete
+    self.restartRequired = restartRequired
+    self.distribution = distribution
+  }
 }
 
 public struct UninstallPreview: Decodable {
@@ -207,7 +218,22 @@ public struct CompanionResult: Decodable {
     }
     if let update = value.update {
       guard ["current", "available", "unsupported", "unavailable", "updated", "installed", "up-to-date", "no-update", "update-available"].contains(update.status),
-            isVersion(update.currentVersion), update.targetVersion.map(isVersion) ?? true
+            isVersion(update.currentVersion), update.targetVersion.map(isVersion) ?? true,
+            update.distribution.map({ ["dmg", "cli-archive"].contains($0) }) ?? true
+      else { throw CompanionFailure.incompatibleProtocol }
+      if update.distribution == "dmg" && update.status == "available" {
+        guard let target = update.targetVersion, compareCompanionVersions(target, update.currentVersion) == 1
+        else { throw CompanionFailure.incompatibleProtocol }
+      }
+    }
+    if let fields = object["data"] as? [String: Any],
+       fields["currentVersion"] != nil || fields["targetVersion"] != nil || fields["distribution"] != nil ||
+       ["update", "update-check"].contains(fields["action"] as? String ?? "") {
+      // A malformed update cannot disappear through an optional decode and be
+      // mistaken for success. Browser destinations are constructed locally.
+      guard value.update != nil,
+            Set(fields.keys).isSubset(of: ["action", "status", "currentVersion", "latestVersion", "targetVersion", "version", "distribution",
+              "started", "resumed", "updated", "updateAvailable", "restartRequired", "certificationIncomplete", "deactivated", "operationId"])
       else { throw CompanionFailure.incompatibleProtocol }
     }
     if let removal = value.uninstallCompletion {
@@ -314,6 +340,7 @@ public func companionActionFailureMessage(_ code: String) -> String {
     "UPDATE_INVALID": "The update could not be verified. Check status and retry only with a verified release.",
     "UPDATE_UNAVAILABLE": "The update service is unavailable. Check your connection and try again later.",
     "UPDATE_UNSUPPORTED": "No supported update is available for this system. Review the release requirements in Help.",
+    "DOWNLOAD_REQUIRED": "Download the new PickerMux DMG, quit PickerMux, and replace the app in Applications. Reopen it to review the bundled backend upgrade with Codex closed.",
     "CERTIFICATION_INCOMPLETE": "PickerMux is installed, but model certification is incomplete. Keep configured provider models available and choose Certify models to retry.",
     "PROVIDER_UNAVAILABLE": "The model server could not be reached during setup. Check the configured server and model availability, then retry setup.",
     "PROVIDER_TIMEOUT": "The model server did not respond in time during setup. Check that it is running and responsive, then retry setup.",

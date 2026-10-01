@@ -159,6 +159,9 @@ resuming that checkpoint, with renewed confirmation, before another mutation.
 execute the refused payload or bypass checksums. `UPDATE_UNSUPPORTED` requires
 review of the runtime or available release package. Software updates do not
 automatically replace the running app bundle.
+`DOWNLOAD_REQUIRED` means the new release is distributed as a DMG. Download
+and replace the app, then review **Update installed backend** in Settings.
+An older installed CLI can remain the source for safe deactivation and removal.
 
 If an operation times out or the app closes, recheck status before retrying.
 The recovery helper runs independently once armed. Setup can also retain a
@@ -216,8 +219,7 @@ From a trusted local 0.8.3 source checkout, you can instead run
 and the affected chat after repair. Choose a native model before sending
 another message. The inert `model_bridge` table points to loopback port zero
 and cannot serve a turn. If you want PickerMux again, first let the signed-in
-native picker refresh its account model cache, fully quit Codex, and then run
-the [regular installer](../README.md#install).
+native picker refresh its account model cache, fully quit Codex, and then install the [current DMG](../README.md#install) and enable its Codex switch.
 
 The installed 0.8.3 CLI also offers `pickermux repair-chats [--json]`.
 The installer mode helps when the old CLI lacks that command or setup is
@@ -243,7 +245,7 @@ the client version. You can check the newer bundled executable directly:
 /Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex --version
 ```
 
-Upgrade with the [latest release installer](../README.md#install).
+Upgrade using the [current DMG and reviewed backend setup](TECHNICAL_GUIDE.md#installation-and-upgrades).
 Rerunning the 0.7.5 installer does not include the fix. Version 0.7.6 detects
 both bundled layouts and continues to validate the exact client version and
 catalog. A successful version check alone does not establish full
@@ -282,7 +284,7 @@ This is fixed in [PickerMux 0.6.1](../CHANGELOG.md#061---2026-09-13).
 It incorporates top-level instructions into the existing leading system
 message and removes the separate field only when merged; instructions-only
 requests keep their existing shape. Fully quit Codex Desktop, follow the
-[regular upgrade procedure](../README.md#upgrade), and verify that
+[app and backend upgrade procedure](TECHNICAL_GUIDE.md#installation-and-upgrades), and verify that
 `pickermux --version` reports 0.6.1 or later before reopening Codex. Editing
 this source checkout does not update an installed runtime; do not patch the
 managed runtime directly.
@@ -407,8 +409,9 @@ traffic with HTTP 503 while keeping its capability-scoped health endpoint
 available, so `status` and `doctor` can report `update-required` without a
 LaunchAgent restart loop. If `managed-config` is also `modified`, follow
 [modified-configuration recovery](#uninstall-refuses-modified-configuration)
-before retrying the installer; do not use `refresh --full`. Otherwise, rerun
-the latest-release installer. Setup checks the Codex
+before retrying setup; do not use `refresh --full`. Otherwise, use the
+[reviewed app/backend upgrade](TECHNICAL_GUIDE.md#installation-and-upgrades).
+Setup checks the Codex
 account cache before staging the downloaded CLI, checks it again under the
 lifecycle lock before committing CLI controls, and checks it once more
 immediately before integration activation. A missing, malformed, or
@@ -892,7 +895,11 @@ unredacted diagnostic wherever possible. A browser opening the Responses URL
 uses `GET`; `METHOD_NOT_ALLOWED` is expected because inference accepts only its
 validated request method and is not evidence that the bridge is healthy.
 
-## The release installer stops before setup
+## A legacy release installer stops before setup
+
+Starting with 0.10.0, the public distribution is a DMG. Use the app
+[installation and upgrade procedure](TECHNICAL_GUIDE.md#installation-and-upgrades).
+The following applies to immutable earlier CLI installer releases.
 
 The installer fails before mutation when macOS, the CPU architecture, Node.js,
 the archive digest, or the archive layout is unsupported. It also refuses root
@@ -923,8 +930,8 @@ outside the receipt-owned installation and would not be removed safely.
 
 ## Upgrade or downgrade is refused
 
-Rerunning the latest-release installer upgrades only a healthy managed
-installation. Modified, orphaned, or partially installed state fails closed;
+Reviewed app/backend setup, and legacy version-pinned installers, upgrade
+only a healthy managed installation. Modified, orphaned, or partially installed state fails closed;
 run `pickermux status` and `pickermux doctor` before deciding how to recover.
 
 An implicit downgrade is deliberately refused. If an older version is needed

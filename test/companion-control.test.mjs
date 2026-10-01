@@ -359,6 +359,18 @@ test("configuration and update replies project safe preview decisions without ra
   assert.equal(Object.hasOwn(companionSuccess("configuration-apply", projected), "previewToken"), false);
   assert.equal(companionSuccess("update-check", { status: "available", targetVersion: "0.9.0" }).status, "available");
   assert.equal(Object.hasOwn(companionSuccess("update-check", { status: SECRET }), "status"), false);
+  const update = companionSuccess("update-check", {
+    status: "available", distribution: "dmg", currentVersion: "0.9.6", targetVersion: "0.10.0",
+    assets: { secret: SECRET }, diskImageSha256: SECRET, downloadUrl: SECRET,
+  });
+  assert.deepEqual(update, {
+    schemaVersion: 1, ok: true, code: "COMPLETE", action: "update-check",
+    currentVersion: "0.9.6", targetVersion: "0.10.0", status: "available", distribution: "dmg",
+  });
+  assert.equal(JSON.stringify(update).includes(SECRET), false);
+  assert.equal(Object.hasOwn(companionSuccess("update-check", { distribution: SECRET }), "distribution"), false);
+  assert.equal(companionFailure({ code: "DOWNLOAD_REQUIRED", message: SECRET }).code, "DOWNLOAD_REQUIRED");
+  assert.equal(JSON.stringify(companionFailure({ code: "DOWNLOAD_REQUIRED", message: SECRET })).includes(SECRET), false);
 });
 
 test("qualification keeps transport controls and all later trust boundaries explicit", () => {

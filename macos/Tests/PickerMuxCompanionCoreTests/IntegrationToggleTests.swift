@@ -171,6 +171,49 @@ final class IntegrationToggleTests: XCTestCase {
     guard case .completed = upgrade else { return XCTFail("Confirmed bundled setup upgrade should complete") }
     XCTAssertEqual(client.calls.map(\.action), [.configurationPreview, .configurationApply])
   }
+
+  func testExplicitInactiveBackendUpgradeIsReviewedAsActivationAndHonorsCancellation() async throws {
+    let bundled = try snapshot().allowingOnly([.configurationPreview, .configurationApply], bundledBackend: true)
+    let state = IntegrationToggleState(snapshot: bundled)
+    XCTAssertFalse(state.isEnabled)
+    XCTAssertTrue(state.needsSetupUpgrade)
+    XCTAssertTrue(state.canReviewSetup)
+    let cancelled = ToggleClient(snapshot: bundled)
+    let declined = try await changePickerMuxIntegration(true, reviewInstalledSetup: true, client: cancelled, consent: .review) { review in
+      XCTAssertTrue(review.title.contains("Update"))
+      XCTAssertTrue(review.text.contains("also enables"))
+      XCTAssertTrue(review.text.contains("provider settings"))
+      XCTAssertTrue(review.text.contains("live certification"))
+      return false
+    }
+    guard case .cancelled = declined else { return XCTFail("Backend upgrades must honor reviewed consent") }
+    XCTAssertEqual(cancelled.calls.map(\.action), [.configurationPreview])
+    let accepted = ToggleClient(snapshot: bundled)
+    let completed = try await changePickerMuxIntegration(true, reviewInstalledSetup: true, client: accepted, consent: .review) { _ in true }
+    guard case .completed = completed else { return XCTFail("An authorized inactive upgrade should activate") }
+    XCTAssertEqual(accepted.calls.map(\.action), [.configurationPreview, .configurationApply])
+  }
+
+  func testBackendUpgradeReviewRequiresClosedCodexReadyCacheAndIdleRecovery() async throws {
+    for active in [true, false] {
+      for changes in [
+        ["desktop": ["status": "running"]], ["desktop": ["status": "unknown"]],
+        ["accountCache": ["status": "version-mismatch"]], ["accountCache": ["status": "missing"]],
+        ["recovery": ["status": "pending", "phase": "suspended"]], ["recovery": ["status": "unknown"]],
+        ["managedConfig": ["status": "modified"]], ["actions": ["configuration-preview"]],
+      ] as [[String: Any]] {
+        let bundled = try snapshot(active: active, changes: changes)
+          .allowingOnly([.configurationPreview, .configurationApply], bundledBackend: true)
+        XCTAssertFalse(IntegrationToggleState(snapshot: bundled).canReviewSetup)
+        let client = ToggleClient(snapshot: bundled)
+        let outcome = try await changePickerMuxIntegration(true, reviewInstalledSetup: true, client: client) { _ in
+          XCTFail("A blocked upgrade cannot request consent"); return true
+        }
+        guard case .blocked = outcome else { XCTFail("An unsafe upgrade remains blocked"); continue }
+        XCTAssertTrue(client.calls.isEmpty)
+      }
+    }
+  }
 }
 
 private final class ToggleClient: CompanionControlling {

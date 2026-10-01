@@ -26,7 +26,7 @@ public struct IntegrationToggleState {
     let closed = ["stopped", "closed"].contains(snapshot.desktop.status)
     let knownInstallation = ["installed", "not-installed"].contains(snapshot.installation.status)
     isEnabled = active
-    needsSetupUpgrade = active && snapshot.usesBundledBackend
+    needsSetupUpgrade = snapshot.installation.status == "installed" && snapshot.usesBundledBackend
     canReviewSetup = !busy && knownRecovery && closed && knownInstallation && (active || inactive) &&
       ["ready", "valid"].contains(snapshot.accountCache.status) &&
       snapshot.actions.contains(.configurationPreview) && snapshot.actions.contains(.configurationApply)
@@ -112,7 +112,7 @@ public func changePickerMuxIntegration(_ enabled: Bool, reviewInstalledSetup: Bo
   guard upgrading ? state.canReviewSetup : state.canChange else { return .blocked }
   if !enabled {
     let review = IntegrationReview(title: "Turn off PickerMux in Codex?",
-      text: "PickerMux will stop its bridge and restore the native Codex picker. The app, settings, certifications and verified backups stay installed so you can turn it on again. A previous integration such as Ollama is restored only by a complete uninstall. Reopen Codex afterwards. Historical chats remain readable.",
+      text: "PickerMux will stop its bridge and restore the native Codex picker. The app, settings, certifications and verified backups stay installed so you can turn it on again. Use complete uninstall in Settings to remove the retained PickerMux data. Reopen Codex afterwards. Historical chats remain readable.",
       button: "Turn off PickerMux", preview: nil)
     if consent == .review {
       guard await confirm(review) else { return .cancelled }
@@ -128,8 +128,9 @@ public func changePickerMuxIntegration(_ enabled: Bool, reviewInstalledSetup: Bo
   let title = upgrading ? "Update PickerMux setup for this app?" :
     snapshot.installation.status == "installed" ? "Enable PickerMux in Codex?" : "Install and enable PickerMux?"
   let replacement = replacing ? "The current picker integration will be replaced after a verified backup. " : ""
+  let upgrade = upgrading ? "This app's verified bundled backend will install its CLI and bridge. If PickerMux is currently off, this also enables it in Codex. " : ""
   let review = IntegrationReview(title: title,
-    text: "\(replacement)PickerMux will install or activate its CLI and bridge so configured provider models appear alongside native Codex models. New installations use LM Studio by default. Existing settings are preserved and the earlier configuration remains restorable. Keep Codex fully closed and provider models available. Setup can send live certification test prompts to those models. Reopen Codex after setup finishes.",
+    text: "\(upgrade)\(replacement)PickerMux will install or activate its CLI and bridge so configured provider models appear alongside native Codex models. New installations use LM Studio by default. Existing provider settings are preserved and the earlier configuration remains restorable. Keep Codex fully closed and provider models available. Setup can send live certification test prompts to those models. Reopen Codex after setup finishes.",
     button: upgrading ? "Update setup" : snapshot.installation.status == "installed" ? "Enable PickerMux" : "Install and enable", preview: preview)
   if consent == .review {
     guard await confirm(review) else { return .cancelled }

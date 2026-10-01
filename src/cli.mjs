@@ -212,6 +212,9 @@ Companion schema 1 advertises integration-toggle-v1. configuration-apply require
 its previewToken and replaceIntegration:true; integration-deactivate requires
 deactivateIntegration:true. Deactivation retains setup, historical aliases and
 private runtime identity for confirmed reactivation without full-refresh purge.
+Companion update-check recognizes the DMG release channel. An update request
+for a DMG returns DOWNLOAD_REQUIRED; replace the app, then explicitly review
+Update installed backend in Settings. No downloaded DMG is executed by the CLI.
 repair-chats restores only the inert model_bridge table used to open historical
 chats after uninstall. Select a native model before sending a new turn.
 refresh --full (also --FULL) recovers an account cache after a Codex update.

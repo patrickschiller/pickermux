@@ -424,7 +424,24 @@ changes block this mode instead of being removed. It cannot be combined with
 `--force`. Native account caches, authentication and chat data stay outside its
 removal authority; the inert historical provider alias remains.
 
-## Release installer trust
+## Release distribution trust
+
+Starting with 0.10.0, the public installation asset is one universal DMG.
+Production builds require Developer ID signatures, accepted and stapled Apple
+notarization and Gatekeeper assessments for both app and image. Development
+signatures cannot authorize release publication. Internal manifests and
+checksums bind the final bytes; the public release body records the DMG hash
+and exact version in a single canonical metadata record.
+
+Update discovery rejects ambiguous assets, foreign URLs, invalid metadata and
+mixed CLI/DMG distributions. The GUI constructs a fixed-repository download URL
+from a validated canonical version. It does not execute downloaded images or
+accept browser URLs from response data. An explicit backend upgrade uses the
+app's pinned source through the existing setup transaction, preserving the
+installed configuration and rollback checks. Installed service and removal
+authority remain with the validated installed source.
+
+The following describes immutable earlier CLI installer releases.
 
 Official end-user installation assets are attached to versioned releases in
 this repository. The generated installer contains the expected SHA-256 digest

@@ -7,6 +7,23 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-01
+
+### Added
+
+- Make the macOS menu-bar app the primary installation and distribution: a
+  universal DMG with the pinned CLI/backend bundled inside the app.
+- Add DMG update discovery and an explicit app-bundled backend upgrade that
+  preserves installed provider settings through the existing setup transaction.
+- Replace the long README with a concise app guide, side-by-side app/picker
+  images, a direct DMG download link and a separate technical guide.
+
+### Changed
+
+- Publish only the DMG as a release asset. Keep verification metadata internal
+  and publish the DMG SHA-256 in release notes. Production signing and
+  notarization remain mandatory.
+
 ### Fixed
 
 - Explain disabled companion removal using its actual status. An absent
@@ -741,7 +758,8 @@ confirm the release date before tagging. See the
   paths and file types, refuses root execution and foreign launchers, and
   restores the previous distribution state when activation fails.
 
-[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.9.6...HEAD
+[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.10.0
 [0.9.6]: https://github.com/patrickschiller/pickermux/releases/tag/v0.9.6
 [0.9.5]: https://github.com/patrickschiller/pickermux/releases/tag/v0.9.5
 [0.9.4]: https://github.com/patrickschiller/pickermux/releases/tag/v0.9.4

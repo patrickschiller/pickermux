@@ -9,8 +9,80 @@ import { gzipSync, gunzipSync } from "node:zlib";
 import { buildRelease } from "../scripts/build-release.mjs";
 import { projectRoot } from "../src/paths.mjs";
 import { activateVerifiedCompanionPayload, applyCompanionUpdate, checkForCompanionUpdate, inspectCompanionArchive, verifyCompanionPayload } from "../src/companion-update.mjs";
+import { PICKERMUX_DMG_ASSET, dmgReleaseMarker } from "../src/companion-release.mjs";
 
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
+
+function diskImageRelease() {
+  const version = "1.0.0";
+  return {
+    tag_name: `v${version}`, draft: false, prerelease: false,
+    body: dmgReleaseMarker({ version, sha256: "a".repeat(64) }),
+    assets: [{ name: PICKERMUX_DMG_ASSET, browser_download_url: `https://github.com/patrickschiller/pickermux/releases/download/v${version}/${PICKERMUX_DMG_ASSET}` }],
+  };
+}
+
+test("a DMG-only release is available without requesting old CLI assets", async () => {
+  let calls = 0;
+  const release = diskImageRelease();
+  const result = await checkForCompanionUpdate({ currentVersion: "0.9.6", fetchImpl: async (url) => {
+    calls += 1;
+    assert.equal(url, "https://api.github.com/repos/patrickschiller/pickermux/releases/latest");
+    return Response.json(release);
+  } });
+  assert.equal(calls, 1);
+  assert.deepEqual(result, {
+    status: "available", distribution: "dmg", currentVersion: "0.9.6", targetVersion: "1.0.0",
+    assets: { [PICKERMUX_DMG_ASSET]: release.assets[0].browser_download_url }, diskImageSha256: "a".repeat(64),
+  });
+});
+
+test("a DMG update requires app replacement and never downloads or activates a CLI payload", async () => {
+  let calls = 0;
+  const phases = [];
+  await assert.rejects(applyCompanionUpdate({ currentVersion: "0.9.6", onProgress: (event) => phases.push(event.phase),
+    fetchImpl: async (url) => {
+      calls += 1;
+      assert.equal(url, "https://api.github.com/repos/patrickschiller/pickermux/releases/latest");
+      return Response.json(diskImageRelease());
+    }, activateImpl: async () => assert.fail("DMGs cannot activate the CLI"),
+  }), { code: "DOWNLOAD_REQUIRED" });
+  assert.equal(calls, 1);
+  assert.deepEqual(phases, ["checking"]);
+});
+
+test("DMG release metadata rejects foreign, duplicate, mixed and unbound candidates", async () => {
+  const mutations = [
+    (release) => { release.assets[0].browser_download_url = "https://evil.example/PickerMux-macos-universal.dmg"; },
+    (release) => { release.assets[0].browser_download_url = release.assets[0].browser_download_url.replace("https:", "http:"); },
+    (release) => { release.assets[0].browser_download_url = release.assets[0].browser_download_url.replace("v1.0.0/", "v0.9.6/"); },
+    (release) => { release.assets.push({ ...release.assets[0] }); },
+    (release) => { release.assets.push({ name: "install.sh", browser_download_url: "https://github.com/patrickschiller/pickermux/releases/download/v1.0.0/install.sh" }); },
+    (release) => { release.assets[0].name = "PickerMux-v1.0.0-macos-universal.dmg"; },
+    (release) => { delete release.body; },
+    (release) => { release.body = release.body.replace("1.0.0", "0.9.6"); },
+    (release) => { release.body = release.body.replace("developer-id-notarized", "apple-development"); },
+    (release) => { release.body += `\n${release.body}`; },
+    (release) => { release.body = "x".repeat(64 * 1024) + release.body; },
+    (release) => { release.body = release.body.replace('"sha256":', '"sha256":"b","sha256":'); },
+    (release) => { release.body = release.body.replace("a".repeat(64), "z".repeat(64)); },
+  ];
+  for (const mutate of mutations) {
+    const release = diskImageRelease();
+    mutate(release);
+    await assert.rejects(checkForCompanionUpdate({ currentVersion: "0.9.6", fetchImpl: async () => Response.json(release) }), { code: "UPDATE_INVALID" });
+  }
+});
+
+test("a current DMG release does not download or activate anything", async () => {
+  let calls = 0;
+  const result = await applyCompanionUpdate({ currentVersion: "1.0.0", fetchImpl: async () => {
+    calls += 1;
+    return Response.json(diskImageRelease());
+  }, activateImpl: async () => assert.fail("current app cannot activate an update") });
+  assert.deepEqual(result, { status: "current", currentVersion: "1.0.0", targetVersion: "1.0.0" });
+  assert.equal(calls, 1);
+});
 
 async function releaseFixture(t) {
   const root = await mkdtemp(path.join(tmpdir(), "pickermux-update-test-"));

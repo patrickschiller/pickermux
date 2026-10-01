@@ -191,10 +191,25 @@ public struct PickerMuxClient {
     try await resolvedStatus().snapshot
   }
 
+  public func checkUpdatesFromBundledBackend() async throws -> CompanionResult {
+    let runtime = try await validatedRuntime()
+    let selected = try await resolvedBundledStatus(runtime: runtime)
+    return try await run(.updateCheck, confirmed: false, previewToken: nil, selected: selected)
+  }
+
+  public func bundledSetupClient(appVersion: String) -> BundledSetupClient {
+    BundledSetupClient(client: self, appVersion: appVersion)
+  }
+
   public func run(_ action: CompanionAction, confirmed: Bool = false, previewToken: String? = nil) async throws -> CompanionResult {
     // Probe schema compatibility before a mutation. Never retry an action via a
     // different backend after a malformed response that may have changed state.
     let selected = try await resolvedStatus()
+    return try await run(action, confirmed: confirmed, previewToken: previewToken, selected: selected)
+  }
+
+  private func run(_ action: CompanionAction, confirmed: Bool, previewToken: String?,
+                   selected: (snapshot: CompanionSnapshot, invocation: BackendInvocation, bundled: Bool, runtime: URL)) async throws -> CompanionResult {
     guard selected.snapshot.actions.contains(action),
           !selected.bundled || [.configurationPreview, .configurationApply, .updateCheck, .diagnose].contains(action)
     else { throw CompanionFailure.incompatibleProtocol }
@@ -207,10 +222,11 @@ public struct PickerMuxClient {
     guard result.exitCode == 0 || !envelope.ok else { throw CompanionFailure.processFailed }
     if envelope.ok && action == .uninstallPreview && envelope.uninstallPreview == nil { throw CompanionFailure.incompatibleProtocol }
     if envelope.ok && action == .uninstall && envelope.uninstallCompletion == nil { throw CompanionFailure.incompatibleProtocol }
+    if envelope.ok && action == .updateCheck && envelope.update == nil { throw CompanionFailure.incompatibleProtocol }
     return envelope
   }
 
-  private func resolvedStatus() async throws -> (snapshot: CompanionSnapshot, invocation: BackendInvocation, bundled: Bool, runtime: URL) {
+  private func validatedRuntime() async throws -> URL {
     let runtime = try nodeResolver()
     let nodeInvocation = BackendInvocation(executable: runtime, leadingArguments: [])
     let version = try await execute(nodeInvocation, arguments: ["--version"], timeout: 10, runtime: runtime)
@@ -219,18 +235,50 @@ public struct PickerMuxClient {
     else { throw CompanionFailure.missingNode }
     let parts = text.trimmingCharacters(in: .whitespacesAndNewlines).dropFirst().split(separator: ".").compactMap { Int($0) }
     guard parts.count == 3, parts[0] > 22 || (parts[0] == 22 && parts[1] >= 15) else { throw CompanionFailure.missingNode }
+    return runtime
+  }
+
+  private func resolvedStatus() async throws -> (snapshot: CompanionSnapshot, invocation: BackendInvocation, bundled: Bool, runtime: URL) {
+    let runtime = try await validatedRuntime()
     do {
       let invocation = BackendInvocation(executable: runtime, leadingArguments: [try launcherResolver().path])
       let result = try await execute(invocation, arguments: ["companion", "status"], timeout: 45, runtime: runtime)
       guard result.exitCode == 0 else { throw CompanionFailure.processFailed }
       return (try CompanionSnapshot.decode(result.stdout), invocation, false, runtime)
     } catch {
-      let invocation = try backendResolver()
-      guard invocation.executable == runtime else { throw CompanionFailure.unsafeLauncher }
-      let result = try await execute(invocation, arguments: ["companion", "status"], timeout: 45, runtime: runtime)
-      guard result.exitCode == 0 else { throw CompanionFailure.processFailed }
-      return (try CompanionSnapshot.decode(result.stdout).allowingOnly([.configurationPreview, .configurationApply, .updateCheck, .diagnose], bundledBackend: true), invocation, true, runtime)
+      return try await resolvedBundledStatus(runtime: runtime)
     }
+  }
+
+  private func resolvedBundledStatus(runtime: URL) async throws -> (snapshot: CompanionSnapshot, invocation: BackendInvocation, bundled: Bool, runtime: URL) {
+    let invocation = try backendResolver()
+    guard invocation.executable == runtime else { throw CompanionFailure.unsafeLauncher }
+    let result = try await execute(invocation, arguments: ["companion", "status"], timeout: 45, runtime: runtime)
+    guard result.exitCode == 0 else { throw CompanionFailure.processFailed }
+    return (try CompanionSnapshot.decode(result.stdout).allowingOnly([.configurationPreview, .configurationApply, .updateCheck, .diagnose], bundledBackend: true), invocation, true, runtime)
+  }
+
+  fileprivate func bundledUpgradeStatus(appVersion: String) async throws -> (snapshot: CompanionSnapshot, invocation: BackendInvocation, bundled: Bool, runtime: URL) {
+    // A newer app is setup authority only after both installed and pinned
+    // sources have been verified afresh. Ordinary service/removal control stays
+    // on the receipt-active installed source regardless of the app version.
+    let installed = try await resolvedStatus()
+    guard companionBackendUpgradeAvailable(appVersion: appVersion, snapshot: installed.snapshot) else {
+      throw CompanionFailure.incompatibleProtocol
+    }
+    let bundled = try await resolvedBundledStatus(runtime: installed.runtime)
+    guard bundled.snapshot.version == appVersion,
+          compareCompanionVersions(bundled.snapshot.version, installed.snapshot.version) == 1 else {
+      throw CompanionFailure.incompatibleProtocol
+    }
+    return (bundled.snapshot.allowingOnly([.configurationPreview, .configurationApply], bundledBackend: true),
+      bundled.invocation, true, bundled.runtime)
+  }
+
+  fileprivate func runBundledUpgrade(_ action: CompanionAction, appVersion: String, confirmed: Bool, previewToken: String?) async throws -> CompanionResult {
+    guard [.configurationPreview, .configurationApply].contains(action) else { throw CompanionFailure.incompatibleProtocol }
+    let selected = try await bundledUpgradeStatus(appVersion: appVersion)
+    return try await run(action, confirmed: confirmed, previewToken: previewToken, selected: selected)
   }
 
   private func execute(_ invocation: BackendInvocation, arguments: [String], input: Data? = nil, timeout: TimeInterval, runtime: URL) async throws -> ProcessOutput {
@@ -240,5 +288,23 @@ public struct PickerMuxClient {
     environment["PATH"] = runtime.deletingLastPathComponent().path + ":/usr/bin:/bin:/usr/sbin:/sbin"
     return try await executor.run(executable: invocation.executable, arguments: invocation.leadingArguments + arguments,
                                   input: input, environment: environment, timeout: timeout)
+  }
+}
+
+public struct BundledSetupClient: CompanionControlling {
+  private let client: PickerMuxClient
+  private let appVersion: String
+
+  fileprivate init(client: PickerMuxClient, appVersion: String) {
+    self.client = client
+    self.appVersion = appVersion
+  }
+
+  public func status() async throws -> CompanionSnapshot {
+    try await client.bundledUpgradeStatus(appVersion: appVersion).snapshot
+  }
+
+  public func run(_ action: CompanionAction, confirmed: Bool, previewToken: String?) async throws -> CompanionResult {
+    try await client.runBundledUpgrade(action, appVersion: appVersion, confirmed: confirmed, previewToken: previewToken)
   }
 }

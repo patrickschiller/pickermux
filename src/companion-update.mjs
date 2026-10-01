@@ -8,9 +8,10 @@ import { gunzipSync } from "node:zlib";
 
 import { compareVersions } from "./distribution-installer.mjs";
 import { sanitizeCodexDesktopLaunchEnvironment } from "./codex-desktop-state.mjs";
+import { PICKERMUX_DMG_ASSET, PICKERMUX_RELEASE_REPOSITORY, parseDmgReleaseRecord } from "./companion-release.mjs";
 
 const execFile = promisify(execFileCallback);
-const REPOSITORY = "https://github.com/patrickschiller/pickermux";
+const REPOSITORY = PICKERMUX_RELEASE_REPOSITORY;
 const RELEASE_API = "https://api.github.com/repos/patrickschiller/pickermux/releases/latest";
 const VERSION = /^(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})$/u;
 const HASH = /^[a-f0-9]{64}$/u;
@@ -119,7 +120,19 @@ export async function checkForCompanionUpdate({ currentVersion, fetchImpl = glob
   if (compareVersions(targetVersion, currentVersion) <= 0) {
     return { status: "current", currentVersion, targetVersion: currentVersion };
   }
-  const names = [`pickermux-v${targetVersion}.tar.gz`, "release-manifest.json", "SHA256SUMS"];
+  const diskImages = release.assets.filter((entry) => entry?.name === PICKERMUX_DMG_ASSET);
+  if (diskImages.length > 0) {
+    // A disk image is an app replacement, never an executable CLI payload.
+    // Its public record binds the exact tag, name, signing gate and checksum.
+    if (release.assets.length !== 1 || diskImages.length !== 1) throw failure();
+    const asset = diskImages[0];
+    const expected = `${REPOSITORY}/releases/download/v${targetVersion}/${asset.name}`;
+    if (asset.browser_download_url !== expected) throw failure();
+    const record = parseDmgReleaseRecord(release.body, { version: targetVersion, file: asset.name });
+    return { status: "available", distribution: "dmg", currentVersion, targetVersion, assets: { [asset.name]: expected }, diskImageSha256: record.sha256 };
+  }
+  const names = [`pickermux-v${targetVersion}.tar.gz`, "install.sh", "release-manifest.json", "SHA256SUMS"];
+  if (release.assets.length !== names.length) throw failure();
   const assets = {};
   for (const name of names) {
     const found = release.assets.filter((entry) => entry?.name === name);
@@ -127,7 +140,7 @@ export async function checkForCompanionUpdate({ currentVersion, fetchImpl = glob
     if (found.length !== 1 || found[0].browser_download_url !== expected) throw failure();
     assets[name] = expected;
   }
-  return { status: "available", currentVersion, targetVersion, assets };
+  return { status: "available", distribution: "cli-archive", currentVersion, targetVersion, assets };
 }
 
 function allowedFile(name) {
@@ -252,6 +265,7 @@ export async function applyCompanionUpdate({ currentVersion, fetchImpl = globalT
   onProgress({ phase: "checking" });
   const candidate = await checkForCompanionUpdate({ currentVersion, fetchImpl });
   if (candidate.status === "current") return candidate;
+  if (candidate.distribution === "dmg") throw failure("DOWNLOAD_REQUIRED");
   const { targetVersion, assets } = candidate;
   const archiveName = `pickermux-v${targetVersion}.tar.gz`;
   onProgress({ phase: "downloading" });

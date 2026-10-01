@@ -40,7 +40,7 @@ Some end-to-end checks require Codex Desktop, LM Studio, and a locally loaded
 model; ordinary unit and release-packaging tests must remain deterministic
 without those applications.
 
-For the optional macOS 13+ companion, use Apple command-line tools with Swift 6
+For the macOS 13+ companion, use Apple command-line tools with Swift 6
 tooling. The package compiles in Swift 5 language mode. Run its isolated tests
 and choose a fresh output directory for an unsigned universal app and DMG build:
 
@@ -58,6 +58,9 @@ For local login-service acceptance, use `--development-signed` with an existing
 Apple Development identity via `PICKERMUX_DEVELOPMENT_SIGNING_IDENTITY`. The
 complete bundle is verified before packaging and in the mounted DMG. This
 mode is not notarized and cannot replace the Developer ID release gates.
+The public distribution contains only the DMG; archives and manifests remain
+internal build evidence. The release notes bind its version and SHA-256 for
+update discovery. See [the release procedure](docs/RELEASING.md).
 See [the companion guide](docs/MACOS_COMPANION.md#development-and-distribution)
 for the protected signing workflow and outstanding live acceptance checks.
 
@@ -74,11 +77,10 @@ for the protected signing workflow and outstanding live acceptance checks.
    change.
 7. Installer changes must preserve the versioned-asset, embedded-checksum,
    no-`sudo`, no-shell-profile-edit, receipt-ownership, and rollback contracts.
-8. Run both required checks before opening a pull request:
+8. Run the complete required verification before opening a pull request:
 
 ```bash
-npm test
-npm run check
+npm run verify
 ```
 
 Companion changes also require the Swift tests and relevant Node protocol,

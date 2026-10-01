@@ -1,6 +1,6 @@
 # macOS companion
 
-PickerMux 0.9.6 includes an optional SwiftUI menu-bar app for inspecting and
+PickerMux 0.10.0 includes a SwiftUI menu-bar app for inspecting and
 operating the existing PickerMux installation. It requires macOS 13 or newer,
 Apple silicon or Intel, and Node.js 22.15.0 or newer. The supported Node
 locations are `/opt/homebrew/bin/node`, `/usr/local/bin/node`, and
@@ -15,10 +15,11 @@ with OpenAI, Codex, or LM Studio.
 
 ## Install from a disk image
 
-The companion build produces `PickerMux-v0.9.6-macos-universal.dmg` alongside
-the app archive. The planned release includes a Developer ID signed and
-notarized image for macOS 13+ on Apple silicon and Intel. Development images
-are labelled `unsigned-development` and remain local test artifacts.
+The public release offers only `PickerMux-macos-universal.dmg`, a Developer ID
+signed and notarized image for macOS 13+ on Apple silicon and Intel. Internal
+build output retains versioned filenames and manifests. Development images
+are labelled `unsigned-development` or `apple-development` and remain local
+test artifacts. Use the [DMG download](../README.md#install).
 
 1. Install a supported Node.js runtime at one of the locations listed above.
 2. Open the reviewed disk image and drag **PickerMux.app** to **Applications**.
@@ -33,8 +34,10 @@ transaction described below. The app does not need to run from the mounted
 image after it has been copied.
 
 For an app upgrade, quit the existing companion before replacing its copied
-bundle with the matching reviewed release. CLI/runtime updates and app
-replacement remain separate operations. The live release acceptance includes
+bundle with the matching reviewed release. Then explicitly review **Update
+installed backend** in Settings when the app includes a newer backend. Setup
+preserves the installed provider configuration; replacing the app alone does
+not upgrade the CLI or runtime. The live release acceptance includes
 mounting the image, copying and opening the app, and testing the app upgrade
 on the target Mac.
 
@@ -117,7 +120,8 @@ The menu offers actions according to the current validated state:
 | Certify models… | Confirm live provider probes for the discovered models. Keep Codex closed and configured models available; allow several minutes per model. |
 | Check installation | Run the deterministic doctor without live inference. |
 | Check for PickerMux updates (Settings) | Inspect the fixed public release endpoint without modifying the installation. |
-| Update PickerMux… (Settings) | Verify the release payload and explicitly activate it through the existing setup transaction. |
+| Download DMG (Settings) | Open the exact version-pinned GitHub download for a validated newer app release. |
+| Update installed backend (Settings) | Review setup using the verified newer backend bundled with the app; preserve installed provider settings. |
 | Remove PickerMux completely… (Settings) | Preview and confirm native Codex restoration plus complete owned removal, then stop background actions and explain app deletion in Finder. |
 
 The app controls models from the installed provider configuration, including
@@ -309,7 +313,7 @@ integration with Codex stopped. It is available only through the receipt-owned
 installed CLI. The app detects older backends even when both versions are
 labelled 0.9.0; the missing capability marker selects its pinned setup backend
 before any mutation. Confirm setup to upgrade that CLI before deactivating.
-The current 0.9.6 payload installs into its own version directory; the older
+The current 0.10.0 payload installs into its own version directory; the older
 0.9.0 contents are never overwritten to add this feature.
 
 `uninstall-preview` returns only fixed removal changes and a digest token.
@@ -331,26 +335,41 @@ shows a busy indicator plus recovery state from snapshots.
 
 ## Updates and app versions
 
-The update check uses only the PickerMux repository's fixed GitHub release API.
-Downloads start at exact versioned asset URLs. HTTPS redirects are limited to
-GitHub release storage, with no credentials or native authentication headers.
-Size and time limits apply before parsing.
+Update checks run through the pinned backend bundled with the app, so an older
+installed CLI can discover the DMG distribution. The endpoint is fixed to the
+PickerMux repository's GitHub release API, with bounded HTTPS responses and
+redirects. A DMG release requires exactly one stable-named image and one
+canonical metadata record binding version, filename, checksum and production
+signing status. Ambiguous assets, mixed CLI/DMG packages or invalid metadata
+fail closed.
 
-Before execution, the updater verifies the archive and manifest checksums,
-the identical manifest inside the archive, each allowlisted file's size,
-mode and digest, package/version/runtime correspondence, and the supported
-ustar structure. Links, traversal, duplicate entries, extension headers, and
-unowned files are rejected. The verified payload is extracted privately and
-run through the existing `setup` transaction. Failed activation retains or
-restores the previous installation. An activated installation whose live
-certification is incomplete remains installed with conservative model gates
-and is reported separately.
+**Download DMG** opens a URL constructed locally from the validated version and
+fixed repository and filename. Response-supplied URLs never open a browser.
+No image is executed or installed by the update check. The CLI's old `update`
+action returns `DOWNLOAD_REQUIRED` for this distribution before downloading
+an asset or changing the installation. Immutable historical CLI releases
+retain their existing archive/manifest/checksum verification path.
 
-This updates the CLI and managed runtime. It does not silently replace the
-running `PickerMux.app`. The panel shows an app/CLI version difference; install
-the matching reviewed app build separately. The checksum trust still depends
-on HTTPS, GitHub, and the maintainer account. A locally generated checksum does
-not establish Developer ID signing or Apple notarization.
+Quit PickerMux, replace its app from the reviewed DMG, eject the image, and
+reopen the copied app. If its canonical version is newer than the validated
+installed backend, Settings offers **Update installed backend**. Keep Codex
+closed, ensure its native account cache is ready, and review the setup change.
+Updating an inactive installation also activates it; the confirmation explains
+that setup can send live model-certification prompts.
+
+The explicit setup client proves the newer bundled version matches the app,
+validates the installed launcher and pinned backend afresh, and permits only
+configuration preview/apply. No equal-version or downgrade activation is
+inferred. Setup keeps the installed provider configuration and uses the core's
+existing ownership, lock, certification and rollback checks. Normal status,
+deactivation, removal and other service actions remain bound to the validated
+installed CLI. An action that may have committed is never retried via a
+different source. Legacy installations missing required capabilities retain
+the separately reviewed bootstrap setup path.
+
+Checksums and metadata trust HTTPS, GitHub and the maintainer account. The
+release build additionally verifies Developer ID signatures and accepted,
+stapled Apple notarization; a checksum alone does not establish those properties.
 
 ## Development and distribution
 
@@ -366,8 +385,8 @@ node scripts/build-companion.mjs --output /tmp/pickermux-companion-development
 
 Choose a new output directory for each build; the builder refuses to replace
 one. The output contains `PickerMux.app`,
-`PickerMux-v0.9.6-macos-universal.tar.gz`,
-`PickerMux-v0.9.6-macos-universal.dmg`, `companion-manifest.json`, and
+`PickerMux-v0.10.0-macos-universal.tar.gz`,
+`PickerMux-v0.10.0-macos-universal.dmg`, `companion-manifest.json`, and
 `SHA256SUMS`. The universal binary contains `arm64` and `x86_64` slices
 targeting macOS 13. The manifest distinguishes `unsigned-development`,
 `apple-development` and `developer-id-notarized` artifacts and binds the bundled backend manifest,
@@ -439,11 +458,12 @@ unsigned development archive and DMG artifacts. Its separately dispatched
 signed-release job requires the protected `companion-signing` environment
 and provisioned macOS runner labeled `pickermux-signing`; it retains both
 assets for release review.
-The workflow does not publish a GitHub release automatically.
-When publishing alongside the CLI, retain its existing `SHA256SUMS` and
-publish the companion checksum file as `companion-SHA256SUMS`. See the
-[companion release procedure](RELEASING.md#optional-macos-companion-assets)
-for the version-matching assets and public-download verification.
+That review workflow does not publish a GitHub release. The separate tag
+workflow in `release.yml` runs the verification and protected signing gates,
+then publishes only the stable-named DMG. Manifests and checksum files remain
+internal; the DMG checksum and bound metadata record appear in the release
+body. See the [release procedure](RELEASING.md) for production prerequisites
+and independent public-download verification.
 
 ## Acceptance status
 

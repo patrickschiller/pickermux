@@ -115,6 +115,7 @@ const ERROR_MESSAGES = Object.freeze({
   UPDATE_INVALID: "The update failed integrity or distribution validation.",
   UPDATE_UNAVAILABLE: "The update service could not be reached. Try again later.",
   UPDATE_UNSUPPORTED: "No supported update package is available for this system.",
+  DOWNLOAD_REQUIRED: "Download the latest PickerMux DMG, replace the app, then update its installed backend from Settings.",
   CERTIFICATION_INCOMPLETE: "Certification did not complete. Unverified models remain conservative.",
   PROVIDER_UNAVAILABLE: "The configured external provider could not be reached. Check its server and loaded models, then retry activation.",
   PROVIDER_TIMEOUT: "Model discovery timed out. Check the external provider and retry activation.",
@@ -513,6 +514,7 @@ export function companionSuccess(action, result = {}) {
     for (const key of ["removed", "nativeRestored", "historicalChatsPreserved", "restartRequired"]) response[key] = true;
   }
   if (["update", "update-check"].includes(action) && ["current", "unavailable", "unsupported", "up-to-date", "available", "updated", "installed", "no-update", "update-available"].includes(result?.status)) response.status = result.status;
+  if (["update", "update-check"].includes(action) && ["dmg", "cli-archive"].includes(result?.distribution)) response.distribution = result.distribution;
   return response;
 }
 
