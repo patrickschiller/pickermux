@@ -7,11 +7,12 @@
 
 **Use local LM Studio models directly from the Codex Desktop picker.**
 
-**Version 0.8.3 improves recovery after Codex Desktop updates.**
-Refresh checks the account cache before external-provider access, accepts
-`--FULL` as an alias for `--full`, and explains uninstall recovery.
-See the [0.8.3 release notes](docs/RELEASE_NOTES_0.8.3.md) for recovery and
-validation limits.
+**Version 0.9.0 adds a native macOS menu-bar companion.**
+Check the picker, refresh it after Codex closes, preview a switch from Ollama,
+and start confirmed recovery after a Codex update. The app uses PickerMux's
+existing installation and routing core. See the
+[companion guide](docs/MACOS_COMPANION.md) for builds, usage, and the remaining
+live acceptance checks.
 
 For installation, upgrade, and diagnostic problems, see
 [Troubleshooting](docs/TROUBLESHOOTING.md).
@@ -59,6 +60,10 @@ endorsed by, or supported by OpenAI, Codex, or LM Studio.
 - LM Studio with its local server enabled and at least one LLM loaded;
 - Node.js 22.15.0 or newer with native Zstandard support;
 - a valid account model cache created by the installed Codex Desktop build.
+
+The optional companion requires macOS 13 or newer and a supported Node.js
+runtime in `/opt/homebrew/bin`, `/usr/local/bin`, or `/usr/bin`. Node.js remains
+an external prerequisite; the app bundles the verified PickerMux backend.
 
 The cache must match the installed Codex client version. Its age alone does not
 make it invalid or require an uninstall.
@@ -111,7 +116,7 @@ If `~/.local/bin` is not already in `PATH`, the installer prints the exact
 one-time shell configuration needed. It does not change `.zprofile`, `.zshrc`,
 or another shell file automatically. Until then, use the absolute command path.
 
-For an exact 0.8.3 install or upgrade, use:
+For the published 0.8.3 reference install or upgrade, use:
 
 ```bash
 /usr/bin/curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://github.com/patrickschiller/pickermux/releases/download/v0.8.3/install.sh | /bin/sh
@@ -188,6 +193,35 @@ absent. Use `pickermux doctor --live` only when you intentionally want a real
 LM Studio inference check. Once `~/.local/bin` is in `PATH`, the shorter
 `pickermux` form is equivalent.
 
+## macOS companion
+
+Open `PickerMux.app` to inspect the bridge, Codex compatibility, account cache,
+and active integration from the menu bar. Available actions use the same
+receipt checks, installation locks, certification gates, and rollback as the
+CLI. A bundled backend can preview and set up the integration when the
+installed CLI is missing or too old; it cannot control another CLI's service.
+
+Choose **Refresh picker** with Codex fully closed, then **Open Codex** to load
+the updated catalog. The settings offer an optional refresh when Codex closes,
+login startup, and notifications for meaningful state changes. These settings
+are off by default. Model weights must already be loaded in LM Studio.
+
+**Repair after a Codex update…** asks before the two graceful Codex quits,
+possible task interruption, and capability change that invalidates earlier
+encrypted compaction continuations. An interrupted repair requires the same
+confirmation before resuming its checkpoint.
+
+**Preview configuration changes** shows ownership and proposed changes before
+a confirmed switch from an Ollama or other gateway. Concurrent edits stop the
+switch; uninstall restores the verified previous configuration. PickerMux
+retains an explicit provider because the built-in provider's retry and
+transport defaults have not qualified for the bridge's safety contract.
+
+The update action verifies the CLI release before activating its existing setup
+transaction. App and CLI versions are shown separately; install a matching app
+build after updating the CLI. App builds, signing requirements, and validation
+limits are documented in [the companion guide](docs/MACOS_COMPANION.md).
+
 ## Daily workflow
 
 1. Start the LM Studio server and load the LLMs you want to expose.
@@ -239,6 +273,12 @@ the Codex process:
 4. request another graceful quit, transactionally reactivate the preserved
    PickerMux configuration, and run the normal validation gates;
 5. reopen Codex so it loads the refreshed mixed catalog.
+
+During suspension, private configuration receipts and the original backup stay
+intact. Codex receives temporary native settings rather than a previously
+configured gateway. Reactivation refuses edits to those temporary settings.
+Full refresh replaces the capability, so earlier encrypted compaction
+continuations cannot be resumed afterward.
 
 PickerMux never escalates a refused or timed-out graceful quit to a forced kill.
 The helper uses bounded waits and a private checkpoint. If the sequence pauses
@@ -375,6 +415,12 @@ See [Configuration](docs/CONFIGURATION.md#shared-web-search) and
 [Troubleshooting](docs/TROUBLESHOOTING.md#web-search-is-missing-or-fails).
 
 ## Upgrade
+
+Version 0.9.0 adds the optional companion and its versioned control protocol.
+Existing healthy configurations retain the explicit provider. Configuration
+cleanup and replacement of an Ollama gateway require a reviewed preview and
+confirmation. See [the companion guide](docs/MACOS_COMPANION.md) before using
+an unsigned development app or preparing a signed release.
 
 Version 0.8.3 checks the exact-version Codex account cache before contacting
 external providers and points a blocked refresh to `refresh --full`. The
@@ -551,6 +597,8 @@ catalog lifecycle, request normalization, and certification design.
 | `pickermux refresh` | Rediscover models and atomically refresh the catalog and runtime. |
 | `pickermux refresh --full` | Interactively suspend PickerMux, refresh Codex account visibility, transactionally reactivate it, and reopen Codex. |
 | `pickermux status` | Show managed configuration, service, and compatibility status. |
+| `pickermux companion status` | Return a version-1, secret-free status snapshot for the macOS companion. |
+| `pickermux companion run` | Execute one strictly bounded, versioned JSON request read from stdin. |
 | `pickermux doctor` | Run deterministic installation and routing checks. |
 | `pickermux doctor --live` | Add a real LM Studio inference check. |
 | `pickermux repair-chats [--json]` | Restore the inert historical `model_bridge` table after an older uninstall, without setup. |
@@ -650,6 +698,10 @@ proxy.
   CLI and runtime state are not changed.
 - Release payloads are versioned, checksum-verified, and extracted only after
   unsafe paths and file types have been rejected.
+- Companion requests use fixed actions and explicit recovery/switch consent;
+  no caller-selected executable, path, provider, or `--force` is accepted.
+  GUI snapshots and progress omit credentials, capability paths, account/model
+  identifiers, prompts, and raw diagnostics.
 - Uninstall inventories and revalidates exact owned paths before removal. Full
   purge refuses modified or foreign runtime, distribution, backup, and
   provider-registry state instead of deleting it recursively.
@@ -747,6 +799,9 @@ Automated coverage includes catalog construction, routing, credential
 isolation, lifecycle rollback, release packaging, installer failures,
 discovery, tool normalization, and compatibility handling. CI runs on macOS
 with Node.js 22.15, 24, and 26.
+
+The native companion has separate Swift protocol, process, and ownership tests,
+plus a universal app build. See [companion development and release checks](docs/MACOS_COMPANION.md#development-and-distribution).
 
 Contributions are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md), follow
 the [Code of Conduct](CODE_OF_CONDUCT.md), and use [SUPPORT.md](SUPPORT.md) to

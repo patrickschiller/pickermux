@@ -10,6 +10,94 @@ pickermux doctor
 Use `doctor --live` only when the static checks pass and a real model inference
 is needed.
 
+## Companion cannot find or validate the CLI or Node.js
+
+The optional menu-bar app requires macOS 13+ and Node.js 22.15.0+ installed in
+`/opt/homebrew/bin`, `/usr/local/bin`, or `/usr/bin`. A Node runtime added only
+by a shell profile is unavailable to the app's narrow process environment.
+Install a supported runtime in one of the documented locations and reopen the
+app. Keep credentials out of shell workarounds and app launch arguments.
+
+The app validates the receipt-owned launcher, current pointer, source
+inventory, and bounded protocol output. It can fall back to its verified
+bundled backend for read-only checks and explicitly confirmed configuration
+setup when the installed CLI is absent or predates the protocol. Other
+mutations require the active installed CLI. If ownership validation fails,
+review the CLI installation; replacing receipts or disabling checks is not a
+recovery procedure.
+
+App and CLI version differences are shown in the panel. Install the matching
+reviewed app build after a CLI update. An unsigned development build does not
+prove that a signed/notarized app is available; see
+[the companion guide](MACOS_COMPANION.md#development-and-distribution).
+
+## Companion configuration preview is blocked or stale
+
+An Ollama or other gateway owns the same root catalog and gateway fields that
+PickerMux uses. Fully quit Codex, ensure its signed-in account cache matches
+the installed client, and choose **Preview configuration changes** before
+applying the explicitly confirmed switch. The preview is bound to the inspected
+configuration and receipt; after any edit, request a fresh preview.
+
+Modified managed blocks, ambiguous root assignments, unknown ownership state,
+or an interrupted recovery prevent automatic switching. Keep the original
+bytes and review the conflict. The app has no force option. Ordinary uninstall
+uses the verified pre-switch backup to restore the former gateway. Historical
+`model_bridge` aliases remain necessary for old chats and must not be removed
+as cosmetic cleanup.
+
+An active root `profile` selector also blocks integration setup or migration.
+A fresh configuration reports `integration-conflict`; a managed one is
+inconsistent. Review the profile selection explicitly before retrying instead
+of deleting ownership markers or choosing a gateway by guesswork.
+
+## Companion refresh, update, or repair is unavailable
+
+Refresh, certification, updates, and configuration changes require Codex to be
+fully quit with `Command-Q`. Closing its last window does not establish that
+state. The optional automatic refresh runs only once after an observed full
+close while the installation is ready; it does not resolve a cache/version or
+configuration conflict.
+
+Use **Check status** or the safe structured CLI snapshot:
+
+```bash
+pickermux companion status
+```
+
+`CODEX_RUNNING` requires a normal full quit. `BUSY` requires waiting for the
+other lifecycle operation. `DISTRIBUTION_INVALID` requires review of the
+installed CLI ownership. `ACCOUNT_CACHE_REFRESH_REQUIRED` or `UPDATE_REQUIRED`
+directs you to confirmed account-cache recovery. `RECOVERY_PENDING` requires
+resuming that checkpoint, with renewed confirmation, before another mutation.
+`CONFIGURATION_CONFLICT` requires review or a fresh configuration preview.
+
+`UPDATE_UNAVAILABLE` can be retried after connectivity returns.
+`UPDATE_INVALID` means release integrity/schema validation failed; do not
+execute the refused payload or bypass checksums. `UPDATE_UNSUPPORTED` requires
+review of the runtime or available release package. Software updates do not
+automatically replace the running app bundle.
+
+If an operation times out or the app closes, recheck status before retrying.
+The recovery helper runs independently once armed. Setup can also retain a
+committed installation when certification is incomplete; use the existing
+[certification recovery](#installation-completes-but-model-certification-does-not)
+instead of assuming the old version remains active.
+
+## Companion login startup, notifications, or Apple events are denied
+
+Enable login startup and notifications only through the app's settings.
+Review **System Settings > General > Login Items**, notification authorization,
+or **Privacy & Security > Automation** when macOS asks for approval. A refused
+or timed-out graceful Codex quit leaves recovery pending or blocked; it never
+authorizes a forced Codex kill. Save work, quit Codex normally, check status,
+and explicitly resume the validated repair.
+
+The new companion's real TCC, login-start, notification, and Codex-update
+acceptance checks are separate from the maintainer-confirmed 0.8.3 live
+baseline. An offline test or unsigned build cannot establish those permissions
+or a successful signed/notarized distribution.
+
 ## Historical chats cannot load `model_bridge`
 
 An older `pickermux uninstall` or `uninstall --remove-cli` can remove the
@@ -329,7 +417,17 @@ account cache, PickerMux receipts, or `~/.codex/auth.json`, and do not use
 finishes the receipt-validated reactivation and opens Codex with the mixed
 catalog.
 
+In 0.9.0, `managedConfig.status` can be `suspended` while the verified recovery
+checkpoint is pending. The original ownership receipt and uninstall baseline
+remain present. A `suspension-conflict` means the temporary native config or
+receipt changed; preserve those files and review the conflict before retrying.
+Configuration migration is unavailable during recovery. The companion's
+**Repair after a Codex update…** resumes through the same helper after renewed
+confirmation; the capability replacement still invalidates earlier encrypted
+compaction continuations.
+
 ## LM Studio was stopped and local models disappeared
+
 
 This is expected in `loaded` mode. A refused connection means the local server
 is deliberately unavailable, so PickerMux publishes a native-only catalog. If

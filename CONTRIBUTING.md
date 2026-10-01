@@ -40,6 +40,20 @@ Some end-to-end checks require Codex Desktop, LM Studio, and a locally loaded
 model; ordinary unit and release-packaging tests must remain deterministic
 without those applications.
 
+For the optional macOS 13+ companion, use Apple command-line tools with Swift 6
+tooling. The package compiles in Swift 5 language mode. Run its isolated tests
+and choose a fresh output directory for an unsigned universal app build:
+
+```bash
+swift test --package-path macos
+node scripts/build-companion.mjs --output /tmp/pickermux-companion-development
+```
+
+The app bundles a verified PickerMux backend and requires an externally
+installed Node.js runtime. A development build does not establish release
+signing or notarization. See [the companion guide](docs/MACOS_COMPANION.md#development-and-distribution)
+for the protected signing workflow and outstanding live acceptance checks.
+
 ## Making a change
 
 1. Create a focused branch from the current default branch.
@@ -59,6 +73,20 @@ without those applications.
 npm test
 npm run check
 ```
+
+Companion changes also require the Swift tests and relevant Node protocol,
+configuration, update, and build tests. Keep Swift observational: it must not
+write Codex TOML, private receipts, certification state, or LaunchAgent files
+directly. Use the finite versioned stdin protocol, validated process targets,
+narrow environment, bounded output, and fixed GUI text. User confirmation
+cannot replace the backend's ownership, lock, cache, or compatibility checks.
+
+Exercise both successful and rejected consent, unknown schemas, oversized
+requests/output, stale previews, edited suspended configuration, child-process
+timeout, and absent/old installed CLI cases. Ordinary tests use temporary
+directories and fake processes. Apple-event/TCC, login startup, real update
+recovery, and signed/notarized distribution require explicit target-machine
+acceptance; report those separately from offline tests.
 
 ## Pull requests
 

@@ -8,6 +8,8 @@ npm-debug.log*
 coverage/
 *.log
 /dist/
+/macos/.build/
+/macos/.swiftpm/
 
 # Private implementation and validation records. Never publish these files.
 /IMPLEMENTIERUNGSVORSCHLAG.md

@@ -1,0 +1,333 @@
+import assert from "node:assert/strict";
+import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { Readable } from "node:stream";
+import test from "node:test";
+
+import {
+  BUILTIN_PROVIDER_QUALIFICATION,
+  COMPANION_ACTIONS,
+  COMPANION_MAX_REQUEST_BYTES,
+  CompanionControlError,
+  collectCompanionStatus,
+  companionFailure,
+  companionSuccess,
+  createCompanionProgress,
+  createCompanionReadOnlyProbes,
+  parseCompanionRequest,
+  readCompanionRequest,
+} from "../src/companion-control.mjs";
+
+const OPERATION_ID = "1804ad9d-4eb2-43f4-95e5-a3b5a1f4b9da";
+const SECRET = "PRIVATE_PROMPT_ACCOUNT_CAPABILITY_TOKEN";
+const consent = { quitCodexTwice: true, interruptTasks: true, invalidateCompaction: true };
+const request = (action, additional = {}) => JSON.stringify({ schemaVersion: 1, action, ...additional });
+
+function probes(overrides = {}) {
+  return {
+    metadata: async () => ({ version: "0.8.3", packagePath: SECRET }),
+    desktop: async () => false,
+    installation: async () => ({ installed: true, receipt: { account: SECRET } }),
+    managedConfig: async () => ({ status: "installed", model: SECRET, baseUrl: SECRET }),
+    service: async () => ({ status: "running", runtime: { capability: SECRET }, health: { prompt: SECRET } }),
+    compatibility: async () => ({ status: "compatible", expected: SECRET }),
+    accountCache: async () => ({ status: "ready", catalog: SECRET }),
+    recovery: async () => null,
+    integration: async () => ({ status: "pickermux", provider: SECRET }),
+    ...overrides,
+  };
+}
+
+test("companion request grammar accepts only named actions with their exact consent", () => {
+  for (const action of COMPANION_ACTIONS) {
+    const additional = action === "recover" ? { confirmation: consent } : action === "configuration-apply"
+      ? { confirmation: { replaceIntegration: true }, previewToken: "f".repeat(64) } : {};
+    assert.deepEqual(parseCompanionRequest(request(action, additional)), { schemaVersion: 1, action, ...additional });
+  }
+  assert.deepEqual(parseCompanionRequest(Buffer.from(request("refresh"))), { schemaVersion: 1, action: "refresh" });
+});
+
+test("companion rejects unknown versions, extra authority and duplicate JSON keys", () => {
+  const rejected = [
+    '{"schemaVersion":1,"schemaVersion":1,"action":"refresh"}',
+    '{"schemaVersion":1,"action":"recover","action":"refresh"}',
+    '{"schemaVersion":1,"action":"refresh","\\u0061ction":"open"}',
+    request("refresh", { force: true }),
+    request("refresh", { configPath: "/private/config" }),
+    request("refresh", { executable: "/bin/sh" }),
+    request("refresh", { provider: "native" }),
+    request("refresh", { confirmation: { replaceIntegration: true } }),
+    request("refresh", { previewToken: "a".repeat(64) }),
+    request("not-supported"),
+    request("refresh", { __proto__: { force: true }, unknown: [] }),
+    request("refresh") + request("open"),
+    "[]", "null", "{\"schemaVersion\":1,\"action\":\"refresh\",}",
+  ];
+  for (const raw of rejected) assert.throws(() => parseCompanionRequest(raw), { code: "INVALID_REQUEST" });
+  assert.throws(() => parseCompanionRequest('{"schemaVersion":2,"action":"refresh"}'), { code: "UNSUPPORTED_SCHEMA" });
+});
+
+test("recovery refuses partial or altered confirmations without creating authority", () => {
+  for (const confirmation of [undefined, null, {}, { ...consent, interruptTasks: false }, { ...consent, forceQuit: true }, { ...consent, quitCodexTwice: "true" }]) {
+    assert.throws(() => parseCompanionRequest(request("recover", { confirmation })), { code: "CONFIRMATION_REQUIRED" });
+  }
+  assert.throws(() => parseCompanionRequest('{"schemaVersion":1,"action":"recover","confirmation":{"quitCodexTwice":true,"interruptTasks":true,"invalidateCompaction":true,"interruptTasks":false}}'), { code: "INVALID_REQUEST" });
+});
+
+test("configuration apply requires exact preview identity and replacement consent", () => {
+  assert.throws(() => parseCompanionRequest(request("configuration-apply")), { code: "CONFIRMATION_REQUIRED" });
+  for (const previewToken of [undefined, "A".repeat(64), "a".repeat(63), SECRET, "/private/config"]) {
+    assert.throws(() => parseCompanionRequest(request("configuration-apply", { confirmation: { replaceIntegration: true }, previewToken })), { code: "INVALID_REQUEST" });
+  }
+  assert.throws(() => parseCompanionRequest(request("configuration-apply", { confirmation: { ...consent, replaceIntegration: true }, previewToken: "a".repeat(64) })), { code: "CONFIRMATION_REQUIRED" });
+});
+
+test("requests are bounded by bytes and require valid UTF-8", () => {
+  assert.throws(() => parseCompanionRequest(" ".repeat(COMPANION_MAX_REQUEST_BYTES + 1)), { code: "REQUEST_TOO_LARGE" });
+  assert.throws(() => parseCompanionRequest("é".repeat(COMPANION_MAX_REQUEST_BYTES)), { code: "REQUEST_TOO_LARGE" });
+  assert.throws(() => parseCompanionRequest(Buffer.from([0xff, 0xfe])), { code: "INVALID_REQUEST" });
+  assert.throws(() => parseCompanionRequest({ schemaVersion: 1, action: "refresh" }), { code: "INVALID_REQUEST" });
+});
+
+test("stdin reader handles chunk boundaries and rejects oversize or stalled input", async () => {
+  const raw = request("refresh");
+  assert.deepEqual(await readCompanionRequest(Readable.from([Buffer.from(raw.slice(0, 17)), Buffer.from(raw.slice(17))])), { schemaVersion: 1, action: "refresh" });
+  await assert.rejects(readCompanionRequest(Readable.from([Buffer.alloc(4_000), Buffer.alloc(97)])), { code: "REQUEST_TOO_LARGE" });
+  let cleanup = false;
+  const stalled = {
+    [Symbol.asyncIterator]() { return this; },
+    next: () => new Promise(() => {}),
+    return() { cleanup = true; return Promise.resolve({ done: true }); },
+  };
+  await assert.rejects(readCompanionRequest(stalled, { timeoutMs: 10 }), { code: "REQUEST_TIMEOUT" });
+  assert.equal(cleanup, true);
+  const stream = new Readable({ read() {} });
+  await assert.rejects(readCompanionRequest(stream, { timeoutMs: 10 }), { code: "REQUEST_TIMEOUT" });
+  assert.equal(stream.destroyed, true);
+});
+
+test("healthy status projects only bounded public values from private probes", async () => {
+  const result = await collectCompanionStatus({ probes: probes() });
+  assert.equal(result.schemaVersion, 1);
+  assert.equal(result.version, "0.8.3");
+  assert.equal(result.state, "ready");
+  assert.deepEqual(result.recovery, { status: "idle", phase: null, operationId: null });
+  assert.deepEqual(result.desktop, { status: "stopped" });
+  assert.deepEqual(result.issues, []);
+  assert.equal(JSON.stringify(result).includes(SECRET), false);
+  assert.ok(result.actions.includes("refresh"));
+  assert.ok(result.actions.includes("open"));
+  assert.ok(result.actions.includes("certify"));
+  assert.equal(result.actions.includes("recover"), false);
+  assert.ok(result.actions.includes("configuration-apply"));
+});
+
+test("status isolates failed probes and never serializes their raw errors", async () => {
+  const result = await collectCompanionStatus({ probes: probes({
+    metadata: async () => ({ version: SECRET }),
+    service: async () => { throw new Error(SECRET); },
+    desktop: async () => { throw Object.assign(new Error(SECRET), { code: SECRET }); },
+  }) });
+  assert.equal(result.state, "degraded");
+  assert.equal(result.version, "unknown");
+  assert.deepEqual(result.managedConfig, { status: "installed" });
+  assert.deepEqual(result.desktop, { status: "unknown" });
+  assert.deepEqual(result.service, { status: "unknown" });
+  assert.equal(result.issues.length, 3);
+  assert.equal(JSON.stringify(result).includes(SECRET), false);
+  for (const action of ["refresh", "recover", "certify", "update", "configuration-apply"]) assert.equal(result.actions.includes(action), false);
+});
+
+test("status bounds stalled probes while retaining complete independent results", async () => {
+  const result = await collectCompanionStatus({ probes: probes({ compatibility: () => new Promise(() => {}) }), probeTimeoutMs: 10 });
+  assert.deepEqual(result.compatibility, { status: "unknown" });
+  assert.equal(result.accountCache.status, "ready");
+  assert.ok(result.issues.some((issue) => issue.code === "compatibility-unavailable"));
+  assert.equal(result.actions.includes("open"), false);
+});
+
+test("recovery status exposes only an operation UUID and fixed workflow phase", async () => {
+  const result = await collectCompanionStatus({ probes: probes({ recovery: async () => ({ phase: "suspended", operationId: OPERATION_ID, baselineFetchedAt: SECRET, clientVersion: SECRET }) }) });
+  assert.equal(result.state, "recovery-pending");
+  assert.deepEqual(result.recovery, { status: "pending", phase: "suspended", operationId: OPERATION_ID });
+  assert.ok(result.actions.includes("recover"));
+  for (const action of ["refresh", "certify", "update", "configuration-apply"]) assert.equal(result.actions.includes(action), false);
+  assert.equal(JSON.stringify(result).includes(SECRET), false);
+});
+
+test("unknown recovery operation IDs fail closed and are never reflected", async () => {
+  const result = await collectCompanionStatus({ probes: probes({ recovery: async () => ({ phase: "suspended", operationId: SECRET }) }) });
+  assert.deepEqual(result.recovery, { status: "unknown", phase: "suspended", operationId: null });
+  assert.equal(result.state, "degraded");
+  assert.equal(result.actions.includes("recover"), false);
+  assert.equal(result.actions.includes("refresh"), false);
+  assert.equal(JSON.stringify(result).includes(SECRET), false);
+});
+
+test("receipt-proven suspension and legacy recovery advertise only confirmed resume", async () => {
+  for (const [managedStatus, integrationStatus] of [["suspended", "conflict"], ["not-installed", "none"]]) {
+    const result = await collectCompanionStatus({ probes: probes({
+      managedConfig: async () => ({ status: managedStatus, installed: false, healthy: true }),
+      integration: async () => ({ status: integrationStatus }),
+      service: async () => ({ status: "not-installed" }),
+      recovery: async () => ({ phase: "suspended", operationId: OPERATION_ID }),
+    }) });
+    assert.equal(result.state, "recovery-pending");
+    assert.ok(result.actions.includes("recover"));
+    for (const action of ["configuration-apply", "refresh", "update", "certify"]) assert.equal(result.actions.includes(action), false);
+    assert.equal(result.issues.some((issue) => issue.code === "configuration-conflict"), false);
+  }
+  for (const override of [
+    { managedConfig: async () => ({ status: "suspension-conflict", healthy: false }) },
+    { managedConfig: async () => ({ status: "suspended", healthy: true }), recovery: async () => null },
+    { managedConfig: async () => ({ status: "suspended", healthy: true }), recovery: async () => ({ phase: "prepared", operationId: OPERATION_ID }) },
+    { managedConfig: async () => ({ status: "not-installed", healthy: true }), integration: async () => ({ status: "foreign" }) },
+  ]) {
+    const result = await collectCompanionStatus({ probes: probes({ integration: async () => ({ status: "conflict" }), recovery: async () => ({ phase: "suspended", operationId: OPERATION_ID }), ...override }) });
+    assert.equal(result.actions.includes("recover"), false);
+    assert.equal(result.actions.includes("configuration-apply"), false);
+  }
+});
+
+test("account-cache mismatch offers confirmed recovery and ordinary age never does", async () => {
+  const result = await collectCompanionStatus({ probes: probes({ accountCache: async () => { throw Object.assign(new Error(SECRET), { code: "CODEX_ACCOUNT_CACHE_REFRESH_REQUIRED" }); } }) });
+  assert.equal(result.accountCache.status, "refresh-required");
+  assert.equal(result.state, "update-required");
+  assert.ok(result.actions.includes("recover"));
+  assert.equal(result.actions.includes("refresh"), false);
+  const old = await collectCompanionStatus({ probes: probes({ accountCache: async () => ({ status: "ready", ageMs: 1e10, fetchedAt: SECRET }) }) });
+  assert.equal(old.state, "ready");
+  assert.equal(old.actions.includes("recover"), false);
+});
+
+test("a quarantined service or compatibility mismatch selects update recovery", async () => {
+  for (const name of ["service", "compatibility"]) {
+    const result = await collectCompanionStatus({ probes: probes({ [name]: async () => ({ status: "update-required", reasons: SECRET }) }) });
+    assert.equal(result.state, "update-required");
+    assert.ok(result.actions.includes("recover"));
+    assert.equal(result.actions.includes("refresh"), false);
+    assert.equal(result.actions.includes("open"), false);
+  }
+});
+
+test("modified owned config and competing integrations cannot offer refresh or recovery", async () => {
+  for (const override of [{ managedConfig: async () => ({ status: "modified" }) }, { managedConfig: async () => ({ status: "integration-conflict" }) }, { integration: async () => ({ status: "ollama" }) }, { integration: async () => ({ status: "foreign" }) }]) {
+    const result = await collectCompanionStatus({ probes: probes(override) });
+    assert.equal(result.state, "configuration-conflict");
+    assert.equal(result.actions.includes("refresh"), false);
+    assert.equal(result.actions.includes("recover"), false);
+    assert.equal(result.actions.includes("certify"), false);
+    assert.equal(result.actions.includes("update"), false);
+    assert.ok(result.actions.includes("configuration-preview"));
+  }
+});
+
+test("status preserves an absent installation and blocks certification while Codex runs", async () => {
+  const missing = await collectCompanionStatus({ probes: probes({
+    installation: async () => ({ installed: false }),
+    managedConfig: async () => ({ status: "not-installed" }),
+    service: async () => ({ status: "not-installed" }),
+    integration: async () => ({ status: "none" }),
+  }) });
+  assert.equal(missing.state, "not-installed");
+  assert.equal(missing.actions.includes("refresh"), false);
+  assert.equal(missing.actions.includes("update"), false);
+  assert.ok(missing.actions.includes("configuration-apply"));
+  const running = await collectCompanionStatus({ probes: probes({ desktop: async () => true }) });
+  assert.equal(running.desktop.status, "running");
+  assert.equal(running.actions.includes("certify"), false);
+  assert.equal(running.actions.includes("configuration-apply"), false);
+});
+
+test("fresh configuration activation requires a verified cache and consistent config", async () => {
+  for (const override of [
+    { accountCache: async () => ({ status: "unknown" }) },
+    { accountCache: async () => ({ status: "refresh-required" }) },
+    { managedConfig: async () => ({ status: "modified" }) },
+    { integration: async () => ({ status: "conflict" }) },
+  ]) {
+    const result = await collectCompanionStatus({ probes: probes(override) });
+    assert.equal(result.actions.includes("configuration-apply"), false);
+  }
+  const absentRuntime = await collectCompanionStatus({ probes: probes({
+    installation: async () => ({ installed: false }),
+    service: async () => { throw new Error(SECRET); },
+    compatibility: async () => { throw new Error(SECRET); },
+    managedConfig: async () => ({ status: "not-installed" }),
+    integration: async () => ({ status: "ollama" }),
+  }) });
+  assert.ok(absentRuntime.actions.includes("configuration-apply"));
+  assert.equal(absentRuntime.actions.includes("refresh"), false);
+});
+
+test("unverified or invalid distribution ownership prevents configuration activation", async () => {
+  for (const installation of [
+    async () => ({ status: "invalid" }),
+    async () => ({ status: "unknown" }),
+    async () => { throw new Error(SECRET); },
+  ]) {
+    const result = await collectCompanionStatus({ probes: probes({ installation }) });
+    assert.equal(result.actions.includes("configuration-apply"), false);
+    for (const action of ["diagnose", "configuration-preview", "update-check"]) assert.ok(result.actions.includes(action));
+  }
+});
+
+test("safe errors and action envelopes never reflect exception text or unknown data", () => {
+  const failure = companionFailure(Object.assign(new Error(SECRET), { code: "CODEX_ACCOUNT_CACHE_REFRESH_REQUIRED", cause: SECRET }));
+  assert.equal(failure.code, "ACCOUNT_CACHE_REFRESH_REQUIRED");
+  assert.equal(JSON.stringify(failure).includes(SECRET), false);
+  assert.equal(companionFailure(new Error(SECRET)).code, "ACTION_FAILED");
+  assert.equal(companionFailure(new CompanionControlError("CODEX_RUNNING")).code, "CODEX_RUNNING");
+  const complete = companionSuccess("recover", { started: true, resumed: false, operationId: OPERATION_ID, model: SECRET, message: SECRET, paths: SECRET });
+  assert.deepEqual(complete, { schemaVersion: 1, ok: true, code: "COMPLETE", action: "recover", started: true, resumed: false, operationId: OPERATION_ID });
+  assert.equal(companionSuccess("update", { targetVersion: "1.2.3", latestVersion: SECRET, operationId: SECRET }).targetVersion, "1.2.3");
+});
+
+test("progress reflects only bounded counters, known phases, and safe operation IDs", () => {
+  assert.deepEqual(createCompanionProgress({ phase: "suspended", operationId: OPERATION_ID, current: 1, total: 2, elapsedMs: 10, model: SECRET }), { schemaVersion: 1, type: "progress", phase: "suspended", operationId: OPERATION_ID, current: 1, total: 2, elapsedMs: 10 });
+  assert.deepEqual(createCompanionProgress({ phase: SECRET, current: -1, total: Infinity, elapsedMs: 1e20, operationId: SECRET }), { schemaVersion: 1, type: "progress", phase: "checking" });
+});
+
+test("configuration and update replies project safe preview decisions without raw config", () => {
+  const projected = companionSuccess("configuration-preview", {
+    status: "ollama", canApply: true, requiresConfirmation: true,
+    previewToken: "c".repeat(64), changes: ["replace-integration", SECRET, "create-backup", "create-backup"],
+    configPath: SECRET, text: SECRET,
+  });
+  assert.deepEqual(projected, {
+    schemaVersion: 1, ok: true, code: "COMPLETE", action: "configuration-preview",
+    status: "ollama", canApply: true, requiresConfirmation: true, previewToken: "c".repeat(64),
+    changes: ["replace-integration", "create-backup"],
+  });
+  assert.equal(JSON.stringify(projected).includes(SECRET), false);
+  assert.equal(Object.hasOwn(companionSuccess("configuration-apply", projected), "previewToken"), false);
+  assert.equal(companionSuccess("update-check", { status: "available", targetVersion: "0.9.0" }).status, "available");
+  assert.equal(Object.hasOwn(companionSuccess("update-check", { status: SECRET }), "status"), false);
+});
+
+test("qualification keeps transport controls and all later trust boundaries explicit", () => {
+  assert.equal(BUILTIN_PROVIDER_QUALIFICATION.supportedMode, "explicit-provider");
+  assert.equal(BUILTIN_PROVIDER_QUALIFICATION.compactMode, "blocked");
+  assert.equal(BUILTIN_PROVIDER_QUALIFICATION.requirements.find((entry) => entry.code === "request-retries-zero").outcome, "mismatch");
+  assert.equal(BUILTIN_PROVIDER_QUALIFICATION.requirements.find((entry) => entry.code === "stream-retries-zero").outcome, "mismatch");
+  assert.ok(BUILTIN_PROVIDER_QUALIFICATION.requirements.some((entry) => entry.code === "historical-provider-identity"));
+});
+
+test("default integration inspector uses exact bounded config files and never follows auth symlinks", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "pickermux-companion-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const paths = { configPath: path.join(directory, "config.toml"), statePath: path.join(directory, "state.json") };
+  const readOnly = createCompanionReadOnlyProbes({ paths });
+  await writeFile(paths.configPath, `openai_base_url = "http://127.0.0.1:11434/api/codex/v1"\nmodel_catalog_json = "/private/.ollama/ollama-launch-models.json"\n`, { mode: 0o600 });
+  assert.deepEqual(await readOnly.integration(), { status: "ollama" });
+  await writeFile(paths.configPath, "model_catalog_json = \"/private/other.json\"\n", { mode: 0o600 });
+  assert.deepEqual(await createCompanionReadOnlyProbes({ paths }).integration(), { status: "foreign" });
+  const original = await readFile(paths.configPath);
+  assert.deepEqual(await readFile(paths.configPath), original);
+  const linkedPaths = { configPath: path.join(directory, "linked.toml"), statePath: paths.statePath };
+  await symlink("auth.json", linkedPaths.configPath);
+  assert.deepEqual(await createCompanionReadOnlyProbes({ paths: linkedPaths }).integration(), { status: "conflict" });
+  const absentDistribution = createCompanionReadOnlyProbes({ distributionPaths: { applicationDirectory: path.join(directory, "absent") } });
+  assert.deepEqual(await absentDistribution.installation(), { installed: false });
+});

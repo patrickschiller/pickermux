@@ -1,6 +1,6 @@
 # PickerMux Architecture
 
-This document describes PickerMux v0.8.3.
+This document describes PickerMux v0.9.0.
 It is intended for contributors, security reviewers, and users who want to
 understand what runs on their Mac.
 
@@ -518,6 +518,29 @@ and ownership state; activation requires health `webSearchContractVersion = 1`
 and failure restores the prior state. Uninstall removes the additional feature
 block only when PickerMux owns it, preserving pre-existing feature settings.
 
+### Configuration mode and gateway switching
+
+The supported layout remains the explicit provider. Its HTTP/SSE, WebSocket
+exclusion, zero request/stream retries, and timeout controls are part of the
+transport contract. A root-only built-in-provider mode inherits different retry
+defaults and does not qualify the required transport controls. The qualification
+report records that block without granting search, tools, context, or compaction
+authority. Model-bound certification remains unchanged.
+
+`previewConfigIntegration` scans only the exact configuration and private
+ownership state, returns a fixed classification and proposed change enums, and
+binds confirmation to a digest token. It recognizes the supported local Ollama
+gateway/catalog structure conservatively; unknown gateway owners remain
+foreign. No GUI request supplies a path, provider, credential, or executable.
+
+An explicitly confirmed switch receives an in-process ownership receipt and
+is revalidated before configuration commit. The original verified backup and
+prior root assignments remain the uninstall baseline. Concurrent state/config
+changes stop activation and enter the existing rollback boundary. Managed
+layout migration canonicalizes only receipt-proven provider bytes, preserves
+user-owned bytes and line endings, and maintains historical provider aliases.
+Unknown or modified state is not automatically reformatted.
+
 ### Full account-cache refresh
 
 `refresh --full` is a separate, explicitly confirmed recovery transaction. It
@@ -548,6 +571,16 @@ it stores neither catalog contents nor account identity. The helper:
 4. requests and verifies a second graceful quit before any integration write;
 5. reactivates the preserved configuration through the normal transactional
    refresh gates, then opens Codex so the new mixed catalog is loaded.
+
+In 0.9.0, suspension is a configuration transaction rather than an uninstall.
+It removes the owned active blocks into a neutral native configuration and
+retains the private ownership receipt with a `full-refresh-v1` suspension digest.
+The original backup, prior assignments, and later uninstall baseline survive
+reactivation. A previous Ollama or foreign gateway is therefore not reinstated
+during the native account-cache fetch. An unchanged receipt-bound suspension
+reports `suspended`; edited bytes or state report `suspension-conflict` and block
+reactivation. Legacy checkpoint state remains subject to the existing ownership
+and helper admission checks.
 
 All application-state and lock-handoff waits are bounded. A rejected or
 timed-out quit is never converted into `SIGKILL` or another forced termination.
@@ -707,7 +740,7 @@ The private health endpoint remains available with fixed safe status/reason
 enums so the LaunchAgent does not enter a restart loop and diagnostics can
 direct the user to refresh.
 
-Versions 0.6.0 through 0.8.3 use bridge contract
+Versions 0.6.0 through 0.9.0 use bridge contract
 `codex-responses-bridge/p6-v1`.
 The managed publisher emits the search claim only from valid model-bound
 evidence, and the runtime accepts it only on entries generated under that exact
@@ -716,6 +749,77 @@ contract. Older or non-p6 catalog claims cannot grant the route capability.
 `doctor` also runs the account-cache inspection as an independent check. It can
 therefore report whether the signed-in account cache matches the current Codex
 client even when the bridge runtime or generated mixed catalog is absent.
+
+## macOS companion and control boundary
+
+```mermaid
+flowchart TB
+    App[SwiftUI menu-bar app]
+    Installed[Validated active CLI]
+    Bundled[Manifest-verified bundled backend]
+    Control[Versioned stdin control protocol]
+    Lifecycle[Existing locks and lifecycle transactions]
+    Helper[Independent recovery helper]
+    App --> Installed
+    App -->|Read-only checks and confirmed setup| Bundled
+    Installed --> Control
+    Bundled --> Control
+    Control --> Lifecycle
+    Lifecycle --> Helper
+```
+
+The `MenuBarExtra` app targets macOS 13+ on Apple silicon and Intel. Swift owns
+display, explicit dialogs, optional `SMAppService` login startup, notifications,
+and an opt-in refresh after a fully observed Codex close. Swift never edits
+TOML, certification files, receipts, or LaunchAgents. Node.js 22.15+ remains an
+external prerequisite.
+
+`companion status` collects independent read-only probes and projects only
+bounded status enums, booleans, safe issues, a version, allowed next actions,
+and a recovery phase/UUID. Failed probes produce partial results rather than
+raw errors. The app samples on a five-second polling cycle; backend deadlines
+and execution time can lengthen that cycle. Account-cache age alone does not
+grant recovery authority.
+
+`companion run` accepts one UTF-8 request capped at 4,096 bytes and a bounded
+input wait. Version 1 accepts only the fixed action set. Unknown or duplicate
+keys, extra requests, arbitrary paths/providers/executables, and force flags
+are rejected. Recovery requires three explicit true consent fields; a gateway
+switch requires explicit replacement consent and its current preview token.
+The dispatcher reads fresh status and validates the active installed source
+before ordinary mutations. GUI confirmation cannot bypass ownership checks,
+locks, provider validation, certification, or rollback.
+
+Invocation uses argument arrays with a narrow environment and drains bounded
+stdout/stderr concurrently. There is no shell interpolation or HTTP control
+listener. Installed launcher receipts, ownership, symlinks, and digests are
+checked. The bundled backend's manifest hash is pinned into the app binary;
+file size/digest, parent directory, and complete inventory checks precede Node
+execution. It can inspect and explicitly set up an absent/older installation,
+but cannot control another installed source's service or arm its recovery helper.
+The app never retries a possibly committed action via a different backend.
+
+Progress is an observational versioned stderr stream containing only fixed
+phases, safe counters, and an optional operation UUID. The app shows a busy
+indicator and samples recovery checkpoints. Failed envelopes contain fixed
+codes and prose. Paths, capability state, account/model identities, prompts,
+native authentication, raw exception messages, and provider output do not cross
+this control boundary. `auth.json` is never read.
+
+The updater checks a fixed GitHub repository and exact versioned assets,
+restricts HTTPS redirects, and bounds downloaded/expanded data. Archive and
+manifest checksums, embedded-manifest equality, every file's mode/size/digest,
+allowlisted names, and package/runtime correspondence are verified before any
+downloaded entry point runs. Private extraction precedes the existing setup
+transaction; original activation rollback and retained incomplete-certification
+semantics remain authoritative. CLI updates and app replacement are separate.
+
+The universal builder embeds the verified backend and produces an unsigned
+development bundle by default. Its explicit release mode requires Developer ID,
+hardened runtime, accepted notarization, stapling, and Gatekeeper assessment.
+A protected signing job retains reviewed artifacts. Build configuration alone
+does not establish signing or live macOS acceptance; see
+[the companion guide](MACOS_COMPANION.md).
 
 ## Private local data
 

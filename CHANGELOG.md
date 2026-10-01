@@ -7,10 +7,55 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-01
+
+### Added
+
+- Add a native macOS 13+ menu-bar companion for installation status, picker
+  refresh, Codex opening, explicitly confirmed update recovery, live model
+  certification, configuration previews, and PickerMux update checks.
+- Add `pickermux companion status` and `pickermux companion run` with a
+  versioned, bounded JSON protocol. Partial status and fixed error codes omit
+  credentials, capability addresses, account/model identities, and raw logs.
+- Include a manifest-verified backend in the app for read-only inspection and
+  explicit setup when the installed CLI is absent or predates the protocol.
+  Other mutations require the active receipt-owned CLI.
+- Add an opt-in refresh after Codex closes, opt-in status notifications, and
+  optional login startup through macOS Service Management. Recovery,
+  certification, configuration switches, and updates remain user-started.
+- Add a universal Apple-silicon/Intel app build with separate unsigned
+  development and Developer ID/notarized release paths. A protected signing
+  workflow retains reviewed release artifacts rather than publishing them
+  automatically.
+- Verify fixed-origin release assets, checksums, the embedded manifest, and
+  each archive file before executing an update through the existing setup
+  transaction. CLI updates retain the existing rollback and incomplete
+  certification boundaries.
+
+### Changed
+
+- Retain the explicit `model_bridge` provider and its HTTP/SSE and zero-retry
+  controls. The root-only built-in-provider mode remains blocked because its
+  transport defaults do not satisfy the required contract.
+- Canonicalize only receipt-owned provider configuration while preserving
+  user bytes and line endings. A confirmed preview token binds an Ollama or
+  other gateway replacement to the inspected configuration; verified backups,
+  concurrent-edit checks, rollback, and later uninstall preserve the previous
+  integration and historical chat compatibility.
+- Preserve configuration ownership receipts during full refresh and use
+  temporary native configuration instead of reinstating a previous gateway.
+  Edited suspension state blocks reactivation; a valid checkpoint resumes only
+  after renewed confirmation.
+
 ### Fixed
 
 - Show the regular installer first in the README's installation section and
   move the repair-only `--repair-chats` command into its own subsection.
+
+The maintainer confirmed the 0.8.3 live baseline. The new companion's real
+macOS Apple-event/TCC, recovery, login-start, and signed-release acceptance
+remain separate checks; signing and notarization are not established by an
+unsigned development build. See [the companion guide](docs/MACOS_COMPANION.md).
 
 ## [0.8.3] - 2026-09-30
 
@@ -576,7 +621,8 @@ confirm the release date before tagging. See the
   paths and file types, refuses root execution and foreign launchers, and
   restores the previous distribution state when activation fails.
 
-[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.8.3...HEAD
+[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.9.0
 [0.8.3]: https://github.com/patrickschiller/pickermux/releases/tag/v0.8.3
 [0.8.2]: https://github.com/patrickschiller/pickermux/releases/tag/v0.8.2
 [0.8.1]: https://github.com/patrickschiller/pickermux/releases/tag/v0.8.1

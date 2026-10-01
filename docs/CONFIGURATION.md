@@ -408,6 +408,51 @@ conversation history. Native Codex routing and configuration are unaffected.
 
 ## Applying configuration changes
 
+### Codex integration ownership and companion previews
+
+PickerMux 0.9.0 retains an explicit `model_bridge` provider. Its additional
+transport fields are deliberate: WebSockets remain disabled, request/stream
+retries remain zero, and configured stream timeout controls are retained.
+The root-only built-in-provider mode is blocked because its defaults do not
+satisfy the required transport contract. A gateway switch cannot grant tools
+or substitute for exact model certification.
+
+The companion's **Preview configuration changes** action returns the active
+integration classification, a finite list of proposed changes, and a digest
+token bound to the inspected configuration/receipt bytes. It recognizes the
+supported local Ollama gateway and catalog; other unowned root overrides are
+classified as foreign. No private TOML, path, account, model, or gateway
+capability appears in the preview.
+
+An active root `profile` selector is outside this integration contract.
+Fresh setup reports `integration-conflict`, and an already managed profile
+configuration is inconsistent. Review and resolve the selector explicitly;
+PickerMux does not guess which profile-specific gateway or catalog wins.
+
+With Codex fully closed and a valid account cache, **Apply configuration
+changes…** requires explicit replacement confirmation and that exact token.
+Setup rechecks the preview before committing, retains a verified backup,
+preserves unrelated user bytes and line endings, and rolls back a failed
+activation. Concurrent edits require a fresh preview. Edited owned blocks or
+ambiguous state stop the operation. The bundled backend permits first setup
+or an upgrade from a CLI predating the protocol, using the same existing
+distribution ownership checks.
+
+An Ollama switch has one active gateway owner; it does not combine two
+independent integrations. Ordinary uninstall restores the verified prior
+root settings, including the Ollama gateway when it was the recorded baseline,
+and keeps the historical `model_bridge` compatibility alias. Subsequent full
+refreshes preserve this original uninstall baseline. Cleanup canonicalizes
+only PickerMux-owned provider layout, not arbitrary user TOML.
+
+The GUI accepts no custom configuration path. First setup uses the safe
+release default; an existing installation reuses its activated private
+configuration. Use the existing custom-config installer or CLI flow for
+provider configuration changes. See [the companion guide](MACOS_COMPANION.md)
+for its protocol and distribution limits.
+
+### Provider configuration changes
+
 If the provider identity and managed bridge contract remain compatible, apply
 the edited source file explicitly:
 
@@ -460,6 +505,20 @@ you to rerun `pickermux refresh --full`; after the confirmation, the
 receipt-active helper continues the validated checkpoint. Do not delete
 `models_cache.json`, modify the installed service configuration, or run purge
 as a shortcut.
+
+Version 0.9.0 also retains the configuration ownership receipt through temporary
+suspension. It removes the active owned blocks into neutral native settings
+instead of reinstating a previous Ollama or foreign gateway during the cache
+fetch. The unchanged temporary state is reported as `suspended`; changed
+configuration/state produces `suspension-conflict` and blocks reactivation.
+Successful reactivation keeps the original verified backup and uninstall
+baseline. Full refresh still changes the capability and invalidates earlier
+encrypted compaction continuations.
+
+The companion uses the same helper after its native confirmation; it does not
+feed the CLI's `FULL` word into a simulated terminal. Resume requires renewed
+confirmation. Pending recovery prevents configuration migration and ordinary
+mutations until the validated operation is resolved.
 
 `pickermux status` reports `full-refresh=idle` when no recovery is pending and
 the current phase otherwise. Its JSON form exposes the same information under

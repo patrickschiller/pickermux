@@ -1,6 +1,6 @@
 {
   "name": "pickermux",
-  "version": "0.8.3",
+  "version": "0.9.0",
   "private": true,
   "description": "Use loaded LM Studio models directly from the Codex Desktop model picker",
   "license": "MIT",
@@ -30,8 +30,10 @@
   },
   "scripts": {
     "test": "node --test",
-    "check": "for file in bin/*.mjs src/*.mjs test/*.mjs; do node --check \"$file\"; done",
+    "check": "for file in bin/*.mjs src/*.mjs scripts/*.mjs test/*.mjs; do node --check \"$file\"; done",
     "release:build": "node scripts/build-release.mjs --output dist",
+    "companion:build": "node scripts/build-companion.mjs --output .artifacts/companion",
+    "companion:test": "swift test --package-path macos",
     "verify": "npm run check && npm test"
   },
   "engines": {
