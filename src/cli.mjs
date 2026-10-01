@@ -177,7 +177,11 @@ const COMMANDS = new Set([
 ]);
 
 function usage() {
-  return `PickerMux — Codex + LM Studio, one model picker
+  return `PickerMux — Codex + Responses providers, one model picker
+
+Use local or remote models through LM Studio or an explicitly configured
+compatible Responses provider. LM Studio adds loaded-model discovery;
+other providers require a model allowlist. Chat Completions alone is insufficient.
 
 Usage:
   pickermux discover [--config PATH] [--json]
@@ -211,9 +215,9 @@ The bundled Codex executable is detected in the current or legacy Desktop layout
 CODEX_BINARY overrides discovery for this command; it is not saved to the service.
 
 Install and refresh enable shared Codex web search unless explicitly disabled.
-External models still require tool certification; search runs outside LM Studio.
+External models still require tool certification; search uses the native Codex backend.
 Setup and install automatically certify discovered models without a valid tool receipt.
-Live tests can take several minutes per model. Keep models loaded and Codex fully closed.
+Live tests can take several minutes per model. Keep configured models available and Codex fully closed.
 Progress is written to stderr; --json keeps stdout machine-readable.
 LM Studio context compaction uses one bounded summary request without tool schemas.
 V2 summaries omit separately supplied base instructions, retaining all conversation messages.

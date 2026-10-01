@@ -63,13 +63,13 @@ public struct IntegrationToggleState {
       guidance = "Open Codex while signed in and wait for its native model picker to load. Fully quit Codex, then check status again."
     } else if snapshot.integration.status == "ollama" || snapshot.integration.status == "foreign" {
       label = "Another integration is active"
-      guidance = "Turning on installs PickerMux and replaces the current picker integration after a verified backup. Setup may send certification test prompts to loaded models."
+      guidance = "Turning on installs PickerMux and replaces the current picker integration after a verified backup. Setup may send certification test prompts to configured provider models."
     } else if snapshot.installation.status == "installed" {
       label = "Installed, currently off"
-      guidance = "Turn on to activate PickerMux in Codex. Setup may send certification test prompts to loaded models."
+      guidance = "Turn on to activate PickerMux in Codex. Setup may send certification test prompts to configured provider models."
     } else {
       label = "Ready to install"
-      guidance = "Turning on installs PickerMux and adds loaded provider models to Codex. Setup may send certification test prompts. Keep Codex closed until it finishes."
+      guidance = "Turning on installs PickerMux and adds configured provider models to Codex. New installations use LM Studio by default. Keep Codex closed during setup; certification may send live test prompts."
     }
   }
 }
@@ -129,7 +129,7 @@ public func changePickerMuxIntegration(_ enabled: Bool, reviewInstalledSetup: Bo
     snapshot.installation.status == "installed" ? "Enable PickerMux in Codex?" : "Install and enable PickerMux?"
   let replacement = replacing ? "The current picker integration will be replaced after a verified backup. " : ""
   let review = IntegrationReview(title: title,
-    text: "\(replacement)PickerMux will install or activate its CLI and bridge so loaded LM Studio models appear alongside native Codex models. Existing settings are preserved and the earlier configuration remains restorable. Keep Codex fully closed and models loaded. Setup can send live certification test prompts to the loaded models. Reopen Codex after setup finishes.",
+    text: "\(replacement)PickerMux will install or activate its CLI and bridge so configured provider models appear alongside native Codex models. New installations use LM Studio by default. Existing settings are preserved and the earlier configuration remains restorable. Keep Codex fully closed and provider models available. Setup can send live certification test prompts to those models. Reopen Codex after setup finishes.",
     button: upgrading ? "Update setup" : snapshot.installation.status == "installed" ? "Enable PickerMux" : "Install and enable", preview: preview)
   if consent == .review {
     guard await confirm(review) else { return .cancelled }

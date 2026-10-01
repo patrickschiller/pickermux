@@ -1,6 +1,6 @@
 # PickerMux Architecture
 
-This document describes PickerMux v0.9.3.
+This document describes PickerMux v0.9.4.
 It is intended for contributors, security reviewers, and users who want to
 understand what runs on their Mac.
 
@@ -53,6 +53,17 @@ flowchart TB
 The service is installed as a user LaunchAgent. Its runtime copy lives outside
 the source checkout so macOS privacy protection on folders such as Documents
 does not break login-time startup.
+
+Configured external providers have two supported kinds. `lmstudio-responses`
+adds LM Studio-specific metadata discovery and request adapters.
+`openai-responses` supports explicitly configured local or remote Responses
+providers with a model allowlist verified through `/models`. Both route model
+requests through the Responses API and require exact model-bound certification
+before tool access. Chat Completions compatibility alone does not establish
+this contract. Automatic loaded-model discovery, Efficient Fidelity, and the
+local context-compaction adapter remain LM Studio-specific. The companion's
+first-install default is LM Studio; it also controls other providers activated
+through the CLI's custom configuration.
 
 ## Catalog construction
 
@@ -740,7 +751,7 @@ The private health endpoint remains available with fixed safe status/reason
 enums so the LaunchAgent does not enter a restart loop and diagnostics can
 direct the user to refresh.
 
-Versions 0.6.0 through 0.9.3 use bridge contract
+Versions 0.6.0 through 0.9.4 use bridge contract
 `codex-responses-bridge/p6-v1`.
 The managed publisher emits the search claim only from valid model-bound
 evidence, and the runtime accepts it only on entries generated under that exact

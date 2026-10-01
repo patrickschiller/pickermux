@@ -7,6 +7,19 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [0.9.4] - 2026-10-01
+
+### Changed
+
+- Describe PickerMux as a bridge from Codex Desktop to local and remote
+  compatible Responses providers in the README, package metadata, and companion.
+- Document the existing provider kinds, allowlist requirements, and model-bound
+  certification. Identify LM Studio as the first-install default with specific
+  loaded-model discovery, Efficient Fidelity, and local compaction adapters.
+- Generalize setup and certification copy to available configured-provider
+  models. Provider support, routing, credentials, and certification gates are
+  unchanged.
+
 ## [0.9.3] - 2026-10-01
 
 ### Fixed
@@ -683,7 +696,8 @@ confirm the release date before tagging. See the
   paths and file types, refuses root execution and foreign launchers, and
   restores the previous distribution state when activation fails.
 
-[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.9.3...HEAD
+[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.9.4...HEAD
+[0.9.4]: https://github.com/patrickschiller/pickermux/releases/tag/v0.9.4
 [0.9.3]: https://github.com/patrickschiller/pickermux/releases/tag/v0.9.3
 [0.9.2]: https://github.com/patrickschiller/pickermux/releases/tag/v0.9.2
 [0.9.1]: https://github.com/patrickschiller/pickermux/releases/tag/v0.9.1

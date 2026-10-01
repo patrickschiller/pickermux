@@ -29,7 +29,7 @@ public enum CompanionAction: String, Codable, CaseIterable {
     case .refresh: return "Refresh picker"
     case .open: return "Open Codex"
     case .recover: return "Repair after a Codex update…"
-    case .certify: return "Certify loaded models…"
+    case .certify: return "Certify models…"
     case .diagnose: return "Check installation"
     case .updateCheck: return "Check for PickerMux updates"
     case .update: return "Update PickerMux…"
@@ -263,8 +263,8 @@ public func companionActionFailureMessage(_ code: String) -> String {
     "UPDATE_INVALID": "The update could not be verified. Check status and retry only with a verified release.",
     "UPDATE_UNAVAILABLE": "The update service is unavailable. Check your connection and try again later.",
     "UPDATE_UNSUPPORTED": "No supported update is available for this system. Review the release requirements in Help.",
-    "CERTIFICATION_INCOMPLETE": "PickerMux is installed, but model certification is incomplete. Leave models loaded and choose Certify loaded models to retry.",
-    "PROVIDER_UNAVAILABLE": "The model server could not be reached during setup. Check the configured server and loaded models, then retry setup.",
+    "CERTIFICATION_INCOMPLETE": "PickerMux is installed, but model certification is incomplete. Keep configured provider models available and choose Certify models to retry.",
+    "PROVIDER_UNAVAILABLE": "The model server could not be reached during setup. Check the configured server and model availability, then retry setup.",
     "PROVIDER_TIMEOUT": "The model server did not respond in time during setup. Check that it is running and responsive, then retry setup.",
     "PROVIDER_PERMISSION_DENIED": "macOS denied access needed for setup. Review PickerMux in System Settings > Privacy & Security and its installation permissions, then retry setup.",
     "PROVIDER_AUTH_REQUIRED": "The model server rejected access during setup. Review the configured provider credentials and access settings, then retry setup.",

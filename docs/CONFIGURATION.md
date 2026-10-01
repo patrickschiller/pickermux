@@ -11,6 +11,34 @@ The schema is intentionally narrow. Unknown keys, inline secrets, ambiguous
 credential sources, wildcard model entries, and configurable native Codex
 destinations are rejected.
 
+## Supported provider kinds
+
+PickerMux connects Codex Desktop to local or remote external models through
+the Responses API. LM Studio is the default provider, and the core also
+supports explicitly configured compatible Responses providers.
+
+| Kind | Discovery | Required model information |
+| --- | --- | --- |
+| `lmstudio-responses` | Automatic loaded-model metadata or an explicit allowlist. | Loaded LM Studio instances supply metadata; configured entries may provide overrides. |
+| `openai-responses` | Explicit allowlist verified against `<baseUrl>/models`. | Each model must specify `type: "llm"` and a positive `contextWindow`. |
+
+A generic provider's model list must have the OpenAI-compatible
+`{"data": [{"id": "example-model"}]}` shape, and inference must implement
+`<baseUrl>/responses`. Chat Completions compatibility alone does not satisfy
+this contract. Provider credentials remain scoped to the configured provider;
+native Codex credentials are never reused for an external endpoint. Tool
+access requires the model-bound live certification matrix to pass.
+
+Automatic loaded-model discovery, Efficient Fidelity, and PickerMux's local
+context-compaction adapter are specific to LM Studio. Other providers use
+their explicit configuration and supported Responses behavior. Configure
+private-network access explicitly when the endpoint is local or on a trusted
+private network; the bridge itself always remains loopback-only.
+
+The companion's first installation uses the bundled LM Studio default.
+Activate a custom provider configuration through the CLI first; later
+companion actions reuse that installed configuration.
+
 For a first release installation with a custom configuration, pass the path to
 the shell that executes the installer:
 
@@ -28,8 +56,8 @@ do not replace it with a new release default.
 external models with missing, stale, or pending base receipts. This uses the
 activated provider configuration, including any explicitly configured remote
 provider. Valid Direct or Efficient Fidelity receipts are reused. Keep Codex
-closed and models loaded; allow several minutes per model. Progress and waiting
-updates go to stderr, including when `--json` is selected; stdout then contains
+closed and configured models available; allow several minutes per model.
+Progress and waiting updates go to stderr, including when `--json` is selected; stdout then contains
 one JSON result with a `certification.status` of `complete` or `incomplete`.
 An incomplete certification exits with status 1 while retaining the activated
 installation and the existing certification recovery boundary. Ordinary
@@ -302,7 +330,11 @@ Use a stable `.ts.net` MagicDNS name instead of an IP when appropriate.
 
 ## Authenticated Responses-compatible provider
 
-Persistent services should use the macOS Keychain:
+This adapter supports explicitly configured local or remote Responses
+providers. The example below uses a remote endpoint and an explicit model
+allowlist. Its model list and Responses behavior must satisfy the contract
+described above; it does not imply that every OpenAI-compatible service is
+supported. Persistent authenticated services should use the macOS Keychain:
 
 ```json
 {

@@ -1,8 +1,8 @@
 {
   "name": "pickermux",
-  "version": "0.9.3",
+  "version": "0.9.4",
   "private": true,
-  "description": "Use loaded LM Studio models directly from the Codex Desktop model picker",
+  "description": "Use local and remote models from compatible Responses providers in Codex Desktop",
   "license": "MIT",
   "author": "Patrick Schiller",
   "homepage": "https://github.com/patrickschiller/pickermux#readme",

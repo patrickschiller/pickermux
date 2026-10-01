@@ -158,7 +158,7 @@ final class CompanionController: ObservableObject {
     operationNoticeAction = busy
     operationFailed = false
     operationStartedAt = Date()
-    message = enabled ? "Installing and activating PickerMux… Keep Codex closed and models loaded." : "Turning off PickerMux…"
+    message = enabled ? "Installing and activating PickerMux… Keep Codex closed and configured provider models available." : "Turning off PickerMux…"
     Task {
       let lease = await operationQueue.acquire(.action)
       do {
@@ -203,7 +203,7 @@ final class CompanionController: ObservableObject {
     operationNoticeAction = action
     operationFailed = false
     operationStartedAt = Date()
-    message = action == .certify ? "Certification is running; keep models loaded." : "\(action.label)…"
+    message = action == .certify ? "Certification is running; keep configured provider models available." : "\(action.label)…"
     Task {
       let lease = await operationQueue.acquire(.action)
       var confirmed = false
@@ -212,8 +212,8 @@ final class CompanionController: ObservableObject {
           text: "Codex will quit twice. Active tasks may be interrupted. PickerMux temporarily opens Codex with native models to refresh the account cache, then restores the picker and opens Codex again. The installation capability changes; earlier encrypted compaction continuations cannot be resumed. An interrupted recovery also requires this confirmation again.",
           button: "Start repair")
       } else if action == .certify {
-        confirmed = await confirmation(title: "Certify loaded models?",
-          text: "PickerMux sends live test prompts to the configured providers. Certification can take several minutes per model. Finish active model tasks and leave the models loaded until it completes.", button: "Start certification")
+        confirmed = await confirmation(title: "Certify models?",
+          text: "PickerMux sends live test prompts to the configured providers. Certification can take several minutes per model. Finish active model tasks and keep the configured models available until it completes.", button: "Start certification")
       } else if action == .update {
         confirmed = await confirmation(title: "Update PickerMux?",
           text: "PickerMux will verify the release download and activate it through its existing distribution transaction. The CLI remains responsible for ownership checks and rollback. Review the current status after the update.", button: "Update")
@@ -328,7 +328,7 @@ final class CompanionController: ObservableObject {
   }
 
   private func resultMessage(_ result: CompanionResult, action: CompanionAction) -> String {
-    if result.certificationIncomplete { return "PickerMux is installed, but model certification is incomplete. Leave models loaded and choose Certify loaded models to retry." }
+    if result.certificationIncomplete { return "PickerMux is installed, but model certification is incomplete. Keep configured provider models available and choose Certify models to retry." }
     if action == .configurationApply { return "PickerMux setup completed. Review the status, then reopen Codex to load the picker." }
     if action == .integrationDeactivate { return "PickerMux was turned off. Reopen Codex to load the native picker. The app and PickerMux settings remain installed." }
     if let update = result.update {
@@ -551,8 +551,8 @@ private struct CompanionHelp: View {
       if let failure = controller.statusFailure {
         Text(failure.message).font(CompanionTypography.body)
       }
-      Text("Turn on Use PickerMux in Codex to install and activate automatically. Turn it off to return to native Codex models while retaining PickerMux settings and certifications.")
-      Text("Fully quit Codex with Command-Q and keep your model server running with models loaded during setup. Setup may send live certification test prompts.")
+      Text("PickerMux adds models from configured providers using the OpenAI Responses API alongside native Codex models. Turn on Use PickerMux in Codex to install and activate automatically. Turn it off to return to native Codex models while retaining PickerMux settings and certifications.")
+      Text("Fully quit Codex with Command-Q and keep the configured provider and its models available during setup. New installations use LM Studio by default. Setup may send live certification test prompts.")
       Text("Requires Node.js 22.15 or newer at /opt/homebrew/bin/node, /usr/local/bin/node or /usr/bin/node. A runtime available only through a shell profile cannot be used.")
         .font(CompanionTypography.body).foregroundStyle(.secondary)
       HStack {

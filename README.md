@@ -5,9 +5,9 @@
 [![Platform: macOS](https://img.shields.io/badge/platform-macOS-lightgrey.svg)](#requirements)
 [![Node.js 22.15+](https://img.shields.io/badge/Node.js-22.15%2B-43853d.svg)](#requirements)
 
-**Use local LM Studio models directly from the Codex Desktop picker.**
+**Use local and remote models from compatible Responses providers in Codex Desktop.**
 
-**Version 0.9.3 includes a native macOS menu-bar companion with a Codex toggle.**
+**Version 0.9.4 includes a native macOS menu-bar companion with a Codex toggle.**
 Check the picker, refresh it after Codex closes, preview a switch from Ollama,
 and start confirmed recovery after a Codex update. The app uses PickerMux's
 existing installation and routing core. See the
@@ -20,16 +20,33 @@ For installation, upgrade, and diagnostic problems, see
 Certified external models can also use Codex's `web.run` tool to search the web,
 read sources, and answer with links. See [Web search](#web-search-tool).
 
-PickerMux makes local models feel like a first-class part of Codex Desktop. Load
-a model in LM Studio, refresh PickerMux, and select it from the same familiar
-model picker—without maintaining separate Codex profiles, repeatedly editing
-providers, or switching to a separate local-only workflow.
+PickerMux connects Codex Desktop to external model providers through the
+Responses API. Configure a provider, refresh PickerMux, and select its models
+from the familiar Codex picker alongside your native models. Providers can run
+locally or remotely. LM Studio is the default configuration and adds automatic
+discovery of loaded models.
 
-Your existing Codex models remain in place while PickerMux adds clear,
-namespaced entries for the local models that are actually loaded. The result is
-a fast local-model workflow with accurate context information, model-specific
-reasoning levels, and a strict routing boundary between native and external
-providers.
+External entries use explicit provider namespaces, bounded model capabilities,
+and separate credentials. Native Codex models keep their own routing and trust
+boundary.
+
+## Supported providers
+
+| Provider kind | Model discovery | Configuration |
+| --- | --- | --- |
+| LM Studio (`lmstudio-responses`) | Loaded LLMs with measured metadata, or an explicit allowlist. | Local server by default; remote LM Studio is also supported. |
+| Compatible Responses provider (`openai-responses`) | Explicit allowlist verified against the provider's `/models` response. | Local or remote endpoint with configured model type and context size. |
+
+Other providers must implement the required Responses contract, including the
+applicable streaming and tool roundtrips. Compatibility with
+`/v1/chat/completions` alone is insufficient. Tool access requires live
+certification bound to the exact model and provider configuration. Efficient
+Fidelity and PickerMux's local context-compaction adapter remain specific to
+LM Studio.
+
+The companion's first-install default is LM Studio. To use another provider,
+activate a [custom configuration](docs/CONFIGURATION.md#authenticated-responses-compatible-provider)
+through the CLI first; the companion then uses that installed configuration.
 
 Version 0.6.0 introduced **Efficient Fidelity**: certified LM Studio models can
 keep the complete Codex coding harness while deferring large tool schemas until
@@ -57,7 +74,8 @@ endorsed by, or supported by OpenAI, Codex, or LM Studio.
 
 - macOS on Apple silicon or Intel;
 - Codex Desktop installed, opened once while signed in, and then fully quit;
-- LM Studio with its local server enabled and at least one LLM loaded;
+- a configured compatible Responses provider with an available LLM; for the
+  default LM Studio configuration, start its server and load at least one LLM;
 - Node.js 22.15.0 or newer with native Zstandard support;
 - a valid account model cache created by the installed Codex Desktop build.
 
@@ -101,8 +119,8 @@ PickerMux's transactional setup lifecycle. It stores versioned CLI files below
 Setup then automatically certifies discovered external models that do not have
 a valid tool certification. These live test requests enable Codex tools for
 reading project files and running commands only after the model passes. Allow
-several minutes per model, or longer on slow hardware. Keep the models loaded
-and Codex fully closed until setup finishes. Progress shows the model number,
+several minutes per model, or longer on slow hardware. Keep configured models
+available and Codex fully closed until setup finishes. Progress shows the model number,
 current check, and elapsed time, with an update every ten seconds while waiting.
 Existing valid Direct and Efficient Fidelity certifications are retained.
 
@@ -110,7 +128,7 @@ If certification fails, setup reports **installation retained, certification
 incomplete** and exits unsuccessfully. Models without a valid certification
 remain text-only or blocked pending recovery; later models may not yet have
 been tested. Run `pickermux doctor`, then `pickermux certify --all` with the
-models loaded to retry. See [certification recovery](docs/TROUBLESHOOTING.md#installation-completes-but-model-certification-does-not).
+configured models available to retry. See [certification recovery](docs/TROUBLESHOOTING.md#installation-completes-but-model-certification-does-not).
 
 If `~/.local/bin` is not already in `PATH`, the installer prints the exact
 one-time shell configuration needed. It does not change `.zprofile`, `.zshrc`,
@@ -185,18 +203,19 @@ After installing 0.8.3, the first command must print `pickermux 0.8.3`.
 and bridge.
 It also reports `full-refresh=idle` normally or the current recovery phase;
 `status --json` exposes the same state as `fullRefresh.status` and
-`fullRefresh.phase`. `discover` lists the LLMs currently loaded in LM Studio.
+`fullRefresh.phase`. `discover` lists external models under the configured
+discovery policy; LM Studio's default policy lists its loaded LLMs.
 `doctor` is deterministic and does not submit a model prompt. Its independent
 `codex-account-cache` check reports whether the signed-in account cache matches
 the installed Codex client even when the bridge runtime or mixed catalog is
 absent. Use `pickermux doctor --live` only when you intentionally want a real
-LM Studio inference check. Once `~/.local/bin` is in `PATH`, the shorter
+external-provider inference check. Once `~/.local/bin` is in `PATH`, the shorter
 `pickermux` form is equivalent.
 
 ## macOS companion
 
 The companion build includes an installable
-`PickerMux-v0.9.3-macos-universal.dmg` for the planned release. Open the disk
+`PickerMux-v0.9.4-macos-universal.dmg` for the planned release. Open the disk
 image, drag **PickerMux.app** to **Applications**, eject the image, and open the
 copied app. Node.js remains a prerequisite. Copying the app does not install
 the CLI or change Codex configuration; turn on **Use PickerMux in Codex** to
@@ -217,7 +236,7 @@ The compact **Use PickerMux in Codex** switch appears at the top and shows the
 verified integration state. Turning it on authorizes installation or
 reactivation with a fresh token-bound configuration preview; no second dialog
 is required. Setup may replace the current gateway and send live certification
-prompts to loaded models. Turning it off authorizes deactivation and stops the
+prompts to configured models. Turning it off authorizes deactivation and stops the
 bridge while keeping the CLI, provider settings,
 certifications and backups for later use. The native Codex picker and an inert
 historical-chat provider alias remain available. Changes require Codex to be
@@ -230,7 +249,8 @@ to the last attempt. After addressing the cause, turn the switch on again;
 Choose **Refresh picker** with Codex fully closed, then **Open Codex** to load
 the updated catalog. The settings offer an optional refresh when Codex closes,
 login startup, and notifications for meaningful state changes. These settings
-are off by default. Model weights must already be loaded in LM Studio.
+are off by default. Configured provider models must be available; load their
+weights in LM Studio when using its loaded-model discovery.
 
 **Repair after a Codex update…** asks before the two graceful Codex quits,
 possible task interruption, and capability change that invalidates earlier
@@ -253,10 +273,11 @@ limits are documented in [the companion guide](docs/MACOS_COMPANION.md).
 
 ## Daily workflow
 
-1. Start the LM Studio server and load the LLMs you want to expose.
+1. Make the configured provider models available. For LM Studio, start its
+   server and load the LLMs you want to expose.
 2. Run `pickermux refresh`.
 3. Fully quit and reopen Codex Desktop.
-4. Select the namespaced LM Studio model from the normal Codex model picker.
+4. Select a namespaced provider model from the normal Codex model picker.
 
 Normal `refresh` does not warn merely because the matching Codex account cache
 is old. Its fetch time and neutral age remain visible through `doctor`.
@@ -397,8 +418,8 @@ architecture are recorded in the
 Version 0.7.5 includes support for Codex's
 client-executed `web.run` tool across registered, tool-certified external
 models. Codex performs the search through the native search service and returns
-the source text to the selected model. LM Studio continues to write the answer;
-PickerMux makes no extra LM Studio inference request to execute the search.
+the source text to the selected model. That model continues to write the answer;
+PickerMux makes no extra external-provider inference request to execute the search.
 This is separate from Efficient Fidelity's search for available tools.
 
 Select a certified external model and ask, for example:
@@ -417,7 +438,7 @@ Search uses `bridge.webSearchModel`, or the existing native
 request parameter. It does not change the selected answer model or establish
 which internal models the search backend uses or how it bills requests. Search
 reuses the native credentials supplied by Codex; they stay on the native search
-path and never reach LM Studio. No additional provider API key is configured.
+path and never reach an external provider. No additional provider API key is configured.
 
 PickerMux preserves Codex's search context, filters, and requested result
 budgets. It does not cache or truncate results. For one reviewed, exact version
@@ -553,19 +574,20 @@ surviving user bytes while adding the compatibility table.
 
 ## Why PickerMux
 
-Running a model in LM Studio is straightforward. Using it repeatedly inside
-Codex Desktop is where friction usually starts: provider changes, model IDs,
-context settings, and separate launch modes interrupt the flow.
+Using models from several providers inside Codex Desktop involves model IDs,
+context settings, credentials, and separate launch modes. PickerMux connects
+those configured providers to the same model picker.
 
 PickerMux turns that setup into a short, repeatable workflow while staying
 deliberately conservative:
 
 - **Load, refresh, select.** Models currently loaded in LM Studio are discovered
   and added to the normal Codex Desktop picker.
-- **One familiar interface.** Move between local models without maintaining a
-  collection of Codex profiles or editing configuration for every switch.
-- **No fake capabilities.** Context size and reasoning options come from the
-  loaded LM Studio instance. PickerMux never inflates a model's context window.
+- **One familiar interface.** Move between local and remote models without
+  maintaining a collection of Codex profiles or editing configuration for every switch.
+- **Bounded capabilities.** LM Studio supplies loaded-model metadata. Other
+  providers use explicit model configuration; tool support is measured by live
+  certification. PickerMux never inflates a model's context window.
 - **Safe model defaults.** Newly discovered external models start in text-only
   mode. The bridge enforces the text-only boundary, reduces verified generated
   bootstrap for faster prompt prefill, and rejects forced tool turns until that
@@ -601,7 +623,8 @@ flowchart LR
     C[Codex Desktop] -->|one loopback provider| B[PickerMux bridge]
     B -->|native model slug<br/>approved native headers| O[Native Codex backend]
     B -->|namespaced model slug<br/>clean provider headers| L[LM Studio Responses API]
-    D[Loaded-model discovery] --> B
+    B -->|namespaced model slug<br/>provider-specific credential| R[Compatible Responses provider]
+    D[LM Studio loaded metadata<br/>or configured model allowlist] --> B
     B --> K[Generated mixed catalog]
     K -. loaded at startup .-> C
 ```
@@ -629,7 +652,7 @@ catalog lifecycle, request normalization, and certification design.
 | `pickermux companion status` | Return a version-1, secret-free status snapshot for the macOS companion. |
 | `pickermux companion run` | Execute one strictly bounded, versioned JSON request read from stdin. |
 | `pickermux doctor` | Run deterministic installation and routing checks. |
-| `pickermux doctor --live` | Add a real LM Studio inference check. |
+| `pickermux doctor --live` | Add a real configured-provider inference check. |
 | `pickermux repair-chats [--json]` | Restore the inert historical `model_bridge` table after an older uninstall, without setup. |
 | `pickermux certify --model SLUG` | Run the base live tool-use matrix and the LM Studio Efficient Fidelity probe for one model. |
 | `pickermux certify --all` | Run the applicable model-bound certification probes for every discovered external model. |

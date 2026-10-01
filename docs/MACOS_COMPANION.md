@@ -1,6 +1,6 @@
 # macOS companion
 
-PickerMux 0.9.3 includes an optional SwiftUI menu-bar app for inspecting and
+PickerMux 0.9.4 includes an optional SwiftUI menu-bar app for inspecting and
 operating the existing PickerMux installation. It requires macOS 13 or newer,
 Apple silicon or Intel, and Node.js 22.15.0 or newer. The supported Node
 locations are `/opt/homebrew/bin/node`, `/usr/local/bin/node`, and
@@ -15,7 +15,7 @@ with OpenAI, Codex, or LM Studio.
 
 ## Install from a disk image
 
-The companion build produces `PickerMux-v0.9.3-macos-universal.dmg` alongside
+The companion build produces `PickerMux-v0.9.4-macos-universal.dmg` alongside
 the app archive. The planned release includes a Developer ID signed and
 notarized image for macOS 13+ on Apple silicon and Intel. Development images
 are labelled `unsigned-development` and remain local test artifacts.
@@ -23,7 +23,7 @@ are labelled `unsigned-development` and remain local test artifacts.
 1. Install a supported Node.js runtime at one of the locations listed above.
 2. Open the reviewed disk image and drag **PickerMux.app** to **Applications**.
 3. Eject the disk image and open the copied app from **Applications**.
-4. With Codex fully closed and the provider's models loaded, turn on
+4. With Codex fully closed and the configured provider's models available, turn on
    **Use PickerMux in Codex** to authorize automatic installation.
 
 The image contains only the app and an Applications shortcut. Dragging the
@@ -49,7 +49,7 @@ Manual **Check status** requests wait behind a running check and show a visible
 checking state followed by the completion time, even when the result is
 unchanged. **Settings…** and **Help…** open persistent, reusable windows.
 Actions show a busy indicator and elapsed time while setup or certification
-is running; keep models loaded until the operation finishes.
+is running; keep configured models available until the operation finishes.
 Primary content and controls use 14-point text in a wider panel. A setup
 failure describes the last attempt. A successful status check inspects the
 installation and Codex state; it does not prove that the model server is
@@ -71,15 +71,15 @@ installation, turning it on obtains a fresh status and configuration preview,
 then automatically installs using that exact preview token. Switching on is
 your explicit consent; there is no second confirmation popup. Setup may
 replace the current integration after a verified backup and send live
-certification test prompts to loaded models. On an inactive installation it offers
+certification test prompts to configured models. On an inactive installation it offers
 reactivation with the retained provider settings. It displays the verified
 backend state after the operation; a cancelled or failed request cannot turn
 the switch on by itself.
 
 Fully quit Codex before changing the toggle. Setup requires the current native
-account cache and a reachable configured provider with a loaded external
-model. The default configuration uses LM Studio. A missing server or loaded
-model produces a specific setup message; it does not remove that prerequisite
+account cache and a reachable configured provider with an available external
+model. The first-install default uses LM Studio and requires loaded models.
+A missing server or loaded model produces a specific setup message; it does not remove that prerequisite
 or infer compatibility from an Ollama installation.
 Setup also distinguishes a discovery timeout, access denied by the operating
 system, HTTP 401/403 authentication, and malformed JSON or unsupported model
@@ -109,13 +109,21 @@ The menu offers actions according to the current validated state:
 | Refresh picker | Run the ordinary transaction with Codex fully closed. It does not quit Codex or submit certification prompts. |
 | Open Codex | Open Codex after the ready integration and active CLI have been verified. A refreshed catalog is loaded at app startup. |
 | Repair after a Codex update… | Confirm two graceful quits, possible task interruption, and invalidation of earlier encrypted compaction continuations, then schedule the independent recovery helper. |
-| Certify loaded models… | Confirm live provider probes for the discovered models. Keep Codex closed and models loaded; allow several minutes per model. |
+| Certify models… | Confirm live provider probes for the discovered models. Keep Codex closed and configured models available; allow several minutes per model. |
 | Check installation | Run the deterministic doctor without live inference. |
 | Check for PickerMux updates (Settings) | Inspect the fixed public release endpoint without modifying the installation. |
 | Update PickerMux… (Settings) | Verify the release payload and explicitly activate it through the existing setup transaction. |
 
-The app controls already loaded models. Load the desired weights and start the
-server in LM Studio before refreshing or installing. Model downloads,
+The app controls models from the installed provider configuration, including
+local or remote compatible Responses providers. New GUI installations use
+LM Studio by default. For another provider, activate a custom configuration
+through the CLI first; later app actions reuse it. There is no provider
+selection or credential editor in the current GUI. See
+[supported provider kinds](CONFIGURATION.md#supported-provider-kinds).
+
+With LM Studio, load the desired weights and start its server before refreshing
+or installing. Other Responses providers use explicit model allowlists and
+must keep their configured models available. Model downloads,
 load/unload controls, and chaining an active Ollama gateway through PickerMux
 are outside this release.
 
@@ -243,7 +251,7 @@ integration with Codex stopped. It is available only through the receipt-owned
 installed CLI. The app detects older backends even when both versions are
 labelled 0.9.0; the missing capability marker selects its pinned setup backend
 before any mutation. Confirm setup to upgrade that CLI before deactivating.
-The current 0.9.3 payload installs into its own version directory; the older
+The current 0.9.4 payload installs into its own version directory; the older
 0.9.0 contents are never overwritten to add this feature.
 
 Successful action output has `schemaVersion`, `ok`, `code`, and a bounded
@@ -291,8 +299,8 @@ node scripts/build-companion.mjs --output /tmp/pickermux-companion-development
 
 Choose a new output directory for each build; the builder refuses to replace
 one. The output contains `PickerMux.app`,
-`PickerMux-v0.9.3-macos-universal.tar.gz`,
-`PickerMux-v0.9.3-macos-universal.dmg`, `companion-manifest.json`, and
+`PickerMux-v0.9.4-macos-universal.tar.gz`,
+`PickerMux-v0.9.4-macos-universal.dmg`, `companion-manifest.json`, and
 `SHA256SUMS`. The universal binary contains `arm64` and `x86_64` slices
 targeting macOS 13. The manifest distinguishes `unsigned-development` from
 `developer-id-notarized` artifacts and binds the bundled backend manifest,
