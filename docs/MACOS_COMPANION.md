@@ -1,6 +1,6 @@
 # macOS companion
 
-PickerMux 0.9.2 includes an optional SwiftUI menu-bar app for inspecting and
+PickerMux 0.9.3 includes an optional SwiftUI menu-bar app for inspecting and
 operating the existing PickerMux installation. It requires macOS 13 or newer,
 Apple silicon or Intel, and Node.js 22.15.0 or newer. The supported Node
 locations are `/opt/homebrew/bin/node`, `/usr/local/bin/node`, and
@@ -15,7 +15,7 @@ with OpenAI, Codex, or LM Studio.
 
 ## Install from a disk image
 
-The companion build produces `PickerMux-v0.9.2-macos-universal.dmg` alongside
+The companion build produces `PickerMux-v0.9.3-macos-universal.dmg` alongside
 the app archive. The planned release includes a Developer ID signed and
 notarized image for macOS 13+ on Apple silicon and Intel. Development images
 are labelled `unsigned-development` and remain local test artifacts.
@@ -50,6 +50,10 @@ checking state followed by the completion time, even when the result is
 unchanged. **Settings…** and **Help…** open persistent, reusable windows.
 Actions show a busy indicator and elapsed time while setup or certification
 is running; keep models loaded until the operation finishes.
+Primary content and controls use 14-point text in a wider panel. A setup
+failure describes the last attempt. A successful status check inspects the
+installation and Codex state; it does not prove that the model server is
+reachable. After addressing the error, turn the switch on again to retry setup.
 
 **Retry status**, **Help…**, **Settings…**, and **Quit** remain visible at the
 top when a status check fails. Help explains the Node.js requirement and opens
@@ -77,6 +81,10 @@ account cache and a reachable configured provider with a loaded external
 model. The default configuration uses LM Studio. A missing server or loaded
 model produces a specific setup message; it does not remove that prerequisite
 or infer compatibility from an Ollama installation.
+Setup also distinguishes a discovery timeout, access denied by the operating
+system, HTTP 401/403 authentication, and malformed JSON or unsupported model
+metadata. Other failures retain a generic safe message rather than claiming
+the server is stopped. Failed preflight does not install or activate anything.
 
 Turning the toggle off authorizes deactivation. PickerMux stops its
 bridge and removes the active integration from the Codex root, while retaining
@@ -235,7 +243,7 @@ integration with Codex stopped. It is available only through the receipt-owned
 installed CLI. The app detects older backends even when both versions are
 labelled 0.9.0; the missing capability marker selects its pinned setup backend
 before any mutation. Confirm setup to upgrade that CLI before deactivating.
-The current 0.9.2 payload installs into its own version directory; the older
+The current 0.9.3 payload installs into its own version directory; the older
 0.9.0 contents are never overwritten to add this feature.
 
 Successful action output has `schemaVersion`, `ok`, `code`, and a bounded
@@ -283,8 +291,8 @@ node scripts/build-companion.mjs --output /tmp/pickermux-companion-development
 
 Choose a new output directory for each build; the builder refuses to replace
 one. The output contains `PickerMux.app`,
-`PickerMux-v0.9.2-macos-universal.tar.gz`,
-`PickerMux-v0.9.2-macos-universal.dmg`, `companion-manifest.json`, and
+`PickerMux-v0.9.3-macos-universal.tar.gz`,
+`PickerMux-v0.9.3-macos-universal.dmg`, `companion-manifest.json`, and
 `SHA256SUMS`. The universal binary contains `arm64` and `x86_64` slices
 targeting macOS 13. The manifest distinguishes `unsigned-development` from
 `developer-id-notarized` artifacts and binds the bundled backend manifest,

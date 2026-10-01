@@ -1,7 +1,7 @@
 # PickerMux Optimierung und macOS Erweiterung
 
 Stand: 1. Oktober 2026. Ausgangsanalyse auf Basis von PickerMux v0.8.3,
-Repository-Commit `bb4a02d`; Umsetzung für v0.9.2 auf dem Topic-Branch.
+Repository-Commit `bb4a02d`; Umsetzung für v0.9.3 auf dem Topic-Branch.
 Der Maintainer hat v0.8.3 selbst live getestet und die Umsetzung aller sechs
 Phasen ausdrücklich freigegeben. Diese Rückmeldung gilt als funktionierende
 Ausgangsbasis; sie ersetzt nicht die Live-Abnahme der neuen App und Recovery.
@@ -259,7 +259,7 @@ zeigen und vorab prüfen; die Aktivierung wird bewusst gestartet. Sie bleibt
 von der Recovery nach einem Codex-Update getrennt.
 
 Der Companion-Build erzeugt zusätzlich zum Universal-Archiv ein versioniertes
-`PickerMux-v0.9.2-macos-universal.dmg`. Das Image enthält ausschließlich
+`PickerMux-v0.9.3-macos-universal.dmg`. Das Image enthält ausschließlich
 `PickerMux.app` und einen `Applications`-Link auf `/Applications`. Nutzer
 kopieren die App nach „Programme“, werfen das Image aus und öffnen die
 kopierte App. Node.js 22.15+ bleibt eine externe Voraussetzung. Das Kopieren
@@ -331,6 +331,15 @@ Updateprüfung und Versionsangaben liegen in Settings. Ein eigenes einfarbiges
 18-Punkt-Menüleisten-Symbol mit nativer Vektorgeometrie passt sich über
 macOS-Template-Tinting an Hell/Dunkel an. Die neue DMG muss noch manuell als
 GUI geprüft werden.
+
+v0.9.3 vergrößert die primäre Schrift auf 14 Punkt und verbreitert das Panel.
+Setup unterscheidet Verbindungsablehnung, Zeitüberschreitung, verweigerten
+Zugriff, Authentifizierung und ungültige Providerantworten. Unbekannte Fehler
+werden nicht mehr als gestoppter Modellserver dargestellt. Eine Fehlermeldung
+bezeichnet den letzten Setup-Versuch; die Statusprüfung allein testet den
+Provider nicht. Die aktuelle lokale Prüfung erkennt ein geladenes LM-Studio-
+Modell und erreicht die Setup-Grenze ohne Installation oder Inferenz. Die
+erfolgreiche Aktivierung aus der neuen GUI bleibt live zu bestätigen.
 
 Die Code-Umsetzung aller sechs Phasen liegt vor. Die Abnahme von Phase 4
 benötigt noch den realen GUI-/TCC-Recovery-Test mit der neuen App. Für die

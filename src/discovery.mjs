@@ -1,9 +1,27 @@
 const DEFAULT_TIMEOUT_MS = 5_000;
 const ALLOWED_PROTOCOLS = new Set(["http:", "https:"]);
 
-class DiscoveryHttpError extends Error {
+const DISCOVERY_FAILURE_CODES = new Set([
+  "PROVIDER_UNAVAILABLE", "PROVIDER_TIMEOUT", "PROVIDER_PERMISSION_DENIED",
+  "PROVIDER_AUTH_REQUIRED", "PROVIDER_RESPONSE_INVALID",
+]);
+const TRANSPORT_CODES = new Map([
+  ...["ECONNREFUSED", "ENETUNREACH", "EHOSTUNREACH", "ENOTFOUND", "EAI_AGAIN"].map((code) => [code, "PROVIDER_UNAVAILABLE"]),
+  ...["ETIMEDOUT", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT"].map((code) => [code, "PROVIDER_TIMEOUT"]),
+  ...["EACCES", "EPERM"].map((code) => [code, "PROVIDER_PERMISSION_DENIED"]),
+]);
+
+export class DiscoveryError extends Error {
+  constructor(code, message, options = undefined) {
+    super(message, options);
+    this.name = "DiscoveryError";
+    this.code = DISCOVERY_FAILURE_CODES.has(code) ? code : "DISCOVERY_FAILED";
+  }
+}
+
+export class DiscoveryHttpError extends DiscoveryError {
   constructor(message, status) {
-    super(message);
+    super([401, 403].includes(status) ? "PROVIDER_AUTH_REQUIRED" : "DISCOVERY_HTTP_ERROR", message);
     this.name = "DiscoveryHttpError";
     this.status = status;
   }
@@ -33,34 +51,35 @@ function positiveInteger(value) {
 function transportLeafCodes(error) {
   const seen = new Set();
   const codes = [];
-
-  const visit = (value) => {
-    if (value === null || typeof value !== "object") {
-      codes.push(undefined);
-      return;
-    }
-    if (seen.has(value)) {
+  const visit = (value, depth = 0) => {
+    if (value === null || typeof value !== "object" || depth >= 8 || seen.size >= 32 || seen.has(value)) {
       codes.push(undefined);
       return;
     }
     seen.add(value);
-
     const children = [];
-    if (value.cause !== null && typeof value.cause === "object") {
-      children.push(value.cause);
-    }
+    if (value.cause !== null && typeof value.cause === "object") children.push(value.cause);
     if (Array.isArray(value.errors)) {
+      if (value.errors.length > 32) { codes.push(undefined); return; }
       children.push(...value.errors);
     }
     if (children.length === 0) {
       codes.push(typeof value.code === "string" ? value.code : undefined);
       return;
     }
-    for (const child of children) visit(child);
+    for (const child of children) visit(child, depth + 1);
   };
-
   visit(error);
   return codes;
+}
+
+/** Structured, bounded discrimination only; private error messages have no authority. */
+export function classifyDiscoveryFailure(error) {
+  if (error instanceof DiscoveryError && DISCOVERY_FAILURE_CODES.has(error.code)) return error.code;
+  if (error instanceof DiscoveryUnavailableError && error.reason === "connection-refused") return "PROVIDER_UNAVAILABLE";
+  const codes = transportLeafCodes(error).map((code) => TRANSPORT_CODES.get(code));
+  const classified = codes[0];
+  return classified && codes.every((code) => code === classified) ? classified : null;
 }
 
 function isConnectionRefused(error) {
@@ -193,7 +212,7 @@ async function requestJson({
   } catch (error) {
     clearTimeout(timeout);
     if (controller.signal.aborted) {
-      throw new Error(`${label} timed out`, { cause: error });
+      throw new DiscoveryError("PROVIDER_TIMEOUT", `${label} timed out`, { cause: error });
     }
     if (isConnectionRefused(error)) {
       throw new DiscoveryUnavailableError(
@@ -202,7 +221,7 @@ async function requestJson({
         { cause: error },
       );
     }
-    throw new Error(`${label} request failed`, { cause: error });
+    throw new DiscoveryError(classifyDiscoveryFailure(error), `${label} request failed`, { cause: error });
   }
 
   if (!response?.ok) {
@@ -213,11 +232,12 @@ async function requestJson({
 
   try {
     return await response.json();
-  } catch {
+  } catch (error) {
     if (controller.signal.aborted) {
-      throw new Error(`${label} timed out`);
+      throw new DiscoveryError("PROVIDER_TIMEOUT", `${label} timed out`, { cause: error });
     }
-    throw new Error(`${label} returned invalid JSON`);
+    const code = error instanceof SyntaxError ? "PROVIDER_RESPONSE_INVALID" : classifyDiscoveryFailure(error);
+    throw new DiscoveryError(code, `${label} returned invalid JSON`, { cause: error });
   } finally {
     clearTimeout(timeout);
   }
@@ -321,7 +341,7 @@ function mergeNativeModelRecords(records) {
 
 function parseNativeModels(payload, allowlist) {
   if (!isPlainObject(payload) || !Array.isArray(payload.models)) {
-    throw new Error("LM Studio metadata returned an unexpected response shape");
+    throw new DiscoveryError("PROVIDER_RESPONSE_INVALID", "LM Studio metadata returned an unexpected response shape");
   }
 
   const byId = groupNativeModels(payload);
@@ -360,7 +380,7 @@ function compareModelIds(left, right) {
 
 function parseLoadedNativeModels(payload, overrides, maxModels) {
   if (!isPlainObject(payload) || !Array.isArray(payload.models)) {
-    throw new Error("LM Studio metadata returned an unexpected response shape");
+    throw new DiscoveryError("PROVIDER_RESPONSE_INVALID", "LM Studio metadata returned an unexpected response shape");
   }
 
   const overrideById = new Map(overrides.map((entry) => [entry.id, entry]));
@@ -424,7 +444,7 @@ function parseLoadedNativeModels(payload, overrides, maxModels) {
 
 function parseOpenAiCompatibleModels(payload, allowlist) {
   if (!isPlainObject(payload) || !Array.isArray(payload.data)) {
-    throw new Error("LM Studio /v1/models returned an unexpected response shape");
+    throw new DiscoveryError("PROVIDER_RESPONSE_INVALID", "LM Studio /v1/models returned an unexpected response shape");
   }
 
   const available = new Set(

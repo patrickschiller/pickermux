@@ -1,6 +1,6 @@
 # PickerMux Architecture
 
-This document describes PickerMux v0.9.2.
+This document describes PickerMux v0.9.3.
 It is intended for contributors, security reviewers, and users who want to
 understand what runs on their Mac.
 
@@ -740,7 +740,7 @@ The private health endpoint remains available with fixed safe status/reason
 enums so the LaunchAgent does not enter a restart loop and diagnostics can
 direct the user to refresh.
 
-Versions 0.6.0 through 0.9.2 use bridge contract
+Versions 0.6.0 through 0.9.3 use bridge contract
 `codex-responses-bridge/p6-v1`.
 The managed publisher emits the search claim only from valid model-bound
 evidence, and the runtime accepts it only on entries generated under that exact

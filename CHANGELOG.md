@@ -7,6 +7,18 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-10-01
+
+### Fixed
+
+- Use larger 14-point text for the companion's primary content and controls,
+  widen its panel, and show setup errors with readable contrast.
+- Distinguish refused connections, timeouts, denied network access, provider
+  authentication and invalid discovery responses during setup. Unknown failures
+  no longer misleadingly instruct users to start their model server.
+- Identify a failed setup message as the last attempt rather than current
+  provider status; status polling does not test provider connectivity.
+
 ## [0.9.2] - 2026-10-01
 
 ### Added
@@ -671,7 +683,8 @@ confirm the release date before tagging. See the
   paths and file types, refuses root execution and foreign launchers, and
   restores the previous distribution state when activation fails.
 
-[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.9.2...HEAD
+[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.9.3...HEAD
+[0.9.3]: https://github.com/patrickschiller/pickermux/releases/tag/v0.9.3
 [0.9.2]: https://github.com/patrickschiller/pickermux/releases/tag/v0.9.2
 [0.9.1]: https://github.com/patrickschiller/pickermux/releases/tag/v0.9.1
 [0.9.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.9.0

@@ -8,6 +8,7 @@ import { inspectCodexAccountCache } from "./account-cache.mjs";
 import { assertRuntimeCompressionSupport } from "./body-codec.mjs";
 import { loadBridgeConfig } from "./bridge-config.mjs";
 import { discoverBridgeModels } from "./bridge-discovery.mjs";
+import { classifyDiscoveryFailure } from "./discovery.mjs";
 import { runBridgeDoctor } from "./bridge-doctor.mjs";
 import {
   checkCurrentCompatibility,
@@ -3145,8 +3146,8 @@ export async function setupPickerMux({
   let discovery;
   try {
     discovery = await discoverImpl({ config: preflightConfig });
-  } catch {
-    throw new CompanionControlError("PROVIDER_UNAVAILABLE");
+  } catch (error) {
+    throw new CompanionControlError(classifyDiscoveryFailure(error) ?? "ACTION_FAILED");
   }
   if (!Array.isArray(discovery?.models) || discovery.models.length === 0) {
     throw new CompanionControlError(discovery?.providers?.some((provider) => provider.unavailableReason === "connection-refused")

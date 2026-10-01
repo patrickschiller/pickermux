@@ -1,5 +1,8 @@
 import {
+  DiscoveryError,
   DiscoveryUnavailableError,
+  DiscoveryHttpError,
+  classifyDiscoveryFailure,
   discoverLmStudio,
 } from "./discovery.mjs";
 import { createCredentialResolver } from "./keychain-credentials.mjs";
@@ -151,26 +154,30 @@ async function discoverGenericProvider({
       { headers, redirect: "error", signal: controller.signal },
     );
     if (!response.ok) {
-      throw new Error(`Provider ${provider.id} model discovery returned HTTP ${response.status}`);
+      throw new DiscoveryHttpError(`External provider model discovery returned HTTP ${response.status}`, response.status);
     }
-    const payload = await response.json();
-    const ids = new Set(
-      Array.isArray(payload?.data)
-        ? payload.data.map((entry) => String(entry?.id ?? "")).filter(Boolean)
-        : [],
-    );
+    let payload;
+    try {
+      payload = await response.json();
+    } catch (error) {
+      if (error instanceof SyntaxError) {
+        throw new DiscoveryError("PROVIDER_RESPONSE_INVALID", "External provider model discovery returned invalid JSON", { cause: error });
+      }
+      throw error;
+    }
+    if (!payload || typeof payload !== "object" || !Array.isArray(payload.data)) {
+      throw new DiscoveryError("PROVIDER_RESPONSE_INVALID", "External provider model discovery returned an unexpected response shape");
+    }
+    const ids = new Set(payload.data.map((entry) => String(entry?.id ?? "")).filter(Boolean));
     if (ids.size === 0) {
       throw new Error(`Provider ${provider.id} returned no model ids`);
     }
-
     return provider.models.map((model) => {
       if (!ids.has(model.id)) {
         throw new Error(`Allowlisted model ${provider.id}/${model.id} was not discovered`);
       }
       if (model.type !== "llm" || !Number.isSafeInteger(model.contextWindow)) {
-        throw new Error(
-          `Generic provider model ${model.slug} requires type=llm and a positive contextWindow`,
-        );
+        throw new Error(`Generic provider model ${model.slug} requires type=llm and a positive contextWindow`);
       }
       return {
         id: model.slug,
@@ -186,12 +193,13 @@ async function discoverGenericProvider({
     });
   } catch (error) {
     if (controller.signal.aborted) {
-      throw new Error(`Provider ${provider.id} model discovery timed out`, { cause: error });
+      throw new DiscoveryError("PROVIDER_TIMEOUT", "External provider model discovery timed out", { cause: error });
     }
-    if (error.message?.startsWith(`Provider ${provider.id}`) || error.message?.startsWith("Generic")) {
-      throw error;
-    }
-    throw new Error(`Provider ${provider.id} model discovery failed`, { cause: error });
+    if (error instanceof DiscoveryError) throw error;
+    // The credential resolver already emits sanitized, structured guidance.
+    // Preserve that CLI diagnostic without inferring authority from its text.
+    if (error?.code === "PROVIDER_CREDENTIAL_ERROR" && error.name === "ProviderCredentialError") throw error;
+    throw new DiscoveryError(classifyDiscoveryFailure(error), "External provider model discovery failed", { cause: error });
   } finally {
     clearTimeout(timeout);
   }

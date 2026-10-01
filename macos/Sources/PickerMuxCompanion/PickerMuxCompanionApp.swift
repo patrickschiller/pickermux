@@ -87,6 +87,10 @@ final class CompanionController: ObservableObject {
     IntegrationToggleState(snapshot: snapshot, busy: busy != nil)
   }
 
+  var lastSetupFailed: Bool {
+    operationFailed && busy == nil && operationNoticeAction == .configurationApply
+  }
+
   init() {
     polling = Task { [weak self] in
       while !Task.isCancelled {
@@ -344,13 +348,20 @@ final class CompanionController: ObservableObject {
 
 }
 
+private enum CompanionTypography {
+  static let body = Font.system(size: 14)
+  static let label = Font.system(size: 14, weight: .semibold)
+  static let progress = Font.system(size: 13)
+  static let metadata = Font.system(size: 12)
+}
+
 private struct CompanionPanel: View {
   @ObservedObject var controller: CompanionController
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 10) {
+    VStack(alignment: .leading, spacing: 12) {
       HStack {
-        Text("Use PickerMux in Codex").font(.subheadline.weight(.semibold))
+        Text("Use PickerMux in Codex").font(CompanionTypography.label)
         Spacer()
         Toggle("Use PickerMux in Codex", isOn: Binding(
           get: { controller.integrationState.isEnabled },
@@ -361,13 +372,13 @@ private struct CompanionPanel: View {
           .disabled(!controller.integrationState.canChange)
           .accessibilityHint(controller.integrationState.guidance)
       }
-      Text(controller.operationFailed && controller.busy == nil && controller.operationNoticeAction == .configurationApply ? "Setup needs attention" : controller.integrationState.label)
-        .font(.caption.weight(.semibold))
+      Text(controller.lastSetupFailed ? "Last setup attempt failed" : controller.integrationState.label)
+        .font(CompanionTypography.label)
       if controller.busy != nil {
         OperationProgress(controller: controller)
       } else {
         Text(controller.integrationState.guidance)
-          .font(.caption).foregroundStyle(.secondary)
+          .font(CompanionTypography.body).foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
       }
       if controller.integrationState.needsSetupUpgrade {
@@ -375,14 +386,18 @@ private struct CompanionPanel: View {
           .disabled(!controller.integrationState.canReviewSetup)
       }
       if controller.snapshot == nil && controller.busy == nil {
-        Text(controller.message).font(.caption).fixedSize(horizontal: false, vertical: true)
+        Text(controller.message).font(CompanionTypography.body).fixedSize(horizontal: false, vertical: true)
       }
       if let notice = controller.operationNotice,
          controller.operationNoticeAction != .updateCheck && controller.operationNoticeAction != .update {
-        Text(notice).font(.caption)
-          .foregroundStyle(controller.operationFailed ? Color.orange : Color.primary)
+        Text(controller.lastSetupFailed ? "Last setup attempt: \(notice)" : notice).font(CompanionTypography.body)
+          .foregroundStyle(.primary)
           .fixedSize(horizontal: false, vertical: true)
-          .accessibilityLabel(notice)
+        if controller.lastSetupFailed {
+          Text("After fixing the cause, turn the switch on again. Check status does not retry setup.")
+            .font(CompanionTypography.body)
+            .fixedSize(horizontal: false, vertical: true)
+        }
       }
       Divider()
       HStack(spacing: 6) {
@@ -396,9 +411,9 @@ private struct CompanionPanel: View {
         Button("Quit") { NSApp.terminate(nil) }
       }
       .buttonStyle(.bordered)
-      .controlSize(.small)
+      .controlSize(.regular)
       if let notice = controller.statusCheckNotice {
-        Text(notice).font(.caption2).foregroundStyle(.secondary)
+        Text(notice).font(CompanionTypography.progress).foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
       }
       if let snapshot = controller.snapshot {
@@ -415,14 +430,14 @@ private struct CompanionPanel: View {
             }
             if !snapshot.issues.isEmpty {
               Text("The installation needs attention. Check it or review the available repair.")
-                .font(.caption).foregroundStyle(.secondary)
+                .font(CompanionTypography.body).foregroundStyle(.secondary)
             }
           }
         }
-        .font(.caption)
+        .font(CompanionTypography.body)
       }
       if controller.refreshQueued {
-        Text("Refresh queued until Codex fully quits.").font(.caption)
+        Text("Refresh queued until Codex fully quits.").font(CompanionTypography.body)
       }
       let actions = CompanionAction.allCases.filter {
         ![.configurationPreview, .configurationApply, .integrationDeactivate, .updateCheck, .update].contains($0) && controller.snapshot?.actions.contains($0) == true
@@ -433,11 +448,12 @@ private struct CompanionPanel: View {
           Button(action == .refresh && controller.refreshQueued ? "Cancel queued refresh" : action.label) { controller.perform(action) }
             .disabled(!controller.canRun(action))
         }
-        .controlSize(.small)
+        .controlSize(.regular)
       }
     }
-    .padding(14)
-    .frame(width: 350)
+    .font(CompanionTypography.body)
+    .padding(16)
+    .frame(width: 400)
   }
 
   private func statusRow(_ label: String, _ status: String) -> some View {
@@ -445,7 +461,7 @@ private struct CompanionPanel: View {
       Text(label).foregroundStyle(.secondary)
       Spacer()
       Text(statusLabel(status))
-    }.font(.caption)
+    }.font(CompanionTypography.body)
   }
 }
 
@@ -456,12 +472,12 @@ private struct OperationProgress: View {
     HStack(alignment: .top, spacing: 8) {
       ProgressView().controlSize(.small)
       VStack(alignment: .leading, spacing: 3) {
-        Text(controller.message).font(.caption).fixedSize(horizontal: false, vertical: true)
+        Text(controller.message).font(CompanionTypography.body).fixedSize(horizontal: false, vertical: true)
         if let started = controller.operationStartedAt {
           TimelineView(.periodic(from: started, by: 1)) { context in
             let elapsed = max(0, Int(context.date.timeIntervalSince(started)))
             Text("Running \(elapsed / 60)m \(elapsed % 60)s · setup and certification may take several minutes.")
-              .font(.caption2).foregroundStyle(.secondary)
+              .font(CompanionTypography.progress).foregroundStyle(.secondary)
               .fixedSize(horizontal: false, vertical: true)
           }
         }
@@ -479,10 +495,10 @@ private struct CompanionSettings: View {
       GroupBox("Updates") {
         VStack(alignment: .leading, spacing: 8) {
           Text("App \(controller.appVersion) · Backend \(controller.snapshot?.version ?? "unavailable")")
-            .font(.caption).foregroundStyle(.secondary)
+            .font(CompanionTypography.metadata).foregroundStyle(.secondary)
           if let update = controller.update {
             Text(update.status == "available" ? "PickerMux \(update.targetVersion ?? "update") is available." : "Update status: \(statusLabel(update.status))")
-              .font(.caption)
+              .font(CompanionTypography.body)
           }
           HStack {
             Button(controller.busy == .updateCheck ? "Checking updates…" : "Check for updates") { controller.perform(.updateCheck) }
@@ -494,12 +510,12 @@ private struct CompanionSettings: View {
           }
           if let notice = controller.operationNotice,
              controller.operationNoticeAction == .updateCheck || controller.operationNoticeAction == .update {
-            Text(notice).font(.caption)
-              .foregroundStyle(controller.operationFailed ? Color.orange : Color.primary)
+            Text(notice).font(CompanionTypography.body)
+              .foregroundStyle(.primary)
               .fixedSize(horizontal: false, vertical: true)
           }
           Text("CLI updates and companion-app replacement are separate. Install the matching app when its version changes.")
-            .font(.caption).foregroundStyle(.secondary)
+            .font(CompanionTypography.body).foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
       }
@@ -511,16 +527,18 @@ private struct CompanionSettings: View {
           get: { controller.notificationsEnabled }, set: { controller.setNotificationsEnabled($0) }))
       }
       Text("Status is checked every five seconds. Automatic refresh is off by default and runs after Codex fully closes. Updates, additional certification and recovery require explicit confirmation.")
-        .font(.caption).foregroundStyle(.secondary)
+        .font(CompanionTypography.body).foregroundStyle(.secondary)
       if let checked = controller.lastStatusCheck {
         Text("Last status check: \(checked.formatted(date: .omitted, time: .standard))")
-          .font(.caption).foregroundStyle(.secondary)
+          .font(CompanionTypography.metadata).foregroundStyle(.secondary)
       }
       Text("PickerMux is an unofficial community project, unaffiliated with OpenAI, Codex or LM Studio.")
-        .font(.caption).foregroundStyle(.secondary)
+        .font(CompanionTypography.body).foregroundStyle(.secondary)
     }
+    .font(CompanionTypography.body)
+    .controlSize(.regular)
     .padding(20)
-    .frame(width: 480)
+    .frame(width: 500)
   }
 }
 
@@ -531,22 +549,24 @@ private struct CompanionHelp: View {
     VStack(alignment: .leading, spacing: 14) {
       Text("PickerMux setup and help").font(.title2.weight(.semibold))
       if let failure = controller.statusFailure {
-        Text(failure.message).font(.callout)
+        Text(failure.message).font(CompanionTypography.body)
       }
       Text("Turn on Use PickerMux in Codex to install and activate automatically. Turn it off to return to native Codex models while retaining PickerMux settings and certifications.")
       Text("Fully quit Codex with Command-Q and keep your model server running with models loaded during setup. Setup may send live certification test prompts.")
       Text("Requires Node.js 22.15 or newer at /opt/homebrew/bin/node, /usr/local/bin/node or /usr/bin/node. A runtime available only through a shell profile cannot be used.")
-        .font(.caption).foregroundStyle(.secondary)
+        .font(CompanionTypography.body).foregroundStyle(.secondary)
       HStack {
         Link("Node.js downloads", destination: URL(string: "https://nodejs.org/en/download")!)
         Link("Troubleshooting", destination: URL(string: "https://github.com/patrickschiller/pickermux/blob/main/docs/TROUBLESHOOTING.md")!)
       }
       Button("Check status") { Task { await controller.refreshStatus(manual: true) } }
         .disabled(controller.isCheckingStatus)
-      if let notice = controller.statusCheckNotice { Text(notice).font(.caption).foregroundStyle(.secondary) }
+      if let notice = controller.statusCheckNotice { Text(notice).font(CompanionTypography.body).foregroundStyle(.secondary) }
     }
+    .font(CompanionTypography.body)
+    .controlSize(.regular)
     .padding(20)
-    .frame(width: 480)
+    .frame(width: 500)
   }
 }
 
@@ -569,6 +589,7 @@ private final class ActionConfirmationWindow: NSObject, NSWindowDelegate {
   }
 
   func show() {
+    if let content = window.contentView { window.setContentSize(content.fittingSize) }
     NSApp.activate(ignoringOtherApps: true)
     window.makeKeyAndOrderFront(nil)
   }
@@ -592,15 +613,17 @@ private struct ActionConfirmationView: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 14) {
-      Text(title).font(.headline)
-      Text(text).font(.callout).fixedSize(horizontal: false, vertical: true)
+      Text(title).font(CompanionTypography.label)
+      Text(text).font(CompanionTypography.body).fixedSize(horizontal: false, vertical: true)
       HStack {
         Spacer()
         Button("Cancel", action: cancel).keyboardShortcut(.cancelAction)
         Button(button, action: confirm).keyboardShortcut(.defaultAction)
       }
     }
+    .font(CompanionTypography.body)
+    .controlSize(.regular)
     .padding(20)
-    .frame(width: 460)
+    .frame(width: 480)
   }
 }

@@ -7,7 +7,7 @@
 
 **Use local LM Studio models directly from the Codex Desktop picker.**
 
-**Version 0.9.2 includes a native macOS menu-bar companion with a Codex toggle.**
+**Version 0.9.3 includes a native macOS menu-bar companion with a Codex toggle.**
 Check the picker, refresh it after Codex closes, preview a switch from Ollama,
 and start confirmed recovery after a Codex update. The app uses PickerMux's
 existing installation and routing core. See the
@@ -196,7 +196,7 @@ LM Studio inference check. Once `~/.local/bin` is in `PATH`, the shorter
 ## macOS companion
 
 The companion build includes an installable
-`PickerMux-v0.9.2-macos-universal.dmg` for the planned release. Open the disk
+`PickerMux-v0.9.3-macos-universal.dmg` for the planned release. Open the disk
 image, drag **PickerMux.app** to **Applications**, eject the image, and open the
 copied app. Node.js remains a prerequisite. Copying the app does not install
 the CLI or change Codex configuration; turn on **Use PickerMux in Codex** to
@@ -222,6 +222,10 @@ bridge while keeping the CLI, provider settings,
 certifications and backups for later use. The native Codex picker and an inert
 historical-chat provider alias remain available. Changes require Codex to be
 fully closed; the switch does not quit it automatically.
+Primary text and controls use 14-point type. Setup failures distinguish
+connection, timeout, access, authentication, and response errors, and refer
+to the last attempt. After addressing the cause, turn the switch on again;
+**Check status** does not retry installation or test the model server.
 
 Choose **Refresh picker** with Codex fully closed, then **Open Codex** to load
 the updated catalog. The settings offer an optional refresh when Codex closes,

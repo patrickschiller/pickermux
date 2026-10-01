@@ -69,11 +69,39 @@ final class ProtocolTests: XCTestCase {
   }
 
   func testActionableFailuresUseFixedSafeGuidance() {
-    XCTAssertTrue(companionActionFailureMessage("PROVIDER_UNAVAILABLE").contains("LM Studio"))
+    XCTAssertTrue(companionActionFailureMessage("PROVIDER_UNAVAILABLE").contains("could not be reached during setup"))
     XCTAssertTrue(companionActionFailureMessage("NO_LOADED_MODELS").contains("Load"))
     XCTAssertTrue(companionActionFailureMessage("ACCOUNT_CACHE_REFRESH_REQUIRED").contains("signed in"))
     XCTAssertTrue(companionActionFailureMessage("DEACTIVATION_ROLLBACK_FAILED").contains("Check status"))
     XCTAssertFalse(companionActionFailureMessage("token=private-value").contains("private-value"))
+  }
+
+  func testProviderFailureGuidanceDistinguishesReachabilityTimeoutPermissionAuthAndResponse() throws {
+    let remedies = [
+      "PROVIDER_UNAVAILABLE": "configured server",
+      "PROVIDER_TIMEOUT": "did not respond in time",
+      "PROVIDER_PERMISSION_DENIED": "Privacy & Security",
+      "PROVIDER_AUTH_REQUIRED": "credentials",
+      "PROVIDER_RESPONSE_INVALID": "API compatibility",
+      "NO_LOADED_MODELS": "Load a model",
+    ]
+    XCTAssertEqual(Set(remedies.keys.map(companionActionFailureMessage)).count, remedies.count)
+    for (code, remedy) in remedies {
+      let message = companionActionFailureMessage(code)
+      XCTAssertTrue(message.contains(remedy), "Each fixed failure needs its specific remedy")
+      XCTAssertTrue(message.contains("during setup") || code == "PROVIDER_PERMISSION_DENIED")
+      XCTAssertFalse(message.contains("LM Studio"), "The configured provider must not be guessed")
+      let result = try CompanionResult.decode(JSONSerialization.data(withJSONObject: ["schemaVersion": 1, "ok": false, "code": code]))
+      XCTAssertEqual(result.code, code)
+      XCTAssertFalse(result.ok)
+    }
+    for canary in ["/private/provider-secret", "http://127.0.0.1/private-capability", "PROVIDER_TIMEOUT token=secret-canary", "provider/model-canary"] {
+      let message = companionActionFailureMessage(canary)
+      XCTAssertFalse(message.contains(canary))
+      XCTAssertFalse(message.contains("secret-canary"))
+      XCTAssertFalse(message.contains("model-canary"))
+      XCTAssertFalse(message.contains("unavailable"), "An unknown failure must not invent a reachability diagnosis")
+    }
   }
 
   func testPreviewAndUpdateDecodePublicDataOnly() throws {

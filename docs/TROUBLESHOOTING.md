@@ -76,6 +76,20 @@ provider is LM Studio. If the app reports a provider unavailable, start its
 server; if it reports no loaded models, load a model before retrying. Installing
 Ollama alone does not satisfy the LM Studio default configuration.
 
+From 0.9.3, setup reports separate fixed messages for a refused connection,
+timeout, denied access during discovery, HTTP 401/403 authentication, and malformed or
+unsupported discovery responses. A general setup failure does not imply that
+the server is stopped. For authentication, review the configured provider's
+credential settings without changing native Codex authentication. For an
+invalid response, check that the configured endpoint serves a supported model
+API; setup stops rather than guessing a schema. For denied access, review the
+app's access before retrying; do not disable system protections.
+
+The displayed error records the last setup attempt. **Check status** checks
+the installation and Codex state without testing provider connectivity. After
+starting the server or fixing the reported prerequisite, turn the switch on
+again to retry setup. The 0.9.3 panel uses larger primary text and controls.
+
 For an account-cache message, open signed-in Codex until the native picker has
 loaded, fully quit it with Command-Q, and check status again. Do not delete
 native authentication or replace ownership receipts to work around setup.

@@ -502,7 +502,7 @@ test("OFF repeats stopped-Desktop and recovery checks before its configuration C
 
 test("fresh setup emits actionable provider, loaded-model and account-cache failures without activation", async (t) => {
   for (const [discoverImpl, code] of [
-    [async () => { throw new Error("PRIVATE_ENDPOINT_CANARY"); }, "PROVIDER_UNAVAILABLE"],
+    [async () => { throw new Error("PRIVATE_ENDPOINT_CANARY"); }, "ACTION_FAILED"],
     [async () => ({ models: [], providers: [{ unavailableReason: "connection-refused" }] }), "PROVIDER_UNAVAILABLE"],
     [async () => ({ models: [] }), "NO_LOADED_MODELS"],
   ]) {
