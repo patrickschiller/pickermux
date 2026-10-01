@@ -13,8 +13,7 @@ import { PICKERMUX_DMG_ASSET, dmgReleaseMarker } from "../src/companion-release.
 
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
-function diskImageRelease() {
-  const version = "1.0.0";
+function diskImageRelease(version = "1.0.0") {
   return {
     tag_name: `v${version}`, draft: false, prerelease: false,
     body: dmgReleaseMarker({ version, sha256: "a".repeat(64) }),
@@ -35,6 +34,43 @@ test("a DMG-only release is available without requesting old CLI assets", async 
     status: "available", distribution: "dmg", currentVersion: "0.9.6", targetVersion: "1.0.0",
     assets: { [PICKERMUX_DMG_ASSET]: release.assets[0].browser_download_url }, diskImageSha256: "a".repeat(64),
   });
+});
+
+test("the 0.10.0 updater discovers version-pinned 0.20.0 DMG metadata with numeric comparison", async () => {
+  const release = diskImageRelease("0.20.0");
+  for (const currentVersion of ["0.9.99", "0.10.0", "0.19.999999"]) {
+    const calls = [];
+    const result = await checkForCompanionUpdate({ currentVersion, fetchImpl: async (url, options) => {
+      calls.push(url);
+      assert.equal(options.redirect, "manual");
+      assert.equal(options.headers.authorization, undefined);
+      return Response.json(release);
+    } });
+    assert.deepEqual(calls, ["https://api.github.com/repos/patrickschiller/pickermux/releases/latest"]);
+    assert.deepEqual(result, {
+      status: "available", distribution: "dmg", currentVersion, targetVersion: "0.20.0",
+      assets: { [PICKERMUX_DMG_ASSET]: `https://github.com/patrickschiller/pickermux/releases/download/v0.20.0/${PICKERMUX_DMG_ASSET}` },
+      diskImageSha256: "a".repeat(64),
+    });
+  }
+  for (const currentVersion of ["0.20.0", "0.20.1", "0.100.0"]) {
+    const result = await checkForCompanionUpdate({ currentVersion, fetchImpl: async () => Response.json(release) });
+    assert.deepEqual(result, { status: "current", currentVersion, targetVersion: currentVersion });
+  }
+});
+
+test("the 0.10.0 updater rejects unpinned or inconsistent 0.20.0 DMG metadata", async () => {
+  for (const mutate of [
+    (release) => { release.assets[0].browser_download_url = release.assets[0].browser_download_url.replace("download/v0.20.0", "latest/download"); },
+    (release) => { release.assets[0].browser_download_url = release.assets[0].browser_download_url.replace("v0.20.0/", "v0.10.0/"); },
+    (release) => { release.body = release.body.replace('"version":"0.20.0"', '"version":"0.10.0"'); },
+    (release) => { release.body += `\n${release.body}`; },
+    (release) => { release.body = release.body.replace("developer-id-notarized", "apple-development"); },
+  ]) {
+    const release = diskImageRelease("0.20.0");
+    mutate(release);
+    await assert.rejects(checkForCompanionUpdate({ currentVersion: "0.10.0", fetchImpl: async () => Response.json(release) }), { code: "UPDATE_INVALID" });
+  }
 });
 
 test("a DMG update requires app replacement and never downloads or activates a CLI payload", async () => {

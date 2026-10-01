@@ -479,6 +479,12 @@ private struct CompanionPanel: View {
   @ObservedObject var controller: CompanionController
 
   var body: some View {
+    ScrollView { content }
+      .frame(width: 400)
+      .frame(maxHeight: 680)
+  }
+
+  private var content: some View {
     VStack(alignment: .leading, spacing: 12) {
       if controller.removalState.backendRemoved {
         RemovalCompletionView(controller: controller)
@@ -540,6 +546,10 @@ private struct CompanionPanel: View {
             .fixedSize(horizontal: false, vertical: true)
         }
         if let snapshot = controller.snapshot {
+          Divider()
+          TokenUsageView(snapshot: snapshot)
+        }
+        if let snapshot = controller.snapshot {
           DisclosureGroup("Installation details") {
             VStack(alignment: .leading, spacing: 4) {
               statusRow("Status", snapshot.state)
@@ -577,7 +587,6 @@ private struct CompanionPanel: View {
     }
     .font(CompanionTypography.body)
     .padding(16)
-    .frame(width: 400)
   }
 
   private func statusRow(_ label: String, _ status: String) -> some View {
@@ -586,6 +595,76 @@ private struct CompanionPanel: View {
       Spacer()
       Text(statusLabel(status))
     }.font(CompanionTypography.body)
+  }
+}
+
+private struct TokenUsageView: View {
+  let snapshot: CompanionSnapshot
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      Text("Token usage").font(CompanionTypography.label)
+      if let usage = snapshot.tokenUsage {
+        if usage.status == .unavailable {
+          Text("Token usage is unavailable. Check the bridge status.")
+            .font(CompanionTypography.metadata).foregroundStyle(.secondary)
+        } else if usage.providers.isEmpty {
+          Text("No model requests yet.")
+            .font(CompanionTypography.metadata).foregroundStyle(.secondary)
+        } else {
+          ForEach(usage.providers) { provider in
+            VStack(alignment: .leading, spacing: 8) {
+              Text(provider.providerId == "lmstudio" ? "LM Studio" : provider.providerId)
+                .font(CompanionTypography.label)
+                .lineLimit(1).truncationMode(.middle)
+              HStack(alignment: .top, spacing: 16) {
+                tokenCounts("Last model request", provider.last.counts)
+                tokenCounts("Since bridge start", provider.displayTotals)
+              }
+              if let note = provider.missingUsageMessage {
+                Text(note).font(CompanionTypography.metadata).foregroundStyle(.secondary)
+                  .fixedSize(horizontal: false, vertical: true)
+              }
+              if provider.totals == nil && provider.requests > provider.unavailableRequests {
+                Text("The accumulated counts exceeded the supported limit and are unavailable.")
+                  .font(CompanionTypography.metadata).foregroundStyle(.secondary)
+                  .fixedSize(horizontal: false, vertical: true)
+              }
+            }
+            if provider.id != usage.providers.last?.id { Divider() }
+          }
+        }
+        Text("External model requests routed through PickerMux. Counts reset when the bridge restarts.")
+          .font(CompanionTypography.metadata).foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+      } else {
+        Text("Token usage is unavailable. Update the installed PickerMux backend to enable it.")
+          .font(CompanionTypography.metadata).foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+    }
+  }
+
+  private func tokenCounts(_ title: String, _ counts: TokenUsageCounts?) -> some View {
+    VStack(alignment: .leading, spacing: 4) {
+      Text(title).font(CompanionTypography.metadata.weight(.semibold))
+        .fixedSize(horizontal: false, vertical: true)
+      tokenRow("Input", counts?.inputTokens)
+      tokenRow("Output", counts?.outputTokens)
+      tokenRow("Total", counts?.totalTokens)
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+  }
+
+  private func tokenRow(_ label: String, _ count: Int?) -> some View {
+    HStack(alignment: .firstTextBaseline, spacing: 4) {
+      Text(label).foregroundStyle(.secondary)
+      Spacer(minLength: 0)
+      Text(count.map { $0.formatted(.number) } ?? "Unavailable")
+        .monospacedDigit()
+        .lineLimit(1).minimumScaleFactor(0.6)
+    }
+    .font(CompanionTypography.metadata)
   }
 }
 

@@ -12,6 +12,15 @@ const VERSION = /^(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})$/u;
 const HASH = /^[a-f0-9]{64}$/u;
 const ASSETS = [PICKERMUX_DMG_ASSET, "release-notes.md", "SHA256SUMS"];
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
+const RELEASE_HIGHLIGHTS = Object.freeze({
+  "0.20.0": [
+    "- View each external provider's input, output and total tokens in the menu-bar panel.",
+    "- Compare the last finalized request with cumulative reported usage **since bridge start**. Totals reset when the bridge restarts.",
+    "- Count ordinary model requests and context compaction observed through PickerMux. Native Codex inference, native web search and marked certification requests are excluded.",
+    "- Show unavailable or incomplete usage when a provider omits counts, a stream is interrupted or usage cannot be safely observed. Missing counts are never treated as zero.",
+    "- Keep token counters in bridge memory; no prompts, response text, credentials or request identifiers are persisted for this feature.",
+  ],
+});
 
 function fail() {
   throw new Error("DMG publication requires an intact, Developer ID signed and notarized build of the exact release version.");
@@ -75,20 +84,16 @@ export async function prepareDmgRelease({ sourceDirectory, outputDirectory, tag 
   const diskImage = await readRegular(path.join(source, versionedName), 256 * 1024 * 1024);
   const sha256 = hash(diskImage);
   if (sha256 !== manifest.diskImage.sha256) fail();
-  const notes = `PickerMux ${tag} introduces the macOS menu-bar app, distributed as one universal DMG.\n\n` +
-    `New since the previous public release, v0.8.3:\n\n` +
-    `- Install and activate PickerMux with the **Use PickerMux in Codex** switch; inspect status and refresh the picker from the menu bar.\n` +
-    `- Keep native Codex and external provider credentials isolated. Tool access remains bound to each model's verified certification.\n` +
-    `- Review guided recovery after Codex updates, with explicit confirmation before Codex is closed and reopened.\n` +
-    `- Check for DMG updates in Settings and explicitly upgrade the installed backend from the new app's verified payload.\n` +
-    `- Completely remove the integration, CLI and managed data from Settings, restoring native Codex defaults and preserving historical chat readability.\n` +
-    `- Use the new app icon and matching menu-bar symbol.\n\n` +
+  const highlights = RELEASE_HIGHLIGHTS[version];
+  const notes = `PickerMux ${tag} is distributed as one universal macOS DMG.\n\n` +
+    (highlights ? `Changes in ${tag}:\n\n${highlights.join("\n")}\n\n` : "") +
     `Download **${PICKERMUX_DMG_ASSET}**, open it, and drag PickerMux into Applications. ` +
-    `Open the app and enable **Use PickerMux in Codex** to install or upgrade the bundled backend. ` +
+    `For a first installation, eject the disk image, open PickerMux from Applications and enable **Use PickerMux in Codex** to install the bundled backend. ` +
     `Keep Codex fully quit and your provider models available during setup.\n\n` +
     `Requires macOS 13 or newer and Node.js 22.15 or newer. Supports Apple silicon and Intel. ` +
     `The app and disk image are Developer ID signed, notarized and stapled.\n\n` +
-    `Existing users replace the app, then use **Update installed backend** in Settings when offered. ` +
+    `Existing users quit PickerMux, replace the app in Applications, eject the disk image and reopen PickerMux from Applications. ` +
+    `Keep Codex fully quit and your provider models available, then choose **Settings → Update installed backend…** when offered to review and apply the bundled backend upgrade. ` +
     `Custom provider settings are preserved.\n\n` +
     `[App guide](${PICKERMUX_RELEASE_REPOSITORY}/blob/${tag}/README.md) · ` +
     `[Technical guide](${PICKERMUX_RELEASE_REPOSITORY}/blob/${tag}/docs/TECHNICAL_GUIDE.md)\n\n` +

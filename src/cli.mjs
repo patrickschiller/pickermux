@@ -212,6 +212,9 @@ Companion schema 1 advertises integration-toggle-v1. configuration-apply require
 its previewToken and replaceIntegration:true; integration-deactivate requires
 deactivateIntegration:true. Deactivation retains setup, historical aliases and
 private runtime identity for confirmed reactivation without full-refresh purge.
+Companion status also advertises token-usage-v1: per-provider input, output and
+total tokens for the last model request and reported usage since bridge start.
+Missing usage remains unavailable; native and certification requests are excluded.
 Companion update-check recognizes the DMG release channel. An update request
 for a DMG returns DOWNLOAD_REQUIRED; replace the app, then explicitly review
 Update installed backend in Settings. No downloaded DMG is executed by the CLI.

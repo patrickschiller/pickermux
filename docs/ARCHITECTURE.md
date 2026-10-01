@@ -1,6 +1,6 @@
 # PickerMux Architecture
 
-This document describes PickerMux v0.9.5.
+This document describes PickerMux v0.20.0.
 It is intended for contributors, security reviewers, and users who want to
 understand what runs on their Mac.
 
@@ -332,6 +332,44 @@ fixed status enums, booleans, and byte/part counts; it cannot contain prompt
 text, raw annotation kinds, model or provider names, IDs, hashes, URLs, or
 paths. The capability-scoped health endpoint lets `doctor` report how much
 context was omitted or retained without parsing request logs.
+
+## Provider token usage
+
+`token-usage.mjs` observes already admitted external inference in the upstream
+relay. A request-local observer parses bounded UTF-8 JSON or SSE separately
+from response forwarding, retains only validated numeric usage, and records
+one outcome when the relay finishes. The observer is absent from native,
+standalone-search, and recognized certification paths. LM Studio's summary
+request is counted from its original provider response, once, before its
+compaction envelope is generated. Generic Responses providers retain their
+existing byte-preserving passthrough contract.
+
+Only non-negative safe integer input/output counts are accepted. Total is
+their checked sum; a supplied provider total must agree. Cached input and
+reasoning output are subsets and are not added again. Streaming counts are
+held until clean EOF so a subsequent malformed frame, duplicate terminal, or
+relay failure cannot publish a successful observation. Missing, malformed,
+interrupted, compressed, or unsupported observations produce unavailable
+counts and never change forwarding behavior. Observer/sink failures have no
+routing authority, and no new decompression, retry, provider-history, or
+inference call is introduced.
+JSON observation is capped at 32 MiB; each observed SSE frame is capped at
+1 MiB so a large passthrough frame cannot monopolize the event loop while
+collecting optional counters. Exceeding either observation bound leaves
+forwarding under its existing contract and marks usage unavailable.
+
+The bridge keeps per-provider request counts, unavailable-request counts, the
+most recently finalized observation, and cumulative reported counts only in
+memory. The bounded snapshot contains canonical configured provider IDs and
+numeric/fixed availability fields; raw provider metadata, model IDs, endpoints,
+capability values, and request/response content or identifiers are excluded.
+Unknown-count requests leave known totals unchanged and are disclosed as a
+partial sum. Safe-integer overflow makes cumulative totals unavailable. The
+snapshot is capped at 128 providers; exceeding that capacity marks the whole
+snapshot unavailable rather than silently omitting a provider. The
+capability-scoped health endpoint publishes `tokenUsage` schema 1, with empty
+providers before the first observed request. Every new bridge instance starts
+fresh counters.
 
 ## Efficient Fidelity
 
@@ -761,7 +799,7 @@ The private health endpoint remains available with fixed safe status/reason
 enums so the LaunchAgent does not enter a restart loop and diagnostics can
 direct the user to refresh.
 
-Versions 0.6.0 through 0.9.5 use bridge contract
+Versions 0.6.0 through 0.20.0 use bridge contract
 `codex-responses-bridge/p6-v1`.
 The managed publisher emits the search claim only from valid model-bound
 evidence, and the runtime accepts it only on entries generated under that exact
@@ -825,7 +863,13 @@ removal through Finder.
 
 `companion status` collects independent read-only probes and projects only
 bounded status enums, booleans, safe issues, a version, allowed next actions,
-and a recovery phase/UUID. Failed probes produce partial results rather than
+and a recovery phase/UUID. The additive `token-usage-v1` capability includes a
+reconstructed usage projection only from an instance-attested running bridge;
+an older runtime or invalid snapshot yields unavailable usage without changing
+lifecycle actions. Swift accepts both the previous finite status contracts
+and the new capability/field pair, validates all counts and provider IDs, and
+preserves usage while filtering actions. Usage counters do not participate in
+notification transition identity. Failed probes produce partial results rather than
 raw errors. The app samples on a five-second polling cycle; backend deadlines
 and execution time can lengthen that cycle. A serial operation queue orders
 polling, manual status checks and actions, so a manual request waits instead

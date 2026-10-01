@@ -134,6 +134,7 @@ test("capability-scoped health and model catalog expose only safe diagnostics", 
     webSearchContractVersion: 1,
     instanceId: "instance-test-1",
     certificationPendingGateVersion: 1,
+    tokenUsage: { schemaVersion: 1, status: "available", providers: [] },
   });
   assert.equal(health.headers["cache-control"], "no-store");
 
@@ -311,6 +312,7 @@ test("runtime compatibility blocks model traffic before registry or body handlin
     ok: false,
     webSearchContractVersion: 1,
     instanceId: null,
+    tokenUsage: { schemaVersion: 1, status: "available", providers: [] },
     compatibility: {
       status: "update-required",
       reasons: ["codex-client-version"],

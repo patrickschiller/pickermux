@@ -1,6 +1,6 @@
 # macOS companion
 
-PickerMux 0.10.0 includes a SwiftUI menu-bar app for inspecting and
+PickerMux 0.20.0 includes a SwiftUI menu-bar app for inspecting and
 operating the existing PickerMux installation. It requires macOS 13 or newer,
 Apple silicon or Intel, and Node.js 22.15.0 or newer. The supported Node
 locations are `/opt/homebrew/bin/node`, `/usr/local/bin/node`, and
@@ -65,6 +65,53 @@ Homebrew-installed Node.js is supported; an existing runtime that fails
 validation needs review rather than an automatic reinstallation. See
 [Node.js troubleshooting](TROUBLESHOOTING.md#companion-cannot-find-or-validate-the-cli-or-nodejs).
 Bridge actions remain unavailable until a validated status permits them.
+
+## Token usage
+
+The menu-bar panel shows **Token usage** for each external provider that has
+received a model request through the current bridge. **Last model request**
+and **Since bridge start** each show separate Input, Output, and Total values.
+The last request is the one that most recently finished, including when
+several chats run concurrently. A user turn can make several model requests
+for tools and context summaries; each is counted once. The values are updated
+with the existing status polling, normally about every five seconds, after
+the response finishes. No additional inference or provider-history request is
+made to collect them.
+
+Counts come from the provider's Responses `usage` fields. Input includes the
+context, instructions, and tool definitions the provider processes. Cached
+input and reasoning output are already included in their respective counts
+and are not added again. Total is Input plus Output. These are request-usage
+figures, not the number of unique tokens in a chat or its current context size.
+
+An aborted response, missing or malformed usage, an unsupported response
+format, or a compressed passthrough reply is marked **Unavailable**. Fully
+received terminal responses can still report consumed tokens when their
+generation was incomplete. The cumulative values sum only verified reported
+counts; if some requests lack counts, the panel identifies the partial sum
+and the number of unavailable requests. If none have reported counts, it shows
+Unavailable instead of zero. Genuine reported zero counts remain valid.
+If cumulative counts exceed the safe numeric range, totals are unavailable
+rather than displayed as an exact rounded or saturated value.
+Observation is bounded to 32 MiB for a JSON response and 1 MiB for each SSE
+frame. A larger payload is still handled by the existing transport contract,
+but its optional usage cannot be reported. More than 128 observed providers
+make the usage snapshot unavailable instead of omitting providers.
+
+The statistics cover only external inference through PickerMux. Native Codex
+models, standalone native web search, and recognized certification traffic are
+excluded. Requests made directly in LM Studio or other applications are outside
+this scope. Explicit manual live diagnostics that use the ordinary inference
+path are counted. No account-wide usage or billing total is queried.
+
+Counts remain in bridge memory and reset on a bridge restart, including a
+refresh or backend update that restarts it. Closing and reopening the companion
+alone does not reset the running bridge. No request history or token-statistics
+file is written. The status projection contains only canonical configured
+provider IDs, availability, and numeric counters, never model names, prompts,
+responses, credentials, or endpoint/capability URLs. An older backend without
+this capability remains readable and shows usage as unavailable; update the
+app and installed backend together to enable the feature.
 
 ## Activate or deactivate in Codex
 
@@ -285,11 +332,16 @@ pickermux companion status
 ```
 
 Its direct JSON snapshot has `schemaVersion: 1`, the fixed
-`capabilities: ["integration-toggle-v1", "native-uninstall-v1"]` markers,
+`capabilities: ["integration-toggle-v1", "native-uninstall-v1", "token-usage-v1"]` markers,
 the PickerMux version, fixed
 component status enums, a state, allowed actions, and fixed safe issues. Recovery
-contains only a known phase and an operation UUID. No path, capability URL,
-model/account identifier, prompt, credential, or raw exception is returned.
+contains only a known phase and an operation UUID. `tokenUsage` contains a
+versioned availability status and bounded per-provider request counts, last
+counts, and cumulative counts. A running bridge must attest its instance before
+its usage is projected. Missing or invalid usage becomes an unavailable empty
+snapshot without changing lifecycle permissions. Older finite status payloads
+without `token-usage-v1` remain readable. No path, capability URL, model/account
+identifier, prompt, credential, or raw exception is returned.
 
 `run` accepts exactly one UTF-8 JSON request from stdin, up to 4,096 bytes,
 with a bounded wait. It rejects duplicate or unknown fields, extra requests,
@@ -313,7 +365,7 @@ integration with Codex stopped. It is available only through the receipt-owned
 installed CLI. The app detects older backends even when both versions are
 labelled 0.9.0; the missing capability marker selects its pinned setup backend
 before any mutation. Confirm setup to upgrade that CLI before deactivating.
-The current 0.10.0 payload installs into its own version directory; the older
+The current 0.20.0 payload installs into its own version directory; the older
 0.9.0 contents are never overwritten to add this feature.
 
 `uninstall-preview` returns only fixed removal changes and a digest token.
@@ -385,8 +437,8 @@ node scripts/build-companion.mjs --output /tmp/pickermux-companion-development
 
 Choose a new output directory for each build; the builder refuses to replace
 one. The output contains `PickerMux.app`,
-`PickerMux-v0.10.0-macos-universal.tar.gz`,
-`PickerMux-v0.10.0-macos-universal.dmg`, `companion-manifest.json`, and
+`PickerMux-v0.20.0-macos-universal.tar.gz`,
+`PickerMux-v0.20.0-macos-universal.dmg`, `companion-manifest.json`, and
 `SHA256SUMS`. The universal binary contains `arm64` and `x86_64` slices
 targeting macOS 13. The manifest distinguishes `unsigned-development`,
 `apple-development` and `developer-id-notarized` artifacts and binds the bundled backend manifest,
