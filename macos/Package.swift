@@ -9,6 +9,7 @@ let package = Package(
     .target(name: "PickerMuxCompanionCore"),
     .executableTarget(name: "PickerMuxCompanion", dependencies: ["PickerMuxCompanionCore"]),
     .testTarget(name: "PickerMuxCompanionCoreTests", dependencies: ["PickerMuxCompanionCore"], resources: [.copy("Fixtures")]),
+    .testTarget(name: "PickerMuxCompanionUITests", dependencies: ["PickerMuxCompanion"]),
   ],
   swiftLanguageModes: [.v5]
 )

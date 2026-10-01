@@ -20,6 +20,11 @@ const RELEASE_HIGHLIGHTS = Object.freeze({
     "- Show unavailable or incomplete usage when a provider omits counts, a stream is interrupted or usage cannot be safely observed. Missing counts are never treated as zero.",
     "- Keep token counters in bridge memory; no prompts, response text, credentials or request identifiers are persisted for this feature.",
   ],
+  "0.20.1": [
+    "- Fix the collapsed menu-bar viewport that could hide controls and token values after upgrading to 0.20.0.",
+    "- Keep menu content in a fixed 400-by-600-point panel with vertical scrolling so provider totals, installation details and available actions remain reachable.",
+    "- Preserve the existing per-provider last-request and since-bridge-start token counts; this patch changes the menu layout.",
+  ],
 });
 
 function fail() {

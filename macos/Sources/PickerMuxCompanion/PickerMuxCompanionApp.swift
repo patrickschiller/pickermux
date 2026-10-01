@@ -479,9 +479,7 @@ private struct CompanionPanel: View {
   @ObservedObject var controller: CompanionController
 
   var body: some View {
-    ScrollView { content }
-      .frame(width: 400)
-      .frame(maxHeight: 680)
+    CompanionMenuViewport { content }
   }
 
   private var content: some View {

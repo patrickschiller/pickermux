@@ -42,7 +42,7 @@ https://github.com/patrickschiller/pickermux/releases/latest/download/PickerMux-
 The release tag still makes a download immutable:
 
 ```text
-https://github.com/patrickschiller/pickermux/releases/download/v0.20.0/PickerMux-macos-universal.dmg
+https://github.com/patrickschiller/pickermux/releases/download/v0.20.1/PickerMux-macos-universal.dmg
 ```
 
 The build retains its versioned DMG, app archive, backend manifest, companion
@@ -65,9 +65,9 @@ key available to `codesign`; the profile must already be usable by `notarytool`.
 Use fresh output directories, since the tools refuse to replace existing ones:
 
 ```bash
-node scripts/build-companion.mjs --release --output /tmp/pickermux-signed-0.20.0
-node scripts/prepare-dmg-release.mjs --source /tmp/pickermux-signed-0.20.0 --output /tmp/pickermux-public-0.20.0 --tag v0.20.0
-node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.20.0 --tag v0.20.0
+node scripts/build-companion.mjs --release --output /tmp/pickermux-signed-0.20.1
+node scripts/prepare-dmg-release.mjs --source /tmp/pickermux-signed-0.20.1 --output /tmp/pickermux-public-0.20.1 --tag v0.20.1
+node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.20.1 --tag v0.20.1
 ```
 
 The release builder signs and notarizes the app and DMG separately, staples
@@ -117,8 +117,8 @@ maintainer's Mac when using the local production route.
 After the exact approved commit is on main and all gates are ready:
 
 ```bash
-git tag -a v0.20.0 -m "PickerMux v0.20.0"
-git push origin v0.20.0
+git tag -a v0.20.1 -m "PickerMux v0.20.1"
+git push origin v0.20.1
 ```
 
 Watch the workflow through publication. If a candidate is wrong, fix the
@@ -142,10 +142,10 @@ production signing requirements above remain mandatory.
    replace its assets.
 
 ```bash
-node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.20.0 --tag v0.20.0
-gh release create v0.20.0 /tmp/pickermux-public-0.20.0/PickerMux-macos-universal.dmg \
-  --verify-tag --title "PickerMux v0.20.0" \
-  --notes-file /tmp/pickermux-public-0.20.0/release-notes.md
+node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.20.1 --tag v0.20.1
+gh release create v0.20.1 /tmp/pickermux-public-0.20.1/PickerMux-macos-universal.dmg \
+  --verify-tag --title "PickerMux v0.20.1" \
+  --notes-file /tmp/pickermux-public-0.20.1/release-notes.md
 ```
 
 Complete the independent public-download verification below before announcing
@@ -175,23 +175,29 @@ installed provider settings. Cancellation and failed activation must retain
 usable prior state; ordinary removal and deactivation continue using the
 validated installed backend.
 
-## 0.20.0 token usage and updater acceptance
+## 0.20.1 menu viewport and updater acceptance
 
 Use an explicitly authorized installation of the previous app to test the
 complete update path. Record the starting app and backend versions and retain
 the prior installation for recovery. These checks supplement source tests;
 publishing an artifact does not establish that the installed upgrade passed.
 
-- In the previous app, check for updates and confirm that 0.20.0 is offered
+- In the previous app, check for updates and confirm that 0.20.1 is offered
   with **Download DMG**. Confirm that the browser opens the exact
-  version-pinned 0.20.0 URL and that the downloaded public bytes pass the
+  version-pinned 0.20.1 URL and that the downloaded public bytes pass the
   independent signature, ticket, checksum, and inventory checks above.
 - Quit PickerMux, replace its copied app, eject the image, and reopen it.
-  Confirm that Settings identifies app 0.20.0 while the installed backend
+  Confirm that Settings identifies app 0.20.1 while the installed backend
   remains at its prior version until **Update installed backend** is reviewed.
   With Codex fully closed and provider models available, complete that explicit
-  setup and confirm that both versions are then 0.20.0. Verify that installed
+  setup and confirm that both versions are then 0.20.1. Verify that installed
   provider settings and still-valid certification receipts are preserved.
+- Open and reopen the menu-bar panel after status and token-usage changes.
+  Confirm that its fixed 400-by-600-point viewport remains visible and that
+  vertical scrolling reaches lower provider totals, installation details, and
+  available actions. Exercise empty, unavailable, partial, and multiple-provider
+  snapshots. Record actual installed-app visual acceptance separately from
+  synthetic layout tests or a preview.
 - Exercise cancellation and an injected failed backend activation separately
   using isolated test state. Confirm that usable prior state remains available
   and that no possibly committed mutation is retried through another backend.

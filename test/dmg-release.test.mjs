@@ -85,6 +85,36 @@ test("0.20.0 publication describes provider tokens and retains one canonical upd
   assert.equal(update.diskImageSha256, result.sha256);
 });
 
+test("0.20.1 viewport patch retains the DMG record accepted by the 0.20.0 updater", async (t) => {
+  const value = await fixture(t, "0.20.1");
+  const result = await prepareDmgRelease({ ...value, tag: "v0.20.1" });
+  const body = await readFile(path.join(value.outputDirectory, "release-notes.md"), "utf8");
+  assert.match(body, /Changes in v0\.20\.1/u);
+  assert.match(body, /collapsed menu-bar viewport.*controls and token values/u);
+  assert.match(body, /fixed 400-by-600-point panel with vertical scrolling/u);
+  assert.match(body, /this patch changes the menu layout/u);
+  assert.doesNotMatch(body, /Changes in v0\.20\.0|introduces the macOS menu-bar app|previous public release/u);
+  assert.equal(body.split("pickermux-dmg-release-v1").length, 2);
+  assert.deepEqual(parseDmgReleaseRecord(body, { version: "0.20.1", file: PICKERMUX_DMG_ASSET }), {
+    version: "0.20.1", file: PICKERMUX_DMG_ASSET, sha256: hash(value.diskImage), signing: "developer-id-notarized",
+  });
+  assert.deepEqual(await readFile(path.join(value.outputDirectory, PICKERMUX_DMG_ASSET)), value.diskImage);
+  assert.equal(await readFile(path.join(value.outputDirectory, "SHA256SUMS"), "utf8"), `${result.sha256}  ${PICKERMUX_DMG_ASSET}\n`);
+  assert.deepEqual(await verifyDmgPublication({ directory: value.outputDirectory, tag: "v0.20.1" }), result);
+  const expectedUrl = `https://github.com/patrickschiller/pickermux/releases/download/v0.20.1/${PICKERMUX_DMG_ASSET}`;
+  const update = await checkForCompanionUpdate({
+    currentVersion: "0.20.0",
+    fetchImpl: async () => Response.json({
+      tag_name: "v0.20.1", draft: false, prerelease: false, body,
+      assets: [{ name: PICKERMUX_DMG_ASSET, browser_download_url: expectedUrl }],
+    }),
+  });
+  assert.deepEqual(update, {
+    status: "available", distribution: "dmg", currentVersion: "0.20.0", targetVersion: "0.20.1",
+    assets: { [PICKERMUX_DMG_ASSET]: expectedUrl }, diskImageSha256: result.sha256,
+  });
+});
+
 test("unsigned and Apple Development builds cannot become public releases", async (t) => {
   for (const signing of ["unsigned-development", "apple-development"]) {
     const value = await fixture(t);

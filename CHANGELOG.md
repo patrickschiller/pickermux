@@ -11,6 +11,15 @@ published as GitHub Releases.
 
 ## [Unreleased]
 
+## [0.20.1] - 2026-10-02
+
+### Fixed
+
+- Give the menu-bar panel a fixed 400-by-600-point viewport with vertical
+  scrolling. This fixes the collapsed scroll surface that could hide the
+  controls and token values in 0.20.0. Provider token counting, routing, and
+  backend lifecycle behavior remain unchanged.
+
 ## [0.20.0] - 2026-10-02
 
 ### Added
@@ -778,7 +787,8 @@ confirm the release date before tagging. See the
   paths and file types, refuses root execution and foreign launchers, and
   restores the previous distribution state when activation fails.
 
-[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.20.0...HEAD
+[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.20.1...HEAD
+[0.20.1]: https://github.com/patrickschiller/pickermux/releases/tag/v0.20.1
 [0.20.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.20.0
 [0.10.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.10.0
 [0.9.6]: #096---2026-10-01
