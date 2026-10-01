@@ -63,13 +63,13 @@ public struct IntegrationToggleState {
       guidance = "Open Codex while signed in and wait for its native model picker to load. Fully quit Codex, then check status again."
     } else if snapshot.integration.status == "ollama" || snapshot.integration.status == "foreign" {
       label = "Another integration is active"
-      guidance = "Turn on to review installation and replace the current picker integration after your confirmation."
+      guidance = "Turning on installs PickerMux and replaces the current picker integration after a verified backup. Setup may send certification test prompts to loaded models."
     } else if snapshot.installation.status == "installed" {
       label = "Installed, currently off"
-      guidance = "Turn on to review activation of PickerMux in Codex."
+      guidance = "Turn on to activate PickerMux in Codex. Setup may send certification test prompts to loaded models."
     } else {
       label = "Ready to install"
-      guidance = "Turn on to review installation and add loaded LM Studio models to the Codex picker."
+      guidance = "Turning on installs PickerMux and adds loaded provider models to Codex. Setup may send certification test prompts. Keep Codex closed until it finishes."
     }
   }
 }
@@ -88,6 +88,12 @@ public enum IntegrationToggleOutcome {
   case completed(CompanionResult)
 }
 
+public enum IntegrationConsent {
+  case review
+  // A deliberate switch or setup-button click is consent for this exact direction.
+  case toggleIntent
+}
+
 public protocol CompanionControlling {
   func status() async throws -> CompanionSnapshot
   func run(_ action: CompanionAction, confirmed: Bool, previewToken: String?) async throws -> CompanionResult
@@ -96,7 +102,9 @@ public protocol CompanionControlling {
 extension PickerMuxClient: CompanionControlling {}
 
 public func changePickerMuxIntegration(_ enabled: Bool, reviewInstalledSetup: Bool = false, client: any CompanionControlling,
-                                      confirm: @MainActor (IntegrationReview) async -> Bool) async throws -> IntegrationToggleOutcome {
+                                      consent: IntegrationConsent = .review,
+                                      confirm: @MainActor (IntegrationReview) async -> Bool = { _ in false }) async throws -> IntegrationToggleOutcome {
+  try Task.checkCancellation()
   let snapshot = try await client.status()
   let state = IntegrationToggleState(snapshot: snapshot)
   let upgrading = enabled && reviewInstalledSetup && state.needsSetupUpgrade
@@ -106,7 +114,10 @@ public func changePickerMuxIntegration(_ enabled: Bool, reviewInstalledSetup: Bo
     let review = IntegrationReview(title: "Turn off PickerMux in Codex?",
       text: "PickerMux will stop its bridge and restore the native Codex picker. The app, settings, certifications and verified backups stay installed so you can turn it on again. A previous integration such as Ollama is restored only by a complete uninstall. Reopen Codex afterwards. Historical chats remain readable.",
       button: "Turn off PickerMux", preview: nil)
-    guard await confirm(review) else { return .cancelled }
+    if consent == .review {
+      guard await confirm(review) else { return .cancelled }
+    }
+    try Task.checkCancellation()
     return .completed(try await client.run(.integrationDeactivate, confirmed: true, previewToken: nil))
   }
 
@@ -120,6 +131,9 @@ public func changePickerMuxIntegration(_ enabled: Bool, reviewInstalledSetup: Bo
   let review = IntegrationReview(title: title,
     text: "\(replacement)PickerMux will install or activate its CLI and bridge so loaded LM Studio models appear alongside native Codex models. Existing settings are preserved and the earlier configuration remains restorable. Keep Codex fully closed and models loaded. Setup can send live certification test prompts to the loaded models. Reopen Codex after setup finishes.",
     button: upgrading ? "Update setup" : snapshot.installation.status == "installed" ? "Enable PickerMux" : "Install and enable", preview: preview)
-  guard await confirm(review) else { return .cancelled }
+  if consent == .review {
+    guard await confirm(review) else { return .cancelled }
+  }
+  try Task.checkCancellation()
   return .completed(try await client.run(.configurationApply, confirmed: true, previewToken: token))
 }

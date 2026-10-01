@@ -1,7 +1,7 @@
 # PickerMux Optimierung und macOS Erweiterung
 
 Stand: 1. Oktober 2026. Ausgangsanalyse auf Basis von PickerMux v0.8.3,
-Repository-Commit `bb4a02d`; Umsetzung für v0.9.1 auf dem Topic-Branch.
+Repository-Commit `bb4a02d`; Umsetzung für v0.9.2 auf dem Topic-Branch.
 Der Maintainer hat v0.8.3 selbst live getestet und die Umsetzung aller sechs
 Phasen ausdrücklich freigegeben. Diese Rückmeldung gilt als funktionierende
 Ausgangsbasis; sie ersetzt nicht die Live-Abnahme der neuen App und Recovery.
@@ -259,7 +259,7 @@ zeigen und vorab prüfen; die Aktivierung wird bewusst gestartet. Sie bleibt
 von der Recovery nach einem Codex-Update getrennt.
 
 Der Companion-Build erzeugt zusätzlich zum Universal-Archiv ein versioniertes
-`PickerMux-v0.9.1-macos-universal.dmg`. Das Image enthält ausschließlich
+`PickerMux-v0.9.2-macos-universal.dmg`. Das Image enthält ausschließlich
 `PickerMux.app` und einen `Applications`-Link auf `/Applications`. Nutzer
 kopieren die App nach „Programme“, werfen das Image aus und öffnen die
 kopierte App. Node.js 22.15+ bleibt eine externe Voraussetzung. Das Kopieren
@@ -275,13 +275,13 @@ notarisiert, gestapelt und geprüft. Der geschützte Workflow bewahrt beide
 Artefakte zur Review auf; eine Veröffentlichung ist ein eigener Schritt.
 Unsignierte Entwicklungsimages bleiben als Testartefakte gekennzeichnet.
 
-Der Implementierungsstand besteht `npm run verify` mit 1.246 Offline-Tests
-und den Syntaxprüfungen. 52 Swift-Tests prüfen die echten
+Der Implementierungsstand besteht `npm run verify` mit 1.255 Offline-Tests
+und den Syntaxprüfungen. 59 Swift-Tests prüfen die echten
 Protokoll-Fixtures, Receipt-/Datei-/Runtime-Prüfungen, Bestätigungen und
 begrenzte Subprozesse. Der Universal-Build wird für `arm64` und `x86_64`
 erstellt; seine eingebetteten Backend-Dateien müssen dem geprüften Source-Stand
 entsprechen.
-Die DMG-Erstellung besteht 33 isolierte Packaging-Prüfungen innerhalb der
+Die DMG-Erstellung besteht 42 isolierte Packaging-Prüfungen innerhalb der
 Node-Tests, einschließlich der AppIcon-Erstellung und ihrer Fehlerpfade.
 Der reale Universal-Build mit Xcode 27.0 sowie die Prüfsummen, UDZO-Format-
 und gemountete Inhaltsprüfung einschließlich aller Dateiberechtigungen
@@ -318,7 +318,19 @@ damit ein installiertes v0.9.0 sicher aktualisiert werden kann.
 Ein eigenes AppIcon wird aus dem versionierten 1024-Pixel-Master und dem
 dokumentierten Designprompt in alle erforderlichen Größen und eine geprüfte
 ICNS-Datei übersetzt. App und Build-Manifest enthalten das Icon samt
-Quell- und Pakethashes. Die neue DMG muss noch manuell als GUI geprüft werden.
+Quell- und Pakethashes.
+
+Die manuelle Prüfung von v0.9.1 zeigte verlorene Status-Klicks während des
+Pollings und unzuverlässige Dialog-/Settings-Aufrufe aus dem Menüfenster.
+v0.9.2 ordnet Status und Aktionen in einer gemeinsamen Warteschlange, zeigt
+Prüfzeit sowie Aktionslaufzeit und öffnet Settings/Hilfe als eigene,
+wiederverwendbare Fenster. Der kleinere Schalter steht ganz oben; seine
+explizite Betätigung autorisiert die automatische Installation ohne zweites
+Popup, während der frische Preview-Token weiterhin geprüft wird.
+Updateprüfung und Versionsangaben liegen in Settings. Ein eigenes einfarbiges
+18-Punkt-Menüleisten-Symbol mit nativer Vektorgeometrie passt sich über
+macOS-Template-Tinting an Hell/Dunkel an. Die neue DMG muss noch manuell als
+GUI geprüft werden.
 
 Die Code-Umsetzung aller sechs Phasen liegt vor. Die Abnahme von Phase 4
 benötigt noch den realen GUI-/TCC-Recovery-Test mit der neuen App. Für die

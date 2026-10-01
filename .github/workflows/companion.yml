@@ -11,6 +11,7 @@ on:
       - LICENSE
       - scripts/build-companion.mjs
       - scripts/build-companion-icon.mjs
+      - scripts/render-menubar-icon.swift
       - scripts/build-release.mjs
       - test/companion-build.test.mjs
       - package.json
@@ -25,6 +26,7 @@ on:
       - LICENSE
       - scripts/build-companion.mjs
       - scripts/build-companion-icon.mjs
+      - scripts/render-menubar-icon.swift
       - scripts/build-release.mjs
       - test/companion-build.test.mjs
       - package.json

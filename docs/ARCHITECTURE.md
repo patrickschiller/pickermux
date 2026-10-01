@@ -1,6 +1,6 @@
 # PickerMux Architecture
 
-This document describes PickerMux v0.9.1.
+This document describes PickerMux v0.9.2.
 It is intended for contributors, security reviewers, and users who want to
 understand what runs on their Mac.
 
@@ -740,7 +740,7 @@ The private health endpoint remains available with fixed safe status/reason
 enums so the LaunchAgent does not enter a restart loop and diagnostics can
 direct the user to refresh.
 
-Versions 0.6.0 through 0.9.1 use bridge contract
+Versions 0.6.0 through 0.9.2 use bridge contract
 `codex-responses-bridge/p6-v1`.
 The managed publisher emits the search claim only from valid model-bound
 evidence, and the runtime accepts it only on entries generated under that exact
@@ -775,8 +775,9 @@ TOML, certification files, receipts, or LaunchAgents. Node.js 22.15+ remains an
 external prerequisite.
 
 The Codex integration toggle reads its value from verified configuration
-ownership. Activation obtains a fresh preview and sends its exact token after
-confirmation. Deactivation has a separate explicit consent field and invokes
+ownership. Turning it on is explicit activation consent: it obtains a fresh
+preview and sends the exact token without a second modal dialog. Turning it
+off supplies the separate deactivation consent field and invokes
 the installed lifecycle under the existing lock. It retains the private
 configuration receipt, provider settings, runtime, certifications, CLI and
 original backup, and stops the service. A receipt-bound `integration-toggle-v1`
@@ -789,7 +790,13 @@ full-refresh helper or replace its checkpoint.
 bounded status enums, booleans, safe issues, a version, allowed next actions,
 and a recovery phase/UUID. Failed probes produce partial results rather than
 raw errors. The app samples on a five-second polling cycle; backend deadlines
-and execution time can lengthen that cycle. Account-cache age alone does not
+and execution time can lengthen that cycle. A serial operation queue orders
+polling, manual status checks and actions, so a manual request waits instead
+of disappearing and older observations cannot replace newer results.
+Manual checks expose completion time; actions expose a busy indicator and
+elapsed time. Settings and Help use persistent native windows, and destructive
+recovery/update confirmations use asynchronous windows rather than a nested
+modal event loop in the transient menu panel. Account-cache age alone does not
 grant recovery authority.
 
 `companion run` accepts one UTF-8 request capped at 4,096 bytes and a bounded
@@ -840,6 +847,10 @@ The universal app includes an `AppIcon.icns` resource declared by
 `CFBundleIconFile`. Native `sips` and `iconutil` compile the versioned RGBA
 master into standard macOS icon sizes. Missing or malformed artwork fails the
 build before packaging; app and disk-image validation include the icon file.
+The separate monochrome `MenuBarIcon.icns` is rendered from native vector
+paths and displayed as an 18-point template image. macOS applies its current
+appearance tint. Transparent geometry, source and packaged hashes are checked
+before packaging, including all resized PNG representations.
 
 ## Private local data
 

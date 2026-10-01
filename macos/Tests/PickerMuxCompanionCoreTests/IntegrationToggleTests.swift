@@ -97,6 +97,62 @@ final class IntegrationToggleTests: XCTestCase {
     XCTAssertFalse(IntegrationToggleState(snapshot: client.snapshotValue).isEnabled)
   }
 
+  func testExplicitToggleAutomaticallyInstallsWithFreshStatusAndExactPreviewToken() async throws {
+    let client = ToggleClient(snapshot: try snapshot(changes: ["installation": ["status": "not-installed"], "managedConfig": ["status": "not-installed"]]))
+    let outcome = try await changePickerMuxIntegration(true, client: client, consent: .toggleIntent) { _ in
+      XCTFail("A deliberate toggle must not request a second confirmation"); return false
+    }
+    guard case .completed(let result) = outcome else { return XCTFail("Toggle intent should install") }
+    XCTAssertTrue(result.ok)
+    XCTAssertEqual(client.statusCalls, 1)
+    XCTAssertEqual(client.calls.map(\.action), [.configurationPreview, .configurationApply])
+    XCTAssertEqual(client.calls.last?.previewToken, String(repeating: "b", count: 64))
+    XCTAssertEqual(client.calls.last?.confirmed, true)
+    XCTAssertFalse(IntegrationToggleState(snapshot: client.snapshotValue).isEnabled)
+  }
+
+  func testExplicitOffToggleIsExactConsentAndDoesNotRequestModalReview() async throws {
+    let client = ToggleClient(snapshot: try snapshot(active: true))
+    let outcome = try await changePickerMuxIntegration(false, client: client, consent: .toggleIntent) { _ in
+      XCTFail("A deliberate off toggle must not request another modal"); return false
+    }
+    guard case .completed = outcome else { return XCTFail("Off intent should deactivate") }
+    XCTAssertEqual(client.statusCalls, 1)
+    XCTAssertEqual(client.calls.map(\.action), [.integrationDeactivate])
+    XCTAssertEqual(client.calls.first?.confirmed, true)
+    XCTAssertNil(client.calls.first?.previewToken)
+  }
+
+  func testAutomaticActivationHonorsChangedStatusAndPreviewFailure() async throws {
+    let running = ToggleClient(snapshot: try snapshot(changes: ["desktop": ["status": "running"]]))
+    let denied = try await changePickerMuxIntegration(true, client: running, consent: .toggleIntent)
+    guard case .blocked = denied else { return XCTFail("A newly running Codex must block activation") }
+    XCTAssertTrue(running.calls.isEmpty)
+    let unavailable = ToggleClient(snapshot: try snapshot())
+    unavailable.previewResult = try CompanionResult.decode(Data(#"{"schemaVersion":1,"ok":false,"code":"PROVIDER_UNAVAILABLE"}"#.utf8))
+    let failed = try await changePickerMuxIntegration(true, client: unavailable, consent: .toggleIntent)
+    guard case .completed(let result) = failed else { return XCTFail("Provider failure must be returned") }
+    XCTAssertFalse(result.ok)
+    XCTAssertEqual(unavailable.calls.map(\.action), [.configurationPreview])
+  }
+
+  func testAutomaticStalePreviewIsNotRetriedAndCancellationAfterPreviewCannotMutate() async throws {
+    let stale = ToggleClient(snapshot: try snapshot())
+    stale.mutationResult = try CompanionResult.decode(Data(#"{"schemaVersion":1,"ok":false,"code":"PREVIEW_STALE"}"#.utf8))
+    let outcome = try await changePickerMuxIntegration(true, client: stale, consent: .toggleIntent)
+    guard case .completed(let result) = outcome else { return XCTFail("Stale preview failure must be returned") }
+    XCTAssertEqual(result.code, "PREVIEW_STALE")
+    XCTAssertEqual(stale.calls.map(\.action), [.configurationPreview, .configurationApply])
+    let cancelled = ToggleClient(snapshot: try snapshot())
+    cancelled.cancelDuringPreview = true
+    let task = Task { try await changePickerMuxIntegration(true, client: cancelled, consent: .toggleIntent) }
+    do {
+      _ = try await task.value
+      XCTFail("Cancelled setup must not mutate")
+    } catch { XCTAssertTrue(error is CancellationError) }
+    XCTAssertEqual(cancelled.calls.map(\.action), [.configurationPreview])
+  }
+
   func testActiveLegacySetupCanBeReviewedWhileOffRemainsBlocked() async throws {
     let original = try snapshot(active: true)
     let bundled = original.allowingOnly([.configurationPreview, .configurationApply], bundledBackend: true)
@@ -124,6 +180,8 @@ private final class ToggleClient: CompanionControlling {
     let previewToken: String?
   }
   var snapshotValue: CompanionSnapshot
+  var statusCalls = 0
+  var cancelDuringPreview = false
   var calls = [Call]()
   var previewResult: CompanionResult
   var mutationResult: CompanionResult
@@ -133,9 +191,12 @@ private final class ToggleClient: CompanionControlling {
     previewResult = try! CompanionResult.decode(Data("{\"schemaVersion\":1,\"ok\":true,\"code\":\"COMPLETE\",\"data\":{\"status\":\"none\",\"canApply\":true,\"requiresConfirmation\":true,\"changes\":[\"reactivate-integration\"],\"previewToken\":\"\(String(repeating: "b", count: 64))\"}}".utf8))
     mutationResult = try! CompanionResult.decode(Data(#"{"schemaVersion":1,"ok":true,"code":"COMPLETE"}"#.utf8))
   }
-  func status() async throws -> CompanionSnapshot { snapshotValue }
+  func status() async throws -> CompanionSnapshot { statusCalls += 1; return snapshotValue }
   func run(_ action: CompanionAction, confirmed: Bool, previewToken: String?) async throws -> CompanionResult {
     calls.append(Call(action: action, confirmed: confirmed, previewToken: previewToken))
+    if action == .configurationPreview && cancelDuringPreview {
+      withUnsafeCurrentTask { $0?.cancel() }
+    }
     return action == .configurationPreview ? previewResult : mutationResult
   }
 }

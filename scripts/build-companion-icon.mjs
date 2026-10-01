@@ -2,6 +2,7 @@ import { constants } from "node:fs";
 import { createHash } from "node:crypto";
 import { chmod, lstat, mkdir, open, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { inflateSync } from "node:zlib";
 
 const PNG_MAGIC = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 const ICON_SIZES = [
@@ -77,7 +78,7 @@ export function validateIconPng(bytes, pixels) {
   if (!imageData || !ended) throw new Error("Companion PNG is missing image data or its end marker");
 }
 
-export function validateCompanionIcns(bytes) {
+export function validateCompanionIcns(bytes, validatePng = validateIconPng) {
   if (bytes.length < 16 || bytes.toString("ascii", 0, 4) !== "icns" || bytes.readUInt32BE(4) !== bytes.length) throw new Error("Companion icon output is not a complete ICNS file");
   const records = new Set();
   const required = new Map([["ic07", 128], ["ic08", 256], ["ic09", 512], ["ic10", 1024], ["ic11", 32], ["ic12", 64], ["ic13", 256], ["ic14", 512]]);
@@ -87,7 +88,7 @@ export function validateCompanionIcns(bytes) {
     const length = bytes.readUInt32BE(offset + 4);
     if (!/^[A-Za-z0-9 ]{4}$/u.test(type) || length <= 8 || offset + length > bytes.length || records.has(type)) throw new Error("Companion ICNS record is malformed or duplicated");
     records.add(type);
-    if (required.has(type)) validateIconPng(bytes.subarray(offset + 8, offset + length), required.get(type));
+    if (required.has(type)) validatePng(bytes.subarray(offset + 8, offset + length), required.get(type));
     offset += length;
   }
   // Modern iconutil emits ic04/ic05 for the small bitmap representations;
@@ -97,26 +98,75 @@ export function validateCompanionIcns(bytes) {
   }
 }
 
-export async function buildCompanionIcon({ source, resources, work, command }) {
+export function validateMenuBarIconPng(bytes, pixels) {
+  validateIconPng(bytes, pixels);
+  const compressed = [];
+  for (let offset = 8; offset < bytes.length;) {
+    const length = bytes.readUInt32BE(offset);
+    if (bytes.toString("ascii", offset + 4, offset + 8) === "IDAT") compressed.push(bytes.subarray(offset + 8, offset + 8 + length));
+    offset += length + 12;
+  }
+  const rowSize = pixels * 4;
+  const expectedSize = (rowSize + 1) * pixels;
+  let filtered;
+  try { filtered = inflateSync(Buffer.concat(compressed), { maxOutputLength: expectedSize }); }
+  catch { throw new Error("Menu-bar icon raster is malformed or exceeds its exact pixel bounds"); }
+  if (filtered.length !== expectedSize) throw new Error("Menu-bar icon raster does not match its exact pixel bounds");
+  const raster = Buffer.alloc(rowSize * pixels);
+  const paeth = (left, above, upperLeft) => {
+    const estimate = left + above - upperLeft;
+    const distanceLeft = Math.abs(estimate - left);
+    const distanceAbove = Math.abs(estimate - above);
+    const distanceCorner = Math.abs(estimate - upperLeft);
+    return distanceLeft <= distanceAbove && distanceLeft <= distanceCorner ? left : distanceAbove <= distanceCorner ? above : upperLeft;
+  };
+  for (let row = 0; row < pixels; row += 1) {
+    const input = row * (rowSize + 1);
+    const output = row * rowSize;
+    const filter = filtered[input];
+    if (filter > 4) throw new Error("Menu-bar icon raster has an unknown PNG filter");
+    for (let column = 0; column < rowSize; column += 1) {
+      const left = column >= 4 ? raster[output + column - 4] : 0;
+      const above = row > 0 ? raster[output + column - rowSize] : 0;
+      const upperLeft = row > 0 && column >= 4 ? raster[output + column - rowSize - 4] : 0;
+      const predictor = filter === 1 ? left : filter === 2 ? above : filter === 3 ? Math.floor((left + above) / 2) : filter === 4 ? paeth(left, above, upperLeft) : 0;
+      raster[output + column] = (filtered[input + 1 + column] + predictor) & 0xff;
+    }
+  }
+  let transparent = false;
+  let visible = false;
+  for (let offset = 3; offset < raster.length; offset += 4) {
+    transparent ||= raster[offset] === 0;
+    visible ||= raster[offset] >= 128;
+  }
+  const corners = [3, rowSize - 1, (pixels - 1) * rowSize + 3, raster.length - 1];
+  if (!transparent || !visible || corners.some((offset) => raster[offset] !== 0)) {
+    throw new Error("Menu-bar icon requires visible artwork on a transparent background with clear corners");
+  }
+}
+
+export async function buildCompanionIcon({ source, resources, work, command, name = "AppIcon" }) {
+  if (!["AppIcon", "MenuBarIcon"].includes(name)) throw new Error("Companion icon resource name is unsupported");
   const master = await regularIconFile(source, 8 * 1024 * 1024);
-  validateIconPng(master, 1024);
+  const validate = name === "MenuBarIcon" ? validateMenuBarIconPng : validateIconPng;
+  validate(master, 1024);
   // Native tools consume an immutable build-local snapshot rather than a
   // repository asset that could be edited halfway through icon conversion.
-  const pinnedMaster = path.join(work, "AppIcon-master.png");
+  const pinnedMaster = path.join(work, `${name}-master.png`);
   await writeFile(pinnedMaster, master, { flag: "wx", mode: 0o600 });
-  const iconset = path.join(work, "AppIcon.iconset");
+  const iconset = path.join(work, `${name}.iconset`);
   await mkdir(iconset, { mode: 0o700 });
   for (const [name, pixels] of ICON_SIZES) {
     const output = path.join(iconset, name);
     await command("/usr/bin/sips", ["-s", "format", "png", "--resampleHeightWidth", String(pixels), String(pixels), pinnedMaster, "--out", output]);
-    validateIconPng(await regularIconFile(output, 8 * 1024 * 1024), pixels);
+    validate(await regularIconFile(output, 8 * 1024 * 1024), pixels);
   }
-  const generated = path.join(work, "AppIcon.icns");
+  const generated = path.join(work, `${name}.icns`);
   await command("/usr/bin/iconutil", ["--convert", "icns", "--output", generated, iconset]);
   const icon = await regularIconFile(generated, 16 * 1024 * 1024);
-  validateCompanionIcns(icon);
-  const destination = path.join(resources, "AppIcon.icns");
+  validateCompanionIcns(icon, validate);
+  const destination = path.join(resources, `${name}.icns`);
   await writeFile(destination, icon, { flag: "wx", mode: 0o644 });
   await chmod(destination, 0o644);
-  return { file: "AppIcon.icns", sha256: sha256(icon), source: "macos/Resources/AppIcon.png", sourceSha256: sha256(master), pixels: 1024 };
+  return { file: `${name}.icns`, sha256: sha256(icon), source: `macos/Resources/${name}.png`, sourceSha256: sha256(master), pixels: 1024 };
 }

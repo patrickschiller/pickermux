@@ -1,6 +1,6 @@
 # macOS companion
 
-PickerMux 0.9.1 includes an optional SwiftUI menu-bar app for inspecting and
+PickerMux 0.9.2 includes an optional SwiftUI menu-bar app for inspecting and
 operating the existing PickerMux installation. It requires macOS 13 or newer,
 Apple silicon or Intel, and Node.js 22.15.0 or newer. The supported Node
 locations are `/opt/homebrew/bin/node`, `/usr/local/bin/node`, and
@@ -15,7 +15,7 @@ with OpenAI, Codex, or LM Studio.
 
 ## Install from a disk image
 
-The companion build produces `PickerMux-v0.9.1-macos-universal.dmg` alongside
+The companion build produces `PickerMux-v0.9.2-macos-universal.dmg` alongside
 the app archive. The planned release includes a Developer ID signed and
 notarized image for macOS 13+ on Apple silicon and Intel. Development images
 are labelled `unsigned-development` and remain local test artifacts.
@@ -24,7 +24,7 @@ are labelled `unsigned-development` and remain local test artifacts.
 2. Open the reviewed disk image and drag **PickerMux.app** to **Applications**.
 3. Eject the disk image and open the copied app from **Applications**.
 4. With Codex fully closed and the provider's models loaded, turn on
-   **Use PickerMux in Codex**, review the setup, and confirm installation.
+   **Use PickerMux in Codex** to authorize automatic installation.
 
 The image contains only the app and an Applications shortcut. Dragging the
 app installs its bundle; it does not install the CLI, modify Codex TOML,
@@ -45,6 +45,11 @@ bridge state, compatibility, account-cache status, integration ownership, and
 any recovery phase. Status is checked on a five-second polling cycle; slow
 checks can extend that interval. The backend isolates failed probes so one
 broken component does not disclose raw diagnostics or discard other results.
+Manual **Check status** requests wait behind a running check and show a visible
+checking state followed by the completion time, even when the result is
+unchanged. **Settings…** and **Help…** open persistent, reusable windows.
+Actions show a busy indicator and elapsed time while setup or certification
+is running; keep models loaded until the operation finishes.
 
 **Retry status**, **Help…**, **Settings…**, and **Quit** remain visible at the
 top when a status check fails. Help explains the Node.js requirement and opens
@@ -56,9 +61,13 @@ Bridge actions remain unavailable until a validated status permits them.
 
 ## Activate or deactivate in Codex
 
-The **Use PickerMux in Codex** toggle is the main setup control. On a first
+The small **Use PickerMux in Codex** switch is the first row and the main setup
+control. On a first
 installation, turning it on obtains a fresh status and configuration preview,
-then asks you to confirm installation. On an inactive installation it offers
+then automatically installs using that exact preview token. Switching on is
+your explicit consent; there is no second confirmation popup. Setup may
+replace the current integration after a verified backup and send live
+certification test prompts to loaded models. On an inactive installation it offers
 reactivation with the retained provider settings. It displays the verified
 backend state after the operation; a cancelled or failed request cannot turn
 the switch on by itself.
@@ -69,7 +78,7 @@ model. The default configuration uses LM Studio. A missing server or loaded
 model produces a specific setup message; it does not remove that prerequisite
 or infer compatibility from an Ollama installation.
 
-Turning the toggle off asks you to confirm deactivation. PickerMux stops its
+Turning the toggle off authorizes deactivation. PickerMux stops its
 bridge and removes the active integration from the Codex root, while retaining
 the CLI, service configuration, original backup, certification receipts and
 runtime for reactivation. An inert historical `model_bridge` provider alias
@@ -81,21 +90,21 @@ state or concurrent configuration changes block the operation.
 Setup and status details are expandable so that the toggle remains prominent.
 The app has a dedicated Finder/Dock icon compiled from the versioned
 [master artwork](../macos/Resources/AppIcon.md).
+Its separate monochrome [menu-bar mark](../macos/Resources/MenuBarIcon.md)
+uses native vector geometry and macOS template tinting for light and dark mode.
 
 The menu offers actions according to the current validated state:
 
 | Action | Behavior |
 | --- | --- |
-| Use PickerMux in Codex | Confirm installation/reactivation when turned on; confirm retained-state deactivation when turned off. |
+| Use PickerMux in Codex | Automatically install/reactivate when turned on; deactivate while retaining installed state when turned off. |
 | Refresh picker | Run the ordinary transaction with Codex fully closed. It does not quit Codex or submit certification prompts. |
 | Open Codex | Open Codex after the ready integration and active CLI have been verified. A refreshed catalog is loaded at app startup. |
 | Repair after a Codex update… | Confirm two graceful quits, possible task interruption, and invalidation of earlier encrypted compaction continuations, then schedule the independent recovery helper. |
 | Certify loaded models… | Confirm live provider probes for the discovered models. Keep Codex closed and models loaded; allow several minutes per model. |
 | Check installation | Run the deterministic doctor without live inference. |
-| Check for PickerMux updates | Inspect the fixed public release endpoint without modifying the installation. |
-| Update PickerMux… | Verify the release payload and explicitly activate it through the existing setup transaction. |
-| Preview configuration changes | Inspect the active gateway and proposed ownership changes without writing TOML. |
-| Apply configuration changes… | Confirm the preview, revalidate its token, and set up or migrate the integration transactionally. |
+| Check for PickerMux updates (Settings) | Inspect the fixed public release endpoint without modifying the installation. |
+| Update PickerMux… (Settings) | Verify the release payload and explicitly activate it through the existing setup transaction. |
 
 The app controls already loaded models. Load the desired weights and start the
 server in LM Studio before refreshing or installing. Model downloads,
@@ -110,6 +119,10 @@ change configuration, certify models, update software, or quit Codex.
 Notifications concern meaningful actionable state changes rather than every
 poll. macOS may require approval in **System Settings > General > Login Items**
 or notification settings.
+Update checks, their results, and app/backend versions also live in Settings.
+Opening or reopening Settings does not automatically download or activate an
+update. Recovery, live certification and software updates still require their
+explicit asynchronous confirmation before starting.
 
 ## Switching from Ollama or cleaning configuration
 
@@ -119,9 +132,9 @@ gateway/catalog structure; other overrides remain a foreign integration.
 There is one active owner of these fields.
 
 With Codex fully closed and its account cache matching the installed client,
-choose **Preview configuration changes**. Review the current integration and
-proposed changes, then choose **Apply configuration changes…**. The confirmation
-is bound to a lowercase hexadecimal preview token generated from the inspected
+turn on **Use PickerMux in Codex**. This authorizes replacement of the current
+picker gateway through a fresh preview. The activation is bound to a
+lowercase hexadecimal preview token generated from the inspected
 configuration and ownership state. The token stays inside the control protocol
 and is not displayed as a capability or credential.
 
@@ -222,7 +235,7 @@ integration with Codex stopped. It is available only through the receipt-owned
 installed CLI. The app detects older backends even when both versions are
 labelled 0.9.0; the missing capability marker selects its pinned setup backend
 before any mutation. Confirm setup to upgrade that CLI before deactivating.
-The current 0.9.1 payload installs into its own version directory; the older
+The current 0.9.2 payload installs into its own version directory; the older
 0.9.0 contents are never overwritten to add this feature.
 
 Successful action output has `schemaVersion`, `ok`, `code`, and a bounded
@@ -270,8 +283,8 @@ node scripts/build-companion.mjs --output /tmp/pickermux-companion-development
 
 Choose a new output directory for each build; the builder refuses to replace
 one. The output contains `PickerMux.app`,
-`PickerMux-v0.9.1-macos-universal.tar.gz`,
-`PickerMux-v0.9.1-macos-universal.dmg`, `companion-manifest.json`, and
+`PickerMux-v0.9.2-macos-universal.tar.gz`,
+`PickerMux-v0.9.2-macos-universal.dmg`, `companion-manifest.json`, and
 `SHA256SUMS`. The universal binary contains `arm64` and `x86_64` slices
 targeting macOS 13. The manifest distinguishes `unsigned-development` from
 `developer-id-notarized` artifacts and binds the bundled backend manifest,

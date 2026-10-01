@@ -12,12 +12,35 @@ struct PickerMuxCompanionApp: App {
   @StateObject private var controller = CompanionController()
 
   var body: some Scene {
-    MenuBarExtra("PickerMux", systemImage: controller.menuIcon) {
+    MenuBarExtra {
       CompanionPanel(controller: controller)
+    } label: {
+      Image(nsImage: menuBarImage)
+        .accessibilityLabel(controller.menuAccessibilityLabel)
     }
     .menuBarExtraStyle(.window)
-    Settings {
-      CompanionSettings(controller: controller)
+  }
+
+  private var menuBarImage: NSImage {
+    let image = NSImage(named: "MenuBarIcon") ?? fallbackMenuBarImage()
+    image.isTemplate = true
+    image.size = NSSize(width: 18, height: 18)
+    return image
+  }
+
+  private func fallbackMenuBarImage() -> NSImage {
+    NSImage(size: NSSize(width: 18, height: 18), flipped: false) { _ in
+      let path = NSBezierPath()
+      path.lineWidth = 1.6
+      path.lineCapStyle = .round
+      for y in [CGFloat(4), 9, 14] {
+        path.move(to: NSPoint(x: 2, y: y))
+        path.line(to: NSPoint(x: 7, y: y))
+        path.line(to: NSPoint(x: 11, y: 9))
+      }
+      path.stroke()
+      NSBezierPath(ovalIn: NSRect(x: 11, y: 6, width: 6, height: 6)).fill()
+      return true
     }
   }
 }
@@ -30,6 +53,12 @@ final class CompanionController: ObservableObject {
   @Published var busy: CompanionAction?
   @Published var refreshQueued = false
   @Published var operationNotice: String?
+  @Published var operationNoticeAction: CompanionAction?
+  @Published var operationFailed = false
+  @Published var operationStartedAt: Date?
+  @Published var isCheckingStatus = false
+  @Published var statusCheckNotice: String?
+  @Published var lastStatusCheck: Date?
   @Published var preview: ConfigurationPreview?
   @Published var update: UpdateStatus?
   @Published var loginEnabled = SMAppService.mainApp.status == .enabled
@@ -39,13 +68,15 @@ final class CompanionController: ObservableObject {
   }
   private let client = PickerMuxClient()
   private var polling: Task<Void, Never>?
-  private var refreshing = false
+  private let operationQueue = CompanionOperationQueue()
+  private var pendingManualChecks = 0
+  private var settingsWindow: NSWindow?
+  private var helpWindow: NSWindow?
+  private var confirmationWindow: ActionConfirmationWindow?
   private var lastTransition: String?
 
-  var menuIcon: String {
-    if busy != nil || snapshot?.recovery.status == "pending" { return "arrow.triangle.2.circlepath" }
-    if snapshot?.state == "inactive" { return "power" }
-    return snapshot?.state == "ready" ? "checkmark.circle" : "exclamationmark.circle"
+  var menuAccessibilityLabel: String {
+    "PickerMux, \(busy != nil ? "operation in progress" : statusLabel(snapshot?.state ?? "unknown"))"
   }
 
   var appVersion: String {
@@ -67,29 +98,43 @@ final class CompanionController: ObservableObject {
 
   deinit { polling?.cancel() }
 
-  func refreshStatus() async {
-    guard !refreshing else { return }
-    refreshing = true
-    defer { refreshing = false }
+  func refreshStatus(manual: Bool = false) async {
+    if manual {
+      pendingManualChecks += 1
+      isCheckingStatus = true
+      statusCheckNotice = busy == nil ? "Checking status…" : "Status check queued until the current action finishes."
+    } else if busy != nil || !operationQueue.isIdle { return }
+    let lease = await operationQueue.acquire(.status)
+    if manual { statusCheckNotice = "Checking status…" }
+    var autoRefresh = false
     do {
       let next = try await client.status()
       if snapshot?.integration.status != next.integration.status { preview = nil }
       let changed = lastTransition != nil && lastTransition != next.transitionIdentity
       let desktopJustClosed = ["running", "open"].contains(snapshot?.desktop.status ?? "") && ["stopped", "closed"].contains(next.desktop.status)
-      let shouldRefresh = (refreshQueued || (refreshOnClose && desktopJustClosed)) && busy == nil && next.state == "ready" && ["idle", "completed"].contains(next.recovery.status) && next.actions.contains(.refresh)
+      autoRefresh = (refreshQueued || (refreshOnClose && desktopJustClosed)) && busy == nil && next.state == "ready" && ["idle", "completed"].contains(next.recovery.status) && next.actions.contains(.refresh)
       let recoveryCompleted = shouldNotifyRecoveryCompletion(previous: snapshot, next: next)
       snapshot = next
       statusFailure = nil
+      let checkedAt = Date()
+      lastStatusCheck = checkedAt
+      if manual { statusCheckNotice = "Status checked at \(checkedAt.formatted(date: .omitted, time: .standard))." }
       if busy == nil { message = statusLabel(next.state) }
       if changed && notificationsEnabled { await notifyIfActionable(next, recoveryCompleted: recoveryCompleted) }
       lastTransition = next.transitionIdentity
-      if shouldRefresh { refreshQueued = false; perform(.refresh) }
     } catch {
       snapshot = nil
       preview = nil
       statusFailure = error as? CompanionFailure
-      message = failureMessage(error)
+      if busy == nil { message = failureMessage(error) }
+      if manual { statusCheckNotice = "Status check failed: \(failureMessage(error))" }
     }
+    if manual {
+      pendingManualChecks -= 1
+      isCheckingStatus = pendingManualChecks > 0
+    }
+    operationQueue.release(lease)
+    if autoRefresh { refreshQueued = false; perform(.refresh) }
   }
 
   func canRun(_ action: CompanionAction) -> Bool {
@@ -106,30 +151,34 @@ final class CompanionController: ObservableObject {
     }
     busy = enabled ? .configurationApply : .integrationDeactivate
     operationNotice = nil
-    message = enabled ? "Reviewing PickerMux installation and activation…" : "Reviewing PickerMux deactivation…"
+    operationNoticeAction = busy
+    operationFailed = false
+    operationStartedAt = Date()
+    message = enabled ? "Installing and activating PickerMux… Keep Codex closed and models loaded." : "Turning off PickerMux…"
     Task {
-      defer { busy = nil }
-      var retainReviewedDetails = false
+      let lease = await operationQueue.acquire(.action)
       do {
-        let outcome = try await changePickerMuxIntegration(enabled, reviewInstalledSetup: reviewInstalledSetup, client: client) { review in
-          self.preview = review.preview
-          return self.confirmation(title: review.title, text: review.text, button: review.button)
-        }
+        let outcome = try await changePickerMuxIntegration(enabled, reviewInstalledSetup: reviewInstalledSetup,
+          client: client, consent: .toggleIntent)
         switch outcome {
         case .unchanged: operationNotice = "The integration already has the requested state."
-        case .cancelled:
-          operationNotice = "The integration change was cancelled."
-          retainReviewedDetails = true
-        case .blocked: operationNotice = "The integration cannot be changed yet. Check status and follow the setup guidance."
+        case .cancelled: operationNotice = "The integration change was cancelled."
+        case .blocked:
+          operationFailed = true
+          operationNotice = "The integration cannot be changed yet. Check status and follow the setup guidance."
         case .completed(let result):
+          operationFailed = !result.ok
           operationNotice = result.ok ? resultMessage(result, action: enabled ? .configurationApply : .integrationDeactivate) :
             companionActionFailureMessage(result.code)
         }
       } catch {
+        operationFailed = true
         operationNotice = failureMessage(error)
       }
-      if !retainReviewedDetails { preview = nil }
+      preview = nil
       busy = nil
+      operationStartedAt = nil
+      operationQueue.release(lease)
       await refreshStatus()
     }
   }
@@ -140,43 +189,52 @@ final class CompanionController: ObservableObject {
     guard canRun(action) else { return }
     if action == .refresh && ["running", "open"].contains(snapshot?.desktop.status ?? "") {
       refreshQueued.toggle()
-      message = refreshQueued ? "Refresh queued. Fully quit Codex to update the picker." : "Queued refresh cancelled."
+      operationNoticeAction = .refresh
+      operationFailed = false
+      operationNotice = refreshQueued ? "Refresh queued. Fully quit Codex to update the picker." : "Queued refresh cancelled."
       return
     }
-    var confirmed = false
-    if action == .recover {
-      confirmed = confirmation(title: "Repair the picker after a Codex update?",
-        text: "Codex will quit twice. Active tasks may be interrupted. PickerMux temporarily opens Codex with native models to refresh the account cache, then restores the picker and opens Codex again. The installation capability changes; earlier encrypted compaction continuations cannot be resumed. An interrupted recovery also requires this confirmation again.",
-        button: "Start repair")
-    } else if action == .certify {
-      confirmed = confirmation(title: "Certify loaded models?",
-        text: "PickerMux sends live test prompts to the configured providers. Certification can take several minutes per model. Finish active model tasks and leave the models loaded until it completes.", button: "Start certification")
-    } else if action == .update {
-      confirmed = confirmation(title: "Update PickerMux?",
-        text: "PickerMux will verify the release download and activate it through its existing distribution transaction. The CLI remains responsible for ownership checks and rollback. Review the current status after the update.", button: "Update")
-    }
-    if [.recover, .certify, .update].contains(action) && !confirmed { return }
-    let token = preview?.previewToken
     busy = action
     operationNotice = nil
+    operationNoticeAction = action
+    operationFailed = false
+    operationStartedAt = Date()
     message = action == .certify ? "Certification is running; keep models loaded." : "\(action.label)…"
     Task {
-      defer { busy = nil }
-      do {
-        let result = try await client.run(action, confirmed: confirmed, previewToken: token)
-        if action == .configurationApply { preview = nil }
-        if result.ok {
-          if let returnedPreview = result.preview { preview = returnedPreview }
-          if let returnedUpdate = result.update { update = returnedUpdate }
-          operationNotice = resultMessage(result, action: action)
-        } else {
-          operationNotice = companionActionFailureMessage(result.code)
+      let lease = await operationQueue.acquire(.action)
+      var confirmed = false
+      if action == .recover {
+        confirmed = await confirmation(title: "Repair the picker after a Codex update?",
+          text: "Codex will quit twice. Active tasks may be interrupted. PickerMux temporarily opens Codex with native models to refresh the account cache, then restores the picker and opens Codex again. The installation capability changes; earlier encrypted compaction continuations cannot be resumed. An interrupted recovery also requires this confirmation again.",
+          button: "Start repair")
+      } else if action == .certify {
+        confirmed = await confirmation(title: "Certify loaded models?",
+          text: "PickerMux sends live test prompts to the configured providers. Certification can take several minutes per model. Finish active model tasks and leave the models loaded until it completes.", button: "Start certification")
+      } else if action == .update {
+        confirmed = await confirmation(title: "Update PickerMux?",
+          text: "PickerMux will verify the release download and activate it through its existing distribution transaction. The CLI remains responsible for ownership checks and rollback. Review the current status after the update.", button: "Update")
+      }
+      if [.recover, .certify, .update].contains(action) && !confirmed {
+        operationNotice = "The action was cancelled."
+      } else {
+        do {
+          let result = try await client.run(action, confirmed: confirmed, previewToken: preview?.previewToken)
+          if result.ok {
+            if let returnedPreview = result.preview { preview = returnedPreview }
+            if let returnedUpdate = result.update { update = returnedUpdate }
+            operationNotice = resultMessage(result, action: action)
+          } else {
+            operationFailed = true
+            operationNotice = companionActionFailureMessage(result.code)
+          }
+        } catch {
+          operationFailed = true
+          operationNotice = failureMessage(error)
         }
-      } catch {
-        if action == .configurationApply { preview = nil }
-        operationNotice = failureMessage(error)
       }
       busy = nil
+      operationStartedAt = nil
+      operationQueue.release(lease)
       await refreshStatus()
     }
   }
@@ -193,30 +251,36 @@ final class CompanionController: ObservableObject {
     }
   }
 
+  func showSettings() {
+    if settingsWindow == nil {
+      settingsWindow = makeWindow(title: "PickerMux Settings", content: CompanionSettings(controller: self))
+    }
+    presentWindow(settingsWindow!)
+  }
+
   func showHelp() {
-    let alert = NSAlert()
-    let nodeRequirement = "The companion requires Node.js 22.15 or newer at /opt/homebrew/bin/node, /usr/local/bin/node or /usr/bin/node. A runtime available only through a shell profile cannot be used."
-    if statusFailure == .unsafeNode {
-      alert.messageText = "Review the Node.js installation"
-      alert.informativeText = "Node.js is installed at a supported location, but its executable or directory ownership could not be verified. Review the installation using the troubleshooting guide, then retry status. \(nodeRequirement)"
-    } else if statusFailure == .missingNode {
-      alert.messageText = "Set up Node.js for PickerMux"
-      alert.informativeText = "\(nodeRequirement) If Node.js is already installed, review its version and location before installing again. The official Node.js installer provides a supported runtime. Choose Retry status after setup."
-    } else {
-      alert.messageText = "PickerMux setup and troubleshooting"
-      alert.informativeText = "\(nodeRequirement) Once status loads, turn on Use PickerMux in Codex to review and confirm installation or activation. Turn it off to use the native Codex picker while retaining PickerMux settings. Copying the app from the disk image does not install the bridge. Use the troubleshooting guide for a refused status or action."
+    if helpWindow == nil {
+      helpWindow = makeWindow(title: "PickerMux Help", content: CompanionHelp(controller: self))
     }
-    alert.alertStyle = .informational
-    alert.addButton(withTitle: "Close")
-    alert.addButton(withTitle: "Node.js downloads")
-    alert.addButton(withTitle: "Troubleshooting")
+    presentWindow(helpWindow!)
+  }
+
+  private func makeWindow<Content: View>(title: String, content: Content) -> NSWindow {
+    let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 420),
+      styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+    window.title = title
+    window.isReleasedWhenClosed = false
+    window.contentView = NSHostingView(rootView: content)
+    window.collectionBehavior.insert(.moveToActiveSpace)
+    window.minSize = NSSize(width: 420, height: 300)
+    window.center()
+    return window
+  }
+
+  private func presentWindow(_ window: NSWindow) {
+    if let content = window.contentView { window.setContentSize(content.fittingSize) }
     NSApp.activate(ignoringOtherApps: true)
-    let response = alert.runModal()
-    if response == .alertSecondButtonReturn {
-      if let url = URL(string: "https://nodejs.org/en/download") { NSWorkspace.shared.open(url) }
-    } else if response == .alertThirdButtonReturn {
-      if let url = URL(string: "https://github.com/patrickschiller/pickermux/blob/main/docs/TROUBLESHOOTING.md#companion-cannot-find-or-validate-the-cli-or-nodejs") { NSWorkspace.shared.open(url) }
-    }
+    window.makeKeyAndOrderFront(nil)
   }
 
   func setNotificationsEnabled(_ enabled: Bool) {
@@ -247,15 +311,16 @@ final class CompanionController: ObservableObject {
     try? await UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "pickermux-state", content: content, trigger: nil))
   }
 
-  private func confirmation(title: String, text: String, button: String) -> Bool {
-    let alert = NSAlert()
-    alert.messageText = title
-    alert.informativeText = text
-    alert.alertStyle = .warning
-    alert.addButton(withTitle: button)
-    alert.addButton(withTitle: "Cancel")
-    NSApp.activate(ignoringOtherApps: true)
-    return alert.runModal() == .alertFirstButtonReturn
+  private func confirmation(title: String, text: String, button: String) async -> Bool {
+    guard confirmationWindow == nil else { return false }
+    return await withCheckedContinuation { continuation in
+      let presenter = ActionConfirmationWindow(title: title, text: text, button: button) { [weak self] confirmed in
+        self?.confirmationWindow = nil
+        continuation.resume(returning: confirmed)
+      }
+      confirmationWindow = presenter
+      presenter.show()
+    }
   }
 
   private func resultMessage(_ result: CompanionResult, action: CompanionAction) -> String {
@@ -269,7 +334,7 @@ final class CompanionController: ObservableObject {
       return "Update information is unavailable."
     }
     if action == .recover { return "Recovery started. The status shows its progress." }
-    if action == .configurationPreview { return "Review the setup details. Turn on Use PickerMux in Codex to confirm installation or activation." }
+    if action == .configurationPreview { return "Review the setup details. Turning on Use PickerMux in Codex installs and activates it." }
     return "PickerMux completed the requested action."
   }
 
@@ -283,48 +348,58 @@ private struct CompanionPanel: View {
   @ObservedObject var controller: CompanionController
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 12) {
+    VStack(alignment: .leading, spacing: 10) {
       HStack {
-        Text("PickerMux").font(.headline)
+        Text("Use PickerMux in Codex").font(.subheadline.weight(.semibold))
         Spacer()
-        if controller.busy != nil { ProgressView().controlSize(.small) }
+        Toggle("Use PickerMux in Codex", isOn: Binding(
+          get: { controller.integrationState.isEnabled },
+          set: { controller.setIntegrationEnabled($0) }))
+          .labelsHidden()
+          .toggleStyle(.switch)
+          .controlSize(.small)
+          .disabled(!controller.integrationState.canChange)
+          .accessibilityHint(controller.integrationState.guidance)
       }
-      HStack(spacing: 8) {
-        Button(controller.snapshot == nil ? "Retry status" : "Check status") { Task { await controller.refreshStatus() } }
-        Button("Help…") { controller.showHelp() }
-        Spacer(minLength: 0)
-        if #available(macOS 14.0, *) {
-          SettingsLink { Text("Settings…") }
-        } else {
-          Button("Settings…") {
-            NSApp.activate(ignoringOtherApps: true)
-            NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
-          }
+      Text(controller.operationFailed && controller.busy == nil && controller.operationNoticeAction == .configurationApply ? "Setup needs attention" : controller.integrationState.label)
+        .font(.caption.weight(.semibold))
+      if controller.busy != nil {
+        OperationProgress(controller: controller)
+      } else {
+        Text(controller.integrationState.guidance)
+          .font(.caption).foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+      if controller.integrationState.needsSetupUpgrade {
+        Button("Complete PickerMux setup") { controller.setIntegrationEnabled(true, reviewInstalledSetup: true) }
+          .disabled(!controller.integrationState.canReviewSetup)
+      }
+      if controller.snapshot == nil && controller.busy == nil {
+        Text(controller.message).font(.caption).fixedSize(horizontal: false, vertical: true)
+      }
+      if let notice = controller.operationNotice,
+         controller.operationNoticeAction != .updateCheck && controller.operationNoticeAction != .update {
+        Text(notice).font(.caption)
+          .foregroundStyle(controller.operationFailed ? Color.orange : Color.primary)
+          .fixedSize(horizontal: false, vertical: true)
+          .accessibilityLabel(notice)
+      }
+      Divider()
+      HStack(spacing: 6) {
+        Button(controller.isCheckingStatus ? "Checking…" : "Check status") {
+          Task { await controller.refreshStatus(manual: true) }
         }
+        .disabled(controller.isCheckingStatus)
+        Spacer(minLength: 0)
+        Button("Settings…") { controller.showSettings() }
+        Button("Help…") { controller.showHelp() }
         Button("Quit") { NSApp.terminate(nil) }
       }
       .buttonStyle(.bordered)
       .controlSize(.small)
-      Divider()
-      Toggle("Use PickerMux in Codex", isOn: Binding(
-        get: { controller.integrationState.isEnabled },
-        set: { controller.setIntegrationEnabled($0) }))
-        .toggleStyle(.switch)
-        .disabled(!controller.integrationState.canChange)
-        .accessibilityHint(controller.integrationState.guidance)
-      Text(controller.integrationState.label).font(.subheadline.weight(.semibold))
-      Text(controller.integrationState.guidance)
-        .font(.caption).foregroundStyle(.secondary)
-        .fixedSize(horizontal: false, vertical: true)
-      if controller.integrationState.needsSetupUpgrade {
-        Button("Complete PickerMux setup…") { controller.setIntegrationEnabled(true, reviewInstalledSetup: true) }
-          .disabled(!controller.integrationState.canReviewSetup)
-      }
-      if controller.busy != nil || controller.snapshot == nil {
-        Text(controller.message).font(.callout).fixedSize(horizontal: false, vertical: true)
-      }
-      if let notice = controller.operationNotice {
-        Text(notice).font(.caption).fixedSize(horizontal: false, vertical: true)
+      if let notice = controller.statusCheckNotice {
+        Text(notice).font(.caption2).foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
       }
       if let snapshot = controller.snapshot {
         DisclosureGroup("Installation details") {
@@ -342,43 +417,27 @@ private struct CompanionPanel: View {
               Text("The installation needs attention. Check it or review the available repair.")
                 .font(.caption).foregroundStyle(.secondary)
             }
-            if controller.appVersion != "development" && controller.appVersion != snapshot.version {
-              Text("App \(controller.appVersion) · Backend \(snapshot.version). Install the matching app after updating PickerMux.")
-                .font(.caption).foregroundStyle(.secondary)
-            }
           }
         }
-      }
-      if let preview = controller.preview {
-        DisclosureGroup("Reviewed setup details") {
-          Text("Current picker: \(preview.status == "none" ? "Native Codex" : statusLabel(preview.status))").font(.caption)
-          Text(preview.canApply
-            ? "Turning on PickerMux requests a fresh review and confirmation."
-            : "Configuration needs review before it can be changed.").font(.caption)
-          ForEach(preview.changes, id: \.self) { change in
-            Text(changeLabel(change)).font(.caption).foregroundStyle(.secondary)
-          }
-        }
-      }
-      if let update = controller.update {
-        Text(update.status == "available" ? "Available: \(update.targetVersion ?? "a newer version")" : "Update check: \(statusLabel(update.status))")
-          .font(.caption)
+        .font(.caption)
       }
       if controller.refreshQueued {
         Text("Refresh queued until Codex fully quits.").font(.caption)
       }
-      if controller.snapshot != nil {
+      let actions = CompanionAction.allCases.filter {
+        ![.configurationPreview, .configurationApply, .integrationDeactivate, .updateCheck, .update].contains($0) && controller.snapshot?.actions.contains($0) == true
+      }
+      if !actions.isEmpty {
         Divider()
-        ForEach(CompanionAction.allCases, id: \.self) { action in
-          if ![.configurationPreview, .configurationApply, .integrationDeactivate].contains(action) && controller.snapshot?.actions.contains(action) == true {
-            Button(action == .refresh && controller.refreshQueued ? "Cancel queued refresh" : action.label) { controller.perform(action) }
-              .disabled(!controller.canRun(action))
-          }
+        ForEach(actions, id: \.self) { action in
+          Button(action == .refresh && controller.refreshQueued ? "Cancel queued refresh" : action.label) { controller.perform(action) }
+            .disabled(!controller.canRun(action))
         }
+        .controlSize(.small)
       }
     }
-    .padding(16)
-    .frame(width: 380)
+    .padding(14)
+    .frame(width: 350)
   }
 
   private func statusRow(_ label: String, _ status: String) -> some View {
@@ -388,19 +447,26 @@ private struct CompanionPanel: View {
       Text(statusLabel(status))
     }.font(.caption)
   }
+}
 
-  private func changeLabel(_ change: String) -> String {
-    let labels = [
-      "replace-integration": "Replace the current picker gateway with PickerMux.",
-      "preserve-user-settings": "Preserve settings outside the owned integration.",
-      "preserve-historical-chats": "Preserve the provider alias for historical chats.",
-      "restore-on-failure": "Restore the prior configuration if activation fails.",
-      "retain-explicit-provider": "Retain the verified HTTP/SSE and zero-retry transport.",
-      "create-backup": "Retain a verified backup of the prior configuration.",
-      "normalize-owned-blocks": "Consolidate PickerMux's owned configuration fields.",
-      "reactivate-integration": "Enable the installed PickerMux bridge again.",
-    ]
-    return labels[change] ?? "Apply an owned integration change from the reviewed preview."
+private struct OperationProgress: View {
+  @ObservedObject var controller: CompanionController
+
+  var body: some View {
+    HStack(alignment: .top, spacing: 8) {
+      ProgressView().controlSize(.small)
+      VStack(alignment: .leading, spacing: 3) {
+        Text(controller.message).font(.caption).fixedSize(horizontal: false, vertical: true)
+        if let started = controller.operationStartedAt {
+          TimelineView(.periodic(from: started, by: 1)) { context in
+            let elapsed = max(0, Int(context.date.timeIntervalSince(started)))
+            Text("Running \(elapsed / 60)m \(elapsed % 60)s · setup and certification may take several minutes.")
+              .font(.caption2).foregroundStyle(.secondary)
+              .fixedSize(horizontal: false, vertical: true)
+          }
+        }
+      }
+    }
   }
 }
 
@@ -408,21 +474,133 @@ private struct CompanionSettings: View {
   @ObservedObject var controller: CompanionController
 
   var body: some View {
-    Form {
-      Toggle("Start PickerMux companion at login", isOn: Binding(
-        get: { controller.loginEnabled }, set: { controller.setLoginEnabled($0) }))
-      Toggle("Refresh picker automatically when Codex closes", isOn: $controller.refreshOnClose)
-      Toggle("Notify when an update or repair needs attention", isOn: Binding(
-        get: { controller.notificationsEnabled }, set: { controller.setNotificationsEnabled($0) }))
-      Text("Status is checked every five seconds. Automatic refresh is off by default and runs once after Codex closes when the integration is ready. Updates, certification, configuration changes and recovery start only when you choose an action.")
+    VStack(alignment: .leading, spacing: 16) {
+      Text("PickerMux Settings").font(.title2.weight(.semibold))
+      GroupBox("Updates") {
+        VStack(alignment: .leading, spacing: 8) {
+          Text("App \(controller.appVersion) · Backend \(controller.snapshot?.version ?? "unavailable")")
+            .font(.caption).foregroundStyle(.secondary)
+          if let update = controller.update {
+            Text(update.status == "available" ? "PickerMux \(update.targetVersion ?? "update") is available." : "Update status: \(statusLabel(update.status))")
+              .font(.caption)
+          }
+          HStack {
+            Button(controller.busy == .updateCheck ? "Checking updates…" : "Check for updates") { controller.perform(.updateCheck) }
+              .disabled(!controller.canRun(.updateCheck))
+            if controller.snapshot?.actions.contains(.update) == true {
+              Button("Update PickerMux…") { controller.perform(.update) }
+                .disabled(!controller.canRun(.update))
+            }
+          }
+          if let notice = controller.operationNotice,
+             controller.operationNoticeAction == .updateCheck || controller.operationNoticeAction == .update {
+            Text(notice).font(.caption)
+              .foregroundStyle(controller.operationFailed ? Color.orange : Color.primary)
+              .fixedSize(horizontal: false, vertical: true)
+          }
+          Text("CLI updates and companion-app replacement are separate. Install the matching app when its version changes.")
+            .font(.caption).foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+      }
+      VStack(alignment: .leading, spacing: 10) {
+        Toggle("Start PickerMux companion at login", isOn: Binding(
+          get: { controller.loginEnabled }, set: { controller.setLoginEnabled($0) }))
+        Toggle("Refresh picker automatically when Codex closes", isOn: $controller.refreshOnClose)
+        Toggle("Notify when an update or repair needs attention", isOn: Binding(
+          get: { controller.notificationsEnabled }, set: { controller.setNotificationsEnabled($0) }))
+      }
+      Text("Status is checked every five seconds. Automatic refresh is off by default and runs after Codex fully closes. Updates, additional certification and recovery require explicit confirmation.")
         .font(.caption).foregroundStyle(.secondary)
-      Text("Turn on Use PickerMux in Codex to review and confirm installation or activation. The switch follows verified status; turning it off keeps this app installed. Requires Node.js 22.15 or newer in /opt/homebrew/bin, /usr/local/bin or /usr/bin.")
-        .font(.caption).foregroundStyle(.secondary)
+      if let checked = controller.lastStatusCheck {
+        Text("Last status check: \(checked.formatted(date: .omitted, time: .standard))")
+          .font(.caption).foregroundStyle(.secondary)
+      }
       Text("PickerMux is an unofficial community project, unaffiliated with OpenAI, Codex or LM Studio.")
         .font(.caption).foregroundStyle(.secondary)
-      Text("App version: \(controller.appVersion)").font(.caption)
     }
     .padding(20)
-    .frame(width: 440)
+    .frame(width: 480)
+  }
+}
+
+private struct CompanionHelp: View {
+  @ObservedObject var controller: CompanionController
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 14) {
+      Text("PickerMux setup and help").font(.title2.weight(.semibold))
+      if let failure = controller.statusFailure {
+        Text(failure.message).font(.callout)
+      }
+      Text("Turn on Use PickerMux in Codex to install and activate automatically. Turn it off to return to native Codex models while retaining PickerMux settings and certifications.")
+      Text("Fully quit Codex with Command-Q and keep your model server running with models loaded during setup. Setup may send live certification test prompts.")
+      Text("Requires Node.js 22.15 or newer at /opt/homebrew/bin/node, /usr/local/bin/node or /usr/bin/node. A runtime available only through a shell profile cannot be used.")
+        .font(.caption).foregroundStyle(.secondary)
+      HStack {
+        Link("Node.js downloads", destination: URL(string: "https://nodejs.org/en/download")!)
+        Link("Troubleshooting", destination: URL(string: "https://github.com/patrickschiller/pickermux/blob/main/docs/TROUBLESHOOTING.md")!)
+      }
+      Button("Check status") { Task { await controller.refreshStatus(manual: true) } }
+        .disabled(controller.isCheckingStatus)
+      if let notice = controller.statusCheckNotice { Text(notice).font(.caption).foregroundStyle(.secondary) }
+    }
+    .padding(20)
+    .frame(width: 480)
+  }
+}
+
+@MainActor
+private final class ActionConfirmationWindow: NSObject, NSWindowDelegate {
+  private let window: NSWindow
+  private var response: ((Bool) -> Void)?
+
+  init(title: String, text: String, button: String, response: @escaping (Bool) -> Void) {
+    window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 460, height: 300),
+      styleMask: [.titled, .closable], backing: .buffered, defer: false)
+    self.response = response
+    super.init()
+    window.title = "PickerMux"
+    window.isReleasedWhenClosed = false
+    window.delegate = self
+    window.contentView = NSHostingView(rootView: ActionConfirmationView(title: title, text: text, button: button,
+      confirm: { [weak self] in self?.finish(true) }, cancel: { [weak self] in self?.finish(false) }))
+    window.center()
+  }
+
+  func show() {
+    NSApp.activate(ignoringOtherApps: true)
+    window.makeKeyAndOrderFront(nil)
+  }
+
+  func windowWillClose(_ notification: Notification) { finish(false) }
+
+  private func finish(_ approved: Bool) {
+    guard let response else { return }
+    self.response = nil
+    window.close()
+    response(approved)
+  }
+}
+
+private struct ActionConfirmationView: View {
+  let title: String
+  let text: String
+  let button: String
+  let confirm: () -> Void
+  let cancel: () -> Void
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 14) {
+      Text(title).font(.headline)
+      Text(text).font(.callout).fixedSize(horizontal: false, vertical: true)
+      HStack {
+        Spacer()
+        Button("Cancel", action: cancel).keyboardShortcut(.cancelAction)
+        Button(button, action: confirm).keyboardShortcut(.defaultAction)
+      }
+    }
+    .padding(20)
+    .frame(width: 460)
   }
 }

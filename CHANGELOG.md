@@ -7,6 +7,25 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-10-01
+
+### Added
+
+- Add an original monochrome menu-bar template symbol with standard/Retina
+  representations and light/dark appearance tinting.
+
+### Fixed
+
+- Queue manual status checks behind active polling/actions and always show
+  their progress and completion time, including unchanged results.
+- Open Settings and Help in persistent native windows instead of dispatching
+  them from the transient menu panel; use asynchronous confirmation windows
+  for recovery, additional certification and updates.
+- Put the small Codex switch first and install/reactivate automatically from
+  explicit toggle intent, retaining fresh status, preview-token and backend
+  ownership checks. Show busy/elapsed-time feedback and actionable failures.
+- Move update checks, update results and version information into Settings.
+
 ## [0.9.1] - 2026-10-01
 
 ### Added
@@ -652,7 +671,8 @@ confirm the release date before tagging. See the
   paths and file types, refuses root execution and foreign launchers, and
   restores the previous distribution state when activation fails.
 
-[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.9.1...HEAD
+[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.9.2...HEAD
+[0.9.2]: https://github.com/patrickschiller/pickermux/releases/tag/v0.9.2
 [0.9.1]: https://github.com/patrickschiller/pickermux/releases/tag/v0.9.1
 [0.9.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.9.0
 [0.8.3]: https://github.com/patrickschiller/pickermux/releases/tag/v0.8.3

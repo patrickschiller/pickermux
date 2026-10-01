@@ -313,6 +313,7 @@ export async function buildCompanion({ projectDirectory, outputDirectory, releas
     }
     const command = (tool, args, timeout) => execute(tool, args, { cwd: project, environment: buildEnvironment, timeout });
     const icon = await buildCompanionIcon({ source: path.join(project, "macos", "Resources", "AppIcon.png"), resources, work, command });
+    const menuBarIcon = { ...await buildCompanionIcon({ source: path.join(project, "macos", "Resources", "MenuBarIcon.png"), resources, work, command, name: "MenuBarIcon" }), template: true, pointSize: 18 };
     const slices = [];
     for (const architecture of ["arm64", "x86_64"]) {
       const slice = path.join(work, `PickerMuxCompanion-${architecture}`);
@@ -362,7 +363,7 @@ export async function buildCompanion({ projectDirectory, outputDirectory, releas
     const archive = await companionArchive(bundle);
     const archiveSha256 = sha256(archive);
     await writeFile(path.join(staged, archiveName), archive, { flag: "wx", mode: 0o644 });
-    const releaseManifest = `${JSON.stringify({ schemaVersion: 1, product: "pickermux-companion", version, minimumMacOS: "13.0", architectures: ["arm64", "x86_64"], signing: release ? "developer-id-notarized" : "unsigned-development", backendManifestSha256: sha256(manifestData), icon, archive: archiveName, archiveSha256, diskImage: { file: diskImageName, sha256: diskImageSha256, format: "UDZO", filesystem: "HFS+", installation: "drag-to-applications" } }, null, 2)}\n`;
+    const releaseManifest = `${JSON.stringify({ schemaVersion: 1, product: "pickermux-companion", version, minimumMacOS: "13.0", architectures: ["arm64", "x86_64"], signing: release ? "developer-id-notarized" : "unsigned-development", backendManifestSha256: sha256(manifestData), icon, menuBarIcon, archive: archiveName, archiveSha256, diskImage: { file: diskImageName, sha256: diskImageSha256, format: "UDZO", filesystem: "HFS+", installation: "drag-to-applications" } }, null, 2)}\n`;
     await writeFile(path.join(staged, "companion-manifest.json"), releaseManifest, { flag: "wx", mode: 0o644 });
     await writeFile(path.join(staged, "SHA256SUMS"), `${archiveSha256}  ${archiveName}\n${diskImageSha256}  ${diskImageName}\n${sha256(releaseManifest)}  companion-manifest.json\n`, { flag: "wx", mode: 0o644 });
     // mkdir is the no-clobber commit boundary: an output concurrently created by

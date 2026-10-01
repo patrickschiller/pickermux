@@ -7,7 +7,7 @@
 
 **Use local LM Studio models directly from the Codex Desktop picker.**
 
-**Version 0.9.1 includes a native macOS menu-bar companion with a Codex toggle.**
+**Version 0.9.2 includes a native macOS menu-bar companion with a Codex toggle.**
 Check the picker, refresh it after Codex closes, preview a switch from Ollama,
 and start confirmed recovery after a Codex update. The app uses PickerMux's
 existing installation and routing core. See the
@@ -196,11 +196,11 @@ LM Studio inference check. Once `~/.local/bin` is in `PATH`, the shorter
 ## macOS companion
 
 The companion build includes an installable
-`PickerMux-v0.9.1-macos-universal.dmg` for the planned release. Open the disk
+`PickerMux-v0.9.2-macos-universal.dmg` for the planned release. Open the disk
 image, drag **PickerMux.app** to **Applications**, eject the image, and open the
 copied app. Node.js remains a prerequisite. Copying the app does not install
-the CLI or change Codex configuration; turn on **Use PickerMux in Codex** and
-confirm the reviewed setup when the integration needs installation. Use a signed and
+the CLI or change Codex configuration; turn on **Use PickerMux in Codex** to
+install or activate the integration automatically. Use a signed and
 notarized release image for distribution; unsigned development images are
 local test builds. See [installation details](docs/MACOS_COMPANION.md#install-from-a-disk-image).
 
@@ -213,9 +213,12 @@ If Node.js cannot be found or validated, **Retry status**, **Help…**,
 **Settings…**, and **Quit** stay available. Help links to Node.js setup and
 [troubleshooting](docs/TROUBLESHOOTING.md#companion-cannot-find-or-validate-the-cli-or-nodejs).
 
-**Use PickerMux in Codex** shows the verified integration state. Turning it on
-reviews and confirms installation or reactivation. Turning it off confirms
-deactivation and stops the bridge while keeping the CLI, provider settings,
+The compact **Use PickerMux in Codex** switch appears at the top and shows the
+verified integration state. Turning it on authorizes installation or
+reactivation with a fresh token-bound configuration preview; no second dialog
+is required. Setup may replace the current gateway and send live certification
+prompts to loaded models. Turning it off authorizes deactivation and stops the
+bridge while keeping the CLI, provider settings,
 certifications and backups for later use. The native Codex picker and an inert
 historical-chat provider alias remain available. Changes require Codex to be
 fully closed; the switch does not quit it automatically.
@@ -230,14 +233,17 @@ possible task interruption, and capability change that invalidates earlier
 encrypted compaction continuations. An interrupted repair requires the same
 confirmation before resuming its checkpoint.
 
-**Preview configuration changes** shows ownership and proposed changes before
-a confirmed switch from an Ollama or other gateway. Concurrent edits stop the
+Setup checks ownership and proposed changes before an authorized switch from
+an Ollama or other gateway. Concurrent edits stop the
 switch; uninstall restores the verified previous configuration. PickerMux
 retains an explicit provider because the built-in provider's retry and
 transport defaults have not qualified for the bridge's safety contract.
 
-The update action verifies the CLI release before activating its existing setup
-transaction. App and CLI versions are shown separately; install a matching app
+**Check status** shows its progress and completion time even when nothing
+changed. Settings and Help open their own reusable windows. Longer operations
+show a spinner and elapsed time. **Check for PickerMux updates** and the update
+result are in Settings. The update action verifies the CLI release before
+activating its existing setup transaction. App and CLI versions are shown separately; install a matching app
 build after updating the CLI. App builds, signing requirements, and validation
 limits are documented in [the companion guide](docs/MACOS_COMPANION.md).
 
@@ -437,8 +443,8 @@ See [Configuration](docs/CONFIGURATION.md#shared-web-search) and
 
 Version 0.9.0 adds the optional companion and its versioned control protocol.
 Existing healthy configurations retain the explicit provider. Configuration
-cleanup and replacement of an Ollama gateway require a reviewed preview and
-confirmation. See [the companion guide](docs/MACOS_COMPANION.md) before using
+cleanup and replacement of an Ollama gateway use a fresh preview bound to
+explicit activation consent. See [the companion guide](docs/MACOS_COMPANION.md) before using
 an unsigned development app or preparing a signed release.
 
 Version 0.8.3 checks the exact-version Codex account cache before contacting

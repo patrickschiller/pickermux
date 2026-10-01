@@ -302,7 +302,7 @@ evidence and fails closed; it is not reported as a successful reactivation.
 
 ## Uninstall and purge boundary
 
-The companion's confirmed integration toggle is separate from uninstall and
+The companion's explicit integration toggle is separate from uninstall and
 full-refresh recovery. Deactivation retains the private ownership receipt,
 runtime/capability record, provider settings, certification receipts and
 original backup, while stopping the managed service and exposing native Codex
@@ -311,7 +311,9 @@ readable. A distinct `integration-toggle-v1` suspension digest binds those
 bytes; edited aliases/configuration and foreign lifecycle suspensions cannot
 authorize reactivation. Deactivation requires Codex to be fully stopped,
 receipt-owned runtime/source validation and the installation lock. Service
-or configuration failures use the existing rollback boundary. GUI consent
+or configuration failures use the existing rollback boundary. Turning the
+toggle on or off supplies explicit consent without a second modal dialog;
+activation still obtains and revalidates a fresh exact preview token. GUI consent
 does not bypass any of these checks.
 
 The normal `pickermux uninstall` lifecycle restores Codex configuration and

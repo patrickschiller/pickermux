@@ -38,13 +38,13 @@ changing Homebrew permissions to work around the old check.
 
 Bridge actions appear only after a validated status grants them. A Node.js
 failure does not authorize configuration setup, refresh, recovery, or an
-update. Copying the app from the DMG installs its bundle; use the confirmed
-configuration preview/setup once status is available if the integration is
+update. Copying the app from the DMG installs its bundle; enable the top switch
+once status is available to authorize automatic setup if the integration is
 not installed yet.
 
 The app validates the receipt-owned launcher, current pointer, source
 inventory, and bounded protocol output. It can fall back to its verified
-bundled backend for read-only checks and explicitly confirmed configuration
+bundled backend for read-only checks and explicitly authorized configuration
 setup when the installed CLI is absent or predates the protocol. Other
 mutations require the active installed CLI. If ownership validation fails,
 review the CLI installation; replacing receipts or disabling checks is not a
@@ -59,14 +59,14 @@ prove that a signed/notarized app is available; see
 
 An Ollama or other gateway owns the same root catalog and gateway fields that
 PickerMux uses. Fully quit Codex, ensure its signed-in account cache matches
-the installed client, and choose **Preview configuration changes** before
-applying the explicitly confirmed switch. The preview is bound to the inspected
+the installed client, then enable **Use PickerMux in Codex** to authorize the
+switch. The automatically acquired preview is bound to the inspected
 configuration and receipt; after any edit, request a fresh preview.
 
 ## Companion cannot enable PickerMux in Codex
 
 Copying the app from a DMG installs the menu-bar utility. Turn on
-**Use PickerMux in Codex** to review and confirm CLI/bridge setup. First
+**Use PickerMux in Codex** to authorize automatic CLI/bridge setup. First
 installation is shown as setup required; the absence of a compatibility
 manifest alone does not mean that Codex was updated.
 
@@ -90,6 +90,22 @@ app. The new app uses its pinned setup backend when the required feature marker
 is absent. Confirm the offered setup upgrade first; only the current
 receipt-owned CLI can deactivate its bridge. Edited suspended configuration
 and pending full-refresh recovery block toggle changes until reviewed.
+
+## Companion buttons appear unresponsive
+
+Use the 0.9.2 companion or newer. Earlier builds could drop a manual status
+request during polling and open settings or modal alerts from the transient
+menu panel. The corrected app queues manual checks, always shows their result
+time, and opens Settings and Help in their own reusable windows. Enabling the
+top switch installs automatically without the old second popup. Recovery and
+software updates use a separate asynchronous confirmation window.
+
+A busy indicator and elapsed time mean the requested operation is still
+running. Installation can take several minutes while loaded models are
+certified. If a fixed model-server error appears, start the configured provider
+and load a model, then retry; reopening Settings or clicking status cannot
+satisfy that setup prerequisite. Update checks and their results are in
+Settings.
 
 Modified managed blocks, ambiguous root assignments, unknown ownership state,
 or an interrupted recovery prevent automatic switching. Keep the original

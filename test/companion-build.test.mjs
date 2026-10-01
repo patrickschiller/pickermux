@@ -6,11 +6,11 @@ import path from "node:path";
 import test from "node:test";
 import { deflateSync, gunzipSync } from "node:zlib";
 import { buildCompanion, companionArchive, releaseSigning } from "../scripts/build-companion.mjs";
-import { validateCompanionIcns, validateIconPng } from "../scripts/build-companion-icon.mjs";
+import { validateCompanionIcns, validateIconPng, validateMenuBarIconPng } from "../scripts/build-companion-icon.mjs";
 
 const hash = (value) => createHash("sha256").update(value).digest("hex");
 
-function iconPng(pixels, colorType = 6) {
+function iconPng(pixels, colorType = 6, template = false, rasterTransform = (raster) => raster) {
   const crc32 = (bytes) => {
     let value = 0xffffffff;
     for (const byte of bytes) {
@@ -33,12 +33,17 @@ function iconPng(pixels, colorType = 6) {
   header[8] = 8;
   header[9] = colorType;
   const raster = Buffer.alloc((pixels * 4 + 1) * pixels);
-  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", header), chunk("IDAT", deflateSync(raster)), chunk("IEND", Buffer.alloc(0))]);
+  if (template) {
+    for (let row = Math.floor(pixels / 4); row < Math.ceil(pixels * 3 / 4); row += 1) {
+      for (let column = Math.floor(pixels / 4); column < Math.ceil(pixels * 3 / 4); column += 1) raster[row * (pixels * 4 + 1) + 1 + column * 4 + 3] = 255;
+    }
+  }
+  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", header), chunk("IDAT", deflateSync(rasterTransform(raster))), chunk("IEND", Buffer.alloc(0))]);
 }
 
-function iconIcns() {
+function iconIcns(template = false) {
   const chunks = [["ic04", 16], ["ic05", 32], ["ic07", 128], ["ic08", 256], ["ic09", 512], ["ic10", 1024], ["ic11", 32], ["ic12", 64], ["ic13", 256], ["ic14", 512]].map(([type, pixels]) => {
-    const contents = iconPng(pixels);
+    const contents = iconPng(pixels, 6, template);
     const record = Buffer.alloc(8);
     record.write(type, "ascii");
     record.writeUInt32BE(contents.length + 8, 4);
@@ -65,6 +70,7 @@ async function fixture(t) {
     "macos/Resources/Info.plist.in": "<plist>__PICKERMUX_VERSION__<key>CFBundleIconFile</key><string>AppIcon</string></plist>\n",
     "macos/Resources/Companion.entitlements": "<plist/>\n",
     "macos/Resources/AppIcon.png": iconPng(1024),
+    "macos/Resources/MenuBarIcon.png": iconPng(1024, 6, true),
     "CHANGELOG.md": "## [1.2.3] - 2026-10-01\n\n[1.2.3]: https://github.com/patrickschiller/pickermux/releases/tag/v1.2.3\n",
     "scripts/install.sh.in": "#!/bin/sh\nversion=__PICKERMUX_VERSION__\narchive=__PICKERMUX_ARCHIVE__\ndigest=__PICKERMUX_SHA256__\n",
   };
@@ -83,8 +89,8 @@ function fakeTools(calls = [], override = async () => {}) {
     if (tool === "/usr/bin/lipo" && args.includes("-create")) await writeFile(args[args.indexOf("-output") + 1], "fixture-universal");
     if (tool === "/usr/bin/lipo" && args.includes("-archs")) return "arm64 x86_64\n";
     if (args[0] === "notarytool") return JSON.stringify({ status: "Accepted" });
-    if (tool === "/usr/bin/sips") await writeFile(args.at(-1), iconPng(Number(args[args.indexOf("--resampleHeightWidth") + 1])), { flag: "wx" });
-    if (tool === "/usr/bin/iconutil") await writeFile(args[args.indexOf("--output") + 1], iconIcns(), { flag: "wx" });
+    if (tool === "/usr/bin/sips") await writeFile(args.at(-1), iconPng(Number(args[args.indexOf("--resampleHeightWidth") + 1]), 6, args.at(-3).endsWith("MenuBarIcon-master.png")), { flag: "wx" });
+    if (tool === "/usr/bin/iconutil") await writeFile(args[args.indexOf("--output") + 1], iconIcns(args.at(-1).endsWith("MenuBarIcon.iconset")), { flag: "wx" });
     if (tool === "/usr/bin/ditto" && !args.includes("-c")) await cp(args[0], args[1], { recursive: true, force: false, errorOnExist: true, verbatimSymlinks: true });
     if (tool === "/usr/bin/hdiutil") {
       if (args[0] === "create") {
@@ -155,9 +161,13 @@ test("companion build pins its complete backend, builds both architectures and p
   assert.equal(packagedIcon.mode, 0o644);
   validateCompanionIcns(packagedIcon.contents);
   assert.deepEqual(distribution.icon, { file: "AppIcon.icns", sha256: hash(packagedIcon.contents), source: "macos/Resources/AppIcon.png", sourceSha256: hash(await readFile(path.join(project, "macos", "Resources", "AppIcon.png"))), pixels: 1024 });
+  const packagedMenuBarIcon = entries.find(({ path: name }) => name === "PickerMux.app/Contents/Resources/MenuBarIcon.icns");
+  assert.equal(packagedMenuBarIcon.mode, 0o644);
+  validateCompanionIcns(packagedMenuBarIcon.contents, validateMenuBarIconPng);
+  assert.deepEqual(distribution.menuBarIcon, { file: "MenuBarIcon.icns", sha256: hash(packagedMenuBarIcon.contents), source: "macos/Resources/MenuBarIcon.png", sourceSha256: hash(await readFile(path.join(project, "macos", "Resources", "MenuBarIcon.png"))), pixels: 1024, template: true, pointSize: 18 });
   assert.match(entries.find(({ path: name }) => name === "PickerMux.app/Contents/Info.plist").contents.toString("utf8"), /<key>CFBundleIconFile<\/key><string>AppIcon<\/string>/u);
   const iconSizes = calls.filter(({ tool }) => tool === "/usr/bin/sips").map(({ args }) => Number(args[args.indexOf("--resampleHeightWidth") + 1]));
-  assert.deepEqual(iconSizes, [16, 32, 32, 64, 128, 256, 256, 512, 512, 1024]);
+  assert.deepEqual(iconSizes, [16, 32, 32, 64, 128, 256, 256, 512, 512, 1024, 16, 32, 32, 64, 128, 256, 256, 512, 512, 1024]);
   assert.ok(calls.some(({ tool, args }) => tool === "/usr/bin/iconutil" && args[0] === "--convert" && args[1] === "icns"));
   assert.deepEqual(distribution.diskImage, { file: "PickerMux-v1.2.3-macos-universal.dmg", sha256: hash(await readFile(path.join(first.outputDirectory, first.diskImageName))), format: "UDZO", filesystem: "HFS+", installation: "drag-to-applications" });
   assert.equal(first.diskImageSha256, distribution.diskImage.sha256);
@@ -310,6 +320,71 @@ test("app icon rejects missing or linked sources, wrong icon declaration and mal
       const { root, project } = await fixture(child);
       await prepare(project);
       await assert.rejects(buildCompanion({ projectDirectory: project, outputDirectory: path.join(root, "out"), execute: fakeTools([], override) }), expected);
+      assert.ok(!(await readdir(root)).includes("out"));
+      assert.equal((await readdir(root)).filter((entry) => entry.startsWith(".pickermux-companion-")).length, 0);
+    });
+  }
+});
+
+test("menu-bar template validates bounded raster data, transparent corners and visible artwork", () => {
+  validateMenuBarIconPng(iconPng(18, 6, true), 18);
+  validateMenuBarIconPng(iconPng(36, 6, true), 36);
+  assert.throws(() => validateMenuBarIconPng(iconPng(18), 18), /visible artwork/u);
+  assert.throws(() => validateMenuBarIconPng(iconPng(18, 2, true), 18), /RGBA alpha/u);
+  assert.throws(() => validateMenuBarIconPng(iconPng(18, 6, true, (raster) => { raster[4] = 255; return raster; }), 18), /clear corners/u);
+  assert.throws(() => validateMenuBarIconPng(iconPng(18, 6, true, (raster) => { raster[0] = 5; return raster; }), 18), /unknown PNG filter/u);
+  assert.throws(() => validateMenuBarIconPng(iconPng(18, 6, true, (raster) => raster.subarray(0, raster.length - 1)), 18), /exact pixel bounds/u);
+  assert.throws(() => validateMenuBarIconPng(iconPng(18, 6, true, (raster) => Buffer.concat([raster, Buffer.alloc(1)])), 18), /exceeds its exact pixel bounds/u);
+  // Three rows with a single opaque center pixel, encoded with each standard
+  // PNG predictor. Alpha carries the macOS template regardless of RGB color.
+  for (const [index, rows] of [
+    [[0, 0, 0], [0, 255, 1], [0, 0, 0]],
+    [[0, 0, 0], [0, 255, 0], [0, 1, 0]],
+    [[0, 0, 0], [0, 255, 129], [0, 129, 0]],
+    [[0, 0, 0], [0, 255, 1], [0, 1, 0]],
+  ].entries()) {
+    validateMenuBarIconPng(iconPng(3, 6, false, (raster) => {
+      for (let row = 0; row < 3; row += 1) {
+        raster[row * 13] = index + 1;
+        for (let column = 0; column < 3; column += 1) raster[row * 13 + 1 + column * 4 + 3] = rows[row][column];
+      }
+      return raster;
+    }), 3);
+  }
+});
+
+test("menu-bar icon rejects linked or invalid masters and substituted native template output", async (t) => {
+  const cases = [
+    ["missing master", async (project) => rm(path.join(project, "macos", "Resources", "MenuBarIcon.png")), async () => {}, /ENOENT/u],
+    ["linked master", async (project) => {
+      const source = path.join(project, "macos", "Resources", "MenuBarIcon.png");
+      await rm(source);
+      await symlink(path.join(project, "macos", "Resources", "AppIcon.png"), source);
+    }, async () => {}, /regular file without links/u],
+    ["hardlinked master", async (project) => {
+      const source = path.join(project, "macos", "Resources", "MenuBarIcon.png");
+      await link(source, source + ".alias");
+    }, async () => {}, /regular file without links/u],
+    ["wrong master dimensions", async (project) => writeFile(path.join(project, "macos", "Resources", "MenuBarIcon.png"), iconPng(512, 6, true)), async () => {}, /1024x1024/u],
+    ["invisible master", async (project) => writeFile(path.join(project, "macos", "Resources", "MenuBarIcon.png"), iconPng(1024)), async () => {}, /visible artwork/u],
+    ["invisible resized output", async () => {}, async (tool, args) => {
+      if (tool === "/usr/bin/sips" && args.at(-3).endsWith("MenuBarIcon-master.png")) {
+        await writeFile(args.at(-1), iconPng(Number(args[args.indexOf("--resampleHeightWidth") + 1]))); return "";
+      }
+    }, /visible artwork/u],
+    ["substituted ICNS", async () => {}, async (tool, args) => {
+      if (tool === "/usr/bin/iconutil" && args.at(-1).endsWith("MenuBarIcon.iconset")) {
+        await writeFile(args[args.indexOf("--output") + 1], iconIcns()); return "";
+      }
+    }, /visible artwork/u],
+  ];
+  for (const [name, prepare, override, expected] of cases) {
+    await t.test(name, async (child) => {
+      const { root, project } = await fixture(child);
+      await prepare(project);
+      const calls = [];
+      await assert.rejects(buildCompanion({ projectDirectory: project, outputDirectory: path.join(root, "out"), execute: fakeTools(calls, override) }), expected);
+      assert.ok(!calls.some(({ args }) => args.includes("swiftc")));
       assert.ok(!(await readdir(root)).includes("out"));
       assert.equal((await readdir(root)).filter((entry) => entry.startsWith(".pickermux-companion-")).length, 0);
     });
