@@ -23,11 +23,12 @@ published as GitHub Releases.
 
 ### Changed
 
-- Reorganize the menu-bar panel with native macOS controls. Keep
+- Use a compact 320-point menu with native macOS styling, stacked Last model
+  request and Since reset usage blocks, and full-width action rows. Keep
   integration state, Refresh picker, Open Codex, Check status, and Check
   installation directly accessible with specific feedback; group certification
-  and recovery under More actions and move details below those primary actions.
-  Keep Settings, Help, and Quit visible in the footer of the bounded panel.
+  and recovery under More actions and show installation details below the
+  primary actions. Settings, Help, and Quit appear as separate menu rows.
 
 ### Fixed
 

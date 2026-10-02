@@ -472,6 +472,40 @@ private enum CompanionTypography {
   static let metadata = Font.system(size: 12)
 }
 
+private enum MenuTypography {
+  static let body = Font.system(size: 13)
+  static let label = Font.system(size: 13)
+  static let progress = Font.system(size: 11)
+  static let metadata = Font.system(size: 11)
+}
+
+private struct MenuRowButtonStyle: ButtonStyle {
+  func makeBody(configuration: Configuration) -> some View {
+    MenuRowLabel(label: configuration.label, isPressed: configuration.isPressed)
+  }
+}
+
+private struct MenuRowLabel<Label: View>: View {
+  let label: Label
+  let isPressed: Bool
+  @Environment(\.isEnabled) private var isEnabled
+  @State private var isHovered = false
+
+  var body: some View {
+    let highlighted = isEnabled && (isHovered || isPressed)
+    label
+      .font(MenuTypography.body)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .padding(.horizontal, 14)
+      .padding(.vertical, 4)
+      .contentShape(Rectangle())
+      .background(highlighted ? Color.accentColor : .clear)
+      .foregroundStyle(highlighted ? Color.white : Color.primary)
+      .opacity(isEnabled ? 1 : 0.45)
+      .onHover { isHovered = $0 }
+  }
+}
+
 struct CompanionPanel: View {
   @ObservedObject var controller: CompanionController
 
@@ -482,43 +516,44 @@ struct CompanionPanel: View {
       if !controller.removalState.backendRemoved {
         VStack(spacing: 0) {
           Divider()
-          HStack(spacing: 8) {
-            Button("Settings…") { controller.showSettings() }
-            Button("Help…") { controller.showHelp() }
-            Spacer(minLength: 0)
-            Button("Quit") { NSApp.terminate(nil) }
-          }
-          .buttonStyle(.bordered)
-          .controlSize(.regular)
-          .padding(.horizontal, 16)
-          .padding(.vertical, 12)
+          Button("Settings…") { controller.showSettings() }
+          Button("Help…") { controller.showHelp() }
+          Button("Quit") { NSApp.terminate(nil) }
         }
+        .buttonStyle(MenuRowButtonStyle())
+        .padding(.vertical, 4)
       }
     }
   }
 
   private var content: some View {
-    VStack(alignment: .leading, spacing: 12) {
+    VStack(alignment: .leading, spacing: 0) {
       if controller.removalState.backendRemoved {
         RemovalCompletionView(controller: controller)
+          .padding(14)
       } else {
-        HStack {
-          Text("Use PickerMux in Codex").font(CompanionTypography.label)
-          Spacer()
-          Toggle("Use PickerMux in Codex", isOn: Binding(
-            get: { controller.integrationState.isEnabled },
-            set: { controller.setIntegrationEnabled($0) }))
-            .labelsHidden()
-            .toggleStyle(.switch)
-            .controlSize(.small)
-            .disabled(!controller.integrationState.canChange)
-            .accessibilityHint(controller.integrationState.guidance)
+        VStack(alignment: .leading, spacing: 4) {
+          HStack {
+            Text("Use PickerMux in Codex").font(MenuTypography.label)
+            Spacer()
+            Toggle("Use PickerMux in Codex", isOn: Binding(
+              get: { controller.integrationState.isEnabled },
+              set: { controller.setIntegrationEnabled($0) }))
+              .labelsHidden()
+              .toggleStyle(.switch)
+              .controlSize(.small)
+              .disabled(!controller.integrationState.canChange)
+              .accessibilityHint(controller.integrationState.guidance)
+          }
+          Text(controller.integrationLabel)
+            .font(MenuTypography.label.weight(.semibold))
+          Text(controller.integrationState.guidance)
+            .font(MenuTypography.metadata).foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
         }
-        Text(controller.integrationLabel)
-          .font(CompanionTypography.label)
-        Text(controller.integrationState.guidance)
-          .font(CompanionTypography.body).foregroundStyle(.secondary)
-          .fixedSize(horizontal: false, vertical: true)
+        .padding(.horizontal, 14)
+        .padding(.top, 10)
+        .padding(.bottom, 8)
         if controller.snapshot?.usesBundledBackend == true && controller.integrationState.needsSetupUpgrade {
           Button("Complete PickerMux setup") { controller.setIntegrationEnabled(true, reviewInstalledSetup: true) }
             .disabled(!controller.canReviewBundledBootstrap)
@@ -526,51 +561,55 @@ struct CompanionPanel: View {
         if let snapshot = controller.snapshot {
           Divider()
           TokenUsageView(snapshot: snapshot)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
         }
         Divider()
-        HStack(spacing: 8) {
-          ForEach(availableActions([.refresh, .open]), id: \.self) { action in
-            actionButton(action)
-          }
+        ForEach(availableActions([.refresh, .open]), id: \.self) { action in
+          actionButton(action)
         }
-        HStack(spacing: 8) {
-          Button(controller.isCheckingStatus ? "Checking…" : "Check status") {
-            Task { await controller.refreshStatus(manual: true) }
-          }
-          .disabled(controller.isCheckingStatus || !controller.activityAllowed)
-          if controller.snapshot?.actions.contains(.diagnose) == true { actionButton(.diagnose) }
+        Button(controller.isCheckingStatus ? "Checking…" : "Check status") {
+          Task { await controller.refreshStatus(manual: true) }
         }
-        VStack(alignment: .leading, spacing: 4) {
-          if controller.busy != nil {
-            OperationProgress(controller: controller)
-          } else if let notice = controller.operationNotice,
-                    controller.operationNoticeAction != .updateCheck && controller.operationNoticeAction != .update {
-            Text(controller.lastSetupFailed ? "Last setup attempt: \(notice)" : notice)
-              .foregroundStyle(controller.operationFailed ? .red : .primary)
-              .fixedSize(horizontal: false, vertical: true)
-            if controller.lastSetupFailed {
-              Text("After fixing the cause, turn the switch on again. Check status does not retry setup.")
+        .disabled(controller.isCheckingStatus || !controller.activityAllowed)
+        if controller.snapshot?.actions.contains(.diagnose) == true { actionButton(.diagnose) }
+        if feedbackVisible {
+          VStack(alignment: .leading, spacing: 3) {
+            if controller.busy != nil {
+              OperationProgress(controller: controller, compact: true)
+            } else if let notice = controller.operationNotice,
+                      controller.operationNoticeAction != .updateCheck && controller.operationNoticeAction != .update {
+              Text(controller.lastSetupFailed ? "Last setup attempt: \(notice)" : notice)
+                .foregroundStyle(controller.operationFailed ? .red : .primary)
+                .fixedSize(horizontal: false, vertical: true)
+              if controller.lastSetupFailed {
+                Text("After fixing the cause, turn the switch on again. Check status does not retry setup.")
+                  .fixedSize(horizontal: false, vertical: true)
+              }
+            } else if controller.snapshot == nil {
+              Text(controller.message).fixedSize(horizontal: false, vertical: true)
+            }
+            if let notice = controller.statusCheckNotice {
+              Text(notice).font(MenuTypography.progress).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             }
-          } else if controller.snapshot == nil {
-            Text(controller.message).fixedSize(horizontal: false, vertical: true)
+            if controller.refreshQueued {
+              Text("Refresh queued until Codex fully quits.").foregroundStyle(.secondary)
+            }
           }
-          if let notice = controller.statusCheckNotice {
-            Text(notice).font(CompanionTypography.progress).foregroundStyle(.secondary)
-              .fixedSize(horizontal: false, vertical: true)
-          }
-          if controller.refreshQueued {
-            Text("Refresh queued until Codex fully quits.").foregroundStyle(.secondary)
-          }
+          .font(MenuTypography.metadata)
+          .padding(.horizontal, 14)
+          .padding(.bottom, 6)
         }
         let maintenance = availableActions([.certify, .recover])
         if !maintenance.isEmpty {
           DisclosureGroup("More actions") {
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 0) {
               ForEach(maintenance, id: \.self) { action in actionButton(action) }
             }
-            .padding(.top, 6)
           }
+          .padding(.horizontal, 14)
+          .padding(.vertical, 4)
         }
         if let snapshot = controller.snapshot {
           DisclosureGroup("Installation details") {
@@ -586,18 +625,25 @@ struct CompanionPanel: View {
               }
               if !snapshot.issues.isEmpty {
                 Text("The installation needs attention. Check it or review the available repair.")
-                  .font(CompanionTypography.body).foregroundStyle(.secondary)
+                  .font(MenuTypography.body).foregroundStyle(.secondary)
               }
             }
           }
-          .font(CompanionTypography.body)
+          .font(MenuTypography.body)
+          .padding(.horizontal, 14)
+          .padding(.vertical, 4)
         }
       }
     }
-    .font(CompanionTypography.body)
-    .buttonStyle(.bordered)
-    .controlSize(.regular)
-    .padding(16)
+    .font(MenuTypography.body)
+    .buttonStyle(MenuRowButtonStyle())
+    .controlSize(.small)
+    .padding(.bottom, 4)
+  }
+
+  private var feedbackVisible: Bool {
+    controller.busy != nil || controller.snapshot == nil || controller.statusCheckNotice != nil || controller.refreshQueued ||
+      (controller.operationNotice != nil && controller.operationNoticeAction != .updateCheck && controller.operationNoticeAction != .update)
   }
 
   private func availableActions(_ actions: [CompanionAction]) -> [CompanionAction] {
@@ -616,7 +662,7 @@ struct CompanionPanel: View {
       Text(label).foregroundStyle(.secondary)
       Spacer()
       Text(statusLabel(status))
-    }.font(CompanionTypography.body)
+    }.font(MenuTypography.body)
   }
 }
 
@@ -624,94 +670,88 @@ struct TokenUsageView: View {
   let snapshot: CompanionSnapshot
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 10) {
-      Text("Token usage").font(CompanionTypography.label)
+    VStack(alignment: .leading, spacing: 6) {
+      Text("Token usage").font(MenuTypography.metadata).foregroundStyle(.secondary)
       if let usage = snapshot.tokenUsage {
         if usage.status == .unavailable {
           Text("Token usage is unavailable. Check the bridge status.")
-            .font(CompanionTypography.metadata).foregroundStyle(.secondary)
+            .font(MenuTypography.metadata).foregroundStyle(.secondary)
         } else if usage.providers.isEmpty {
           Text("No model requests yet.")
-            .font(CompanionTypography.metadata).foregroundStyle(.secondary)
+            .font(MenuTypography.metadata).foregroundStyle(.secondary)
         } else {
           ForEach(usage.providers) { provider in
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 6) {
               Text(provider.providerId == "lmstudio" ? "LM Studio" : provider.providerId)
-                .font(CompanionTypography.label)
+                .font(MenuTypography.label)
                 .lineLimit(1).truncationMode(.middle)
-              Grid(alignment: .trailing, horizontalSpacing: 16, verticalSpacing: 5) {
-                GridRow {
-                  Color.clear.gridCellUnsizedAxes([.horizontal, .vertical])
-                  Text("Last model\nrequest")
-                    .multilineTextAlignment(.trailing)
-                    .frame(maxWidth: .infinity, alignment: .trailing)
-                  Text(usage.isPersistent ? "Since reset" : "Since bridge start")
-                    .frame(maxWidth: .infinity, alignment: .trailing)
-                }
-                .font(CompanionTypography.metadata.weight(.semibold))
-                tokenRow("Input", provider.last.counts?.inputTokens, provider.displayTotals?.inputTokens)
-                tokenRow("Output", provider.last.counts?.outputTokens, provider.displayTotals?.outputTokens)
-                tokenRow("Total", provider.last.counts?.totalTokens, provider.displayTotals?.totalTokens)
-                  .fontWeight(.semibold)
-              }
-              .frame(maxWidth: .infinity, alignment: .leading)
+              tokenSummary("Last model request", counts: provider.last.counts)
+              tokenSummary(usage.isPersistent ? "Since reset" : "Since bridge start", counts: provider.displayTotals)
               if let note = provider.missingUsageMessage {
-                Text(note).font(CompanionTypography.metadata).foregroundStyle(.secondary)
+                Text(note).font(MenuTypography.metadata).foregroundStyle(.secondary)
                   .fixedSize(horizontal: false, vertical: true)
               }
               if provider.totals == nil && provider.requests > provider.unavailableRequests {
                 Text("The accumulated counts exceeded the supported limit and are unavailable.")
-                  .font(CompanionTypography.metadata).foregroundStyle(.secondary)
+                  .font(MenuTypography.metadata).foregroundStyle(.secondary)
                   .fixedSize(horizontal: false, vertical: true)
               }
             }
             if provider.id != usage.providers.last?.id { Divider() }
           }
         }
-        Text(usage.isPersistent ? "Totals are saved across restarts. Reset accumulated counts in Settings." :
-          "External model requests routed through PickerMux. Counts reset when the bridge restarts.")
-          .font(CompanionTypography.metadata).foregroundStyle(.secondary)
+        Text(usage.isPersistent ? "Saved across restarts. Reset in Settings." : "Counts reset when the bridge restarts.")
+          .font(MenuTypography.metadata).foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
       } else {
         Text("Token usage is unavailable. Update the installed PickerMux backend to enable it.")
-          .font(CompanionTypography.metadata).foregroundStyle(.secondary)
+          .font(MenuTypography.metadata).foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
       }
     }
   }
 
-  private func tokenRow(_ label: String, _ last: Int?, _ total: Int?) -> some View {
-    GridRow {
-      Text(label).foregroundStyle(label == "Total" ? .primary : .secondary)
-        .gridColumnAlignment(.leading)
-      tokenCount(last)
-      tokenCount(total)
+  private func tokenSummary(_ title: String, counts: TokenUsageCounts?) -> some View {
+    VStack(alignment: .leading, spacing: 2) {
+      Text(title).font(MenuTypography.metadata).foregroundStyle(.secondary)
+      tokenRow("Input", counts?.inputTokens)
+      tokenRow("Output", counts?.outputTokens)
+      tokenRow("Total", counts?.totalTokens).fontWeight(.semibold)
     }
-    .font(CompanionTypography.metadata)
+  }
+
+  private func tokenRow(_ label: String, _ count: Int?) -> some View {
+    HStack {
+      Text(label).foregroundStyle(label == "Total" ? .primary : .secondary)
+      Spacer(minLength: 16)
+      tokenCount(count)
+    }
+    .font(Font.system(size: 12))
   }
 
   private func tokenCount(_ count: Int?) -> some View {
     Text(count.map { $0.formatted(.number) } ?? "Unavailable")
       .monospacedDigit()
-      .lineLimit(1).minimumScaleFactor(0.6)
-      .frame(maxWidth: .infinity, alignment: .trailing)
+      .lineLimit(1).minimumScaleFactor(0.8)
   }
 }
 
 private struct OperationProgress: View {
   @ObservedObject var controller: CompanionController
+  var compact = false
 
   var body: some View {
     HStack(alignment: .top, spacing: 8) {
       ProgressView().controlSize(.small)
       VStack(alignment: .leading, spacing: 3) {
-        Text(controller.message).font(CompanionTypography.body).fixedSize(horizontal: false, vertical: true)
+        Text(controller.message).font(compact ? MenuTypography.metadata : CompanionTypography.body)
+          .fixedSize(horizontal: false, vertical: true)
         if let started = controller.operationStartedAt {
           TimelineView(.periodic(from: started, by: 1)) { context in
             let elapsed = max(0, Int(context.date.timeIntervalSince(started)))
             Text("Running \(elapsed / 60)m \(elapsed % 60)s" +
               ([.configurationApply, .certify].contains(controller.busy) ? " · setup and certification may take several minutes." : "."))
-              .font(CompanionTypography.progress).foregroundStyle(.secondary)
+              .font(compact ? MenuTypography.progress : CompanionTypography.progress).foregroundStyle(.secondary)
               .fixedSize(horizontal: false, vertical: true)
           }
         }

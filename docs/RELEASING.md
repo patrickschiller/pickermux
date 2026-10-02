@@ -193,8 +193,10 @@ publishing an artifact does not establish that the installed upgrade passed.
   setup and confirm that both versions are then 0.21.0. Verify that installed
   provider settings and still-valid certification receipts are preserved.
 - Open and reopen the native menu after status and token-usage changes.
-  Confirm that integration state, Refresh picker/Open Codex and Check
-  status/Check installation stay directly accessible with specific feedback.
+  Confirm the compact 320-point presentation, vertically stacked Last model
+  request/Since reset blocks, and full-width action rows. Integration state,
+  Refresh picker, Open Codex, Check status, and Check installation must remain
+  directly accessible with specific feedback.
   Exercise permitted/disabled actions, the More actions and Installation details
   disclosure groups, Settings/Help windows, and Quit. Verify empty, unavailable, partial,
   and multiple-provider snapshots. Record installed-app visual acceptance

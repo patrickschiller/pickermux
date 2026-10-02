@@ -57,13 +57,12 @@ failure describes the last attempt. A successful status check inspects the
 installation and Codex state; it does not prove that the model server is
 reachable. After addressing the error, turn the switch on again to retry setup.
 
-The menu-bar panel places the integration state and token usage before
-**Refresh picker** and **Open Codex**, followed by **Check status** and
-**Check installation**, with specific feedback immediately below those actions.
+The compact 320-point menu places integration state and token usage before
+the full-width **Refresh picker**, **Open Codex**, **Check status**, and
+**Check installation** rows, with specific feedback below those actions.
 **More actions** groups certification and repair; **Installation details**
-expands below. **Settings…**, **Help…**, and **Quit** stay visible in its footer. The
-400-by-600-point viewport scrolls its main content when needed; the footer
-stays in place. Bridge actions are offered according to the verified state
+expands below. **Settings…**, **Help…**, and **Quit** appear as separate menu rows
+at the bottom. Bridge actions are offered according to the verified state
 and are disabled while another operation is running.
 
 **Check status**, **Help…**, **Settings…**, and **Quit** remain visible when a
@@ -77,8 +76,8 @@ Bridge actions remain unavailable until a validated status permits them.
 ## Token usage
 
 The panel shows **Token usage** for each external provider with recorded usage.
-**Last model request** and **Since reset** each show separate Input, Output,
-and Total values.
+**Last model request** and **Since reset** are stacked vertically, each showing
+Input, Output, and Total values with right-aligned counts.
 The last request is the one that most recently finished, including when
 several chats run concurrently. A user turn can make several model requests
 for tools and context summaries; each is counted once. The values are updated

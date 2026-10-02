@@ -1,18 +1,19 @@
 # PickerMux 0.21.0
 
-PickerMux 0.21.0 uses native macOS menu controls with direct everyday actions, keeps
+PickerMux 0.21.0 uses a compact macOS-style menu with direct everyday actions, keeps
 provider token totals across bridge restarts, and fixes a configuration warning
 that could appear after Codex added an unrelated setting.
 
-## Native menu controls
+## Compact menu
 
 The menu keeps **Use PickerMux in Codex** and its verified state at the top.
-**Refresh picker** and **Open Codex**, followed by **Check status** and
-**Check installation**, are directly accessible. Specific feedback appears
-below those actions. **More actions** groups model certification and picker
-repair and installation details expand below. Settings, Help, and Quit stay
-visible in the footer of the 400-by-600-point panel while its main content
-scrolls when necessary. Offered actions obey the existing backend checks.
+**Refresh picker**, **Open Codex**, **Check status**, and **Check installation**
+are full-width menu rows. Specific feedback appears below those actions.
+**More actions** groups model certification and picker repair; installation
+details expand below. Settings, Help, and Quit appear as separate rows at the
+bottom. The menu is 320 points wide and stacks each provider's **Last model
+request** and **Since reset** usage blocks vertically. Offered actions obey
+the existing backend checks.
 
 Settings and Help keep their own reusable windows. Fully quit Codex before
 changing the integration, refreshing its picker, or updating the backend.

@@ -911,14 +911,13 @@ recovery/update confirmations use asynchronous windows rather than a nested
 modal event loop in the transient menu panel. Account-cache age alone does not
 grant recovery authority.
 
-The menu-bar panel places the integration state and token usage before
-Refresh picker/Open Codex and Check status/Check installation, directly before
-their specific feedback. Its shared 400-by-600-point viewport scrolls main
-content while retaining a visible native Settings/Help/Quit footer.
-Certification and recovery live under More actions; Installation details,
-Settings, Help, and Quit remain in the footer. Offered actions obey the
-validated backend permissions. Native menu presentation does not
-grant lifecycle authority.
+The compact 320-point menu places integration state and vertically stacked
+provider usage blocks before full-width Refresh picker, Open Codex, Check
+status, and Check installation rows, followed by specific feedback.
+Certification and recovery live under More actions; Installation details
+expand below the primary actions. Settings, Help, and Quit appear as separate
+menu rows. Offered actions obey the validated backend permissions. Native
+menu presentation does not grant lifecycle authority.
 
 `companion run` accepts one UTF-8 request capped at 4,096 bytes and a bounded
 input wait. Version 1 accepts only the fixed action set. Unknown or duplicate

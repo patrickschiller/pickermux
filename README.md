@@ -21,7 +21,7 @@ other local or remote Responses providers use a custom configuration.
     <td width="50%" align="center"><strong>Codex model picker</strong></td>
   </tr>
   <tr>
-    <td valign="top"><img src="assets/screenshots/pickermux-companion.png" alt="Synthetic PickerMux 0.21.0 menu preview with native controls, direct actions and durable provider token usage" width="400"></td>
+    <td valign="top"><img src="assets/screenshots/pickermux-companion.png" alt="Synthetic compact PickerMux 0.21.0 menu preview with stacked token usage and full-width action rows" width="320"></td>
     <td valign="top"><img src="assets/screenshots/pickermux-model-picker.png" alt="Codex model picker with namespaced external models alongside native models" width="440"></td>
   </tr>
 </table>
@@ -68,9 +68,9 @@ Make your provider models available, fully quit Codex, choose **Refresh picker**
 and reopen Codex. With LM Studio, load the models you want before refreshing.
 Newly discovered models need **Certify models…** before they can use tools.
 
-The panel puts **Refresh picker**, **Open Codex**, **Check status**, and
-**Check installation** beside their specific feedback. Native controls keep
-the menu compact; **Settings…**, **Help…**, and **Quit** stay visible in its footer.
+The compact menu offers **Refresh picker**, **Open Codex**, **Check status**, and
+**Check installation** as full-width rows, with specific feedback below them.
+**Settings…**, **Help…**, and **Quit** appear as separate rows at the bottom.
 **Settings…** contains update checks,
 optional login startup, refresh after Codex closes, and notifications. After a
 Codex update, **Repair after a Codex update…** explains the recovery and asks
@@ -83,7 +83,7 @@ that message in 0.20.1 and earlier without a manual configuration edit; the
 0.21.0 backend recognizes and preserves that setting after receipt verification.
 
 The panel's **Token usage** section shows input, output, and total tokens per
-external provider for the last model request and **Since reset**.
+external provider in stacked **Last model request** and **Since reset** blocks.
 It uses provider-reported counts from requests through PickerMux, including
 tool rounds and context summaries. Missing counts are marked unavailable;
 partial sums are labelled. Counts and the last request survive bridge restarts,
