@@ -1975,7 +1975,9 @@ test("runCli discloses the parser-only historical compatibility table after purg
   assert.match(stdout.join(""), /compatibility table remains only so historical chats parse/iu);
   assert.match(stdout.join(""), /new turns through it fail locally/iu);
   assert.match(stdout.join(""), /Fully quit and reopen Codex Desktop after removal/u);
-  assert.match(stdout.join(""), /select a native model before sending/u);
+  assert.match(stdout.join(""), /Changing the selected model may leave an existing chat on model_bridge/u);
+  assert.match(stdout.join(""), /Native provider recovery: https:\/\/github\.com\/patrickschiller\/pickermux\/blob\/main\/docs\/TROUBLESHOOTING\.md#reconnecting-in-an-old-chat-after-deactivation-or-uninstall/u);
+  assert.doesNotMatch(stdout.join(""), /[Ss]elect a native model before sending/u);
 });
 
 test("runCli rejects incomplete full purge results before its success path", async () => {

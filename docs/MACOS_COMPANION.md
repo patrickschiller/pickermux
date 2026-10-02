@@ -165,9 +165,10 @@ Turning the toggle off authorizes deactivation. PickerMux stops its
 bridge and removes the active integration from the Codex root, while retaining
 the CLI, service configuration, original backup, certification receipts and
 runtime for reactivation. An inert historical `model_bridge` provider alias
-keeps old chats readable; select a native model to continue an old chat while
-PickerMux is off. Deactivation is separate from account-cache recovery and
-does not create a full-refresh checkpoint. Pending recovery, edited ownership
+keeps old chats readable. Continuing an old chat while PickerMux is off may
+require [native-provider recovery](TROUBLESHOOTING.md#reconnecting-in-an-old-chat-after-deactivation-or-uninstall),
+even with a native model selected. Deactivation is separate from account-cache
+recovery and does not create a full-refresh checkpoint. Pending recovery, edited ownership
 state or concurrent configuration changes block the operation.
 
 Reopen Codex after successful deactivation to load its native picker. The
@@ -255,8 +256,10 @@ reported separately and never treated as confirmed absence.
 
 Native sign-in, the account model cache, projects, chats and unrelated settings
 are preserved. One inert `model_bridge` provider table remains so older chats
-can open; it contains no catalog models or usable provider route. Select a
-native model before continuing an older PickerMux chat.
+can open; it contains no catalog models or usable provider route. Changing the
+selected model may leave the chat's saved provider unchanged. Follow
+[native-provider recovery](TROUBLESHOOTING.md#reconnecting-in-an-old-chat-after-deactivation-or-uninstall)
+to continue an older PickerMux chat natively.
 
 Removal requires the receipt-owned installed CLI with the new native-uninstall
 capability. An older or unverified backend cannot use the bundled setup payload

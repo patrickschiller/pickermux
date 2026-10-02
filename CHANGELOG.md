@@ -11,6 +11,15 @@ published as GitHub Releases.
 
 ## [Unreleased]
 
+### Fixed
+
+- Document native-provider recovery for historical chats that keep reconnecting
+  after PickerMux deactivation or removal. Correct README, companion-guide,
+  technical-guide, and CLI advice that implied selecting a native model always
+  migrates the saved chat provider. Clarify that `repair-chats` restores parsing
+  compatibility only, and describe an explicit Codex resume with private
+  backups, preserved model/effort, and version-specific compatibility limits.
+
 ## [0.21.0] - 2026-10-02
 
 ### Added

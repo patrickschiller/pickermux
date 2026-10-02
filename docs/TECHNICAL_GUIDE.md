@@ -334,8 +334,10 @@ retains recovery state and reports incomplete removal. See
 
 Canonical installations retain an inert `model_bridge` provider table so older
 chats can open. It has no credentials, catalog models, or usable provider route.
-Select a native model before sending another turn in a historical chat. A later
-installation removes only the exact unchanged compatibility table.
+Changing the selected model may leave a historical chat's saved provider on
+`model_bridge`. To continue that chat natively, follow
+[native-provider recovery](TROUBLESHOOTING.md#reconnecting-in-an-old-chat-after-deactivation-or-uninstall).
+A later installation removes only the exact unchanged compatibility table.
 
 ### Repair historical chats
 
@@ -352,8 +354,10 @@ The historical 0.8.3 release provides a pinned repair-only installer:
 
 This legacy installer verifies its payload and does not run setup. Download and
 inspect the script first if required by your threat model; its bootstrap trusts
-HTTPS, GitHub, and the release publisher. Select a native model after repair.
-See [historical chat recovery](TROUBLESHOOTING.md#historical-chats-cannot-load-model_bridge).
+HTTPS, GitHub, and the release publisher. This repair restores parsing
+compatibility only; it does not migrate a chat's saved provider. See
+[historical chat recovery](TROUBLESHOOTING.md#historical-chats-cannot-load-model_bridge)
+and [native-provider recovery](TROUBLESHOOTING.md#reconnecting-in-an-old-chat-after-deactivation-or-uninstall).
 
 ## Routing and security
 

@@ -179,6 +179,9 @@ const COMMANDS = new Set([
   "version",
 ]);
 
+const HISTORICAL_CHAT_RECOVERY_DOC =
+  "https://github.com/patrickschiller/pickermux/blob/main/docs/TROUBLESHOOTING.md#reconnecting-in-an-old-chat-after-deactivation-or-uninstall";
+
 function usage() {
   return `PickerMux — Codex + Responses providers, one model picker
 
@@ -223,12 +226,14 @@ Companion update-check recognizes the DMG release channel. An update request
 for a DMG returns DOWNLOAD_REQUIRED; replace the app, then explicitly review
 Update installed backend in Settings. No downloaded DMG is executed by the CLI.
 repair-chats restores only the inert model_bridge table used to open historical
-chats after uninstall. Select a native model before sending a new turn.
+chats after uninstall. Saved chat providers are unchanged.
 refresh --full (also --FULL) recovers an account cache after a Codex update.
 It requires interactive confirmation and unchanged managed configuration.
 One valid, unowned root service_tier setting inside the managed block is
 preserved; duplicate or malformed settings and routing edits still block changes.
-After uninstall, fully restart Codex and select a native model in existing chats.
+After uninstall, fully restart Codex. Changing the selected model may leave
+an existing chat on model_bridge. Native provider recovery:
+${HISTORICAL_CHAT_RECOVERY_DOC}
 The bundled Codex executable is detected in the current or legacy Desktop layout.
 CODEX_BINARY overrides discovery for this command; it is not saved to the service.
 
@@ -3686,11 +3691,16 @@ export async function runCli(argv, {
       assertNoPendingFullRefreshImpl: assertNoPendingFullRefreshLocked,
     });
     if (options.json) printJson(result);
-    else process.stdout.write(
-      result.changed
-        ? "Historical model_bridge chats can be reopened. Select a native model before sending a new turn.\n"
-        : "Historical model_bridge chat compatibility is already present. Select a native model before sending a new turn.\n",
-    );
+    else {
+      process.stdout.write(
+        result.changed
+          ? "Historical model_bridge chats can be reopened. Saved chat providers are unchanged.\n"
+          : "Historical model_bridge chat compatibility is already present. Saved chat providers are unchanged.\n",
+      );
+      process.stdout.write(
+        `This restores parsing compatibility only. Native provider recovery: ${HISTORICAL_CHAT_RECOVERY_DOC}\n`,
+      );
+    }
     return result;
   }
   if (options.command === "uninstall") {
@@ -3780,11 +3790,11 @@ export async function runCli(argv, {
       );
       if (!options.purge && historicalCompatibility) {
         process.stdout.write(
-          "An inert model_bridge table remains so historical chats open. Select a native model before sending a new turn.\n",
+          "An inert model_bridge table remains so historical chats open; it cannot serve new turns.\n",
         );
       }
       process.stdout.write(
-        "Fully quit and reopen Codex Desktop after removal. In existing PickerMux chats, select a native model before sending; the removed bridge cannot serve new turns.\n",
+        `Fully quit and reopen Codex Desktop after removal. Changing the selected model may leave an existing chat on model_bridge.\nNative provider recovery: ${HISTORICAL_CHAT_RECOVERY_DOC}\n`,
       );
       if (options.removeCli && result.removed.cleanupPendingPath) {
         process.stderr.write(

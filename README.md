@@ -100,8 +100,10 @@ For complete removal, quit Codex and choose **Settings → Remove PickerMux
 completely…**. Confirm removal of the integration, CLI, managed data, verified
 backups, and registered provider credentials. Then quit PickerMux and move its
 app to the Trash. Codex sign-in, projects, chats, and unrelated settings stay
-intact. An inactive provider alias keeps historical chats readable; choose a
-native model before continuing one. [Removal details](docs/TECHNICAL_GUIDE.md#deactivation-and-removal).
+intact. An inactive provider alias keeps historical chats readable. If an old
+chat keeps reconnecting with a native model selected, its saved provider may
+still need [native-provider recovery](docs/TROUBLESHOOTING.md#reconnecting-in-an-old-chat-after-deactivation-or-uninstall).
+See [removal details](docs/TECHNICAL_GUIDE.md#deactivation-and-removal).
 
 ## Technical overview
 

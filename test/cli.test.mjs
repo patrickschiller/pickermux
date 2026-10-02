@@ -54,6 +54,10 @@ test("release metadata and both CLI entry points identify PickerMux", async () =
       assert.match(stdout, /pickermux companion status/u);
       assert.match(stdout, /pickermux companion run/u);
       assert.match(stdout, /After uninstall, fully restart Codex/u);
+      assert.match(stdout, /Changing the selected model may leave\nan existing chat on model_bridge/u);
+      assert.match(stdout, /Saved chat providers are unchanged/u);
+      assert.match(stdout, /https:\/\/github\.com\/patrickschiller\/pickermux\/blob\/main\/docs\/TROUBLESHOOTING\.md#reconnecting-in-an-old-chat-after-deactivation-or-uninstall/u);
+      assert.doesNotMatch(stdout, /[Ss]elect a native model before sending/u);
       assert.doesNotMatch(
         stdout,
         new RegExp(["Smart", "Routing"].join(" "), "iu"),
