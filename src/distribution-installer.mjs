@@ -18,6 +18,7 @@ import {
 import path from "node:path";
 
 import { readPickerMuxMetadata } from "./version.mjs";
+import { inventoryUsageStore, revalidateUsageStoreInventory } from "./usage-store.mjs";
 
 const RECEIPT_SCHEMA_VERSION = 1;
 const RECEIPT_PRODUCT = "pickermux";
@@ -419,6 +420,10 @@ async function assertFreshDestination(paths, permittedVersion) {
   const entries = await readdir(paths.applicationDirectory);
   for (const entry of entries) {
     if (entry === path.basename(paths.lockPath)) continue;
+    if (entry === "usage") {
+      await inventoryUsageStore({ directory: path.join(paths.applicationDirectory, "usage") });
+      continue;
+    }
     if (entry === "versions") {
       await assertDirectory(paths.versionsDirectory, "PickerMux versions directory");
       const versions = await readdir(paths.versionsDirectory);
@@ -1498,13 +1503,19 @@ async function stageDistributionRemoval(paths, installation, renameImpl) {
   }
 }
 
-async function assertExclusiveApplicationDirectory(paths) {
+async function assertExclusiveApplicationDirectory(paths, usageStoreInventory) {
   const expected = new Set([
     path.basename(paths.currentPath),
     path.basename(paths.lockPath),
     path.basename(paths.receiptPath),
     path.basename(paths.versionsDirectory),
   ]);
+  if (usageStoreInventory !== undefined) {
+    await revalidateUsageStoreInventory(usageStoreInventory, {
+      directory: path.join(paths.applicationDirectory, "usage"),
+    });
+    if (usageStoreInventory.exists) expected.add("usage");
+  }
   const unexpected = (await readdir(paths.applicationDirectory))
     .filter((entry) => !expected.has(entry))
     .sort();
@@ -1608,6 +1619,7 @@ export async function removeManagedDistribution({
   paths,
   beforeRemove = async () => undefined,
   requireExclusiveApplicationDirectory = false,
+  usageStoreInventory,
   processKillImpl,
   renameImpl = rename,
   openImpl = open,
@@ -1643,7 +1655,7 @@ export async function removeManagedDistribution({
       throw new Error("PickerMux CLI ownership state changed during removal");
     }
     if (requireExclusiveApplicationDirectory) {
-      await assertExclusiveApplicationDirectory(paths);
+      await assertExclusiveApplicationDirectory(paths, usageStoreInventory);
     }
     applicationDirectoryStats = await assertDirectory(
       paths.applicationDirectory,

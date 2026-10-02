@@ -1,11 +1,15 @@
 import assert from "node:assert/strict";
 import http from "node:http";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import { gzipSync } from "node:zlib";
 
 import { listenBridgeServer } from "../src/bridge-server.mjs";
 import { CERTIFICATION_HEADER } from "../src/certification-transport.mjs";
 import { createResponsesProxy } from "../src/responses-proxy.mjs";
+import { createUsageStore } from "../src/usage-store.mjs";
 
 const CAPABILITY = "offline_usage_capability_0123456789_ABCDEFGHIJKLMN";
 const INSTANCE = "offline-usage-instance-0123456789";
@@ -34,6 +38,7 @@ async function listen(server) {
 async function close(server) {
   server.closeAllConnections();
   if (server.listening) await new Promise((resolve) => server.close(resolve));
+  await server.flushTokenUsage?.();
 }
 
 function send({ port, path, body, headers = {}, onData }) {
@@ -65,7 +70,7 @@ function send({ port, path, body, headers = {}, onData }) {
   });
 }
 
-async function harness(t, { limits, gate = async () => {}, onTokenUsage } = {}) {
+async function harness(t, { limits, gate = async () => {}, onTokenUsage, tokenUsageStore } = {}) {
   const fixtures = [];
   const upstreamRequests = [];
   const upstream = http.createServer((request, response) => {
@@ -106,18 +111,68 @@ async function harness(t, { limits, gate = async () => {}, onTokenUsage } = {}) 
     await listen(server);
     base = "";
   } else {
-    server = await listenBridgeServer({ ...options, capabilityToken: CAPABILITY, instanceId: INSTANCE });
+    server = await listenBridgeServer({ ...options, capabilityToken: CAPABILITY, instanceId: INSTANCE, tokenUsageStore });
     base = `/c/${CAPABILITY}`;
   }
   t.after(() => close(server));
   const port = server.address().port;
   return {
     fixtures, upstreamRequests,
+    close: () => close(server),
     send: (body = {}, options = {}) => send({ port, path: `${base}/v1/responses`, body: { model: "lmstudio/example-model", input: "Hello", ...body }, ...options }),
     health: async () => JSON.parse((await send({ port, path: `${base}/health` })).body).tokenUsage,
     search: (body) => send({ port, path: `${base}/v1/alpha/search`, body }),
   };
 }
+
+test("installed usage survives real server replacement and explicit reset retains last", async (t) => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), "pickermux-usage-pipeline-"));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const parent = path.join(temporary, "PickerMux");
+  await mkdir(parent, { mode: 0o700 });
+  const directory = path.join(parent, "usage");
+  const first = await harness(t, { tokenUsageStore: createUsageStore({ directory }) });
+  await first.send();
+  first.fixtures.push({ headers: { "content-type": "text/event-stream" }, body: streamBody() });
+  await first.send({ stream: true });
+  await first.send({}, { headers: { [CERTIFICATION_HEADER]: INSTANCE } });
+  await first.send({ model: "native-example" });
+  const before = await first.health();
+  assert.equal(before.schemaVersion, 2);
+  assert.equal(before.providers[0].requests, 2);
+  assert.deepEqual(before.providers[0].totals, { inputTokens: 246, outputTokens: 34, totalTokens: 280 });
+  await first.close();
+  const second = await harness(t, { tokenUsageStore: createUsageStore({ directory }) });
+  assert.deepEqual(await second.health(), before);
+  const reset = await createUsageStore({ directory }).resetCumulative();
+  assert.deepEqual(reset.providers[0].last, before.providers[0].last);
+  assert.equal(reset.providers[0].requests, 0);
+  assert.deepEqual(reset.providers[0].totals, { inputTokens: 0, outputTokens: 0, totalTokens: 0 });
+  assert.deepEqual(await second.health(), reset);
+  await second.send();
+  const after = await second.health();
+  assert.equal(after.providers[0].requests, 1);
+  assert.deepEqual(after.providers[0].totals, counts);
+  const saved = await readFile(path.join(directory, "token-usage.json"), "utf8");
+  assert.doesNotMatch(saved, /canary|example-model|https?:|capability|input_text/u);
+});
+
+test("failed persistence leaves inference bytes untouched and health unavailable", async (t) => {
+  let observations = 0;
+  const tokenUsageStore = {
+    record() { observations += 1; return Promise.reject(new Error("private-store-canary")); },
+    readSnapshot() { return Promise.reject(new Error("private-store-canary")); },
+    flush() {},
+  };
+  const proxy = await harness(t, { tokenUsageStore });
+  const raw = Buffer.from(JSON.stringify(modelResponse(), null, 2));
+  proxy.fixtures.push({ body: raw });
+  const result = await proxy.send({ model: "remote/example-model" });
+  assert.equal(result.status, 200);
+  assert.deepEqual(result.body, raw);
+  assert.equal(observations, 1);
+  assert.deepEqual(await proxy.health(), { schemaVersion: 2, status: "unavailable", resetAt: null, providers: [] });
+});
 
 test("health shows isolated JSON/SSE totals and one genuine compaction request", async (t) => {
   const proxy = await harness(t);

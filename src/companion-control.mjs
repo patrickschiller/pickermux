@@ -1,5 +1,6 @@
 import { execFile as execFileCallback } from "node:child_process";
 import { lstat } from "node:fs/promises";
+import path from "node:path";
 import { promisify, TextDecoder } from "node:util";
 
 import { inspectCodexAccountCache } from "./account-cache.mjs";
@@ -12,7 +13,8 @@ import { isCodexDesktopRunning } from "./codex-desktop-state.mjs";
 import { validateDistributionInstallation } from "./distribution-installer.mjs";
 import { FULL_REFRESH_PHASES, readFullRefreshCheckpoint } from "./full-refresh.mjs";
 import { readPickerMuxMetadata } from "./version.mjs";
-import { projectTokenUsageSnapshot } from "./token-usage.mjs";
+import { isTokenUsageResetTime, projectTokenUsageSnapshot } from "./token-usage.mjs";
+import { createUsageStore } from "./usage-store.mjs";
 
 const execFile = promisify(execFileCallback);
 const executeReadOnlyProbe = (file, argumentsList, options = {}) => execFile(file, argumentsList, { ...options, timeout: 4_000 });
@@ -32,6 +34,7 @@ export const COMPANION_ACTIONS = Object.freeze([
   "integration-deactivate",
   "uninstall-preview",
   "uninstall",
+  "usage-reset",
 ]);
 export const COMPANION_UNINSTALL_CHANGES = Object.freeze([
   "restore-native-codex", "remove-integration", "remove-runtime", "remove-cli",
@@ -240,6 +243,9 @@ export function parseCompanionRequest(input) {
     if (!exactKeys(request.confirmation, ["deactivateIntegration"], ["deactivateIntegration"]) || request.confirmation.deactivateIntegration !== true) {
       throw requestError("CONFIRMATION_REQUIRED");
     }
+  } else if (request.action === "usage-reset") {
+    if (!exactKeys(request.confirmation, ["resetAccumulatedUsage"], ["resetAccumulatedUsage"]) ||
+        request.confirmation.resetAccumulatedUsage !== true) throw requestError("CONFIRMATION_REQUIRED");
   } else if (request.action === "uninstall") {
     const keys = ["removePickerMux", "restoreNativeCodex", "deleteProviderCredentials", "deleteBackups"];
     if (!exactKeys(request.confirmation, keys, keys) || keys.some((key) => request.confirmation[key] !== true)) {
@@ -324,7 +330,8 @@ async function boundedProbe(probe, timeoutMs) {
 
 export async function collectCompanionStatus({ probes = {}, probeTimeoutMs = 5_000 } = {}) {
   if (!isPlainRecord(probes) || !Number.isSafeInteger(probeTimeoutMs) || probeTimeoutMs < 1 || probeTimeoutMs > 30_000) throw requestError();
-  const names = ["metadata", ...Object.keys(STATUS_ENUMS)];
+  const names = ["metadata", ...Object.keys(STATUS_ENUMS),
+    ...(typeof probes.tokenUsage === "function" ? ["tokenUsage"] : [])];
   const observed = await Promise.allSettled(names.map((name) => boundedProbe(probes[name], probeTimeoutMs)));
   const snapshot = {
     schemaVersion: COMPANION_SCHEMA_VERSION,
@@ -334,10 +341,22 @@ export async function collectCompanionStatus({ probes = {}, probeTimeoutMs = 5_0
     tokenUsage: { schemaVersion: 1, status: "unavailable", providers: [] },
   };
   const issues = [];
+  let attestedUsage = false;
+  let durableResetAvailable = false;
   function issue(code) { issues.push({ code, message: ISSUE_MESSAGES[code] }); }
   names.forEach((name, index) => {
     const observation = observed[index];
     const raw = observation.status === "fulfilled" ? observation.value : undefined;
+    if (name === "tokenUsage") {
+      try {
+        const usage = projectTokenUsageSnapshot(raw?.snapshot ?? raw);
+        if (usage?.schemaVersion === 2) {
+          if (!attestedUsage) snapshot.tokenUsage = usage;
+          durableResetAvailable = raw?.canReset === true || (raw?.snapshot === undefined && usage.status === "available");
+        }
+      } catch { /* Persistent counters cannot grant lifecycle authority. */ }
+      return;
+    }
     if (name === "metadata") {
       const version = safeVersion(typeof raw === "string" ? raw : raw?.version);
       if (version) snapshot.version = version;
@@ -364,7 +383,10 @@ export async function collectCompanionStatus({ probes = {}, probeTimeoutMs = 5_0
       // cannot enter the companion's observational status protocol.
       try {
         const usage = projectTokenUsageSnapshot(raw.health?.tokenUsage);
-        if (usage) snapshot.tokenUsage = usage;
+        if (usage) {
+          snapshot.tokenUsage = usage;
+          attestedUsage = true;
+        }
       } catch { /* Optional telemetry cannot change lifecycle permissions. */ }
     }
     if (name === "recovery") {
@@ -417,6 +439,10 @@ export async function collectCompanionStatus({ probes = {}, probeTimeoutMs = 5_0
     snapshot.actions.push("uninstall-preview", "uninstall");
   }
   snapshot.issues = issues;
+  if (snapshot.tokenUsage.schemaVersion === 2) {
+    snapshot.capabilities = ["integration-toggle-v1", "native-uninstall-v1", "token-usage-v2", "token-usage-reset-v1"];
+    if (installed && knownRecovery && durableResetAvailable) snapshot.actions.push("usage-reset");
+  }
   return snapshot;
 }
 
@@ -424,18 +450,26 @@ export function createCompanionReadOnlyProbes({ paths, distributionPaths, fullRe
   let configPromise;
   let clientPromise;
   let managedPromise;
+  let installationPromise;
   const loadConfig = () => configPromise ??= config === undefined ? loadCompanionServiceConfig({ paths }) : Promise.resolve(config);
   const client = () => clientPromise ??= loadCodexClientVersion({ codexPath, execFileImpl: executeReadOnlyProbe });
   const managed = () => managedPromise ??= getConfigStatus({ configPath: paths.configPath, statePath: paths.statePath });
+  const installation = () => installationPromise ??= (async () => {
+    try { await lstat(distributionPaths.applicationDirectory); } catch (error) {
+      if (error?.code === "ENOENT") return { installed: false };
+      throw error;
+    }
+    return validateDistributionInstallation({ paths: distributionPaths });
+  })();
   return {
     metadata: () => readPickerMuxMetadata(),
     desktop: () => isCodexDesktopRunning({ execFileImpl: executeReadOnlyProbe }),
-    installation: async () => {
-      try { await lstat(distributionPaths.applicationDirectory); } catch (error) {
-        if (error?.code === "ENOENT") return { installed: false };
-        throw error;
-      }
-      return validateDistributionInstallation({ paths: distributionPaths });
+    installation,
+    tokenUsage: async () => {
+      if ((await installation()).installed !== true) return null;
+      const store = createUsageStore({ directory: path.join(distributionPaths.applicationDirectory, "usage") });
+      const [snapshot, canReset] = await Promise.all([store.readSnapshot(), store.canReset()]);
+      return { snapshot, canReset };
     },
     managedConfig: managed,
     service: async () => {
@@ -513,6 +547,14 @@ export function companionSuccess(action, result = {}) {
     if (action === "configuration-preview" && typeof result?.previewToken === "string" && PREVIEW_TOKEN_PATTERN.test(result.previewToken)) response.previewToken = result.previewToken;
   }
   if (action === "integration-deactivate" && result?.status === "deactivated") response.status = "deactivated";
+  if (action === "usage-reset") {
+    if (result?.status !== "reset" || !isTokenUsageResetTime(result.resetAt) || result.lastRequestPreserved !== true) {
+      throw requestError("ACTION_FAILED");
+    }
+    response.status = "reset";
+    response.resetAt = result.resetAt;
+    response.lastRequestPreserved = true;
+  }
   if (action === "uninstall-preview") {
     if (result?.status !== "ready" || result?.canApply !== true || !PREVIEW_TOKEN_PATTERN.test(result?.previewToken ?? "") ||
       !Array.isArray(result.changes) || result.changes.length !== COMPANION_UNINSTALL_CHANGES.length ||

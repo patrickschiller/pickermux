@@ -39,6 +39,7 @@ import {
   resolveDistributionPaths,
   resolveInstallPaths,
 } from "../src/paths.mjs";
+import { createUsageStore, inventoryUsageStore } from "../src/usage-store.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -1061,6 +1062,62 @@ test("exclusive CLI removal rejects foreign application state before staging", a
     })).installed,
     true,
   );
+});
+
+test("ordinary CLI removal retains verified usage and a later setup reuses it", async (t) => {
+  const fixture = await temporaryFixture(t);
+  await setupManagedDistribution({ sourceRoot: fixture.source, paths: fixture.distributionPaths, activate: async () => ({}) });
+  const directory = path.join(fixture.distributionPaths.applicationDirectory, "usage");
+  const store = createUsageStore({ directory });
+  assert.equal(await store.record("fixture", { status: "available", inputTokens: 120, outputTokens: 30, totalTokens: 150 }), true);
+  const filename = path.join(directory, "token-usage.json");
+  const before = await readFile(filename);
+  const result = await removeManagedDistribution({ paths: fixture.distributionPaths });
+  assert.equal(result.removed.applicationDirectoryRemoved, false);
+  assert.deepEqual(await readFile(filename), before);
+  await setupManagedDistribution({ sourceRoot: fixture.source, paths: fixture.distributionPaths, activate: async () => ({}) });
+  assert.deepEqual(await readFile(filename), before);
+  assert.equal((await store.readSnapshot()).providers[0].totals.totalTokens, 150);
+  assert.equal((await validateDistributionInstallation({ paths: fixture.distributionPaths })).installed, true);
+});
+
+test("fresh setup refuses corrupt retained usage before activation", async (t) => {
+  const fixture = await temporaryFixture(t);
+  const directory = path.join(fixture.distributionPaths.applicationDirectory, "usage");
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const filename = path.join(directory, "token-usage.json");
+  const bytes = Buffer.from('{"foreign":true}\n');
+  await writeFile(filename, bytes, { mode: 0o600 });
+  let activations = 0;
+  await assert.rejects(setupManagedDistribution({
+    sourceRoot: fixture.source, paths: fixture.distributionPaths,
+    activate: async () => { activations += 1; },
+  }), { code: "USAGE_STORE_UNAVAILABLE" });
+  assert.equal(activations, 0);
+  assert.deepEqual(await readFile(filename), bytes);
+});
+
+test("exclusive CLI removal requires an opaque usage proof for the exact fixed child", async (t) => {
+  const fixture = await temporaryFixture(t);
+  await setupManagedDistribution({ sourceRoot: fixture.source, paths: fixture.distributionPaths, activate: async () => ({}) });
+  const directory = path.join(fixture.distributionPaths.applicationDirectory, "usage");
+  const store = createUsageStore({ directory });
+  assert.equal(await store.record("fixture", { status: "available", inputTokens: 10, outputTokens: 2 }), true);
+  const filename = path.join(directory, "token-usage.json");
+  const before = await readFile(filename);
+  const other = await temporaryFixture(t, "0.4.0", "other");
+  await setupManagedDistribution({ sourceRoot: other.source, paths: other.distributionPaths, activate: async () => ({}) });
+  const foreignReceipt = await inventoryUsageStore({ directory: path.join(other.distributionPaths.applicationDirectory, "usage") });
+  for (const usageStoreInventory of [{ exists: true }, foreignReceipt]) {
+    let staged = false;
+    await assert.rejects(removeManagedDistribution({
+      paths: fixture.distributionPaths, requireExclusiveApplicationDirectory: true, usageStoreInventory,
+      beforeRemove: async () => { staged = true; },
+    }), { code: "USAGE_STORE_UNAVAILABLE" });
+    assert.equal(staged, false);
+    assert.deepEqual(await readFile(filename), before);
+    assert.equal((await validateDistributionInstallation({ paths: fixture.distributionPaths })).installed, true);
+  }
 });
 
 test("CLI removal preserves application and versions paths created after staging", async (t) => {

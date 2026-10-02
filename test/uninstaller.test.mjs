@@ -46,6 +46,7 @@ import {
   purgePickerMuxBackups,
 } from "../src/purge-data.mjs";
 import { stageServicePackage } from "../src/service-package.mjs";
+import { createUsageStore, inventoryUsageStore, revalidateUsageStoreInventory, removeUsageStoreInventory } from "../src/usage-store.mjs";
 
 const PROJECT_ROOT = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -84,7 +85,14 @@ function distributionSnapshot(marker = "stable") {
 
 function mockConfigOwnership(events) {
   const receipt = Object.freeze({ kind: "config-ownership-receipt" });
+  const usageReceipt = Object.freeze({ exists: false });
   return {
+    inventoryUsageImpl: async () => usageReceipt,
+    revalidateUsageImpl: async (actual) => { assert.equal(actual, usageReceipt); },
+    removeUsageImpl: async (actual) => {
+      assert.equal(actual, usageReceipt);
+      return { removed: false, cleanupPendingPath: null };
+    },
     inventoryConfigImpl: async () => {
       events?.push("config-inventoried");
       return receipt;
@@ -150,7 +158,10 @@ async function assertCliRejectsWithoutStdout(operation, validate) {
 test("full uninstall revalidates ownership and stages registry and backups before credential deletion", async () => {
   const events = [];
   const paths = fixturePaths();
-  const distributionPaths = { receiptPath: "/private/receipt.json" };
+  const distributionPaths = {
+    receiptPath: "/private/receipt.json",
+    applicationDirectory: "/private/tmp/pickermux-uninstall/PickerMux",
+  };
   const distribution = distributionSnapshot();
   const installInventory = { exists: true, kind: "install-receipt" };
   const backupInventory = { exists: true, kind: "backup-receipt" };
@@ -296,7 +307,7 @@ test("full uninstall refuses registry drift before any integration or credential
   await assert.rejects(
     purgePickerMux({
       paths: fixturePaths(),
-      distributionPaths: {},
+      distributionPaths: { applicationDirectory: "/private/tmp/pickermux-uninstall/PickerMux" },
       desktopRunningImpl: async () => false,
       validateDistributionImpl: async () => distribution,
       validateLaunchAgentImpl: async () => ({ present: true }),
@@ -345,7 +356,7 @@ test("full uninstall retains the CLI when private cleanup remains pending", asyn
   await assert.rejects(
     purgePickerMux({
       paths: fixturePaths(),
-      distributionPaths: {},
+      distributionPaths: { applicationDirectory: "/private/tmp/pickermux-uninstall/PickerMux" },
       desktopRunningImpl: async () => false,
       validateDistributionImpl: async () => distribution,
       validateLaunchAgentImpl: async () => ({ present: false }),
@@ -394,7 +405,7 @@ test("partial credential deletion restores receipts and leaves the integration a
   await assert.rejects(
     purgePickerMux({
       paths: fixturePaths(),
-      distributionPaths: {},
+      distributionPaths: { applicationDirectory: "/private/tmp/pickermux-uninstall/PickerMux" },
       desktopRunningImpl: async () => false,
       validateDistributionImpl: async () => distribution,
       validateLaunchAgentImpl: async () => ({ present: true }),
@@ -1104,7 +1115,7 @@ test("full uninstall fails when CLI quarantine cleanup remains pending", async (
   await assert.rejects(
     purgePickerMux({
       paths: fixturePaths(),
-      distributionPaths: {},
+      distributionPaths: { applicationDirectory: "/private/tmp/pickermux-uninstall/PickerMux" },
       desktopRunningImpl: async () => false,
       validateDistributionImpl: async () => distribution,
       validateLaunchAgentImpl: async () => ({ present: true }),
@@ -1147,7 +1158,7 @@ test("full uninstall restores the CLI when the managed directory stays non-empty
   await assert.rejects(
     purgePickerMux({
       paths: fixturePaths(),
-      distributionPaths: {},
+      distributionPaths: { applicationDirectory: "/private/tmp/pickermux-uninstall/PickerMux" },
       desktopRunningImpl: async () => false,
       validateDistributionImpl: async () => distribution,
       validateLaunchAgentImpl: async () => ({ present: true }),
@@ -1197,7 +1208,7 @@ test("full uninstall binds integration removal to the receipt confirmed under lo
   await assert.rejects(
     purgePickerMux({
       paths: fixturePaths(),
-      distributionPaths: {},
+      distributionPaths: { applicationDirectory: "/private/tmp/pickermux-uninstall/PickerMux" },
       desktopRunningImpl: async () => false,
       validateDistributionImpl: async () => preflight,
       validateLaunchAgentImpl: async () => ({ present: false }),
@@ -1712,6 +1723,9 @@ test("native full removal composes real active/OFF config, catalog, CLI and back
   for (const off of [false, true]) {
     await t.test(off ? "OFF" : "active", async (subtest) => {
       const fixture = await nativeRemovalFixture(subtest, off);
+      const usageDirectory = path.join(fixture.distributionPaths.applicationDirectory, "usage");
+      const store = createUsageStore({ directory: usageDirectory });
+      assert.equal(await store.record("fixture", { status: "available", inputTokens: 120, outputTokens: 30 }), true);
       const nativeFiles = ["auth.json", "models_cache.json", "chat.json"].map((name) => path.join(fixture.paths.codexHome, name));
       const nativeBytes = Buffer.from("test-only native state\n");
       for (const target of nativeFiles) await writeFile(target, nativeBytes, { mode: 0o600 });
@@ -1729,6 +1743,9 @@ test("native full removal composes real active/OFF config, catalog, CLI and back
       assert.deepEqual(deleted, ["fixture"]);
       assert.equal(result.beforeResult.integration.removedConfig.nativeRestored, true);
       assert.equal(result.beforeResult.integration.removedConfig.historicalCompatibility, true);
+      assert.equal(result.beforeResult.usage.removed, true);
+      assert.equal(result.beforeResult.usage.cleanupPendingPath, null);
+      await assert.rejects(stat(usageDirectory), { code: "ENOENT" });
       const config = await readFile(fixture.paths.configPath, "utf8");
       assert.match(config, /operator_setting = true/u);
       assert.match(config, /127\.0\.0\.1:0\/v1/u);
@@ -1743,6 +1760,107 @@ test("native full removal composes real active/OFF config, catalog, CLI and back
       }
     });
   }
+});
+
+test("full removal refuses corrupt or foreign usage before credential and integration changes", async (t) => {
+  for (const corruption of ["invalid-store", "foreign-entry"]) {
+    await t.test(corruption, async (subtest) => {
+      const fixture = await nativeRemovalFixture(subtest);
+      const directory = path.join(fixture.distributionPaths.applicationDirectory, "usage");
+      const store = createUsageStore({ directory });
+      assert.equal(await store.record("fixture", { status: "available", inputTokens: 10, outputTokens: 2 }), true);
+      const filename = path.join(directory, corruption === "invalid-store" ? "token-usage.json" : "operator-note.txt");
+      const bytes = Buffer.from('{"foreign":true}\n');
+      await writeFile(filename, bytes, { mode: 0o600 });
+      const config = await readFile(fixture.paths.configPath);
+      let mutations = 0;
+      await assert.rejects(previewPickerMuxUninstall(fixture.options), { code: "UNINSTALL_PREFLIGHT_FAILED" });
+      await assert.rejects(purgePickerMux({
+        ...fixture.options,
+        deleteCredentialImpl: async () => { mutations += 1; },
+        uninstallIntegrationImpl: async () => { mutations += 1; },
+      }), { code: "USAGE_STORE_UNAVAILABLE" });
+      assert.equal(mutations, 0);
+      assert.deepEqual(await readFile(filename), bytes);
+      assert.deepEqual(await readFile(fixture.paths.configPath), config);
+      assert.equal((await validateDistributionInstallation({ paths: fixture.distributionPaths })).installed, true);
+    });
+  }
+});
+
+test("full purge revalidates usage after backup quarantine before deleting credentials", async (t) => {
+  const fixture = await nativeRemovalFixture(t);
+  const directory = path.join(fixture.distributionPaths.applicationDirectory, "usage");
+  const store = createUsageStore({ directory });
+  assert.equal(await store.record("fixture", { status: "available", inputTokens: 10, outputTokens: 2 }), true);
+  let credentials = 0;
+  await assert.rejects(purgePickerMux({
+    ...fixture.options,
+    deleteCredentialImpl: async () => { credentials += 1; },
+    purgeBackupsImpl: (argumentsList) => purgePickerMuxBackups({
+      ...argumentsList,
+      beforeCommit: async (context) => {
+        assert.equal(await store.record("fixture", { status: "available", inputTokens: 1, outputTokens: 1 }), true);
+        return argumentsList.beforeCommit(context);
+      },
+    }),
+  }), /storage could not be verified/u);
+  assert.equal(credentials, 0);
+  assert.equal((await store.readSnapshot()).providers[0].totals.totalTokens, 14);
+  assert.equal((await validateDistributionInstallation({ paths: fixture.distributionPaths })).installed, true);
+});
+
+test("a final service flush changing usage prevents exact cleanup and retains the CLI", async (t) => {
+  const fixture = await nativeRemovalFixture(t);
+  const directory = path.join(fixture.distributionPaths.applicationDirectory, "usage");
+  const store = createUsageStore({ directory });
+  assert.equal(await store.record("fixture", { status: "available", inputTokens: 10, outputTokens: 2 }), true);
+  const events = [];
+  await assert.rejects(purgePickerMux({
+    ...fixture.options,
+    revalidateUsageImpl: async (...argumentsList) => {
+      events.push("usage-revalidated");
+      return revalidateUsageStoreInventory(...argumentsList);
+    },
+    deleteCredentialImpl: async () => { events.push("credential-deleted"); return true; },
+    uninstallIntegrationImpl: async (options) => {
+      const result = await fixture.options.uninstallIntegrationImpl(options);
+      events.push("service-stopped");
+      assert.equal(await store.record("fixture", { status: "available", inputTokens: 1, outputTokens: 1 }), true);
+      return result;
+    },
+    removeUsageImpl: async (receipt) => {
+      assert.equal(events.at(-1), "service-stopped");
+      return removeUsageStoreInventory(receipt);
+    },
+  }), { code: "PICKERMUX_PURGE_INCOMPLETE" });
+  assert.equal(events.filter((event) => event === "usage-revalidated").length, 2);
+  assert.ok(events.indexOf("credential-deleted") < events.indexOf("service-stopped"));
+  assert.equal((await store.readSnapshot()).providers[0].totals.totalTokens, 14);
+  assert.equal((await validateDistributionInstallation({ paths: fixture.distributionPaths })).installed, true);
+});
+
+test("usage cleanup failure remains pending and retains the receipt-owned CLI", async (t) => {
+  const fixture = await nativeRemovalFixture(t);
+  const directory = path.join(fixture.distributionPaths.applicationDirectory, "usage");
+  const store = createUsageStore({ directory });
+  assert.equal(await store.record("fixture", { status: "available", inputTokens: 10, outputTokens: 2 }), true);
+  const filename = path.join(directory, "token-usage.json");
+  const before = await readFile(filename);
+  await assert.rejects(purgePickerMux({
+    ...fixture.options,
+    deleteCredentialImpl: async () => true,
+    inventoryUsageImpl: (options) => inventoryUsageStore({
+      ...options,
+      fsImpl: { unlink: async () => { throw Object.assign(new Error("fixture unlink failure"), { code: "EACCES" }); } },
+    }),
+  }), (error) => {
+    assert.equal(error.code, "PICKERMUX_PURGE_INCOMPLETE");
+    assert.equal(error.cleanupPendingPath, directory);
+    return true;
+  });
+  assert.deepEqual(await readFile(filename), before);
+  assert.equal((await validateDistributionInstallation({ paths: fixture.distributionPaths })).installed, true);
 });
 
 test("native purge rejects stale preview and new foreign roots before deleting credentials", async (t) => {
@@ -1950,7 +2068,7 @@ test("full uninstall rejects a forged auth.json backupPath before any mutation",
   await assert.rejects(
     purgePickerMux({
       paths,
-      distributionPaths: {},
+      distributionPaths: { applicationDirectory: "/private/tmp/pickermux-uninstall/PickerMux" },
       desktopRunningImpl: async () => false,
       validateDistributionImpl: async () => distributionSnapshot(),
       validateLaunchAgentImpl: async () => ({ present: true }),
@@ -1987,7 +2105,7 @@ test("late integration failure retains recovery receipts after credential commit
   await assert.rejects(
     purgePickerMux({
       paths: fixturePaths(),
-      distributionPaths: {},
+      distributionPaths: { applicationDirectory: "/private/tmp/pickermux-uninstall/PickerMux" },
       desktopRunningImpl: async () => false,
       validateDistributionImpl: async () => distribution,
       validateLaunchAgentImpl: async () => ({ present: true }),

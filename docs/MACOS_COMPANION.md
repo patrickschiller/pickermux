@@ -1,6 +1,6 @@
 # macOS companion
 
-PickerMux 0.20.1 includes a SwiftUI menu-bar app for inspecting and
+PickerMux 0.21.0 includes a SwiftUI menu-bar app with native macOS controls for inspecting and
 operating the existing PickerMux installation. It requires macOS 13 or newer,
 Apple silicon or Intel, and Node.js 22.15.0 or newer. The supported Node
 locations are `/opt/homebrew/bin/node`, `/usr/local/bin/node`, and
@@ -51,20 +51,23 @@ broken component does not disclose raw diagnostics or discard other results.
 Manual **Check status** requests wait behind a running check and show a visible
 checking state followed by the completion time, even when the result is
 unchanged. **Settings…** and **Help…** open persistent, reusable windows.
-Actions show a busy indicator and elapsed time while setup or certification
-is running; keep configured models available until the operation finishes.
-Primary content and controls use 14-point text in a wider panel. A setup
+Actions show their current progress while setup or certification
+is running; keep configured models available until the operation finishes. A setup
 failure describes the last attempt. A successful status check inspects the
 installation and Codex state; it does not prove that the model server is
 reachable. After addressing the error, turn the switch on again to retry setup.
 
-The panel has an explicit 400-by-600-point viewport and scrolls vertically
-when its content is longer. This keeps the scroll surface from collapsing
-while token usage or installation details change. Scroll to reach lower
-provider totals, installation details, and available actions.
+The menu-bar panel places the integration state and token usage before
+**Refresh picker** and **Open Codex**, followed by **Check status** and
+**Check installation**, with specific feedback immediately below those actions.
+**More actions** groups certification and repair; **Installation details**
+expands below. **Settings…**, **Help…**, and **Quit** stay visible in its footer. The
+400-by-600-point viewport scrolls its main content when needed; the footer
+stays in place. Bridge actions are offered according to the verified state
+and are disabled while another operation is running.
 
-**Retry status**, **Help…**, **Settings…**, and **Quit** remain visible at the
-top when a status check fails. Help explains the Node.js requirement and opens
+**Check status**, **Help…**, **Settings…**, and **Quit** remain visible when a
+status check fails. Help explains the Node.js requirement and opens
 only the fixed official download or troubleshooting links you choose.
 Homebrew-installed Node.js is supported; an existing runtime that fails
 validation needs review rather than an automatic reinstallation. See
@@ -73,9 +76,9 @@ Bridge actions remain unavailable until a validated status permits them.
 
 ## Token usage
 
-The menu-bar panel shows **Token usage** for each external provider that has
-received a model request through the current bridge. **Last model request**
-and **Since bridge start** each show separate Input, Output, and Total values.
+The panel shows **Token usage** for each external provider with recorded usage.
+**Last model request** and **Since reset** each show separate Input, Output,
+and Total values.
 The last request is the one that most recently finished, including when
 several chats run concurrently. A user turn can make several model requests
 for tools and context summaries; each is counted once. The values are updated
@@ -109,19 +112,34 @@ excluded. Requests made directly in LM Studio or other applications are outside
 this scope. Explicit manual live diagnostics that use the ordinary inference
 path are counted. No account-wide usage or billing total is queried.
 
-Counts remain in bridge memory and reset on a bridge restart, including a
-refresh or backend update that restarts it. Closing and reopening the companion
-alone does not reset the running bridge. No request history or token-statistics
-file is written. The status projection contains only canonical configured
-provider IDs, availability, and numeric counters, never model names, prompts,
-responses, credentials, or endpoint/capability URLs. An older backend without
-this capability remains readable and shows usage as unavailable; update the
-app and installed backend together to enable the feature.
+Private local usage storage preserves accumulated counts and the last model
+request across bridge restarts, refreshes, backend upgrades, and companion
+restarts. **Settings → Token usage → Reset accumulated counts…** clears the
+accumulated counts for all recorded providers and starts a new **Since reset**
+total. It retains each provider's last model request. Usage before installing
+a persistence-capable backend cannot be reconstructed after an older bridge
+has restarted.
+
+The private file is `~/Library/Application Support/PickerMux/usage/token-usage.json`.
+Ordinary uninstall and CLI removal retain it; complete PickerMux removal
+deletes only verified owned usage state. Graceful bridge shutdown flushes queued
+observations. A forced termination or crash can lose observations that were
+not yet committed. An unsafe or corrupt store is retained for review and
+makes usage unavailable; it does not stop model routing or authorize an
+overwrite. Reset is offered only when the installed backend validates the
+available usage state.
+
+Stored usage contains canonical configured provider IDs, availability, numeric
+counters, the reset time, and private storage bookkeeping, never model names,
+prompts, responses, credentials, or endpoint/capability URLs. No request history
+is stored or queried. Older finite backend snapshots remain readable and their
+session totals are labelled **Since bridge start**; update the app and installed
+backend together to enable durable **Since reset** counts and explicit reset.
 
 ## Activate or deactivate in Codex
 
-The small **Use PickerMux in Codex** switch is the first row and the main setup
-control. On a first
+The **Use PickerMux in Codex** switch reflects the verified integration
+state and is the main setup control. On a first
 installation, turning it on obtains a fresh status and configuration preview,
 then automatically installs using that exact preview token. Switching on is
 your explicit consent; there is no second confirmation popup. Setup may
@@ -155,7 +173,8 @@ generated mixed catalog retained on disk is inactive while the toggle is off;
 the inert provider alias adds no picker models. A historical chat may still
 show its former model selection until you choose a native model.
 
-Setup and status details are expandable so that the toggle remains prominent.
+Setup and status details live under **Installation details** so that the
+integration control remains prominent.
 The app has a dedicated Finder/Dock icon compiled from the versioned
 [master artwork](../macos/Resources/AppIcon.md).
 Its separate monochrome [menu-bar mark](../macos/Resources/MenuBarIcon.md)
@@ -174,6 +193,7 @@ The menu offers actions according to the current validated state:
 | Check for PickerMux updates (Settings) | Inspect the fixed public release endpoint without modifying the installation. |
 | Download DMG (Settings) | Open the exact version-pinned GitHub download for a validated newer app release. |
 | Update installed backend (Settings) | Review setup using the verified newer backend bundled with the app; preserve installed provider settings. |
+| Reset accumulated counts… (Settings → Token usage) | Clear all providers' accumulated usage while retaining each last model request. |
 | Remove PickerMux completely… (Settings) | Preview and confirm native Codex restoration plus complete owned removal, then stop background actions and explain app deletion in Finder. |
 
 The app controls models from the installed provider configuration, including
@@ -337,15 +357,20 @@ pickermux companion status
 ```
 
 Its direct JSON snapshot has `schemaVersion: 1`, the fixed
-`capabilities: ["integration-toggle-v1", "native-uninstall-v1", "token-usage-v1"]` markers,
+`capabilities: ["integration-toggle-v1", "native-uninstall-v1", "token-usage-v2", "token-usage-reset-v1"]` markers,
 the PickerMux version, fixed
 component status enums, a state, allowed actions, and fixed safe issues. Recovery
 contains only a known phase and an operation UUID. `tokenUsage` contains a
-versioned availability status and bounded per-provider request counts, last
-counts, and cumulative counts. A running bridge must attest its instance before
-its usage is projected. Missing or invalid usage becomes an unavailable empty
+`schemaVersion: 2`, a fixed availability status, a canonical UTC `resetAt` time
+or `null`, and bounded per-provider request counts, last counts, and cumulative
+counts. Request counts and cumulative counts are measured since reset; they
+may be zero while a last request from before the reset remains. Live bridge
+usage requires instance attestation; durable counts can also be read from the
+verified installed backend's private usage store while the bridge is stopped.
+Missing or invalid usage becomes an unavailable empty
 snapshot without changing lifecycle permissions. Older finite status payloads
-without `token-usage-v1` remain readable. No path, capability URL, model/account
+without usage or with `token-usage-v1` remain readable. The v1 and v2 usage
+capabilities are mutually exclusive. No path, capability URL, model/account
 identifier, prompt, credential, or raw exception is returned.
 
 `run` accepts exactly one UTF-8 JSON request from stdin, up to 4,096 bytes,
@@ -358,7 +383,7 @@ printf '%s\n' '{"schemaVersion":1,"action":"configuration-preview"}' | pickermux
 
 The finite actions are `refresh`, `open`, `recover`, `certify`, `diagnose`,
 `update-check`, `update`, `configuration-preview`, `configuration-apply`,
-`integration-deactivate`, `uninstall-preview`, and `uninstall`.
+`integration-deactivate`, `usage-reset`, `uninstall-preview`, and `uninstall`.
 Recovery requires `confirmation` containing exactly `quitCodexTwice: true`,
 `interruptTasks: true`, and `invalidateCompaction: true`. Configuration apply
 requires the exact prior `previewToken` and
@@ -370,8 +395,16 @@ integration with Codex stopped. It is available only through the receipt-owned
 installed CLI. The app detects older backends even when both versions are
 labelled 0.9.0; the missing capability marker selects its pinned setup backend
 before any mutation. Confirm setup to upgrade that CLI before deactivating.
-The current 0.20.1 payload installs into its own version directory; the older
+The current 0.21.0 payload installs into its own version directory; the older
 0.9.0 contents are never overwritten to add this feature.
+
+`usage-reset` requires exactly
+`confirmation: {"resetAccumulatedUsage": true}` and a validated installed
+backend with available durable usage. It accepts no provider, path, or count
+parameters. Successful `data` reports `action: "usage-reset"`,
+`status: "reset"`, the canonical UTC `resetAt`, and
+`lastRequestPreserved: true`. This action changes statistics only; it does not
+change Codex configuration, provider credentials, or model routing.
 
 `uninstall-preview` returns only fixed removal changes and a digest token.
 `uninstall` requires that exact `previewToken` and a confirmation containing
@@ -442,8 +475,8 @@ node scripts/build-companion.mjs --output /tmp/pickermux-companion-development
 
 Choose a new output directory for each build; the builder refuses to replace
 one. The output contains `PickerMux.app`,
-`PickerMux-v0.20.1-macos-universal.tar.gz`,
-`PickerMux-v0.20.1-macos-universal.dmg`, `companion-manifest.json`, and
+`PickerMux-v0.21.0-macos-universal.tar.gz`,
+`PickerMux-v0.21.0-macos-universal.dmg`, `companion-manifest.json`, and
 `SHA256SUMS`. The universal binary contains `arm64` and `x86_64` slices
 targeting macOS 13. The manifest distinguishes `unsigned-development`,
 `apple-development` and `developer-id-notarized` artifacts and binds the bundled backend manifest,

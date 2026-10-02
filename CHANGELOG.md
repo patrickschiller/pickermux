@@ -11,6 +11,44 @@ published as GitHub Releases.
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-10-02
+
+### Added
+
+- Keep each provider's reported token usage and last model request in private
+  local storage across bridge restarts, refreshes, and backend upgrades. Show
+  cumulative counts as **Since reset**.
+- Add **Reset accumulated counts…** under Settings → Token usage. Reset only
+  cumulative counts and retain the last model request.
+
+### Changed
+
+- Reorganize the menu-bar panel with native macOS controls. Keep
+  integration state, Refresh picker, Open Codex, Check status, and Check
+  installation directly accessible with specific feedback; group certification
+  and recovery under More actions and move details below those primary actions.
+  Keep Settings, Help, and Quit visible in the footer of the bounded panel.
+
+### Fixed
+
+- Avoid a false **Integration needs review** conflict when one valid, unowned
+  root `service_tier` string is inserted inside PickerMux's marked root block.
+  Verify the original receipt digest with only that line excluded and the
+  existing model/reasoning normalization; retain the line's original bytes
+  through selection, migration, deactivation, suspension, and ordinary or
+  native-restoring uninstall. Ambiguous settings and managed routing changes
+  continue to fail closed.
+
+### Security and compatibility
+
+- Persist validated usage with private file permissions, atomic writes and
+  ownership checks. Retain unsafe or corrupt state for review and report usage
+  as unavailable without changing routing. Ordinary uninstall retains usage;
+  complete removal deletes only verified owned usage state.
+- Add the finite `token-usage-v2` and `token-usage-reset-v1` capabilities while
+  retaining support for older memory-only usage snapshots. Native credential
+  isolation and the `codex-responses-bridge/p6-v1` routing contract remain intact.
+
 ## [0.20.1] - 2026-10-02
 
 ### Fixed
@@ -787,7 +825,8 @@ confirm the release date before tagging. See the
   paths and file types, refuses root execution and foreign launchers, and
   restores the previous distribution state when activation fails.
 
-[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.20.1...HEAD
+[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.21.0...HEAD
+[0.21.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.21.0
 [0.20.1]: https://github.com/patrickschiller/pickermux/releases/tag/v0.20.1
 [0.20.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.20.0
 [0.10.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.10.0

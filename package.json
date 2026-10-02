@@ -1,6 +1,6 @@
 {
   "name": "pickermux",
-  "version": "0.20.1",
+  "version": "0.21.0",
   "private": true,
   "description": "Use local and remote models from compatible Responses providers in Codex Desktop",
   "license": "MIT",

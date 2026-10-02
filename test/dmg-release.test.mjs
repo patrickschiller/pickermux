@@ -115,6 +115,38 @@ test("0.20.1 viewport patch retains the DMG record accepted by the 0.20.0 update
   });
 });
 
+test("0.21.0 publication describes native actions, durable usage and narrow configuration recovery", async (t) => {
+  const value = await fixture(t, "0.21.0");
+  const result = await prepareDmgRelease({ ...value, tag: "v0.21.0" });
+  const body = await readFile(path.join(value.outputDirectory, "release-notes.md"), "utf8");
+  assert.match(body, /Changes in v0\.21\.0/u);
+  assert.match(body, /native macOS menu controls with direct Refresh picker, Open Codex, Check status and Check installation/u);
+  assert.match(body, /usage across bridge restarts, refreshes and backend upgrades/u);
+  assert.match(body, /since reset/u);
+  assert.match(body, /Reset accumulated counts….*retaining the last model request/u);
+  assert.match(body, /private local storage.*prompts, response text, credentials, endpoints and request identifiers remain excluded/u);
+  assert.match(body, /service_tier.*retaining receipt verification and preserving the setting/u);
+  assert.doesNotMatch(body, /Changes in v0\.20\.[01]|Counts reset when the bridge restarts/u);
+  assert.equal(body.split("pickermux-dmg-release-v1").length, 2);
+  assert.deepEqual(parseDmgReleaseRecord(body, { version: "0.21.0", file: PICKERMUX_DMG_ASSET }), {
+    version: "0.21.0", file: PICKERMUX_DMG_ASSET, sha256: hash(value.diskImage), signing: "developer-id-notarized",
+  });
+  assert.deepEqual(await readFile(path.join(value.outputDirectory, PICKERMUX_DMG_ASSET)), value.diskImage);
+  assert.deepEqual(await verifyDmgPublication({ directory: value.outputDirectory, tag: "v0.21.0" }), result);
+  const expectedUrl = `https://github.com/patrickschiller/pickermux/releases/download/v0.21.0/${PICKERMUX_DMG_ASSET}`;
+  const update = await checkForCompanionUpdate({
+    currentVersion: "0.20.1",
+    fetchImpl: async () => Response.json({
+      tag_name: "v0.21.0", draft: false, prerelease: false, body,
+      assets: [{ name: PICKERMUX_DMG_ASSET, browser_download_url: expectedUrl }],
+    }),
+  });
+  assert.deepEqual(update, {
+    status: "available", distribution: "dmg", currentVersion: "0.20.1", targetVersion: "0.21.0",
+    assets: { [PICKERMUX_DMG_ASSET]: expectedUrl }, diskImageSha256: result.sha256,
+  });
+});
+
 test("unsigned and Apple Development builds cannot become public releases", async (t) => {
   for (const signing of ["unsigned-development", "apple-development"]) {
     const value = await fixture(t);

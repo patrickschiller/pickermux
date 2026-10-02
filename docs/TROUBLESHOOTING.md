@@ -105,6 +105,45 @@ is absent. Confirm the offered setup upgrade first; only the current
 receipt-owned CLI can deactivate its bridge. Edited suspended configuration
 and pending full-refresh recovery block toggle changes until reviewed.
 
+## Integration needs review after an unrelated Codex setting change
+
+**Integration needs review** means the companion could not verify the current
+configuration ownership. It does not by itself establish that the bridge or
+LM Studio stopped. In 0.20.1 and earlier, a root `service_tier` assignment
+inserted inside PickerMux's marked root block changes its recorded digest and
+can trigger this warning even without a manual edit. `service_tier` is an
+ordinary string-valued [Codex configuration setting](https://learn.chatgpt.com/docs/config-file/config-reference)
+and is not owned by PickerMux.
+
+The [0.21.0 backend](../CHANGELOG.md#0210---2026-10-02) accepts exactly
+one unambiguous, nonempty string assignment there only when excluding that
+line reproduces the receipt's managed-block digest, including the existing
+allowance for model and reasoning selection changes. It preserves the original
+`service_tier` bytes during selection, migration, deactivation, suspension, and
+ordinary or native-restoring uninstall. Malformed, duplicate, or dotted
+assignments and other managed routing edits still block changes. Updating the
+source checkout or replacing only the app does not update the installed backend;
+review **Settings → Update installed backend…** in the matching released app.
+
+For an installed release affected only by this extra line, the narrow manual
+workaround is:
+
+1. Fully quit Codex with **Command-Q**.
+2. In your Codex `config.toml`, locate the root block between
+   `# >>> lm-studio-model-router:p2 root >>>` and
+   `# <<< lm-studio-model-router:p2 root <<<`.
+3. Move the **same existing `service_tier` assignment line**, including its
+   value and any inline comment, immediately before the root begin marker.
+   Keep it in the global TOML root, before the first table. Do not copy the line
+   or place it below a provider table, which would change its scope.
+4. Save and choose **Check status** in PickerMux before reopening Codex.
+
+This workaround requires no reinstall, purge, receipt edit, or change to
+provider settings when the extra `service_tier` line is the sole ownership
+conflict. If the block has other changes, the line is ambiguous, or status
+still reports a conflict, preserve the configuration and review the reported
+issue instead of moving further settings or bypassing the ownership check.
+
 ## Companion buttons appear unresponsive
 
 Use the 0.9.2 companion or newer. Earlier builds could drop a manual status

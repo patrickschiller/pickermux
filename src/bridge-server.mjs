@@ -252,6 +252,7 @@ export function createBridgeServer({
   compatibilityGate,
   externalRequestGate,
   onTextOnlyCompaction,
+  tokenUsageStore,
 } = {}) {
   if (!registry || typeof registry.resolve !== "function" || typeof registry.listModels !== "function") {
     throw new TypeError("A model registry with resolve() and listModels() is required");
@@ -278,7 +279,11 @@ export function createBridgeServer({
     throw new TypeError("onTextOnlyCompaction must be a function");
   }
   const textOnlyContextTelemetry = createTextOnlyContextTelemetry();
-  const tokenUsageTelemetry = createTokenUsageTelemetry();
+  if (tokenUsageStore !== undefined && ["record", "readSnapshot", "flush"].some((name) =>
+    typeof tokenUsageStore?.[name] !== "function")) {
+    throw new TypeError("tokenUsageStore must provide record(), readSnapshot(), and flush()");
+  }
+  const tokenUsageTelemetry = tokenUsageStore ?? createTokenUsageTelemetry();
   const certificationPendingGateActive =
     typeof externalRequestGate === "function";
   const captureTextOnlyCompaction = (event) => {
@@ -346,11 +351,19 @@ export function createBridgeServer({
     if (request.method === "GET" && path === "/health") {
       const compatibility = publicCompatibilityState(compatibilityGate);
       const textOnlyContext = textOnlyContextTelemetry.snapshot();
+      let tokenUsage;
+      try {
+        tokenUsage = tokenUsageStore
+          ? await tokenUsageStore.readSnapshot()
+          : tokenUsageTelemetry.snapshot();
+      } catch {
+        tokenUsage = { schemaVersion: 2, status: "unavailable", resetAt: null, providers: [] };
+      }
       writeJson(response, 200, {
         ok: compatibility === null || compatibility.status === "compatible",
         webSearchContractVersion: WEB_SEARCH_CONTRACT_VERSION,
         instanceId,
-        tokenUsage: tokenUsageTelemetry.snapshot(),
+        tokenUsage,
         ...(certificationPendingGateActive
           ? {
               certificationPendingGateVersion:
@@ -415,6 +428,7 @@ export function createBridgeServer({
   server.keepAliveTimeout = 120_000;
   server.maxRequestsPerSocket = 100;
   Object.defineProperties(server, {
+    flushTokenUsage: { value: () => tokenUsageStore?.flush(), enumerable: false },
     capabilityPath: { value: basePath, enumerable: true },
     providerBaseUrl: {
       enumerable: true,

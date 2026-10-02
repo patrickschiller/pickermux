@@ -339,7 +339,7 @@ export async function setManagedPickerSelection(options = {}) {
 
   const current = await readConfigFile(configPath, { mustExist: true });
   const located = locateOwnedBlocks(current.text, state);
-  const pickerRoot = inspectPickerMutableRoot(located.root, state);
+  const pickerRoot = inspectPickerMutableRoot(located.root, state, current.text);
   const modified = [];
   if (!pickerRoot.safe) modified.push("root");
   if (sha256(located.provider.text) !== state.blocks.provider.sha256) {
@@ -554,12 +554,13 @@ async function suspendConfiguration(options, kind) {
     throw failure("INTEGRATION_CONFLICT", "Full refresh cannot suspend a user-owned OpenAI gateway alongside PickerMux.");
   }
   await readOwnershipBackup(ownership);
+  const pickerRoot = inspectPickerMutableRoot(located.root, state, current.text);
   const replacements = ownedBlockNames(state)
-    .map((name) => ({ ...located[name], replacement: "" }))
+    .map((name) => ({ ...located[name], replacement: name === "root" ? pickerRoot.retainedText : "" }))
     .sort((left, right) => right.start - left.start);
   let suspendedText = current.text;
   for (const block of replacements) {
-    suspendedText = suspendedText.slice(0, block.start) + suspendedText.slice(block.end);
+    suspendedText = suspendedText.slice(0, block.start) + block.replacement + suspendedText.slice(block.end);
   }
   const native = inspectRootIntegration(suspendedText);
   if (native.foreign || containsAnyManagedMarker(suspendedText)) {
@@ -703,7 +704,7 @@ export async function enableManagedStandaloneWebSearch(options = {}) {
   assertStateMatchesConfig(state, settings.configPath);
   const current = await readConfigFile(settings.configPath, { mustExist: true });
   const located = locateOwnedBlocks(current.text, state);
-  const pickerRoot = inspectPickerMutableRoot(located.root, state);
+  const pickerRoot = inspectPickerMutableRoot(located.root, state, current.text);
   for (const name of ownedBlockNames(state)) {
     if (sha256(located[name].text) !== state.blocks[name].sha256 && !(name === "root" && pickerRoot.safe)) {
       throw failure("MANAGED_BLOCK_MODIFIED", "Refusing to change modified managed search settings.");
@@ -999,7 +1000,7 @@ export async function uninstallConfig(options) {
   const located = state.suspension
     ? locateSuspendedRestorationBoundary(restorationText)
     : locateOwnedBlocks(current.text, state);
-  const pickerRoot = state.suspension ? { safe: true } : inspectPickerMutableRoot(located.root, state);
+  const pickerRoot = state.suspension ? { safe: true, retainedText: "" } : inspectPickerMutableRoot(located.root, state, current.text);
 
   if (state.priorAssignments.some(({ key }) => key === "openai_base_url") &&
     inspectRootIntegration(current.text).gateway !== undefined) {
@@ -1074,7 +1075,7 @@ export async function uninstallConfig(options) {
       .map((assignment) => `${assignment.raw}${assignment.eol ?? located.root.eol}`)
       .join("");
     const replacements = [
-      { ...located.root, replacement: prior },
+      { ...located.root, replacement: prior + (pickerRoot.safe ? pickerRoot.retainedText : "") },
       { ...located.provider, replacement: "" },
       ...(located.webSearch ? [{ ...located.webSearch, replacement: "" }] : []),
     ].sort((left, right) => right.start - left.start);
@@ -1229,8 +1230,9 @@ export async function inventoryNativeConfigRestoration(options = {}) {
     candidate = removeDeactivatedHistoricalCompatibility(candidate, state).text;
   } else {
     const located = locateHealthyManagedBlocks(current.text, state);
+    const pickerRoot = inspectPickerMutableRoot(located.root, state, current.text);
     for (const block of ownedBlockNames(state).map((name) => located[name]).sort((left, right) => right.start - left.start)) {
-      candidate = candidate.slice(0, block.start) + candidate.slice(block.end);
+      candidate = candidate.slice(0, block.start) + (block === located.root ? pickerRoot.retainedText : "") + candidate.slice(block.end);
     }
   }
   assertNativeDefaultRoot(candidate);
@@ -1342,7 +1344,7 @@ export async function restoreRecoveredProviderEndMarker(options = {}) {
 
   const current = await readConfigFile(settings.configPath, { mustExist: true });
   const located = locateOwnedBlocks(current.text, ownership.state);
-  const pickerRoot = inspectPickerMutableRoot(located.root, ownership.state);
+  const pickerRoot = inspectPickerMutableRoot(located.root, ownership.state, current.text);
   const modified = [];
   if (
     sha256(located.root.text) !== ownership.state.blocks.root.sha256 &&
@@ -1476,7 +1478,7 @@ export async function getConfigStatus(options) {
       }
     }
     const located = locateOwnedBlocks(current.text, state);
-    const pickerRoot = inspectPickerMutableRoot(located.root, state);
+    const pickerRoot = inspectPickerMutableRoot(located.root, state, current.text);
     const modifiedBlocks = ownedBlockNames(state).filter((name) => {
       if (sha256(located[name].text) === state.blocks[name].sha256) return false;
       return !(name === "root" && pickerRoot.safe);
@@ -1980,7 +1982,7 @@ function inspectRootIntegration(source) {
 
 function locateHealthyManagedBlocks(source, state) {
   const located = locateOwnedBlocks(source, state);
-  const pickerRoot = inspectPickerMutableRoot(located.root, state);
+  const pickerRoot = inspectPickerMutableRoot(located.root, state, source);
   for (const name of ownedBlockNames(state)) {
     if (sha256(located[name].text) !== state.blocks[name].sha256 && !(name === "root" && pickerRoot.safe)) {
       throw failure("MANAGED_BLOCK_MODIFIED", "Refusing to migrate edited managed configuration.");
@@ -2288,7 +2290,7 @@ function parseTomlBasicKeySegment(source, start) {
     const hex = source.slice(index + 2, index + 2 + width);
     if (!new RegExp(`^[0-9A-Fa-f]{${width}}$`, "u").test(hex)) return null;
     const codePoint = Number.parseInt(hex, 16);
-    if (codePoint > 0x10ffff) return null;
+    if (codePoint > 0x10ffff || (codePoint >= 0xd800 && codePoint <= 0xdfff)) return null;
     value += String.fromCodePoint(codePoint);
     index += width + 1;
   }
@@ -2543,13 +2545,46 @@ function tomlString(value) {
     .replace(/\\f/g, "\\u000c");
 }
 
-function inspectPickerMutableRoot(block, state) {
+function inspectUnownedPickerServiceTier(block, source) {
+  const assignments = [];
+  let rootScope = true;
+  let tableConflict = false;
+  for (const line of scanTomlLexicalLines(source).lines) {
+    const code = line.code.trim();
+    if (isTableHeader(code)) {
+      if (parseTomlTablePath(code)?.[0] === "service_tier") tableConflict = true;
+      rootScope = false;
+      continue;
+    }
+    if (rootScope && parseTomlAssignmentKeyPath(code)?.[0] === "service_tier") {
+      assignments.push(line);
+    }
+  }
+  const inserted = assignments.filter((line) => line.start >= block.start && line.end <= block.end);
+  if (inserted.length === 0) return { safe: true, retainedText: "", starts: new Set() };
+  const line = inserted[0];
+  const match = /^\s*service_tier\s*=\s*(.+?)\s*$/u.exec(line.code);
+  const value = match ? parseSimpleTomlString(match[1]) : undefined;
+  const safe = !tableConflict && assignments.length === 1 && inserted.length === 1 &&
+    typeof value === "string" && value.trim().length > 0 && !/[\u0000-\u001f\u007f]/u.test(value);
+  return {
+    safe,
+    retainedText: safe ? `${line.raw}${line.eol}` : "",
+    starts: new Set(safe ? [line.start] : []),
+  };
+}
+
+function inspectPickerMutableRoot(block, state, source) {
   const lines = splitLines(block.text);
+  // Codex may insert its unowned tier preference between our root markers.
+  // Exclude only that proven root assignment; every other byte must still
+  // reproduce the original receipt, and lifecycle removal must retain it.
+  const serviceTier = inspectUnownedPickerServiceTier(block, source);
   let model;
   let modelReasoningEffort;
   let modelCount = 0;
   let reasoningCount = 0;
-  const normalized = lines.map((line) => {
+  const normalized = lines.filter((line) => !serviceTier.starts.has(block.start + line.start)).map((line) => {
     const modelMatch = /^model\s*=\s*("(?:[^"\\]|\\.)*")\s*$/u.exec(line.raw);
     if (modelMatch) {
       modelCount += 1;
@@ -2589,9 +2624,11 @@ function inspectPickerMutableRoot(block, state) {
   return {
     safe:
       valuesAreSafe &&
+      serviceTier.safe &&
       sha256(joinLines(normalized)) === state.blocks.root.sha256,
     model: valuesAreSafe ? model : undefined,
     modelReasoningEffort: valuesAreSafe ? modelReasoningEffort : undefined,
+    retainedText: serviceTier.retainedText,
   };
 }
 

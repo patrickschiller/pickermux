@@ -1,6 +1,6 @@
 # PickerMux Architecture
 
-This document describes PickerMux v0.20.1.
+This document describes PickerMux v0.21.0.
 It is intended for contributors, security reviewers, and users who want to
 understand what runs on their Mac.
 
@@ -359,17 +359,30 @@ collecting optional counters. Exceeding either observation bound leaves
 forwarding under its existing contract and marks usage unavailable.
 
 The bridge keeps per-provider request counts, unavailable-request counts, the
-most recently finalized observation, and cumulative reported counts only in
-memory. The bounded snapshot contains canonical configured provider IDs and
+most recently finalized observation, and cumulative reported counts. Private
+local usage storage retains this validated aggregate state across bridge
+restarts, refreshes, and backend upgrades. The bounded snapshot contains
+canonical configured provider IDs and
 numeric/fixed availability fields; raw provider metadata, model IDs, endpoints,
 capability values, and request/response content or identifiers are excluded.
 Unknown-count requests leave known totals unchanged and are disclosed as a
 partial sum. Safe-integer overflow makes cumulative totals unavailable. The
 snapshot is capped at 128 providers; exceeding that capacity marks the whole
 snapshot unavailable rather than silently omitting a provider. The
-capability-scoped health endpoint publishes `tokenUsage` schema 1, with empty
-providers before the first observed request. Every new bridge instance starts
-fresh counters.
+capability-scoped health endpoint publishes `tokenUsage` schema 2, with a
+canonical UTC reset time or `null` and empty
+providers before any recorded usage. The explicit Settings reset clears
+accumulated counts while retaining the most recently finalized observation.
+This storage records no per-request history and grants no routing authority.
+
+The usage store is `~/Library/Application Support/PickerMux/usage/token-usage.json`,
+outside the replaceable bridge runtime. Its directory/file modes are `0700`/
+`0600`; private generation metadata binds storage updates. Writes are queued
+and atomic, and graceful shutdown flushes the queue. A forced termination may
+lose uncommitted observations. Unsafe, invalid, corrupt or concurrently changed
+state remains preserved and makes telemetry unavailable without changing
+inference. Ordinary uninstall and CLI removal retain the store; complete purge
+removes only verified owned usage state.
 
 ## Efficient Fidelity
 
@@ -536,6 +549,19 @@ contain prompts, responses, or credentials.
 The integration installer owns only marked Codex configuration fields and
 explicit files under `~/.codex/model-bridge`, plus its named LaunchAgent. It
 creates a verified backup before changing Codex configuration.
+
+The 0.21.0 root-ownership fix recognizes one unowned `service_tier`
+assignment inserted inside the marked root block. The assignment must be an
+unambiguous, nonempty simple string at global TOML scope. Inspection virtually
+excludes only that line, then requires the receipt's exact managed-block digest
+under the existing model/reasoning selection normalization. It never updates
+the receipt to bless unrelated edits. Selection and layout changes retain the
+original line in place; deactivation, full-refresh suspension,
+and ordinary or native-restoring uninstall retain its raw bytes as user-owned
+configuration. Malformed, duplicate, or dotted `service_tier` assignments,
+changed routing fields, and other receipt mismatches remain blocked.
+Read-only status makes no configuration write. See the
+[installed-release workaround](TROUBLESHOOTING.md#integration-needs-review-after-an-unrelated-codex-setting-change).
 
 The ownership receipt also permits one narrow, write-free recovery: if only the
 managed provider end marker is missing, PickerMux tests the safe line boundaries
@@ -799,7 +825,7 @@ The private health endpoint remains available with fixed safe status/reason
 enums so the LaunchAgent does not enter a restart loop and diagnostics can
 direct the user to refresh.
 
-Versions 0.6.0 through 0.20.1 use bridge contract
+Versions 0.6.0 through 0.21.0 use bridge contract
 `codex-responses-bridge/p6-v1`.
 The managed publisher emits the search claim only from valid model-bound
 evidence, and the runtime accepts it only on entries generated under that exact
@@ -813,7 +839,7 @@ client even when the bridge runtime or generated mixed catalog is absent.
 
 ```mermaid
 flowchart TB
-    App[SwiftUI menu-bar app]
+    App[SwiftUI native menu controls and settings]
     Installed[Validated active CLI]
     Bundled[Manifest-verified bundled backend]
     Control[Versioned stdin control protocol]
@@ -863,11 +889,16 @@ removal through Finder.
 
 `companion status` collects independent read-only probes and projects only
 bounded status enums, booleans, safe issues, a version, allowed next actions,
-and a recovery phase/UUID. The additive `token-usage-v1` capability includes a
-reconstructed usage projection only from an instance-attested running bridge;
-an older runtime or invalid snapshot yields unavailable usage without changing
-lifecycle actions. Swift accepts both the previous finite status contracts
-and the new capability/field pair, validates all counts and provider IDs, and
+and a recovery phase/UUID. The additive `token-usage-v2` capability includes a
+reconstructed usage projection from an instance-attested running bridge or
+the verified installed backend's private durable store. Invalid state yields
+unavailable usage without changing
+lifecycle actions. The reset time and counts are validated independently of
+model/request metadata. `token-usage-reset-v1` exposes only the explicit
+`usage-reset` action with `resetAccumulatedUsage: true`; it resets cumulative
+counts and retains the last request. Swift accepts both the previous finite
+status contracts, including memory-only v1 usage, and the new capability/field
+pair, validates all counts and provider IDs, and
 preserves usage while filtering actions. Usage counters do not participate in
 notification transition identity. Failed probes produce partial results rather than
 raw errors. The app samples on a five-second polling cycle; backend deadlines
@@ -880,11 +911,14 @@ recovery/update confirmations use asynchronous windows rather than a nested
 modal event loop in the transient menu panel. Account-cache age alone does not
 grant recovery authority.
 
-The menu content uses a shared vertical scroll view with an explicit
-400-by-600-point viewport. An explicit size prevents compressed `MenuBarExtra`
-layout proposals from collapsing the scroll surface; longer provider and
-installation sections remain reachable by scrolling. This presentation wrapper
-does not change polling, token observation, or lifecycle authority.
+The menu-bar panel places the integration state and token usage before
+Refresh picker/Open Codex and Check status/Check installation, directly before
+their specific feedback. Its shared 400-by-600-point viewport scrolls main
+content while retaining a visible native Settings/Help/Quit footer.
+Certification and recovery live under More actions; Installation details,
+Settings, Help, and Quit remain in the footer. Offered actions obey the
+validated backend permissions. Native menu presentation does not
+grant lifecycle authority.
 
 `companion run` accepts one UTF-8 request capped at 4,096 bytes and a bounded
 input wait. Version 1 accepts only the fixed action set. Unknown or duplicate

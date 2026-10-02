@@ -25,6 +25,61 @@ const SECRET = "PRIVATE_PROMPT_ACCOUNT_CAPABILITY_TOKEN";
 const consent = { quitCodexTwice: true, interruptTasks: true, invalidateCompaction: true };
 const request = (action, additional = {}) => JSON.stringify({ schemaVersion: 1, action, ...additional });
 
+test("usage reset accepts only exact consent and projects a proven reset result", () => {
+  const confirmation = { resetAccumulatedUsage: true };
+  assert.equal(parseCompanionRequest(request("usage-reset", { confirmation })).action, "usage-reset");
+  for (const value of [undefined, {}, { resetAccumulatedUsage: false }, { resetAccumulatedUsage: "true" },
+    { ...confirmation, providerId: "lmstudio" }]) {
+    assert.throws(() => parseCompanionRequest(request("usage-reset", { confirmation: value })), { code: "CONFIRMATION_REQUIRED" });
+  }
+  assert.throws(() => parseCompanionRequest(request("usage-reset", { confirmation, previewToken: "a".repeat(64) })), { code: "INVALID_REQUEST" });
+  const result = { status: "reset", resetAt: "2026-10-02T18:00:00.000Z", lastRequestPreserved: true };
+  assert.deepEqual(companionSuccess("usage-reset", { ...result, prompt: SECRET }),
+    { schemaVersion: 1, ok: true, code: "COMPLETE", action: "usage-reset", ...result });
+  for (const invalid of [{ ...result, lastRequestPreserved: false }, { ...result, status: "pending" }, { ...result, resetAt: SECRET }]) {
+    assert.throws(() => companionSuccess("usage-reset", invalid), { code: "ACTION_FAILED" });
+  }
+});
+
+test("durable status remains visible while OFF and reset does not require quitting Codex", async () => {
+  const usage = { schemaVersion: 2, status: "available", resetAt: null, providers: [] };
+  for (const off of [false, true]) {
+    const result = await collectCompanionStatus({ probes: probes({
+      desktop: async () => true,
+      service: async () => ({ status: off ? "not-installed" : "running", healthy: !off }),
+      tokenUsage: async () => ({ ...usage, private: SECRET }),
+      ...(off ? { managedConfig: async () => ({ status: "deactivated" }), integration: async () => ({ status: "none" }) } : {}),
+    }) });
+    assert.deepEqual(result.tokenUsage, usage);
+    assert.ok(result.capabilities.includes("token-usage-v2"));
+    assert.ok(result.capabilities.includes("token-usage-reset-v1"));
+    assert.ok(result.actions.includes("usage-reset"));
+    assert.doesNotMatch(JSON.stringify(result), /PRIVATE_/u);
+  }
+  for (const override of [
+    { installation: async () => ({ installed: false }) },
+    { recovery: async () => ({ phase: "prepared", operationId: OPERATION_ID }) },
+    { tokenUsage: async () => ({ ...usage, status: "unavailable" }) },
+  ]) {
+    const result = await collectCompanionStatus({ probes: probes({ tokenUsage: async () => usage, ...override }) });
+    assert.equal(result.actions.includes("usage-reset"), false);
+  }
+  const legacy = await collectCompanionStatus({ probes: probes({
+    service: async () => ({ status: "running", healthy: true, health: { tokenUsage: { schemaVersion: 1, status: "available", providers: [] } } }),
+    tokenUsage: async () => usage,
+  }) });
+  assert.equal(legacy.tokenUsage.schemaVersion, 1);
+  assert.equal(legacy.actions.includes("usage-reset"), false);
+  const overflow = await collectCompanionStatus({ probes: probes({
+    service: async () => ({ status: "running", healthy: true, health: {
+      tokenUsage: { ...usage, status: "unavailable" },
+    } }),
+    tokenUsage: async () => ({ snapshot: usage, canReset: true }),
+  }) });
+  assert.equal(overflow.tokenUsage.status, "unavailable");
+  assert.ok(overflow.actions.includes("usage-reset"));
+});
+
 function probes(overrides = {}) {
   return {
     metadata: async () => ({ version: "0.8.3", packagePath: SECRET }),
@@ -44,7 +99,8 @@ test("companion request grammar accepts only named actions with their exact cons
   for (const action of COMPANION_ACTIONS) {
     const additional = action === "recover" ? { confirmation: consent } : action === "configuration-apply"
       ? { confirmation: { replaceIntegration: true }, previewToken: "f".repeat(64) } : action === "integration-deactivate" ? { confirmation: { deactivateIntegration: true } } : action === "uninstall"
-        ? { confirmation: { removePickerMux: true, restoreNativeCodex: true, deleteProviderCredentials: true, deleteBackups: true }, previewToken: "f".repeat(64) } : {};
+        ? { confirmation: { removePickerMux: true, restoreNativeCodex: true, deleteProviderCredentials: true, deleteBackups: true }, previewToken: "f".repeat(64) } : action === "usage-reset"
+          ? { confirmation: { resetAccumulatedUsage: true } } : {};
     assert.deepEqual(parseCompanionRequest(request(action, additional)), { schemaVersion: 1, action, ...additional });
   }
   assert.deepEqual(parseCompanionRequest(Buffer.from(request("refresh"))), { schemaVersion: 1, action: "refresh" });

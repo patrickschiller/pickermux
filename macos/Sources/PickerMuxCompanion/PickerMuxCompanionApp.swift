@@ -99,6 +99,10 @@ final class CompanionController: ObservableObject {
     IntegrationToggleState(snapshot: snapshot, busy: busy != nil || !activityAllowed)
   }
 
+  var integrationLabel: String {
+    IntegrationToggleState(snapshot: snapshot).label
+  }
+
   var backendUpgradeAvailable: Bool {
     companionBackendUpgradeAvailable(appVersion: appVersion, snapshot: snapshot)
   }
@@ -119,8 +123,8 @@ final class CompanionController: ObservableObject {
     operationFailed && busy == nil && operationNoticeAction == .configurationApply
   }
 
-  init() {
-    startPolling()
+  init(pollingEnabled: Bool = true) {
+    if pollingEnabled { startPolling() }
   }
 
   private func startPolling() {
@@ -270,14 +274,18 @@ final class CompanionController: ObservableObject {
       } else if action == .certify {
         confirmed = await confirmation(title: "Certify models?",
           text: "PickerMux sends live test prompts to the configured providers. Certification can take several minutes per model. Finish active model tasks and keep the configured models available until it completes.", button: "Start certification")
+      } else if action == .usageReset {
+        confirmed = await confirmation(title: "Reset accumulated counts?",
+          text: "Clear the saved totals for all providers. Last model request stays visible.", button: "Reset counts")
       }
-      if [.recover, .certify].contains(action) && !confirmed {
+      if [.recover, .certify, .usageReset].contains(action) && !confirmed {
         operationNotice = "The action was cancelled."
       } else {
         do {
           let result = action == .updateCheck ? try await client.checkUpdatesFromBundledBackend() :
-            try await client.run(action, confirmed: confirmed, previewToken: preview?.previewToken)
+            try await client.run(action, confirmed: confirmed, previewToken: action == .usageReset ? nil : preview?.previewToken)
           if result.ok {
+            if action == .usageReset && result.usageReset == nil { throw CompanionFailure.incompatibleProtocol }
             if let returnedPreview = result.preview { preview = returnedPreview }
             if let returnedUpdate = result.update { update = returnedUpdate }
             operationNotice = resultMessage(result, action: action)
@@ -448,18 +456,7 @@ final class CompanionController: ObservableObject {
   }
 
   private func resultMessage(_ result: CompanionResult, action: CompanionAction) -> String {
-    if result.certificationIncomplete { return "PickerMux is installed, but model certification is incomplete. Keep configured provider models available and choose Certify models to retry." }
-    if action == .configurationApply { return "PickerMux setup completed. Review the status, then reopen Codex to load the picker." }
-    if action == .integrationDeactivate { return "PickerMux was turned off. Fully quit and reopen Codex to remove its models from the picker. The app and PickerMux settings remain installed." }
-    if let update = result.update {
-      if update.status == "updated" || update.status == "installed" { return "PickerMux was updated. Open Codex after reviewing the status; install the matching companion app when its version changes." }
-      if update.status == "available", let version = update.targetVersion { return "PickerMux \(version) is available." }
-      if update.status == "current" { return "PickerMux is up to date." }
-      return "Update information is unavailable."
-    }
-    if action == .recover { return "Recovery started. The status shows its progress." }
-    if action == .configurationPreview { return "Review the setup details. Turning on Use PickerMux in Codex installs and activates it." }
-    return "PickerMux completed the requested action."
+    companionActionResultMessage(result, action: action)
   }
 
   private func failureMessage(_ error: Error) -> String {
@@ -475,11 +472,29 @@ private enum CompanionTypography {
   static let metadata = Font.system(size: 12)
 }
 
-private struct CompanionPanel: View {
+struct CompanionPanel: View {
   @ObservedObject var controller: CompanionController
 
   var body: some View {
-    CompanionMenuViewport { content }
+    CompanionMenuViewport {
+      content
+    } footer: {
+      if !controller.removalState.backendRemoved {
+        VStack(spacing: 0) {
+          Divider()
+          HStack(spacing: 8) {
+            Button("Settings…") { controller.showSettings() }
+            Button("Help…") { controller.showHelp() }
+            Spacer(minLength: 0)
+            Button("Quit") { NSApp.terminate(nil) }
+          }
+          .buttonStyle(.bordered)
+          .controlSize(.regular)
+          .padding(.horizontal, 16)
+          .padding(.vertical, 12)
+        }
+      }
+    }
   }
 
   private var content: some View {
@@ -499,53 +514,63 @@ private struct CompanionPanel: View {
             .disabled(!controller.integrationState.canChange)
             .accessibilityHint(controller.integrationState.guidance)
         }
-        Text(controller.lastSetupFailed ? "Last setup attempt failed" : controller.integrationState.label)
+        Text(controller.integrationLabel)
           .font(CompanionTypography.label)
-        if controller.busy != nil {
-          OperationProgress(controller: controller)
-        } else {
-          Text(controller.integrationState.guidance)
-            .font(CompanionTypography.body).foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
-        }
+        Text(controller.integrationState.guidance)
+          .font(CompanionTypography.body).foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
         if controller.snapshot?.usesBundledBackend == true && controller.integrationState.needsSetupUpgrade {
           Button("Complete PickerMux setup") { controller.setIntegrationEnabled(true, reviewInstalledSetup: true) }
             .disabled(!controller.canReviewBundledBootstrap)
         }
-        if controller.snapshot == nil && controller.busy == nil {
-          Text(controller.message).font(CompanionTypography.body).fixedSize(horizontal: false, vertical: true)
-        }
-        if let notice = controller.operationNotice,
-           controller.operationNoticeAction != .updateCheck && controller.operationNoticeAction != .update {
-          Text(controller.lastSetupFailed ? "Last setup attempt: \(notice)" : notice).font(CompanionTypography.body)
-            .foregroundStyle(.primary)
-            .fixedSize(horizontal: false, vertical: true)
-          if controller.lastSetupFailed {
-            Text("After fixing the cause, turn the switch on again. Check status does not retry setup.")
-              .font(CompanionTypography.body)
-              .fixedSize(horizontal: false, vertical: true)
-          }
+        if let snapshot = controller.snapshot {
+          Divider()
+          TokenUsageView(snapshot: snapshot)
         }
         Divider()
-        HStack(spacing: 6) {
+        HStack(spacing: 8) {
+          ForEach(availableActions([.refresh, .open]), id: \.self) { action in
+            actionButton(action)
+          }
+        }
+        HStack(spacing: 8) {
           Button(controller.isCheckingStatus ? "Checking…" : "Check status") {
             Task { await controller.refreshStatus(manual: true) }
           }
           .disabled(controller.isCheckingStatus || !controller.activityAllowed)
-          Spacer(minLength: 0)
-          Button("Settings…") { controller.showSettings() }
-          Button("Help…") { controller.showHelp() }
-          Button("Quit") { NSApp.terminate(nil) }
+          if controller.snapshot?.actions.contains(.diagnose) == true { actionButton(.diagnose) }
         }
-        .buttonStyle(.bordered)
-        .controlSize(.regular)
-        if let notice = controller.statusCheckNotice {
-          Text(notice).font(CompanionTypography.progress).foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
+        VStack(alignment: .leading, spacing: 4) {
+          if controller.busy != nil {
+            OperationProgress(controller: controller)
+          } else if let notice = controller.operationNotice,
+                    controller.operationNoticeAction != .updateCheck && controller.operationNoticeAction != .update {
+            Text(controller.lastSetupFailed ? "Last setup attempt: \(notice)" : notice)
+              .foregroundStyle(controller.operationFailed ? .red : .primary)
+              .fixedSize(horizontal: false, vertical: true)
+            if controller.lastSetupFailed {
+              Text("After fixing the cause, turn the switch on again. Check status does not retry setup.")
+                .fixedSize(horizontal: false, vertical: true)
+            }
+          } else if controller.snapshot == nil {
+            Text(controller.message).fixedSize(horizontal: false, vertical: true)
+          }
+          if let notice = controller.statusCheckNotice {
+            Text(notice).font(CompanionTypography.progress).foregroundStyle(.secondary)
+              .fixedSize(horizontal: false, vertical: true)
+          }
+          if controller.refreshQueued {
+            Text("Refresh queued until Codex fully quits.").foregroundStyle(.secondary)
+          }
         }
-        if let snapshot = controller.snapshot {
-          Divider()
-          TokenUsageView(snapshot: snapshot)
+        let maintenance = availableActions([.certify, .recover])
+        if !maintenance.isEmpty {
+          DisclosureGroup("More actions") {
+            VStack(alignment: .leading, spacing: 8) {
+              ForEach(maintenance, id: \.self) { action in actionButton(action) }
+            }
+            .padding(.top, 6)
+          }
         }
         if let snapshot = controller.snapshot {
           DisclosureGroup("Installation details") {
@@ -567,24 +592,23 @@ private struct CompanionPanel: View {
           }
           .font(CompanionTypography.body)
         }
-        if controller.refreshQueued {
-          Text("Refresh queued until Codex fully quits.").font(CompanionTypography.body)
-        }
-        let actions = CompanionAction.allCases.filter {
-          ![.configurationPreview, .configurationApply, .integrationDeactivate, .updateCheck, .update, .uninstallPreview, .uninstall].contains($0) && controller.snapshot?.actions.contains($0) == true
-        }
-        if !actions.isEmpty {
-          Divider()
-          ForEach(actions, id: \.self) { action in
-            Button(action == .refresh && controller.refreshQueued ? "Cancel queued refresh" : action.label) { controller.perform(action) }
-              .disabled(!controller.canRun(action))
-          }
-          .controlSize(.regular)
-        }
       }
     }
     .font(CompanionTypography.body)
+    .buttonStyle(.bordered)
+    .controlSize(.regular)
     .padding(16)
+  }
+
+  private func availableActions(_ actions: [CompanionAction]) -> [CompanionAction] {
+    actions.filter { controller.snapshot?.actions.contains($0) == true }
+  }
+
+  private func actionButton(_ action: CompanionAction) -> some View {
+    Button(action == .refresh && controller.refreshQueued ? "Cancel queued refresh" : action.label) {
+      controller.perform(action)
+    }
+    .disabled(!controller.canRun(action))
   }
 
   private func statusRow(_ label: String, _ status: String) -> some View {
@@ -596,7 +620,7 @@ private struct CompanionPanel: View {
   }
 }
 
-private struct TokenUsageView: View {
+struct TokenUsageView: View {
   let snapshot: CompanionSnapshot
 
   var body: some View {
@@ -615,10 +639,22 @@ private struct TokenUsageView: View {
               Text(provider.providerId == "lmstudio" ? "LM Studio" : provider.providerId)
                 .font(CompanionTypography.label)
                 .lineLimit(1).truncationMode(.middle)
-              HStack(alignment: .top, spacing: 16) {
-                tokenCounts("Last model request", provider.last.counts)
-                tokenCounts("Since bridge start", provider.displayTotals)
+              Grid(alignment: .trailing, horizontalSpacing: 16, verticalSpacing: 5) {
+                GridRow {
+                  Color.clear.gridCellUnsizedAxes([.horizontal, .vertical])
+                  Text("Last model\nrequest")
+                    .multilineTextAlignment(.trailing)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                  Text(usage.isPersistent ? "Since reset" : "Since bridge start")
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                }
+                .font(CompanionTypography.metadata.weight(.semibold))
+                tokenRow("Input", provider.last.counts?.inputTokens, provider.displayTotals?.inputTokens)
+                tokenRow("Output", provider.last.counts?.outputTokens, provider.displayTotals?.outputTokens)
+                tokenRow("Total", provider.last.counts?.totalTokens, provider.displayTotals?.totalTokens)
+                  .fontWeight(.semibold)
               }
+              .frame(maxWidth: .infinity, alignment: .leading)
               if let note = provider.missingUsageMessage {
                 Text(note).font(CompanionTypography.metadata).foregroundStyle(.secondary)
                   .fixedSize(horizontal: false, vertical: true)
@@ -632,7 +668,8 @@ private struct TokenUsageView: View {
             if provider.id != usage.providers.last?.id { Divider() }
           }
         }
-        Text("External model requests routed through PickerMux. Counts reset when the bridge restarts.")
+        Text(usage.isPersistent ? "Totals are saved across restarts. Reset accumulated counts in Settings." :
+          "External model requests routed through PickerMux. Counts reset when the bridge restarts.")
           .font(CompanionTypography.metadata).foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
       } else {
@@ -643,26 +680,21 @@ private struct TokenUsageView: View {
     }
   }
 
-  private func tokenCounts(_ title: String, _ counts: TokenUsageCounts?) -> some View {
-    VStack(alignment: .leading, spacing: 4) {
-      Text(title).font(CompanionTypography.metadata.weight(.semibold))
-        .fixedSize(horizontal: false, vertical: true)
-      tokenRow("Input", counts?.inputTokens)
-      tokenRow("Output", counts?.outputTokens)
-      tokenRow("Total", counts?.totalTokens)
-    }
-    .frame(maxWidth: .infinity, alignment: .leading)
-  }
-
-  private func tokenRow(_ label: String, _ count: Int?) -> some View {
-    HStack(alignment: .firstTextBaseline, spacing: 4) {
-      Text(label).foregroundStyle(.secondary)
-      Spacer(minLength: 0)
-      Text(count.map { $0.formatted(.number) } ?? "Unavailable")
-        .monospacedDigit()
-        .lineLimit(1).minimumScaleFactor(0.6)
+  private func tokenRow(_ label: String, _ last: Int?, _ total: Int?) -> some View {
+    GridRow {
+      Text(label).foregroundStyle(label == "Total" ? .primary : .secondary)
+        .gridColumnAlignment(.leading)
+      tokenCount(last)
+      tokenCount(total)
     }
     .font(CompanionTypography.metadata)
+  }
+
+  private func tokenCount(_ count: Int?) -> some View {
+    Text(count.map { $0.formatted(.number) } ?? "Unavailable")
+      .monospacedDigit()
+      .lineLimit(1).minimumScaleFactor(0.6)
+      .frame(maxWidth: .infinity, alignment: .trailing)
   }
 }
 
@@ -677,7 +709,8 @@ private struct OperationProgress: View {
         if let started = controller.operationStartedAt {
           TimelineView(.periodic(from: started, by: 1)) { context in
             let elapsed = max(0, Int(context.date.timeIntervalSince(started)))
-            Text("Running \(elapsed / 60)m \(elapsed % 60)s · setup and certification may take several minutes.")
+            Text("Running \(elapsed / 60)m \(elapsed % 60)s" +
+              ([.configurationApply, .certify].contains(controller.busy) ? " · setup and certification may take several minutes." : "."))
               .font(CompanionTypography.progress).foregroundStyle(.secondary)
               .fixedSize(horizontal: false, vertical: true)
           }
@@ -697,6 +730,32 @@ private struct CompanionSettings: View {
         if controller.removalState.backendRemoved {
           RemovalCompletionView(controller: controller)
         } else {
+          GroupBox("Token usage") {
+            VStack(alignment: .leading, spacing: 8) {
+              Text(controller.snapshot?.tokenUsage?.isPersistent == true ?
+                "Accumulated counts are saved across app and bridge restarts." :
+                "Update the installed PickerMux backend to save totals across restarts and reset them here.")
+                .fixedSize(horizontal: false, vertical: true)
+              Button(controller.busy == .usageReset ? "Resetting counts…" : "Reset accumulated counts…") {
+                controller.perform(.usageReset)
+              }
+              .disabled(!controller.canRun(.usageReset))
+              if let reset = controller.snapshot?.tokenUsage?.resetDate {
+                Text("Last reset: \(reset.formatted(date: .numeric, time: .shortened))")
+                  .font(CompanionTypography.metadata).foregroundStyle(.secondary)
+              } else if controller.snapshot?.tokenUsage?.isPersistent == true {
+                Text("Last reset: Never").font(CompanionTypography.metadata).foregroundStyle(.secondary)
+              }
+              Text("Resets totals for all providers. Last model request stays visible.")
+                .font(CompanionTypography.metadata).foregroundStyle(.secondary)
+              if controller.busy == .usageReset { OperationProgress(controller: controller) }
+              if let notice = controller.operationNotice, controller.operationNoticeAction == .usageReset {
+                Text(notice).foregroundStyle(controller.operationFailed ? .red : .primary)
+                  .fixedSize(horizontal: false, vertical: true)
+              }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+          }
           GroupBox("Updates") {
             VStack(alignment: .leading, spacing: 8) {
               Text("App \(controller.appVersion) · Backend \(controller.snapshot?.version ?? "unavailable")")
