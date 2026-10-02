@@ -25,12 +25,14 @@ const RELEASE_HIGHLIGHTS = Object.freeze({
     "- Keep menu content in a fixed 400-by-600-point panel with vertical scrolling so provider totals, installation details and available actions remain reachable.",
     "- Preserve the existing per-provider last-request and since-bridge-start token counts; this patch changes the menu layout.",
   ],
-  "0.21.0": [
-    "- Use native macOS menu controls with direct Refresh picker, Open Codex, Check status and Check installation actions, specific feedback, and a persistent Settings, Help and Quit footer.",
+  "0.22.0": [
+    "- Use a compact 320-point macOS menu with vertically stacked token summaries, direct Refresh picker, Open Codex, Check status and Check installation actions, specific feedback, and a persistent Settings, Help and Quit footer.",
     "- Keep per-provider input, output and total usage across bridge restarts, refreshes and backend upgrades. Show cumulative reported usage **since reset** and retain the last model request.",
     "- Add **Settings → Token usage → Reset accumulated counts…** to clear cumulative counts explicitly while retaining the last model request.",
     "- Save validated provider usage in private local storage; prompts, response text, credentials, endpoints and request identifiers remain excluded.",
     "- Fix a false Integration needs review conflict caused by one valid Codex service_tier setting inside PickerMux's marked root block, while retaining receipt verification and preserving the setting.",
+    "- Explain Reconnecting in historical chats after deactivation or uninstall: fully restart Codex and review the saved chat provider. Changing the selected model can leave an existing chat on model_bridge; saved chat providers are unchanged.",
+    "- Add experimental GPT-Live WebRTC bootstrap support for the reviewed POST /v1/live request. OpenAI receives voice audio and conversation context; delegated tasks retain the selected Responses model, including certified local models. A compatible Codex client, native account and voice access, and target-Mac voice acceptance are required; bridge WebSocket upgrades remain unsupported.",
   ],
 });
 

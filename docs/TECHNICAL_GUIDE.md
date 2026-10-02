@@ -248,6 +248,52 @@ earlier encrypted continuations. Other providers do not inherit this adapter.
 See [compaction configuration](CONFIGURATION.md#lm-studio-context-compaction)
 and [compaction architecture](ARCHITECTURE.md#lm-studio-context-compaction).
 
+## GPT-Live voice and local tasks
+
+The 0.22.0 backend supports the reviewed GPT-Live WebRTC bootstrap.
+Start voice in Codex with an available native account and voice feature. The
+voice model is separate from the selected task model: GPT-Live handles speech
+through OpenAI and delegates work back to the existing Codex chat. A selected
+local model continues receiving those tasks through its ordinary Responses
+route. Its tools still require exact model certification; voice grants no
+additional tools or local audio capability.
+
+Voice audio, initial conversation context, and context supplied during the
+voice session go to OpenAI even when the task model is local. This feature
+does not provide an entirely local voice session. Account access, native sign-in,
+and Codex's voice availability remain prerequisites. See the official
+[voice feature guide](https://learn.chatgpt.com/docs/features/voice) and
+[Live delegation guide](https://developers.openai.com/api/docs/guides/live-delegation).
+
+PickerMux adapts only the exact capability-scoped `POST /v1/live` bootstrap
+to the native service. Codex handles WebRTC media and its direct native
+sideband connection. Bridge WebSocket upgrades remain unsupported; unknown
+request or response shapes fail closed. The implementation follows the
+[reviewed public client](https://github.com/openai/codex/blob/d61c7a824f951abfb2133ed8aebefaed651156d4/codex-rs/codex-api/src/endpoint/realtime_call.rs)
+and [separate realtime model selection](https://github.com/openai/codex/blob/d61c7a824f951abfb2133ed8aebefaed651156d4/codex-rs/core/src/realtime_conversation.rs#L1552).
+
+This support is experimental. Voice and local delegation require manual
+target-Mac validation with native account access and a compatible client.
+A source checkout change does not update an installed backend. Manual acceptance
+requires an explicitly authorized target Mac and the normal reviewed backend
+installation or upgrade while Codex is fully closed:
+
+1. Record the tested PickerMux backend and Codex versions without private
+   configuration, credentials, account identifiers, or capability URLs.
+2. Select a native model, start voice, speak a short nonsensitive request,
+   confirm an audible reply, then end voice normally.
+3. Select an available, certified local model and start voice again. Ask it to
+   inspect a small test project's files and explain the result. Confirm the
+   delegated task stays on the namespaced local model, the local provider
+   performs inference, and the spoken answer reflects that result.
+4. End and restart voice, then confirm ordinary local text/tool requests still
+   work. Record failures using fixed error codes rather than raw voice requests,
+   SDP, upstream error bodies, or transcripts.
+5. Run the offline `live-wire` and `live-proxy` suites to verify unsupported
+   shapes, oversized input/replies, upstream failures, and native credential
+   isolation with synthetic data. These checks do not establish account or
+   voice service availability.
+
 ## Codex update recovery
 
 After an update, inspect **Check status**, **Check installation**, or:

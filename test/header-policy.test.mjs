@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   buildExternalRequestHeaders,
+  buildLiveRequestHeaders,
   buildNativeRequestHeaders,
   hasDisallowedOrigin,
   isExpectedHost,
@@ -81,6 +82,42 @@ test("external policy discards every caller credential and adds only the route c
     "content-type": "application/json",
   });
   assert.doesNotMatch(JSON.stringify(headers), /chatgpt-secret|cookie-secret|attestation-secret/u);
+});
+
+test("voice headers are native-only and rebuilt after bootstrap conversion", () => {
+  const incoming = {
+    authorization: "Bearer native-test-token",
+    "chatgpt-account-id": "native-test-account",
+    "x-oai-attestation": "native-test-attestation",
+    "openai-alpha": "quicksilver=v2",
+    "x-session-id": "voice-test-session",
+    "content-type": "multipart/form-data",
+    "content-length": "9999",
+    "content-encoding": "gzip",
+    cookie: "private-test-cookie",
+    "proxy-authorization": "private-test-proxy",
+    "x-random-secret": "private-test-header",
+  };
+  assert.deepEqual({ ...buildLiveRequestHeaders(incoming, 42) }, {
+    authorization: "Bearer native-test-token",
+    "chatgpt-account-id": "native-test-account",
+    "x-oai-attestation": "native-test-attestation",
+    "openai-alpha": "quicksilver=v2",
+    "x-session-id": "voice-test-session",
+    "content-type": "application/json",
+    "content-length": "42",
+    "accept-encoding": "identity",
+  });
+  for (const headers of [
+    buildNativeRequestHeaders(incoming, 42),
+    buildExternalRequestHeaders(incoming, 42),
+  ]) {
+    assert.equal(headers["openai-alpha"], undefined);
+    assert.equal(headers["x-session-id"], undefined);
+  }
+  for (const sessionId of ["bad\r\nsecret", ["ambiguous", "session"]]) {
+    assert.equal(buildLiveRequestHeaders({ "x-session-id": sessionId }, 1)["x-session-id"], undefined);
+  }
 });
 
 test("response policy strips hop-by-hop, cookie and redirect topology headers", () => {

@@ -1,7 +1,8 @@
 import http from "node:http";
 
 import { hasDisallowedOrigin, isExpectedHost } from "./header-policy.mjs";
-import { createResponsesProxy, createWebSearchProxy } from "./responses-proxy.mjs";
+import { createLiveProxy, createResponsesProxy, createWebSearchProxy } from "./responses-proxy.mjs";
+import { LIVE_CONTRACT_VERSION, LIVE_PATH } from "./live-wire.mjs";
 import { WEB_SEARCH_CONTRACT_VERSION, WEB_SEARCH_PATH } from "./web-search-wire.mjs";
 import { createTokenUsageTelemetry } from "./token-usage.mjs";
 
@@ -315,6 +316,7 @@ export function createBridgeServer({
     httpsTransport,
     externalRequestGate,
   });
+  const handleLive = createLiveProxy({ nativeBaseUrl, limits, httpTransport, httpsTransport });
 
   const server = http.createServer({ maxHeaderSize: requestHeaderBytes }, async (request, response) => {
     const port = listenerPort(server);
@@ -347,6 +349,10 @@ export function createBridgeServer({
       return;
     }
     const path = url.pathname.slice(basePath.length);
+    if (path === LIVE_PATH && request.url !== `${basePath}${LIVE_PATH}`) {
+      writeRouteError(response, 404, "NOT_FOUND", "Endpoint not found");
+      return;
+    }
 
     if (request.method === "GET" && path === "/health") {
       const compatibility = publicCompatibilityState(compatibilityGate);
@@ -362,6 +368,7 @@ export function createBridgeServer({
       writeJson(response, 200, {
         ok: compatibility === null || compatibility.status === "compatible",
         webSearchContractVersion: WEB_SEARCH_CONTRACT_VERSION,
+        liveContractVersion: LIVE_CONTRACT_VERSION,
         instanceId,
         tokenUsage,
         ...(certificationPendingGateActive
@@ -403,7 +410,13 @@ export function createBridgeServer({
       return;
     }
 
-    if (path === "/v1/responses" || path === "/v1/responses/compact" || path === WEB_SEARCH_PATH) {
+    if (request.method === "POST" && path === LIVE_PATH) {
+      if (!(await admitModelRequest(compatibilityGate, response))) return;
+      await handleLive(request, response, path);
+      return;
+    }
+
+    if (path === "/v1/responses" || path === "/v1/responses/compact" || path === WEB_SEARCH_PATH || path === LIVE_PATH) {
       writeRouteError(response, 405, "METHOD_NOT_ALLOWED", "Method not allowed");
       return;
     }

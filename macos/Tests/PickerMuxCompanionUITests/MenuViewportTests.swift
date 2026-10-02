@@ -172,7 +172,7 @@ final class MenuViewportTests: XCTestCase {
       "totals": ["inputTokens": 140000, "outputTokens": 3250, "totalTokens": 143250],
     ]
     return try CompanionSnapshot.decode(JSONSerialization.data(withJSONObject: [
-      "schemaVersion": 1, "version": "0.21.0", "state": "ready",
+      "schemaVersion": 1, "version": "0.22.0", "state": "ready",
       "capabilities": ["integration-toggle-v1", "native-uninstall-v1", "token-usage-v2", "token-usage-reset-v1"],
       "desktop": ["status": "running"], "installation": ["status": "installed"],
       "managedConfig": ["status": "installed"], "service": ["status": "running"],

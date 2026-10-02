@@ -115,7 +115,7 @@ can trigger this warning even without a manual edit. `service_tier` is an
 ordinary string-valued [Codex configuration setting](https://learn.chatgpt.com/docs/config-file/config-reference)
 and is not owned by PickerMux.
 
-The [0.21.0 backend](../CHANGELOG.md#0210---2026-10-02) accepts exactly
+The [0.22.0 backend](../CHANGELOG.md#0220---2026-10-02) accepts exactly
 one unambiguous, nonempty string assignment there only when excluding that
 line reproduces the receipt's managed-block digest, including the existing
 allowance for model and reasoning selection changes. It preserves the original
@@ -823,6 +823,36 @@ An available tool does not guarantee a correct answer. Ask the model to search
 and cite current sources and inspect whether `web.run` actually ran. A model
 that answers from memory can still invent facts. PickerMux does not add a
 separate research agent for text-only models.
+
+## Voice cannot start: `/v1/live` returns 404
+
+`404 Not Found: Endpoint not found` at the private loopback `/v1/live`
+endpoint usually means the running bridge does not handle that voice bootstrap.
+Older PickerMux backends lack it. Selecting a native model alone still uses
+the active bridge provider, and refreshing its model catalog cannot add a
+missing HTTP endpoint. A source checkout change does not update the installed
+backend; use the normal reviewed backend upgrade to 0.22.0 or later.
+
+For an immediate reversible check, fully quit Codex with **Command-Q**, turn
+**Use PickerMux in Codex** off in the menu-bar app, and reopen Codex. Start a
+new native chat and try voice again. For an old PickerMux chat, follow
+[native-provider recovery](#reconnecting-in-an-old-chat-after-deactivation-or-uninstall)
+before continuing it; selecting a native model may leave its saved provider
+unchanged.
+If voice also fails with PickerMux off, check native sign-in, account access,
+and Codex voice availability. Keep the private `/c/...` path out of reports.
+
+The 0.22.0 backend adds experimental GPT-Live WebRTC bootstrap support.
+OpenAI handles voice audio and conversation context; delegated tasks can remain
+on a certified local model. This does not provide local voice inference or
+new tool grants. Only the reviewed bootstrap shape is accepted; unknown
+schemas stop safely. Bridge WebSocket upgrades remain unsupported. Validate
+voice and local delegation manually on the target Mac with native account
+access and a compatible client; use the
+[voice acceptance procedure](TECHNICAL_GUIDE.md#gpt-live-voice-and-local-tasks)
+and [official voice guide](https://learn.chatgpt.com/docs/features/voice).
+Report only fixed error codes and tested versions, never raw requests, SDP,
+transcripts, call identifiers, or upstream errors.
 
 ## LM Studio reports `Invalid type for 'input'` after a tool call
 

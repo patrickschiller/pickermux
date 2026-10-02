@@ -116,6 +116,29 @@ settings remain effective. Provider/feature migration uses the existing
 compare-and-swap and rollback boundary and requires the running search
 contract; uninstall removes only an unchanged feature block PickerMux owns.
 
+GPT-Live WebRTC bootstrap has a separate native-only boundary. The exact
+capability-scoped `POST /v1/live` accepts only the reviewed multipart SDP/session
+shape and converts it to JSON for the fixed native
+`/realtime/calls?intent=quicksilver&architecture=avas` destination. The
+compatibility gate, input validation, and transport bounds remain active.
+A voice-specific header policy admits native voice session headers without
+changing the external header allowlist. No external provider credential is
+resolved and no native credential reaches an external provider.
+
+SDP and call identifiers are validated before success; the returned Location
+is synthesized as a relative path instead of forwarding upstream URLs.
+Unsupported request or response schemas and native service failures return
+fixed redacted errors. PickerMux does not proxy WebRTC media or its direct
+native sideband, and bridge WebSocket upgrades remain rejected.
+
+Voice audio and conversation context are sent to OpenAI even when the selected
+task model is local. Client delegation retains the task's existing Responses
+route and certification checks; it grants no tools or local audio capabilities.
+SDP, call IDs, transcripts, capability paths, and raw native errors must stay
+out of diagnostics. This experimental support requires native account access,
+a compatible client, and manual target-Mac validation of voice and local
+delegation; see the [reviewed contract and acceptance procedure](docs/TECHNICAL_GUIDE.md#gpt-live-voice-and-local-tasks).
+
 LM Studio compaction has a separate request and replay boundary. Only an exact
 bare trailing `compaction_trigger` on full `/responses` replay is adapted. The
 usual certification gate, external sanitization, and tool-history validation

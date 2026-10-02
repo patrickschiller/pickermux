@@ -11,16 +11,10 @@ published as GitHub Releases.
 
 ## [Unreleased]
 
-### Fixed
+## [0.22.0] - 2026-10-02
 
-- Document native-provider recovery for historical chats that keep reconnecting
-  after PickerMux deactivation or removal. Correct README, companion-guide,
-  technical-guide, and CLI advice that implied selecting a native model always
-  migrates the saved chat provider. Clarify that `repair-chats` restores parsing
-  compatibility only, and describe an explicit Codex resume with private
-  backups, preserved model/effort, and version-specific compatibility limits.
-
-## [0.21.0] - 2026-10-02
+This release includes the menu, durable usage, and configuration recovery work
+prepared for the unpublished 0.21.0 candidate.
 
 ### Added
 
@@ -29,6 +23,16 @@ published as GitHub Releases.
   cumulative counts as **Since reset**.
 - Add **Reset accumulated counts…** under Settings → Token usage. Reset only
   cumulative counts and retain the last model request.
+- Add experimental GPT-Live WebRTC bootstrap support through the exact private
+  `POST /v1/live` route, fixing the missing bridge endpoint behind the local
+  voice-start 404. Adapt the reviewed multipart call to the fixed native
+  ChatGPT JSON endpoint and validate SDP and call IDs before returning a
+  synthesized relative Location. Voice and local delegation require manual
+  target-Mac validation with native account access and a compatible client.
+- Keep voice-delegated tasks on the selected Responses model, including
+  certified local models. Voice audio and conversation context go to OpenAI;
+  native sign-in and account voice access are required. Voice grants no new
+  local tool authority and bridge WebSocket upgrades remain unsupported.
 
 ### Changed
 
@@ -48,6 +52,13 @@ published as GitHub Releases.
   through selection, migration, deactivation, suspension, and ordinary or
   native-restoring uninstall. Ambiguous settings and managed routing changes
   continue to fail closed.
+- Document native-provider recovery for historical chats that keep reconnecting
+  after PickerMux deactivation or removal. Correct README, companion-guide,
+  technical-guide, and CLI advice that implied selecting a native model always
+  migrates the saved chat provider. Clarify that `repair-chats` restores parsing
+  compatibility only, and describe an explicit Codex resume with private
+  backups, preserved model/effort, and version-specific compatibility limits.
+  PickerMux does not automatically migrate chat providers.
 
 ### Security and compatibility
 
@@ -58,6 +69,9 @@ published as GitHub Releases.
 - Add the finite `token-usage-v2` and `token-usage-reset-v1` capabilities while
   retaining support for older memory-only usage snapshots. Native credential
   isolation and the `codex-responses-bridge/p6-v1` routing contract remain intact.
+- Keep GPT-Live bootstrap credentials and native voice headers confined to the
+  fixed native service; no external provider credential is resolved. Reject
+  unknown request/response shapes and return only fixed redacted errors.
 
 ## [0.20.1] - 2026-10-02
 
@@ -835,8 +849,8 @@ confirm the release date before tagging. See the
   paths and file types, refuses root execution and foreign launchers, and
   restores the previous distribution state when activation fails.
 
-[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.21.0...HEAD
-[0.21.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.21.0
+[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.22.0...HEAD
+[0.22.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.22.0
 [0.20.1]: https://github.com/patrickschiller/pickermux/releases/tag/v0.20.1
 [0.20.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.20.0
 [0.10.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.10.0

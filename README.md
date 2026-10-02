@@ -21,12 +21,12 @@ other local or remote Responses providers use a custom configuration.
     <td width="50%" align="center"><strong>Codex model picker</strong></td>
   </tr>
   <tr>
-    <td valign="top"><img src="assets/screenshots/pickermux-companion.png" alt="Synthetic compact PickerMux 0.21.0 menu preview with stacked token usage and full-width action rows" width="320"></td>
+    <td valign="top"><img src="assets/screenshots/pickermux-companion.png" alt="Synthetic compact PickerMux menu preview with stacked token usage and full-width action rows" width="320"></td>
     <td valign="top"><img src="assets/screenshots/pickermux-model-picker.png" alt="Codex model picker with namespaced external models alongside native models" width="440"></td>
   </tr>
 </table>
 
-*Left: synthetic PickerMux 0.21.0 preview with example usage. Right: Codex picker screenshot.*
+*Left: synthetic compact-menu preview with example usage. Right: Codex picker screenshot.*
 
 PickerMux is an unofficial community project. It is not affiliated with,
 endorsed by, or supported by OpenAI, Codex, or LM Studio.
@@ -80,7 +80,7 @@ If a working installation suddenly shows **Integration needs review**, review
 the [configuration-conflict checks](docs/TROUBLESHOOTING.md#integration-needs-review-after-an-unrelated-codex-setting-change).
 A Codex `service_tier` setting inside PickerMux's marked root block can trigger
 that message in 0.20.1 and earlier without a manual configuration edit; the
-0.21.0 backend recognizes and preserves that setting after receipt verification.
+0.22.0 backend recognizes and preserves that setting after receipt verification.
 
 The panel's **Token usage** section shows input, output, and total tokens per
 external provider in stacked **Last model request** and **Since reset** blocks.
@@ -90,6 +90,16 @@ partial sums are labelled. Counts and the last request survive bridge restarts,
 refreshes, and backend upgrades. **Settings → Token usage → Reset accumulated
 counts…** clears accumulated counts while retaining the last request.
 See [token usage](docs/MACOS_COMPANION.md#token-usage).
+
+## Voice with a local model
+
+PickerMux 0.22.0 adds experimental GPT-Live WebRTC support. Codex can
+use OpenAI for voice while the selected local model handles delegated tasks.
+Voice audio and conversation context go to OpenAI, including when a local model
+is selected. This requires native sign-in and account access to Codex voice;
+local tool access still requires exact model certification. Voice and local
+delegation require manual validation with the installed backend and compatible
+client. See [voice setup and acceptance](docs/TECHNICAL_GUIDE.md#gpt-live-voice-and-local-tasks).
 
 ## Switch off or remove
 

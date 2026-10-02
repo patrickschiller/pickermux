@@ -239,6 +239,9 @@ CODEX_BINARY overrides discovery for this command; it is not saved to the servic
 
 Install and refresh enable shared Codex web search unless explicitly disabled.
 External models still require tool certification; search uses the native Codex backend.
+GPT-Live WebRTC bootstrap uses the native ChatGPT service; delegated tasks retain
+their selected model. Voice audio and startup context go to OpenAI. This requires
+account voice availability and a compatible Codex client; unknown schemas fail closed.
 Setup and install automatically certify discovered models without a valid tool receipt.
 Live tests can take several minutes per model. Keep configured models available and Codex fully closed.
 Progress is written to stderr; --json keeps stdout machine-readable.

@@ -42,7 +42,7 @@ https://github.com/patrickschiller/pickermux/releases/latest/download/PickerMux-
 The release tag still makes a download immutable:
 
 ```text
-https://github.com/patrickschiller/pickermux/releases/download/v0.21.0/PickerMux-macos-universal.dmg
+https://github.com/patrickschiller/pickermux/releases/download/v0.22.0/PickerMux-macos-universal.dmg
 ```
 
 The build retains its versioned DMG, app archive, backend manifest, companion
@@ -65,9 +65,9 @@ key available to `codesign`; the profile must already be usable by `notarytool`.
 Use fresh output directories, since the tools refuse to replace existing ones:
 
 ```bash
-node scripts/build-companion.mjs --release --output /tmp/pickermux-signed-0.21.0
-node scripts/prepare-dmg-release.mjs --source /tmp/pickermux-signed-0.21.0 --output /tmp/pickermux-public-0.21.0 --tag v0.21.0
-node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.21.0 --tag v0.21.0
+node scripts/build-companion.mjs --release --output /tmp/pickermux-signed-0.22.0
+node scripts/prepare-dmg-release.mjs --source /tmp/pickermux-signed-0.22.0 --output /tmp/pickermux-public-0.22.0 --tag v0.22.0
+node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.22.0 --tag v0.22.0
 ```
 
 The release builder signs and notarizes the app and DMG separately, staples
@@ -117,8 +117,8 @@ maintainer's Mac when using the local production route.
 After the exact approved commit is on main and all gates are ready:
 
 ```bash
-git tag -a v0.21.0 -m "PickerMux v0.21.0"
-git push origin v0.21.0
+git tag -a v0.22.0 -m "PickerMux v0.22.0"
+git push origin v0.22.0
 ```
 
 Watch the workflow through publication. If a candidate is wrong, fix the
@@ -142,10 +142,10 @@ production signing requirements above remain mandatory.
    replace its assets.
 
 ```bash
-node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.21.0 --tag v0.21.0
-gh release create v0.21.0 /tmp/pickermux-public-0.21.0/PickerMux-macos-universal.dmg \
-  --verify-tag --title "PickerMux v0.21.0" \
-  --notes-file /tmp/pickermux-public-0.21.0/release-notes.md
+node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.22.0 --tag v0.22.0
+gh release create v0.22.0 /tmp/pickermux-public-0.22.0/PickerMux-macos-universal.dmg \
+  --verify-tag --title "PickerMux v0.22.0" \
+  --notes-file /tmp/pickermux-public-0.22.0/release-notes.md
 ```
 
 Complete the independent public-download verification below before announcing
@@ -175,22 +175,22 @@ installed provider settings. Cancellation and failed activation must retain
 usable prior state; ordinary removal and deactivation continue using the
 validated installed backend.
 
-## 0.21.0 native menu, durable usage, and updater acceptance
+## 0.22.0 native menu, durable usage, and updater acceptance
 
 Use an explicitly authorized installation of the previous app to test the
 complete update path. Record the starting app and backend versions and retain
 the prior installation for recovery. These checks supplement source tests;
 publishing an artifact does not establish that the installed upgrade passed.
 
-- In the previous app, check for updates and confirm that 0.21.0 is offered
+- In the previous app, check for updates and confirm that 0.22.0 is offered
   with **Download DMG**. Confirm that the browser opens the exact
-  version-pinned 0.21.0 URL and that the downloaded public bytes pass the
+  version-pinned 0.22.0 URL and that the downloaded public bytes pass the
   independent signature, ticket, checksum, and inventory checks above.
 - Quit PickerMux, replace its copied app, eject the image, and reopen it.
-  Confirm that Settings identifies app 0.21.0 while the installed backend
+  Confirm that Settings identifies app 0.22.0 while the installed backend
   remains at its prior version until **Update installed backend** is reviewed.
   With Codex fully closed and provider models available, complete that explicit
-  setup and confirm that both versions are then 0.21.0. Verify that installed
+  setup and confirm that both versions are then 0.22.0. Verify that installed
   provider settings and still-valid certification receipts are preserved.
 - Open and reopen the native menu after status and token-usage changes.
   Confirm the compact 320-point presentation, vertically stacked Last model
@@ -232,6 +232,26 @@ publishing an artifact does not establish that the installed upgrade passed.
   edited routing fields. On the authorized target, verify the backend upgrade
   resolves this sole false ownership conflict without reinstalling, purging,
   editing the receipt, or losing the Codex setting.
+
+## 0.22.0 voice and historical-chat recovery acceptance
+
+GPT-Live remains experimental. Follow the
+[target-Mac voice procedure](TECHNICAL_GUIDE.md#gpt-live-voice-and-local-tasks)
+using the exact installed release backend and an account with native voice
+access. Record native voice start/reply/end, certified local-model delegation,
+voice restart, and ordinary text/tool continuation separately. Offline adapter
+tests do not establish native service availability or successful voice audio.
+Keep SDP, call IDs, transcripts, capability URLs, credentials, and upstream
+errors out of release evidence; use tested versions and fixed result codes.
+
+The Reconnecting change supplies recovery guidance and corrected CLI text; it
+does not add automatic chat migration. Review the
+[native-provider procedure](TROUBLESHOOTING.md#reconnecting-in-an-old-chat-after-deactivation-or-uninstall)
+and its pinned source/compatibility limits. Preserve its distinction between
+the observed native `thread/resume` recovery and the CLI repair procedure that
+has not been separately exercised live. Do not claim a new migration command,
+rewrite private chat databases or rollout files, or make the inert provider
+alias into a live route.
 
 ## Manual acceptance matrix
 

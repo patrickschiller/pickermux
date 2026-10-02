@@ -1,6 +1,6 @@
 # PickerMux Architecture
 
-This document describes PickerMux v0.21.0.
+This document describes PickerMux v0.22.0.
 It is intended for contributors, security reviewers, and users who want to
 understand what runs on their Mac.
 
@@ -170,6 +170,48 @@ the implemented request/response contract, not backend availability or the
 meaning of internal search-model selection. See the
 [official guidance](https://learn.chatgpt.com/docs/web-search?surface=app#app-search-with-a-custom-model-provider)
 and [public Codex search client](https://github.com/openai/codex/blob/36f0dbe796d9bb1a18a0fc0640ed08b3e1d54564/codex-rs/codex-api/src/endpoint/search.rs).
+
+### GPT-Live WebRTC bootstrap
+
+The capability-scoped `POST /v1/live` route adapts the reviewed Codex
+Frameless Bidi WebRTC call bootstrap. Codex selects the realtime model
+independently of the task model; its V3 default is `gpt-live-1-codex`.
+The session uses client delegation, so spoken task handoffs reenter the same
+Codex session and retain its selected native or external Responses route.
+Voice does not add local audio support or grant tools to an external model.
+
+The client chooses its HTTP shape from the provider base URL. PickerMux's
+loopback URL produces multipart input with the fixed
+`codex-realtime-call-boundary`, one SDP part, and one JSON session part.
+The native ChatGPT route instead expects JSON `{sdp, session}` at the fixed
+`/realtime/calls?intent=quicksilver&architecture=avas` destination. The adapter
+validates the exact reviewed shape before converting that framing. Unknown
+fields, malformed model identifiers, unsupported multipart shapes, or unsafe
+input fail closed.
+
+Only the native voice header policy forwards the additional `openai-alpha`
+and `x-session-id` headers. Incoming native authentication, account, and
+attestation headers remain confined to the native destination; no external
+provider credential is resolved. The normal compatibility gate and bounded
+body/transport checks apply before a successful reply is returned.
+
+Successful bootstrap replies contain validated UTF-8 SDP and a validated call
+ID extracted from `Location`. PickerMux synthesizes a relative
+`/v1/live/{call_id}` Location rather than exposing upstream topology. Codex
+uses the ID to join its direct native WebRTC sideband, normally
+`wss://api.openai.com/v1/live/{call_id}`. WebRTC media and sideband traffic
+remain client-managed; bridge WebSocket upgrades are still rejected.
+
+Voice audio and conversation context go to OpenAI even for local task models.
+The bootstrap never changes `/responses` routing, external header isolation,
+or certification authority. Source and offline tests establish this boundary;
+voice and local delegation require manual target-Mac validation. See the
+[manual acceptance procedure](TECHNICAL_GUIDE.md#gpt-live-voice-and-local-tasks),
+[official Live delegation guide](https://developers.openai.com/api/docs/guides/live-delegation),
+and the pinned public Codex
+[call client](https://github.com/openai/codex/blob/d61c7a824f951abfb2133ed8aebefaed651156d4/codex-rs/codex-api/src/endpoint/realtime_call.rs),
+[sideband URL builder](https://github.com/openai/codex/blob/d61c7a824f951abfb2133ed8aebefaed651156d4/codex-rs/codex-api/src/endpoint/realtime_websocket/methods.rs#L831),
+and [task handoff](https://github.com/openai/codex/blob/d61c7a824f951abfb2133ed8aebefaed651156d4/codex-rs/core/src/session/turn_input.rs#L640).
 
 ## LM Studio context compaction
 
@@ -550,7 +592,7 @@ The integration installer owns only marked Codex configuration fields and
 explicit files under `~/.codex/model-bridge`, plus its named LaunchAgent. It
 creates a verified backup before changing Codex configuration.
 
-The 0.21.0 root-ownership fix recognizes one unowned `service_tier`
+The 0.22.0 root-ownership fix recognizes one unowned `service_tier`
 assignment inserted inside the marked root block. The assignment must be an
 unambiguous, nonempty simple string at global TOML scope. Inspection virtually
 excludes only that line, then requires the receipt's exact managed-block digest
@@ -825,7 +867,7 @@ The private health endpoint remains available with fixed safe status/reason
 enums so the LaunchAgent does not enter a restart loop and diagnostics can
 direct the user to refresh.
 
-Versions 0.6.0 through 0.21.0 use bridge contract
+Versions 0.6.0 through 0.22.0 use bridge contract
 `codex-responses-bridge/p6-v1`.
 The managed publisher emits the search claim only from valid model-bound
 evidence, and the runtime accepts it only on entries generated under that exact
