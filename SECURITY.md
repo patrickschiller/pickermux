@@ -265,8 +265,12 @@ The explicit Settings reset clears only accumulated counts and retains the
 last model request. The usage directory is private (`0700`) and the usage file
 is private (`0600`); unsafe links, invalid state and concurrent changes cannot
 authorize overwriting foreign data. Invalid or corrupt state is retained for
-review and reported as unavailable. Ordinary uninstall/CLI removal retain the
-usage file; complete purge removes only verified owned usage state. Graceful
+review and reported as unavailable.
+An existing empty usage directory or missing statistics file cannot silently
+restart counters; only an explicit Settings reset recovers that missing-file
+state. Malformed or foreign files still cannot authorize a reset overwrite.
+Ordinary uninstall/CLI removal retain the usage file; complete purge removes
+only verified owned usage state. Graceful
 shutdown drains queued writes; a crash can lose observations not yet committed.
 Storage and observer failures cannot affect routing or lifecycle permissions.
 

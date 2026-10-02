@@ -122,7 +122,6 @@ public struct CompanionSnapshot: Decodable {
            ["integration-toggle-v1", "token-usage-v2", "token-usage-reset-v1"],
            ["integration-toggle-v1", "native-uninstall-v1", "token-usage-v2", "token-usage-reset-v1"]].contains(value.capabilities),
           value.supportsTokenUsage == (value.tokenUsage != nil),
-          value.tokenUsage == nil || value.tokenUsage?.schemaVersion == (value.capabilities.contains("token-usage-v2") ? 2 : 1),
           object["tokenUsage"] == nil || value.tokenUsage != nil,
           (isVersion(value.version) || value.version == "unknown"),
           safeToken(value.state), value.actions.count <= CompanionAction.allCases.count,
@@ -136,6 +135,11 @@ public struct CompanionSnapshot: Decodable {
           value.recovery.phase.map({ recoveryPhases.contains($0) }) ?? true,
           value.recovery.operationId.map({ $0.range(of: "^[A-Za-z0-9-]{1,80}$", options: .regularExpression) != nil }) ?? true
     else { throw CompanionFailure.incompatibleProtocol }
+    // Keep the optional binding separate for Swift 6.3 optimized-build compatibility.
+    if let usage = value.tokenUsage {
+      let expectedSchema = value.capabilities.contains("token-usage-v2") ? 2 : 1
+      guard usage.schemaVersion == expectedSchema else { throw CompanionFailure.incompatibleProtocol }
+    }
     return value
   }
 }

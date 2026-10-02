@@ -127,7 +127,10 @@ observations. A forced termination or crash can lose observations that were
 not yet committed. An unsafe or corrupt store is retained for review and
 makes usage unavailable; it does not stop model routing or authorize an
 overwrite. Reset is offered only when the installed backend validates the
-available usage state.
+reset authority. An existing empty usage directory or a missing statistics
+file shows usage as unavailable until you explicitly choose **Reset accumulated
+counts…**; new requests do not silently restart the totals at zero. This narrow
+recovery does not permit overwriting malformed or foreign statistics files.
 
 Stored usage contains canonical configured provider IDs, availability, numeric
 counters, the reset time, and private storage bookkeeping, never model names,
