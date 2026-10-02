@@ -21,12 +21,12 @@ other local or remote Responses providers use a custom configuration.
     <td width="50%" align="center"><strong>Codex model picker</strong></td>
   </tr>
   <tr>
-    <td valign="top"><img src="assets/screenshots/pickermux-companion.png" alt="PickerMux panel preview with demo status and the Codex integration switch" width="440"></td>
+    <td valign="top"><img src="assets/screenshots/pickermux-companion.png" alt="PickerMux menu-bar panel with the Codex integration switch and provider token usage" width="440"></td>
     <td valign="top"><img src="assets/screenshots/pickermux-model-picker.png" alt="Codex model picker with namespaced external models alongside native models" width="440"></td>
   </tr>
 </table>
 
-*Left: app UI preview with demo status. Right: Codex picker screenshot.*
+*Left: PickerMux menu-bar panel with provider token usage. Right: Codex picker screenshot.*
 
 PickerMux is an unofficial community project. It is not affiliated with,
 endorsed by, or supported by OpenAI, Codex, or LM Studio.
