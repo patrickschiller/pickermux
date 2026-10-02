@@ -35,6 +35,7 @@ function projectUsage(response) {
 
 /** Reconstruct the finite public schema without carrying provider metadata. */
 export function projectTokenUsageSnapshot(value) {
+  if (record(value) && value.schemaVersion === 2) return projectDurableTokenUsageSnapshot(value);
   if (!record(value) || value.schemaVersion !== 1 ||
       !["available", "unavailable"].includes(value.status) ||
       !Array.isArray(value.providers) || value.providers.length > TOKEN_USAGE_MAX_PROVIDERS ||
@@ -76,6 +77,51 @@ export function projectTokenUsageSnapshot(value) {
     });
   }
   return { schemaVersion: 1, status: value.status, providers };
+}
+
+export function isTokenUsageResetTime(value) {
+  return typeof value === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(value) &&
+    Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value;
+}
+
+/** Last-request measurements survive a reset; only cumulative fields start over. */
+export function projectDurableTokenUsageSnapshot(value) {
+  if (!record(value) || value.schemaVersion !== 2 ||
+      !["available", "unavailable"].includes(value.status) ||
+      (value.resetAt !== null && !isTokenUsageResetTime(value.resetAt)) ||
+      !Array.isArray(value.providers) || value.providers.length > TOKEN_USAGE_MAX_PROVIDERS ||
+      (value.status === "unavailable" && value.providers.length !== 0)) return null;
+  const seen = new Set();
+  const providers = [];
+  for (const provider of value.providers) {
+    if (!record(provider) || !isValidProviderId(provider.providerId) || seen.has(provider.providerId) ||
+        !counter(provider.requests) || !counter(provider.unavailableRequests) ||
+        provider.unavailableRequests > provider.requests || !record(provider.last) ||
+        !["available", "unavailable"].includes(provider.last.status)) return null;
+    seen.add(provider.providerId);
+    let last = { status: "unavailable" };
+    if (provider.last.status === "available") {
+      const counts = tokenCounts(provider.last.inputTokens, provider.last.outputTokens, provider.last.totalTokens);
+      if (!counts || provider.last.totalTokens === undefined) return null;
+      last = { status: "available", ...counts };
+    }
+    const availableRequests = provider.requests - provider.unavailableRequests;
+    let totals = null;
+    if (provider.totals !== null) {
+      if (!record(provider.totals) || provider.totals.totalTokens === undefined) return null;
+      totals = tokenCounts(provider.totals.inputTokens, provider.totals.outputTokens, provider.totals.totalTokens);
+      if (!totals || (availableRequests === 0 && totals.totalTokens !== 0)) return null;
+    } else if (availableRequests < 2) return null;
+    if (provider.requests > 0 &&
+        ((last.status === "available" && availableRequests === 0) ||
+         (last.status === "unavailable" && provider.unavailableRequests === 0) ||
+         (last.status === "available" && totals !== null &&
+          (TOKEN_FIELDS.some((key) => totals[key] < last[key]) ||
+           (availableRequests === 1 && TOKEN_FIELDS.some((key) => totals[key] !== last[key])))))) return null;
+    providers.push({ providerId: provider.providerId, requests: provider.requests,
+      unavailableRequests: provider.unavailableRequests, last, totals });
+  }
+  return { schemaVersion: 2, status: value.status, resetAt: value.resetAt, providers };
 }
 
 /** Bridge-local counters contain only route-selected IDs and projected integers. */

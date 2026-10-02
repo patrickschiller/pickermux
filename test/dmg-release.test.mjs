@@ -115,6 +115,63 @@ test("0.20.1 viewport patch retains the DMG record accepted by the 0.20.0 update
   });
 });
 
+test("0.22.0 publication combines menu, usage, recovery and experimental voice changes", async (t) => {
+  const value = await fixture(t, "0.22.0");
+  const result = await prepareDmgRelease({ ...value, tag: "v0.22.0" });
+  const body = await readFile(path.join(value.outputDirectory, "release-notes.md"), "utf8");
+  assert.match(body, /Changes in v0\.22\.0/u);
+  assert.match(body, /compact 320-point macOS menu with vertically stacked token summaries/u);
+  assert.match(body, /direct Refresh picker, Open Codex, Check status and Check installation/u);
+  assert.match(body, /usage across bridge restarts, refreshes and backend upgrades/u);
+  assert.match(body, /since reset/u);
+  assert.match(body, /Reset accumulated counts….*retaining the last model request/u);
+  assert.match(body, /private local storage.*prompts, response text, credentials, endpoints and request identifiers remain excluded/u);
+  assert.match(body, /service_tier.*retaining receipt verification and preserving the setting/u);
+  assert.match(body, /Reconnecting in historical chats after deactivation or uninstall: fully restart Codex/u);
+  assert.match(body, /Changing the selected model can leave an existing chat on model_bridge; saved chat providers are unchanged/u);
+  assert.match(body, /experimental GPT-Live WebRTC bootstrap.*reviewed POST \/v1\/live request/u);
+  assert.match(body, /OpenAI receives voice audio and conversation context; delegated tasks retain the selected Responses model, including certified local models/u);
+  assert.match(body, /A compatible Codex client, native account and voice access, and target-Mac voice acceptance are required; bridge WebSocket upgrades remain unsupported/u);
+  assert.doesNotMatch(body, /Changes in v0\.2[01]\.[01]|Counts reset when the bridge restarts|live acceptance passed|acceptance remains pending|fully local voice/iu);
+  assert.equal(body.split("pickermux-dmg-release-v1").length, 2);
+  assert.deepEqual(parseDmgReleaseRecord(body, { version: "0.22.0", file: PICKERMUX_DMG_ASSET }), {
+    version: "0.22.0", file: PICKERMUX_DMG_ASSET, sha256: hash(value.diskImage), signing: "developer-id-notarized",
+  });
+  assert.deepEqual((await readdir(value.outputDirectory)).sort(), [PICKERMUX_DMG_ASSET, "SHA256SUMS", "release-notes.md"].sort());
+  assert.deepEqual(await readFile(path.join(value.outputDirectory, PICKERMUX_DMG_ASSET)), value.diskImage);
+  assert.equal(await readFile(path.join(value.outputDirectory, "SHA256SUMS"), "utf8"), `${result.sha256}  ${PICKERMUX_DMG_ASSET}\n`);
+  assert.deepEqual(await verifyDmgPublication({ directory: value.outputDirectory, tag: "v0.22.0" }), result);
+  const expectedUrl = `https://github.com/patrickschiller/pickermux/releases/download/v0.22.0/${PICKERMUX_DMG_ASSET}`;
+  const release = {
+    tag_name: "v0.22.0", draft: false, prerelease: false, body,
+    assets: [{ name: PICKERMUX_DMG_ASSET, browser_download_url: expectedUrl }],
+  };
+  for (const currentVersion of ["0.20.1", "0.21.0"]) {
+    const update = await checkForCompanionUpdate({
+      currentVersion,
+      fetchImpl: async () => Response.json(release),
+    });
+    assert.deepEqual(update, {
+      status: "available", distribution: "dmg", currentVersion, targetVersion: "0.22.0",
+      assets: { [PICKERMUX_DMG_ASSET]: expectedUrl }, diskImageSha256: result.sha256,
+    });
+  }
+  const mutations = [
+    (candidate) => { candidate.body = dmgReleaseMarker({ version: "0.21.0", sha256: result.sha256 }); },
+    (candidate) => { candidate.assets[0].browser_download_url = expectedUrl.replace("v0.22.0", "v0.21.0"); },
+    (candidate) => { candidate.assets[0].browser_download_url = expectedUrl.replace("download/v0.22.0", "latest/download"); },
+    (candidate) => { candidate.assets.push({ name: "install.sh", browser_download_url: `${expectedUrl}/install.sh` }); },
+  ];
+  for (const mutate of mutations) {
+    const candidate = structuredClone(release);
+    mutate(candidate);
+    await assert.rejects(checkForCompanionUpdate({
+      currentVersion: "0.20.1",
+      fetchImpl: async () => Response.json(candidate),
+    }), { code: "UPDATE_INVALID" });
+  }
+});
+
 test("unsigned and Apple Development builds cannot become public releases", async (t) => {
   for (const signing of ["unsigned-development", "apple-development"]) {
     const value = await fixture(t);

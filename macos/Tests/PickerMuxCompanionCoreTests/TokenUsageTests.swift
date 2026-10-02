@@ -207,4 +207,95 @@ final class TokenUsageTests: XCTestCase {
     XCTAssertTrue(filtered.usesBundledBackend)
     XCTAssertEqual(filtered.actions, [.refresh])
   }
+
+  private func persistentUsage(_ providers: [[String: Any]] = [], resetAt: Any = NSNull()) -> [String: Any] {
+    ["schemaVersion": 2, "status": "available", "providers": providers, "resetAt": resetAt]
+  }
+
+  private func decodePersistent(_ usage: [String: Any], resetCapability: Bool = true) throws -> CompanionSnapshot {
+    let capabilities = ["integration-toggle-v1", "native-uninstall-v1", "token-usage-v2"] +
+      (resetCapability ? ["token-usage-reset-v1"] : [])
+    return try CompanionSnapshot.decode(snapshot(usage, capabilities: capabilities))
+  }
+
+  func testPersistentUsageKeepsLastRequestWhenAccumulatedCountsReset() throws {
+    let resetAt = "2026-10-02T18:04:05.123Z"
+    let reset = provider(["requests": 0, "unavailableRequests": 0, "totals": counts(0, 0)])
+    let value = try decodePersistent(persistentUsage([reset], resetAt: resetAt))
+    let usage = try XCTUnwrap(value.tokenUsage)
+    XCTAssertTrue(value.supportsTokenUsage)
+    XCTAssertTrue(value.supportsTokenUsageReset)
+    XCTAssertTrue(usage.isPersistent)
+    XCTAssertEqual(usage.resetAt, resetAt)
+    XCTAssertNotNil(usage.resetDate)
+    XCTAssertEqual(usage.providers.first?.last.counts?.totalTokens, 150)
+    XCTAssertEqual(usage.providers.first?.displayTotals?.totalTokens, 0)
+    XCTAssertNil(usage.providers.first?.missingUsageMessage)
+    let neverReset = try decodePersistent(persistentUsage([provider()]), resetCapability: false)
+    XCTAssertNil(neverReset.tokenUsage?.resetDate)
+    XCTAssertFalse(neverReset.supportsTokenUsageReset)
+  }
+
+  func testPersistentUsageRequiresMatchingCanonicalCapabilitiesAndMetadata() throws {
+    let valid = persistentUsage([provider()])
+    for capabilities in [
+      ["integration-toggle-v1", "token-usage-v1"],
+      ["integration-toggle-v1", "token-usage-v1", "token-usage-v2"],
+      ["integration-toggle-v1", "token-usage-reset-v1"],
+      ["integration-toggle-v1", "token-usage-reset-v1", "token-usage-v2"],
+      ["integration-toggle-v1", "token-usage-v2", "token-usage-reset-v1", "token-usage-reset-v1"],
+    ] {
+      XCTAssertThrowsError(try CompanionSnapshot.decode(snapshot(valid, capabilities: capabilities)))
+    }
+    XCTAssertThrowsError(try decodePersistent(usage([provider()])))
+    var missing = valid
+    missing.removeValue(forKey: "resetAt")
+    XCTAssertThrowsError(try decodePersistent(missing))
+    var extra = valid
+    extra["privateMetadata"] = "/private/secret-canary"
+    XCTAssertThrowsError(try decodePersistent(extra))
+    for invalid in [
+      "2026-10-02T18:04:05Z", "2026-10-02T18:04:05.123+00:00",
+      "2026-02-30T18:04:05.123Z", "2026-13-02T18:04:05.123Z", "2026-10-02T25:04:05.123Z",
+      "2026-10-02T18:04:05.123Z\n", "/private/date-canary", true, 123,
+    ] as [Any] {
+      XCTAssertThrowsError(try decodePersistent(persistentUsage([provider()], resetAt: invalid)))
+    }
+  }
+
+  func testPersistentZeroWindowAllowsOnlyMeasuredZeroTotalsAndRetainsMissingLastUsage() throws {
+    let base = provider(["requests": 0, "unavailableRequests": 0, "last": ["status": "unavailable"], "totals": counts(0, 0)])
+    let clean = try decodePersistent(persistentUsage([base]))
+    XCTAssertNil(clean.tokenUsage?.providers.first?.last.counts)
+    XCTAssertEqual(clean.tokenUsage?.providers.first?.displayTotals?.totalTokens, 0)
+    for changes in [
+      ["requests": -1], ["unavailableRequests": 1], ["totals": counts(1, 0)], ["totals": NSNull()],
+    ] as [[String: Any]] {
+      var bad = base
+      bad.merge(changes) { _, value in value }
+      XCTAssertThrowsError(try decodePersistent(persistentUsage([bad])))
+    }
+    for changes in [
+      ["requests": 1, "totals": counts(0, 0)],
+      ["requests": 1, "totals": counts(120, 31)],
+      ["requests": 1, "unavailableRequests": 1],
+      ["requests": 1, "last": ["status": "unavailable"]],
+    ] as [[String: Any]] {
+      XCTAssertThrowsError(try decodePersistent(persistentUsage([provider(changes)])))
+    }
+  }
+
+  func testPersistentUsageSurvivesBundledActionFilteringWithoutGrantingReset() throws {
+    var root = try XCTUnwrap(JSONSerialization.jsonObject(with: snapshot(persistentUsage([provider()]),
+      capabilities: ["integration-toggle-v1", "native-uninstall-v1", "token-usage-v2", "token-usage-reset-v1"])) as? [String: Any])
+    root["actions"] = ["configuration-preview", "configuration-apply", "usage-reset"]
+    let value = try CompanionSnapshot.decode(JSONSerialization.data(withJSONObject: root))
+    let filtered = value.allowingOnly([.configurationPreview, .configurationApply], bundledBackend: true)
+    XCTAssertTrue(filtered.supportsTokenUsageReset)
+    XCTAssertFalse(filtered.actions.contains(.usageReset))
+    XCTAssertEqual(value.tokenUsage, filtered.tokenUsage)
+    XCTAssertEqual(value.transitionIdentity, filtered.transitionIdentity)
+    root["capabilities"] = ["integration-toggle-v1", "native-uninstall-v1", "token-usage-v2"]
+    XCTAssertThrowsError(try CompanionSnapshot.decode(JSONSerialization.data(withJSONObject: root)))
+  }
 }

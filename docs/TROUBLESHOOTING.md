@@ -105,6 +105,45 @@ is absent. Confirm the offered setup upgrade first; only the current
 receipt-owned CLI can deactivate its bridge. Edited suspended configuration
 and pending full-refresh recovery block toggle changes until reviewed.
 
+## Integration needs review after an unrelated Codex setting change
+
+**Integration needs review** means the companion could not verify the current
+configuration ownership. It does not by itself establish that the bridge or
+LM Studio stopped. In 0.20.1 and earlier, a root `service_tier` assignment
+inserted inside PickerMux's marked root block changes its recorded digest and
+can trigger this warning even without a manual edit. `service_tier` is an
+ordinary string-valued [Codex configuration setting](https://learn.chatgpt.com/docs/config-file/config-reference)
+and is not owned by PickerMux.
+
+The [0.22.0 backend](../CHANGELOG.md#0220---2026-10-02) accepts exactly
+one unambiguous, nonempty string assignment there only when excluding that
+line reproduces the receipt's managed-block digest, including the existing
+allowance for model and reasoning selection changes. It preserves the original
+`service_tier` bytes during selection, migration, deactivation, suspension, and
+ordinary or native-restoring uninstall. Malformed, duplicate, or dotted
+assignments and other managed routing edits still block changes. Updating the
+source checkout or replacing only the app does not update the installed backend;
+review **Settings → Update installed backend…** in the matching released app.
+
+For an installed release affected only by this extra line, the narrow manual
+workaround is:
+
+1. Fully quit Codex with **Command-Q**.
+2. In your Codex `config.toml`, locate the root block between
+   `# >>> lm-studio-model-router:p2 root >>>` and
+   `# <<< lm-studio-model-router:p2 root <<<`.
+3. Move the **same existing `service_tier` assignment line**, including its
+   value and any inline comment, immediately before the root begin marker.
+   Keep it in the global TOML root, before the first table. Do not copy the line
+   or place it below a provider table, which would change its scope.
+4. Save and choose **Check status** in PickerMux before reopening Codex.
+
+This workaround requires no reinstall, purge, receipt edit, or change to
+provider settings when the extra `service_tier` line is the sole ownership
+conflict. If the block has other changes, the line is ambiguous, or status
+still reports a conflict, preserve the configuration and review the reported
+issue instead of moving further settings or bypassing the ownership check.
+
 ## Companion buttons appear unresponsive
 
 Use the 0.9.2 companion or newer. Earlier builds could drop a manual status
@@ -216,9 +255,11 @@ repair, without setup, LM Studio, or a current account model cache:
 
 From a trusted local 0.8.3 source checkout, you can instead run
 `node bin/pickermux.mjs repair-chats` from the repository root. Reopen Codex
-and the affected chat after repair. Choose a native model before sending
-another message. The inert `model_bridge` table points to loopback port zero
-and cannot serve a turn. If you want PickerMux again, first let the signed-in
+and the affected chat after repair. The inert `model_bridge` table points to
+loopback port zero and cannot serve a turn. Changing the selected model may
+leave the chat's saved provider unchanged; follow
+[native-provider recovery](#reconnecting-in-an-old-chat-after-deactivation-or-uninstall)
+before continuing it natively. If you want PickerMux again, first let the signed-in
 native picker refresh its account model cache, fully quit Codex, and then install the [current DMG](../README.md#install) and enable its Codex switch.
 
 The installed 0.8.3 CLI also offers `pickermux repair-chats [--json]`.
@@ -475,12 +516,13 @@ If `doctor` reports modified managed configuration, follow
 
 ## Connection failed after uninstall
 
-Fully quit and reopen Codex Desktop, open the affected chat, and select a
-native model before sending. Historical PickerMux chats can still retain their
-`model_bridge` provider. The inert compatibility table preserves parsing but
-deliberately cannot serve a new turn; sending through it can report
-“Connection failed: error sending request.” Restarting alone does not change
-the provider stored for that chat.
+Historical PickerMux chats can retain their saved `model_bridge` provider
+after uninstall. The inert compatibility table preserves parsing but cannot
+serve a new turn; sending through it can report “Connection failed: error
+sending request” or repeatedly show “Reconnecting.” Restarting and selecting a
+native model may both leave the saved provider unchanged. Follow
+[native-provider recovery](#reconnecting-in-an-old-chat-after-deactivation-or-uninstall)
+to continue the same chat.
 
 If uninstall instead reports that managed blocks were edited, it refused
 removal before stopping the service. The integration remains installed; inspect
@@ -488,6 +530,103 @@ removal before stopping the service. The integration remains installed; inspect
 [modified-configuration recovery](#uninstall-refuses-modified-configuration).
 `--force` is for choosing to remove those reviewed owned blocks. It does not
 renew Codex's account cache or migrate historical chats to another provider.
+
+## Reconnecting in an old chat after deactivation or uninstall
+
+Use this recovery when PickerMux is off or removed, a native model is selected,
+and an old PickerMux chat keeps showing “Reconnecting” or “Connection failed.”
+First confirm that a new native chat works. If new chats fail too, investigate
+native sign-in, connectivity, and account availability instead of changing an
+old chat's provider.
+
+Codex stores the provider separately from the selected model. A historical
+chat can still be bound to `model_bridge` even though its picker shows a native
+model and the root configuration is native. The retained compatibility alias
+has no usable route. `pickermux repair-chats` restores that alias when it is
+missing; it does not migrate the provider stored for a chat. Reinstalling or
+refreshing the model catalog is not a provider migration either.
+
+### Resume the same chat with an explicit native provider
+
+The recovery uses Codex's own resume operation to checkpoint `openai` for the
+existing chat. It does not require a follow-up message or a new chat. Finish or
+interrupt active work first. If the affected chat has an active goal, pause it
+through Codex before resuming; a resume can otherwise restart goal work.
+
+1. Copy the affected chat's UUID from its `codex://threads/CHAT_UUID` link.
+   Record the native model ID and reasoning effort you intend to retain.
+   `Ultra` corresponds to `ultra`; use only an effort supported by that model.
+   Use the UUID, rather than a title or `--last`, to target exactly this chat.
+2. Open macOS Terminal outside Codex. Fully quit Codex Desktop with
+   `Command-Q`. Exit other Codex terminal sessions and stop shared Codex
+   background servers normally, so nothing writes chat state during backup.
+   Keep Desktop closed until the recovery terminal session exits. An already
+   loaded chat can ignore conflicting provider overrides.
+3. Use the trusted Codex executable bundled with that Desktop version. For
+   the current bundle layout:
+
+   ```bash
+   pickermux_codex="/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex"
+   "$pickermux_codex" --version
+   ```
+
+   For the legacy layout, set `pickermux_codex` to
+   `/Applications/ChatGPT.app/Contents/Resources/codex`. A `codex` on `PATH`
+   must match the Desktop client and use the same Codex home. Use the normal
+   Desktop environment, without a custom `CODEX_HOME`, `OPENAI_BASE_URL`, or
+   `OPENAI_API_KEY` override.
+4. Make a private backup of conversation history while all Codex clients are
+   stopped. This procedure assumes the default `~/.codex` location and ordinary
+   files/directories; do not use it with state redirected through symbolic
+   links. These files contain private chat content; keep the backup local and
+   do not attach it to an issue. It copies only `sessions`, leaving
+   authentication and credential stores outside the backup:
+
+   ```bash
+   pickermux_backup="$(mktemp -d /private/tmp/pickermux-native-chat.XXXXXX)" &&
+     chmod 700 "$pickermux_backup" &&
+     cp -R "$HOME/.codex/sessions" "$pickermux_backup/sessions"
+   ```
+
+   Stop if any backup command fails. Codex owns the provider/state update;
+   this copy preserves chat history, rather than a manually restorable SQLite
+   snapshot. Temporary backups can be cleared by
+   macOS; retain a private copy elsewhere if you need longer-term recovery.
+5. Change to the chat's original project directory. Replace `CHAT_UUID`,
+   `NATIVE_MODEL_ID`, and `SUPPORTED_EFFORT` below with the recorded values:
+
+   ```bash
+   "$pickermux_codex" resume CHAT_UUID --no-daemon \
+     -c 'model_provider="openai"' \
+     -m NATIVE_MODEL_ID \
+     -c 'model_reasoning_effort="SUPPORTED_EFFORT"'
+   ```
+
+   `--no-daemon` starts an independent session rather than joining an existing
+   background server. Keep the original project directory if Codex asks which
+   directory to use. Wait for the existing transcript to load, check the
+   native model and effort, then enter `/quit`. Do not append a prompt or use
+   `codex exec resume`, which starts inference. Startup may initialize native
+   sign-in, configured plugins, and other services.
+6. Reopen Desktop and continue the same chat. If it still reconnects, stop and
+   report the Codex version and a fixed error code through
+   [support](../SUPPORT.md), without raw transcripts, databases, or logs.
+
+The successful native-provider recovery was observed with Codex
+`0.159.0-alpha.12.1` through `thread/resume`. The terminal procedure above was
+verified against that client's source; it has not been separately exercised
+as a live CLI repair. That client
+[passes explicit model/provider overrides on resume](https://github.com/openai/codex/blob/180d8caaac22c656bfc6329f2f573ee1430cbe20/codex-rs/tui/src/app_server_session.rs#L2090-L2114)
+and [persists effective settings even without a new turn](https://github.com/openai/codex/blob/180d8caaac22c656bfc6329f2f573ee1430cbe20/codex-rs/core/src/session/mod.rs#L1602-L1614).
+The official [CLI reference](https://learn.chatgpt.com/docs/developer-commands)
+describes interactive resume and configuration overrides. If your matching
+client rejects an option or cannot resume the chat, stop rather than bypassing
+its compatibility checks. Do not edit SQLite rows or rollout JSONL files,
+delete `auth.json`, or make the inert alias into a live provider route.
+
+Earlier rollout metadata can still name `model_bridge` after successful
+recovery. Do not rewrite that history header; the resumed settings are what
+the verified client checkpoints for subsequent sessions.
 
 ## Full account-cache refresh stops before completion
 
@@ -684,6 +823,36 @@ An available tool does not guarantee a correct answer. Ask the model to search
 and cite current sources and inspect whether `web.run` actually ran. A model
 that answers from memory can still invent facts. PickerMux does not add a
 separate research agent for text-only models.
+
+## Voice cannot start: `/v1/live` returns 404
+
+`404 Not Found: Endpoint not found` at the private loopback `/v1/live`
+endpoint usually means the running bridge does not handle that voice bootstrap.
+Older PickerMux backends lack it. Selecting a native model alone still uses
+the active bridge provider, and refreshing its model catalog cannot add a
+missing HTTP endpoint. A source checkout change does not update the installed
+backend; use the normal reviewed backend upgrade to 0.22.0 or later.
+
+For an immediate reversible check, fully quit Codex with **Command-Q**, turn
+**Use PickerMux in Codex** off in the menu-bar app, and reopen Codex. Start a
+new native chat and try voice again. For an old PickerMux chat, follow
+[native-provider recovery](#reconnecting-in-an-old-chat-after-deactivation-or-uninstall)
+before continuing it; selecting a native model may leave its saved provider
+unchanged.
+If voice also fails with PickerMux off, check native sign-in, account access,
+and Codex voice availability. Keep the private `/c/...` path out of reports.
+
+The 0.22.0 backend adds experimental GPT-Live WebRTC bootstrap support.
+OpenAI handles voice audio and conversation context; delegated tasks can remain
+on a certified local model. This does not provide local voice inference or
+new tool grants. Only the reviewed bootstrap shape is accepted; unknown
+schemas stop safely. Bridge WebSocket upgrades remain unsupported. Validate
+voice and local delegation manually on the target Mac with native account
+access and a compatible client; use the
+[voice acceptance procedure](TECHNICAL_GUIDE.md#gpt-live-voice-and-local-tasks)
+and [official voice guide](https://learn.chatgpt.com/docs/features/voice).
+Report only fixed error codes and tested versions, never raw requests, SDP,
+transcripts, call identifiers, or upstream errors.
 
 ## LM Studio reports `Invalid type for 'input'` after a tool call
 
@@ -982,8 +1151,9 @@ ownership checks.
 Every current CLI uninstall mode for the canonical `model_bridge` integration
 leaves one intentionally unusable compatibility table in `config.toml` so
 historical chats can open. It has no credentials, uses
-`http://127.0.0.1:0/v1`, and retries zero times; select a
-native model for new turns. A later PickerMux setup removes only the exact
+`http://127.0.0.1:0/v1`, and retries zero times. Continuing an old chat may
+require [native-provider recovery](#reconnecting-in-an-old-chat-after-deactivation-or-uninstall),
+even with a native model selected. A later PickerMux setup removes only the exact
 marker-bounded table. If setup reports a provider-table conflict, do not delete
 or edit the table broadly: it was modified or is not PickerMux-owned and needs
 manual review. The marker records only whether the restored config must remain

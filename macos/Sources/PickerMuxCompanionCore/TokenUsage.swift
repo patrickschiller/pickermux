@@ -57,7 +57,7 @@ public struct ProviderTokenUsage: Decodable, Equatable, Identifiable {
   public var id: String { providerId }
 
   // An all-unknown aggregate has no measured zero; keep it unavailable in the UI.
-  public var displayTotals: TokenUsageCounts? { requests > unavailableRequests ? totals : nil }
+  public var displayTotals: TokenUsageCounts? { requests == 0 || requests > unavailableRequests ? totals : nil }
 
   public var missingUsageMessage: String? {
     guard unavailableRequests > 0 else { return nil }
@@ -70,6 +70,10 @@ public struct ProviderTokenUsage: Decodable, Equatable, Identifiable {
   private enum CodingKeys: String, CodingKey { case providerId, requests, unavailableRequests, last, totals }
 
   public init(from decoder: Decoder) throws {
+    try self.init(from: decoder, schemaVersion: 1)
+  }
+
+  fileprivate init(from decoder: Decoder, schemaVersion: Int) throws {
     try requireTokenUsageKeys(decoder, ["providerId", "requests", "unavailableRequests", "last", "totals"])
     let container = try decoder.container(keyedBy: CodingKeys.self)
     providerId = try container.decode(String.self, forKey: .providerId)
@@ -79,12 +83,13 @@ public struct ProviderTokenUsage: Decodable, Equatable, Identifiable {
     totals = try container.decodeIfPresent(TokenUsageCounts.self, forKey: .totals)
     guard providerId.utf8.count <= 127,
           providerId.range(of: "^[a-z0-9](?:[a-z0-9_-]{0,125}[a-z0-9])?\\z", options: .regularExpression) != nil,
-          isTokenUsageCount(requests), requests >= 1, isTokenUsageCount(unavailableRequests), unavailableRequests <= requests,
+          isTokenUsageCount(requests), requests >= (schemaVersion == 1 ? 1 : 0),
+          isTokenUsageCount(unavailableRequests), unavailableRequests <= requests,
           totals != nil || requests - unavailableRequests >= 2,
-          last.status == .available ? requests > unavailableRequests : unavailableRequests >= 1
+          (schemaVersion == 2 && requests == 0) || (last.status == .available ? requests > unavailableRequests : unavailableRequests >= 1)
     else { throw CompanionFailure.incompatibleProtocol }
     if let totals {
-      if let latest = last.counts {
+      if schemaVersion == 1 || requests > 0, let latest = last.counts {
         guard totals.inputTokens >= latest.inputTokens, totals.outputTokens >= latest.outputTokens
         else { throw CompanionFailure.incompatibleProtocol }
         if requests - unavailableRequests == 1 {
@@ -102,20 +107,46 @@ public struct TokenUsageSnapshot: Decodable, Equatable {
   public let schemaVersion: Int
   public let status: TokenUsageAvailability
   public let providers: [ProviderTokenUsage]
+  public let resetAt: String?
+  public var isPersistent: Bool { schemaVersion == 2 }
+  public var resetDate: Date? { resetAt.flatMap(canonicalTokenUsageDate) }
 
-  private enum CodingKeys: String, CodingKey { case schemaVersion, status, providers }
+  private enum CodingKeys: String, CodingKey { case schemaVersion, status, providers, resetAt }
 
   public init(from decoder: Decoder) throws {
-    try requireTokenUsageKeys(decoder, ["schemaVersion", "status", "providers"])
     let container = try decoder.container(keyedBy: CodingKeys.self)
     schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
+    guard [1, 2].contains(schemaVersion) else { throw CompanionFailure.incompatibleProtocol }
+    try requireTokenUsageKeys(decoder, schemaVersion == 1 ? ["schemaVersion", "status", "providers"] :
+      ["schemaVersion", "status", "providers", "resetAt"])
     status = try container.decode(TokenUsageAvailability.self, forKey: .status)
-    providers = try container.decode([ProviderTokenUsage].self, forKey: .providers)
-    guard schemaVersion == 1, providers.count <= 128,
+    resetAt = schemaVersion == 2 ? try container.decodeIfPresent(String.self, forKey: .resetAt) : nil
+    if let resetAt, canonicalTokenUsageDate(resetAt) == nil { throw CompanionFailure.incompatibleProtocol }
+    var elements = try container.nestedUnkeyedContainer(forKey: .providers)
+    var decodedProviders: [ProviderTokenUsage] = []
+    while !elements.isAtEnd {
+      guard decodedProviders.count < 128 else { throw CompanionFailure.incompatibleProtocol }
+      decodedProviders.append(try ProviderTokenUsage(from: elements.superDecoder(), schemaVersion: schemaVersion))
+    }
+    providers = decodedProviders
+    guard providers.count <= 128,
           Set(providers.map(\.providerId)).count == providers.count,
           status == .available || providers.isEmpty
     else { throw CompanionFailure.incompatibleProtocol }
   }
+}
+
+func canonicalTokenUsageDate(_ value: String) -> Date? {
+  guard value.range(of: "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$", options: .regularExpression) != nil
+  else { return nil }
+  let formatter = DateFormatter()
+  formatter.locale = Locale(identifier: "en_US_POSIX")
+  formatter.calendar = Calendar(identifier: .gregorian)
+  formatter.timeZone = TimeZone(secondsFromGMT: 0)
+  formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'"
+  formatter.isLenient = false
+  guard let date = formatter.date(from: value), formatter.string(from: date) == value else { return nil }
+  return date
 }
 
 private extension TokenUsageCounts {

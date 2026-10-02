@@ -42,7 +42,7 @@ https://github.com/patrickschiller/pickermux/releases/latest/download/PickerMux-
 The release tag still makes a download immutable:
 
 ```text
-https://github.com/patrickschiller/pickermux/releases/download/v0.20.1/PickerMux-macos-universal.dmg
+https://github.com/patrickschiller/pickermux/releases/download/v0.22.0/PickerMux-macos-universal.dmg
 ```
 
 The build retains its versioned DMG, app archive, backend manifest, companion
@@ -65,9 +65,9 @@ key available to `codesign`; the profile must already be usable by `notarytool`.
 Use fresh output directories, since the tools refuse to replace existing ones:
 
 ```bash
-node scripts/build-companion.mjs --release --output /tmp/pickermux-signed-0.20.1
-node scripts/prepare-dmg-release.mjs --source /tmp/pickermux-signed-0.20.1 --output /tmp/pickermux-public-0.20.1 --tag v0.20.1
-node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.20.1 --tag v0.20.1
+node scripts/build-companion.mjs --release --output /tmp/pickermux-signed-0.22.0
+node scripts/prepare-dmg-release.mjs --source /tmp/pickermux-signed-0.22.0 --output /tmp/pickermux-public-0.22.0 --tag v0.22.0
+node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.22.0 --tag v0.22.0
 ```
 
 The release builder signs and notarizes the app and DMG separately, staples
@@ -117,8 +117,8 @@ maintainer's Mac when using the local production route.
 After the exact approved commit is on main and all gates are ready:
 
 ```bash
-git tag -a v0.20.1 -m "PickerMux v0.20.1"
-git push origin v0.20.1
+git tag -a v0.22.0 -m "PickerMux v0.22.0"
+git push origin v0.22.0
 ```
 
 Watch the workflow through publication. If a candidate is wrong, fix the
@@ -142,10 +142,10 @@ production signing requirements above remain mandatory.
    replace its assets.
 
 ```bash
-node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.20.1 --tag v0.20.1
-gh release create v0.20.1 /tmp/pickermux-public-0.20.1/PickerMux-macos-universal.dmg \
-  --verify-tag --title "PickerMux v0.20.1" \
-  --notes-file /tmp/pickermux-public-0.20.1/release-notes.md
+node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.22.0 --tag v0.22.0
+gh release create v0.22.0 /tmp/pickermux-public-0.22.0/PickerMux-macos-universal.dmg \
+  --verify-tag --title "PickerMux v0.22.0" \
+  --notes-file /tmp/pickermux-public-0.22.0/release-notes.md
 ```
 
 Complete the independent public-download verification below before announcing
@@ -175,44 +175,83 @@ installed provider settings. Cancellation and failed activation must retain
 usable prior state; ordinary removal and deactivation continue using the
 validated installed backend.
 
-## 0.20.1 menu viewport and updater acceptance
+## 0.22.0 native menu, durable usage, and updater acceptance
 
 Use an explicitly authorized installation of the previous app to test the
 complete update path. Record the starting app and backend versions and retain
 the prior installation for recovery. These checks supplement source tests;
 publishing an artifact does not establish that the installed upgrade passed.
 
-- In the previous app, check for updates and confirm that 0.20.1 is offered
+- In the previous app, check for updates and confirm that 0.22.0 is offered
   with **Download DMG**. Confirm that the browser opens the exact
-  version-pinned 0.20.1 URL and that the downloaded public bytes pass the
+  version-pinned 0.22.0 URL and that the downloaded public bytes pass the
   independent signature, ticket, checksum, and inventory checks above.
 - Quit PickerMux, replace its copied app, eject the image, and reopen it.
-  Confirm that Settings identifies app 0.20.1 while the installed backend
+  Confirm that Settings identifies app 0.22.0 while the installed backend
   remains at its prior version until **Update installed backend** is reviewed.
   With Codex fully closed and provider models available, complete that explicit
-  setup and confirm that both versions are then 0.20.1. Verify that installed
+  setup and confirm that both versions are then 0.22.0. Verify that installed
   provider settings and still-valid certification receipts are preserved.
-- Open and reopen the menu-bar panel after status and token-usage changes.
-  Confirm that its fixed 400-by-600-point viewport remains visible and that
-  vertical scrolling reaches lower provider totals, installation details, and
-  available actions. Exercise empty, unavailable, partial, and multiple-provider
-  snapshots. Record actual installed-app visual acceptance separately from
-  synthetic layout tests or a preview.
+- Open and reopen the native menu after status and token-usage changes.
+  Confirm the compact 320-point presentation, vertically stacked Last model
+  request/Since reset blocks, and full-width action rows. Integration state,
+  Refresh picker, Open Codex, Check status, and Check installation must remain
+  directly accessible with specific feedback.
+  Exercise permitted/disabled actions, the More actions and Installation details
+  disclosure groups, Settings/Help windows, and Quit. Verify empty, unavailable, partial,
+  and multiple-provider snapshots. Record installed-app visual acceptance
+  separately from synthetic native-menu tests or a preview.
 - Exercise cancellation and an injected failed backend activation separately
   using isolated test state. Confirm that usable prior state remains available
   and that no possibly committed mutation is retried through another backend.
-- After live external JSON and streaming requests, compare the panel's Input,
+- After live external JSON and streaming requests, compare the menu's Input,
   Output, and Total with the provider's reported usage. Confirm that tool rounds
   and context summaries accumulate once, simultaneous chats share provider
   totals, and Last model request follows the most recently finished response.
+  Confirm that Since reset, each last request, and partial/unavailable coverage
+  survive companion and bridge restarts, refresh, and the backend upgrade.
   Keep inspected provider payloads private and do not retain prompt content
   or raw diagnostics as release evidence.
 - Confirm that native requests, standalone native search, and recognized
   certification requests do not increase the counters. Reopening the app
-  preserves counts while restarting the bridge clears them. Use injected
+  preserves counts, as does restarting the bridge. Choose Settings → Token
+  usage → Reset accumulated counts… and confirm that all accumulated totals
+  reset while each last request remains. Use injected
   replies for missing, malformed, aborted, compressed, oversized, zero-count,
   and numeric-overflow cases; confirm unavailable and partial totals without
-  changing forwarded bytes. Older finite backend snapshots remain readable.
+  changing forwarded bytes. Exercise private usage-file permissions,
+  malformed/oversized or concurrently changed state, unsafe links, atomic
+  persistence failures, and the defined retention/removal policy with isolated
+  state. Older finite backend snapshots remain readable without treating their
+  session totals as durable counts.
+- Insert one valid user-owned service_tier string inside an otherwise
+  receipt-proven root block in isolated lifecycle fixtures. Verify status
+  performs no write, selection/migration preserve it, and deactivation,
+  full-refresh suspension, and ordinary/native-restoring uninstall retain its
+  raw bytes. Reject duplicate, dotted, malformed, or ambiguous assignments and
+  edited routing fields. On the authorized target, verify the backend upgrade
+  resolves this sole false ownership conflict without reinstalling, purging,
+  editing the receipt, or losing the Codex setting.
+
+## 0.22.0 voice and historical-chat recovery acceptance
+
+GPT-Live remains experimental. Follow the
+[target-Mac voice procedure](TECHNICAL_GUIDE.md#gpt-live-voice-and-local-tasks)
+using the exact installed release backend and an account with native voice
+access. Record native voice start/reply/end, certified local-model delegation,
+voice restart, and ordinary text/tool continuation separately. Offline adapter
+tests do not establish native service availability or successful voice audio.
+Keep SDP, call IDs, transcripts, capability URLs, credentials, and upstream
+errors out of release evidence; use tested versions and fixed result codes.
+
+The Reconnecting change supplies recovery guidance and corrected CLI text; it
+does not add automatic chat migration. Review the
+[native-provider procedure](TROUBLESHOOTING.md#reconnecting-in-an-old-chat-after-deactivation-or-uninstall)
+and its pinned source/compatibility limits. Preserve its distinction between
+the observed native `thread/resume` recovery and the CLI repair procedure that
+has not been separately exercised live. Do not claim a new migration command,
+rewrite private chat databases or rollout files, or make the inert provider
+alias into a live route.
 
 ## Manual acceptance matrix
 

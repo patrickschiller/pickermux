@@ -194,3 +194,34 @@ test("provider storage and snapshot length are bounded", () => {
   oversized.providers.push({ ...oversized.providers[0], providerId: "extra" });
   assert.equal(projectTokenUsageSnapshot(oversized), null);
 });
+
+test("durable usage projects only safe counters and preserves last after reset", () => {
+  const value = { schemaVersion: 2, status: "available", resetAt: "2026-10-02T18:00:00.000Z", providers: [{
+    providerId: "lmstudio", requests: 0, unavailableRequests: 0,
+    last: { status: "available", inputTokens: 12, outputTokens: 3, totalTokens: 15 },
+    totals: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+  }] };
+  const noisy = structuredClone(value);
+  noisy.generation = "private-canary";
+  noisy.providers[0].prompt = "private-canary";
+  assert.deepEqual(projectTokenUsageSnapshot(noisy), value);
+  for (const mutate of [
+    (v) => { delete v.resetAt; },
+    (v) => { v.resetAt = "2026-02-30T18:00:00.000Z"; },
+    (v) => { v.resetAt = "2026-10-02T18:00:00Z"; },
+    (v) => { v.providers[0].totals.totalTokens = 1; },
+    (v) => { v.providers[0].totals = null; },
+    (v) => { v.providers[0].requests = 1; },
+    (v) => { v.providers[0].unavailableRequests = 1; },
+    (v) => { v.providers[0].last.totalTokens = 999; },
+    (v) => { v.providers.push(v.providers[0]); },
+    (v) => { v.providers[0].providerId = "private/path"; },
+    (v) => { v.status = "unavailable"; },
+  ]) {
+    const invalid = structuredClone(value);
+    mutate(invalid);
+    assert.equal(projectTokenUsageSnapshot(invalid), null);
+  }
+  assert.deepEqual(projectTokenUsageSnapshot({ schemaVersion: 2, status: "available", resetAt: null, providers: [] }),
+    { schemaVersion: 2, status: "available", resetAt: null, providers: [] });
+});

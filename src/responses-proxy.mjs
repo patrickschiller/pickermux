@@ -5,10 +5,17 @@ import { BlockList, isIP } from "node:net";
 
 import {
   buildExternalRequestHeaders,
+  buildLiveRequestHeaders,
   buildNativeRequestHeaders,
   sanitizeUpstreamResponseHeaders,
 } from "./header-policy.mjs";
-import { BodyCodecError, decodeJsonBody, readLimitedBody } from "./body-codec.mjs";
+import { BodyCodecError, decodeBody, decodeJsonBody, readLimitedBody } from "./body-codec.mjs";
+import {
+  LIVE_PATH,
+  MAX_LIVE_RESPONSE_BYTES,
+  encodeLiveRequest,
+  projectLiveResponse,
+} from "./live-wire.mjs";
 import { createCredentialResolver } from "./keychain-credentials.mjs";
 import {
   projectClientToolSearch,
@@ -244,6 +251,7 @@ const PUBLIC_ERROR_CODES = new Set([
   "INVALID_COMPRESSION",
   "INVALID_JSON",
   "INVALID_JSON_OBJECT",
+  "INVALID_LIVE_REQUEST",
   "INVALID_REASONING_EFFORT",
   "INVALID_REASONING_POLICY",
   "INVALID_ROUTE",
@@ -253,6 +261,7 @@ const PUBLIC_ERROR_CODES = new Set([
   "INVALID_UPSTREAM_MODEL",
   "INVALID_WEB_SEARCH",
   "MISSING_MODEL",
+  "LIVE_SERVICE_ERROR",
   "MISSING_TOOL_SEARCH_OUTPUT",
   "MODEL_CERTIFICATION_PENDING",
   "MODEL_NOT_CERTIFIED",
@@ -1271,6 +1280,8 @@ function publicProxyError(error) {
     INVALID_COMPRESSION: "Request body compression is invalid",
     INVALID_JSON: "Request body must be valid JSON",
     INVALID_JSON_OBJECT: "Request body must be a JSON object",
+    INVALID_LIVE_REQUEST: "The voice request does not match the supported Codex contract; update PickerMux for this Codex version",
+    LIVE_SERVICE_ERROR: "The native voice service could not start the session",
     MISSING_MODEL: "Request body must contain a model",
     INVALID_WEB_SEARCH: "The web search request does not match the supported Codex contract",
     MODEL_NOT_CERTIFIED: "The selected model is not certified for tool use",
@@ -1324,6 +1335,7 @@ function relayUpstream({
   lookup,
   responseCodec,
   webSearchResponse = false,
+  liveResponse = false,
   compactionResponse,
   tokenUsageObserver,
 }) {
@@ -1427,6 +1439,22 @@ function relayUpstream({
           incoming.statusCode,
         );
         try {
+          if (liveResponse) {
+            const status = Number(incoming.statusCode);
+            if (status < 200 || status >= 300) {
+              throw new ResponsesProxyError("Native voice service failed", {
+                statusCode: status >= 400 && status <= 599 ? status : 502,
+                code: "LIVE_SERVICE_ERROR",
+              });
+            }
+            if (!/^(?:application\/sdp|text\/plain)(?:\s*;|$)/iu.test(
+              String(incoming.headers["content-type"] ?? ""),
+            )) {
+              throw new ResponsesProxyError("Unknown live response format", {
+                code: "UPSTREAM_RESPONSE_ERROR",
+              });
+            }
+          }
           if (compactionResponse) {
             const status = Number(incoming.statusCode);
             if (
@@ -1459,7 +1487,9 @@ function relayUpstream({
             }
           }
           transformMode =
-            compactionResponse
+            liveResponse
+              ? "live-sdp"
+              : compactionResponse
               ? "compaction-json"
               : webSearchResponse
               ? "search-json"
@@ -1513,9 +1543,11 @@ function relayUpstream({
             limits.streamIdleTimeoutMs,
           );
           try {
-            if (["json", "search-json", "compaction-json"].includes(transformMode)) {
+            if (["json", "search-json", "compaction-json", "live-sdp"].includes(transformMode)) {
               jsonBytes += chunk.length;
-              const maxBytes = compactionResponse
+              const maxBytes = liveResponse
+                ? MAX_LIVE_RESPONSE_BYTES
+                : compactionResponse
                 ? MAX_COMPACTION_RESPONSE_BYTES
                 : RESPONSE_TRANSFORM_MAX_BYTES;
               if (jsonBytes > maxBytes) {
@@ -1537,7 +1569,18 @@ function relayUpstream({
         incoming.once("end", () => {
           if (settled || terminating) return;
           try {
-            if (transformMode === "compaction-json") {
+            if (transformMode === "live-sdp") {
+              const projected = projectLiveResponse(Buffer.concat(jsonChunks), incoming.headers);
+              if (!response.destroyed && !response.headersSent) {
+                response.writeHead(incoming.statusCode, {
+                  "content-type": "application/sdp",
+                  "content-length": String(projected.body.length),
+                  "cache-control": "no-store",
+                  "location": projected.location,
+                });
+              }
+              writeChunk(projected.body);
+            } else if (transformMode === "compaction-json") {
               const projected = buildCompactionResponse(
                 Buffer.concat(jsonChunks), compactionResponse,
               );
@@ -1845,6 +1888,59 @@ export function createResponsesProxy({
 }
 
 export const SUPPORTED_RESPONSE_PATHS = RESPONSE_PATHS;
+
+export function createLiveProxy({
+  nativeBaseUrl = DEFAULT_NATIVE_BASE_URL,
+  limits: configuredLimits,
+  httpTransport = http,
+  httpsTransport = https,
+} = {}) {
+  const limits = normalizeLimits(configuredLimits);
+  const target = upstreamUrl(
+    assertApiBaseUrl(nativeBaseUrl, { credential: true }),
+    "/v1/realtime/calls",
+  );
+  target.search = "?intent=quicksilver&architecture=avas";
+  const transports = { http: httpTransport, https: httpsTransport };
+
+  return async function handleLive(request, response, path) {
+    try {
+      if (path !== LIVE_PATH) {
+        throw new ResponsesProxyError("Unknown live endpoint", {
+          statusCode: 404,
+          code: "NOT_FOUND",
+        });
+      }
+      if (request.headers["openai-alpha"] !== "quicksilver=v2") {
+        throw new BodyCodecError("Unknown live protocol", { code: "INVALID_LIVE_REQUEST" });
+      }
+      const rawBody = await readLimitedBody(request, { maxBytes: limits.requestBodyBytes });
+      const body = encodeLiveRequest(await decodeBody(
+        rawBody, request.headers["content-encoding"], { maxBytes: limits.requestBodyBytes },
+      ), request.headers["content-type"]);
+      if (body.length > limits.requestBodyBytes) {
+        throw new BodyCodecError("Request body is too large", {
+          statusCode: 413,
+          code: "BODY_TOO_LARGE",
+        });
+      }
+      // This route has one native destination and never consults the model
+      // registry or provider credentials. Delegated /responses stay separate.
+      await relayUpstream({
+        request,
+        response,
+        target,
+        headers: buildLiveRequestHeaders(request.headers, body.length),
+        body,
+        limits,
+        transports,
+        liveResponse: true,
+      });
+    } catch (error) {
+      sendProxyError(response, error);
+    }
+  };
+}
 
 /**
  * Codex executes web.run separately from inference. This endpoint has one

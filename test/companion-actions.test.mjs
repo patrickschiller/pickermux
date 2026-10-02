@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { Readable } from "node:stream";
 import test from "node:test";
 
@@ -7,6 +10,7 @@ import { runCompanionCli } from "../src/companion-cli.mjs";
 import { COMPANION_ACTIONS } from "../src/companion-control.mjs";
 import { runPickerMuxCompanion } from "../src/cli.mjs";
 import { ConfigManagerError } from "../src/config-manager.mjs";
+import { createUsageStore } from "../src/usage-store.mjs";
 
 const request = (action, additional = {}) => ({ schemaVersion: 1, action, ...additional });
 const consent = { quitCodexTwice: true, interruptTasks: true, invalidateCompaction: true };
@@ -38,6 +42,54 @@ test("companion actions revalidate authority under the shared installation lock"
     await executeCompanionAction(request(action), options);
     assert.deepEqual(calls, ["lock", "status", "distribution", action]);
   }
+});
+
+test("usage reset runs only against the installed backend and allows a running Desktop", async () => {
+  const consent = { confirmation: { resetAccumulatedUsage: true } };
+  const valid = fixture({ snapshot: { desktop: { status: "running" } } });
+  await executeCompanionAction(request("usage-reset", consent), valid.options);
+  assert.deepEqual(valid.calls, ["lock", "status", "distribution", "usage-reset"]);
+  for (const override of [
+    { snapshot: { actions: ["diagnose"] } },
+    { options: { validateDistributionImpl: async () => ({ installed: false }) } },
+    { options: { validateDistributionImpl: async () => ({ installed: true, activeDirectory: "/different/source" }) } },
+  ]) {
+    const invalid = fixture(override);
+    await assert.rejects(executeCompanionAction(request("usage-reset", consent), invalid.options));
+    assert.equal(invalid.calls.includes("usage-reset"), false);
+  }
+});
+
+test("installed reset handler commits exact saved counts without touching lifecycle state", async (t) => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), "pickermux-companion-usage-"));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const applicationDirectory = path.join(temporary, "PickerMux");
+  await mkdir(applicationDirectory, { mode: 0o700 });
+  const store = createUsageStore({ directory: path.join(applicationDirectory, "usage") });
+  const last = { status: "available", inputTokens: 10, outputTokens: 3, totalTokens: 13 };
+  await store.record("lmstudio", last);
+  let output = "";
+  const run = () => runPickerMuxCompanion(["run"], {
+    distributionPaths: { applicationDirectory }, sourceRoot: "/verified/versions/0.21.0",
+    statusImpl: async () => fixture({ snapshot: { desktop: { status: "running" } } }).snapshot,
+    validateDistributionImpl: async () => ({ installed: true, activeDirectory: "/verified/versions/0.21.0" }),
+    withLockImpl: async (_paths, operation) => operation(),
+    desktopRunningImpl: async () => assert.fail("Reset must not quit or inspect Codex"),
+    input: Readable.from([JSON.stringify(request("usage-reset", { confirmation: { resetAccumulatedUsage: true } }))]),
+    output: { write: (value) => { output += value; } }, progressOutput: { write() {} },
+  });
+  const result = await run();
+  assert.equal(result.ok, true);
+  assert.equal(result.data.lastRequestPreserved, true);
+  const after = await store.readSnapshot();
+  assert.deepEqual(after.providers[0].last, last);
+  assert.equal(after.providers[0].requests, 0);
+  assert.equal(after.providers[0].totals.totalTokens, 0);
+  await writeFile(path.join(applicationDirectory, "usage", "token-usage.json"), secret, { mode: 0o600 });
+  output = "";
+  const failed = await run();
+  assert.equal(failed.ok, false);
+  assert.equal(output.includes(secret), false);
 });
 
 const uninstallConsent = { removePickerMux: true, restoreNativeCodex: true, deleteProviderCredentials: true, deleteBackups: true };

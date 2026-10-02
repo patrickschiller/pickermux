@@ -21,12 +21,12 @@ other local or remote Responses providers use a custom configuration.
     <td width="50%" align="center"><strong>Codex model picker</strong></td>
   </tr>
   <tr>
-    <td valign="top"><img src="assets/screenshots/pickermux-companion.png" alt="PickerMux menu-bar panel with the Codex integration switch and provider token usage" width="440"></td>
+    <td valign="top"><img src="assets/screenshots/pickermux-companion.png" alt="Synthetic compact PickerMux menu preview with stacked token usage and full-width action rows" width="320"></td>
     <td valign="top"><img src="assets/screenshots/pickermux-model-picker.png" alt="Codex model picker with namespaced external models alongside native models" width="440"></td>
   </tr>
 </table>
 
-*Left: PickerMux menu-bar panel with provider token usage. Right: Codex picker screenshot.*
+*Left: synthetic compact-menu preview with example usage. Right: Codex picker screenshot.*
 
 PickerMux is an unofficial community project. It is not affiliated with,
 endorsed by, or supported by OpenAI, Codex, or LM Studio.
@@ -68,16 +68,38 @@ Make your provider models available, fully quit Codex, choose **Refresh picker**
 and reopen Codex. With LM Studio, load the models you want before refreshing.
 Newly discovered models need **Certify models…** before they can use tools.
 
-**Check status** inspects the installation. **Settings…** contains update checks,
+The compact menu offers **Refresh picker**, **Open Codex**, **Check status**, and
+**Check installation** as full-width rows, with specific feedback below them.
+**Settings…**, **Help…**, and **Quit** appear as separate rows at the bottom.
+**Settings…** contains update checks,
 optional login startup, refresh after Codex closes, and notifications. After a
 Codex update, **Repair after a Codex update…** explains the recovery and asks
 before quitting and reopening Codex. Catalog changes require a full restart.
 
+If a working installation suddenly shows **Integration needs review**, review
+the [configuration-conflict checks](docs/TROUBLESHOOTING.md#integration-needs-review-after-an-unrelated-codex-setting-change).
+A Codex `service_tier` setting inside PickerMux's marked root block can trigger
+that message in 0.20.1 and earlier without a manual configuration edit; the
+0.22.0 backend recognizes and preserves that setting after receipt verification.
+
 The panel's **Token usage** section shows input, output, and total tokens per
-external provider for the last model request and since the bridge started.
+external provider in stacked **Last model request** and **Since reset** blocks.
 It uses provider-reported counts from requests through PickerMux, including
 tool rounds and context summaries. Missing counts are marked unavailable;
-partial sums are labelled. See [token usage](docs/MACOS_COMPANION.md#token-usage).
+partial sums are labelled. Counts and the last request survive bridge restarts,
+refreshes, and backend upgrades. **Settings → Token usage → Reset accumulated
+counts…** clears accumulated counts while retaining the last request.
+See [token usage](docs/MACOS_COMPANION.md#token-usage).
+
+## Voice with a local model
+
+PickerMux 0.22.0 adds experimental GPT-Live WebRTC support. Codex can
+use OpenAI for voice while the selected local model handles delegated tasks.
+Voice audio and conversation context go to OpenAI, including when a local model
+is selected. This requires native sign-in and account access to Codex voice;
+local tool access still requires exact model certification. Voice and local
+delegation require manual validation with the installed backend and compatible
+client. See [voice setup and acceptance](docs/TECHNICAL_GUIDE.md#gpt-live-voice-and-local-tasks).
 
 ## Switch off or remove
 
@@ -88,8 +110,10 @@ For complete removal, quit Codex and choose **Settings → Remove PickerMux
 completely…**. Confirm removal of the integration, CLI, managed data, verified
 backups, and registered provider credentials. Then quit PickerMux and move its
 app to the Trash. Codex sign-in, projects, chats, and unrelated settings stay
-intact. An inactive provider alias keeps historical chats readable; choose a
-native model before continuing one. [Removal details](docs/TECHNICAL_GUIDE.md#deactivation-and-removal).
+intact. An inactive provider alias keeps historical chats readable. If an old
+chat keeps reconnecting with a native model selected, its saved provider may
+still need [native-provider recovery](docs/TROUBLESHOOTING.md#reconnecting-in-an-old-chat-after-deactivation-or-uninstall).
+See [removal details](docs/TECHNICAL_GUIDE.md#deactivation-and-removal).
 
 ## Technical overview
 

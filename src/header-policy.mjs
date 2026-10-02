@@ -118,6 +118,21 @@ export function buildExternalRequestHeaders(
   return result;
 }
 
+export function buildLiveRequestHeaders(incomingHeaders, bodyLength) {
+  const result = buildNativeRequestHeaders(incomingHeaders, bodyLength);
+  // Voice bootstrap has its own reviewed headers; ordinary inference keeps
+  // its existing policy, and neither field is eligible for external requests.
+  result["openai-alpha"] = "quicksilver=v2";
+  const sessionId = incomingHeaders?.["x-session-id"];
+  if (typeof sessionId === "string" && !hasUnsafeHeaderValue(sessionId)) {
+    result["x-session-id"] = sessionId;
+  }
+  delete result["content-encoding"];
+  result["content-type"] = "application/json";
+  result["accept-encoding"] = "identity";
+  return result;
+}
+
 export function sanitizeUpstreamResponseHeaders(headers, statusCode) {
   const result = Object.create(null);
   const connectionTokens = String(headers?.connection ?? "")

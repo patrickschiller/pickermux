@@ -1,6 +1,6 @@
 # PickerMux Architecture
 
-This document describes PickerMux v0.20.1.
+This document describes PickerMux v0.22.0.
 It is intended for contributors, security reviewers, and users who want to
 understand what runs on their Mac.
 
@@ -170,6 +170,48 @@ the implemented request/response contract, not backend availability or the
 meaning of internal search-model selection. See the
 [official guidance](https://learn.chatgpt.com/docs/web-search?surface=app#app-search-with-a-custom-model-provider)
 and [public Codex search client](https://github.com/openai/codex/blob/36f0dbe796d9bb1a18a0fc0640ed08b3e1d54564/codex-rs/codex-api/src/endpoint/search.rs).
+
+### GPT-Live WebRTC bootstrap
+
+The capability-scoped `POST /v1/live` route adapts the reviewed Codex
+Frameless Bidi WebRTC call bootstrap. Codex selects the realtime model
+independently of the task model; its V3 default is `gpt-live-1-codex`.
+The session uses client delegation, so spoken task handoffs reenter the same
+Codex session and retain its selected native or external Responses route.
+Voice does not add local audio support or grant tools to an external model.
+
+The client chooses its HTTP shape from the provider base URL. PickerMux's
+loopback URL produces multipart input with the fixed
+`codex-realtime-call-boundary`, one SDP part, and one JSON session part.
+The native ChatGPT route instead expects JSON `{sdp, session}` at the fixed
+`/realtime/calls?intent=quicksilver&architecture=avas` destination. The adapter
+validates the exact reviewed shape before converting that framing. Unknown
+fields, malformed model identifiers, unsupported multipart shapes, or unsafe
+input fail closed.
+
+Only the native voice header policy forwards the additional `openai-alpha`
+and `x-session-id` headers. Incoming native authentication, account, and
+attestation headers remain confined to the native destination; no external
+provider credential is resolved. The normal compatibility gate and bounded
+body/transport checks apply before a successful reply is returned.
+
+Successful bootstrap replies contain validated UTF-8 SDP and a validated call
+ID extracted from `Location`. PickerMux synthesizes a relative
+`/v1/live/{call_id}` Location rather than exposing upstream topology. Codex
+uses the ID to join its direct native WebRTC sideband, normally
+`wss://api.openai.com/v1/live/{call_id}`. WebRTC media and sideband traffic
+remain client-managed; bridge WebSocket upgrades are still rejected.
+
+Voice audio and conversation context go to OpenAI even for local task models.
+The bootstrap never changes `/responses` routing, external header isolation,
+or certification authority. Source and offline tests establish this boundary;
+voice and local delegation require manual target-Mac validation. See the
+[manual acceptance procedure](TECHNICAL_GUIDE.md#gpt-live-voice-and-local-tasks),
+[official Live delegation guide](https://developers.openai.com/api/docs/guides/live-delegation),
+and the pinned public Codex
+[call client](https://github.com/openai/codex/blob/d61c7a824f951abfb2133ed8aebefaed651156d4/codex-rs/codex-api/src/endpoint/realtime_call.rs),
+[sideband URL builder](https://github.com/openai/codex/blob/d61c7a824f951abfb2133ed8aebefaed651156d4/codex-rs/codex-api/src/endpoint/realtime_websocket/methods.rs#L831),
+and [task handoff](https://github.com/openai/codex/blob/d61c7a824f951abfb2133ed8aebefaed651156d4/codex-rs/core/src/session/turn_input.rs#L640).
 
 ## LM Studio context compaction
 
@@ -359,17 +401,30 @@ collecting optional counters. Exceeding either observation bound leaves
 forwarding under its existing contract and marks usage unavailable.
 
 The bridge keeps per-provider request counts, unavailable-request counts, the
-most recently finalized observation, and cumulative reported counts only in
-memory. The bounded snapshot contains canonical configured provider IDs and
+most recently finalized observation, and cumulative reported counts. Private
+local usage storage retains this validated aggregate state across bridge
+restarts, refreshes, and backend upgrades. The bounded snapshot contains
+canonical configured provider IDs and
 numeric/fixed availability fields; raw provider metadata, model IDs, endpoints,
 capability values, and request/response content or identifiers are excluded.
 Unknown-count requests leave known totals unchanged and are disclosed as a
 partial sum. Safe-integer overflow makes cumulative totals unavailable. The
 snapshot is capped at 128 providers; exceeding that capacity marks the whole
 snapshot unavailable rather than silently omitting a provider. The
-capability-scoped health endpoint publishes `tokenUsage` schema 1, with empty
-providers before the first observed request. Every new bridge instance starts
-fresh counters.
+capability-scoped health endpoint publishes `tokenUsage` schema 2, with a
+canonical UTC reset time or `null` and empty
+providers before any recorded usage. The explicit Settings reset clears
+accumulated counts while retaining the most recently finalized observation.
+This storage records no per-request history and grants no routing authority.
+
+The usage store is `~/Library/Application Support/PickerMux/usage/token-usage.json`,
+outside the replaceable bridge runtime. Its directory/file modes are `0700`/
+`0600`; private generation metadata binds storage updates. Writes are queued
+and atomic, and graceful shutdown flushes the queue. A forced termination may
+lose uncommitted observations. Unsafe, invalid, corrupt or concurrently changed
+state remains preserved and makes telemetry unavailable without changing
+inference. Ordinary uninstall and CLI removal retain the store; complete purge
+removes only verified owned usage state.
 
 ## Efficient Fidelity
 
@@ -536,6 +591,19 @@ contain prompts, responses, or credentials.
 The integration installer owns only marked Codex configuration fields and
 explicit files under `~/.codex/model-bridge`, plus its named LaunchAgent. It
 creates a verified backup before changing Codex configuration.
+
+The 0.22.0 root-ownership fix recognizes one unowned `service_tier`
+assignment inserted inside the marked root block. The assignment must be an
+unambiguous, nonempty simple string at global TOML scope. Inspection virtually
+excludes only that line, then requires the receipt's exact managed-block digest
+under the existing model/reasoning selection normalization. It never updates
+the receipt to bless unrelated edits. Selection and layout changes retain the
+original line in place; deactivation, full-refresh suspension,
+and ordinary or native-restoring uninstall retain its raw bytes as user-owned
+configuration. Malformed, duplicate, or dotted `service_tier` assignments,
+changed routing fields, and other receipt mismatches remain blocked.
+Read-only status makes no configuration write. See the
+[installed-release workaround](TROUBLESHOOTING.md#integration-needs-review-after-an-unrelated-codex-setting-change).
 
 The ownership receipt also permits one narrow, write-free recovery: if only the
 managed provider end marker is missing, PickerMux tests the safe line boundaries
@@ -799,7 +867,7 @@ The private health endpoint remains available with fixed safe status/reason
 enums so the LaunchAgent does not enter a restart loop and diagnostics can
 direct the user to refresh.
 
-Versions 0.6.0 through 0.20.1 use bridge contract
+Versions 0.6.0 through 0.22.0 use bridge contract
 `codex-responses-bridge/p6-v1`.
 The managed publisher emits the search claim only from valid model-bound
 evidence, and the runtime accepts it only on entries generated under that exact
@@ -813,7 +881,7 @@ client even when the bridge runtime or generated mixed catalog is absent.
 
 ```mermaid
 flowchart TB
-    App[SwiftUI menu-bar app]
+    App[SwiftUI native menu controls and settings]
     Installed[Validated active CLI]
     Bundled[Manifest-verified bundled backend]
     Control[Versioned stdin control protocol]
@@ -863,11 +931,16 @@ removal through Finder.
 
 `companion status` collects independent read-only probes and projects only
 bounded status enums, booleans, safe issues, a version, allowed next actions,
-and a recovery phase/UUID. The additive `token-usage-v1` capability includes a
-reconstructed usage projection only from an instance-attested running bridge;
-an older runtime or invalid snapshot yields unavailable usage without changing
-lifecycle actions. Swift accepts both the previous finite status contracts
-and the new capability/field pair, validates all counts and provider IDs, and
+and a recovery phase/UUID. The additive `token-usage-v2` capability includes a
+reconstructed usage projection from an instance-attested running bridge or
+the verified installed backend's private durable store. Invalid state yields
+unavailable usage without changing
+lifecycle actions. The reset time and counts are validated independently of
+model/request metadata. `token-usage-reset-v1` exposes only the explicit
+`usage-reset` action with `resetAccumulatedUsage: true`; it resets cumulative
+counts and retains the last request. Swift accepts both the previous finite
+status contracts, including memory-only v1 usage, and the new capability/field
+pair, validates all counts and provider IDs, and
 preserves usage while filtering actions. Usage counters do not participate in
 notification transition identity. Failed probes produce partial results rather than
 raw errors. The app samples on a five-second polling cycle; backend deadlines
@@ -880,11 +953,13 @@ recovery/update confirmations use asynchronous windows rather than a nested
 modal event loop in the transient menu panel. Account-cache age alone does not
 grant recovery authority.
 
-The menu content uses a shared vertical scroll view with an explicit
-400-by-600-point viewport. An explicit size prevents compressed `MenuBarExtra`
-layout proposals from collapsing the scroll surface; longer provider and
-installation sections remain reachable by scrolling. This presentation wrapper
-does not change polling, token observation, or lifecycle authority.
+The compact 320-point menu places integration state and vertically stacked
+provider usage blocks before full-width Refresh picker, Open Codex, Check
+status, and Check installation rows, followed by specific feedback.
+Certification and recovery live under More actions; Installation details
+expand below the primary actions. Settings, Help, and Quit appear as separate
+menu rows. Offered actions obey the validated backend permissions. Native
+menu presentation does not grant lifecycle authority.
 
 `companion run` accepts one UTF-8 request capped at 4,096 bytes and a bounded
 input wait. Version 1 accepts only the fixed action set. Unknown or duplicate

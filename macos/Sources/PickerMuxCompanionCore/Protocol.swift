@@ -23,6 +23,7 @@ public enum CompanionAction: String, Codable, CaseIterable {
   case configurationPreview = "configuration-preview"
   case configurationApply = "configuration-apply"
   case integrationDeactivate = "integration-deactivate"
+  case usageReset = "usage-reset"
   case uninstallPreview = "uninstall-preview"
   case uninstall
 
@@ -38,6 +39,7 @@ public enum CompanionAction: String, Codable, CaseIterable {
     case .configurationPreview: return "Review PickerMux setup"
     case .configurationApply: return "Install and enable PickerMux…"
     case .integrationDeactivate: return "Turn off PickerMux in Codex…"
+    case .usageReset: return "Reset accumulated counts…"
     case .uninstallPreview: return "Review complete removal"
     case .uninstall: return "Remove PickerMux completely…"
     }
@@ -87,7 +89,8 @@ public struct CompanionSnapshot: Decodable {
   public var usesBundledBackend = false
 
   public var supportsNativeUninstall: Bool { capabilities.contains("native-uninstall-v1") }
-  public var supportsTokenUsage: Bool { capabilities.contains("token-usage-v1") }
+  public var supportsTokenUsage: Bool { capabilities.contains("token-usage-v1") || capabilities.contains("token-usage-v2") }
+  public var supportsTokenUsageReset: Bool { capabilities.contains("token-usage-reset-v1") }
 
   enum CodingKeys: String, CodingKey {
     case schemaVersion, capabilities, version, state, desktop, installation, managedConfig,
@@ -114,13 +117,17 @@ public struct CompanionSnapshot: Decodable {
           let value = try? JSONDecoder().decode(CompanionSnapshot.self, from: data),
           value.schemaVersion == 1,
           [["integration-toggle-v1"], ["integration-toggle-v1", "native-uninstall-v1"],
-           ["integration-toggle-v1", "token-usage-v1"], ["integration-toggle-v1", "native-uninstall-v1", "token-usage-v1"]].contains(value.capabilities),
+           ["integration-toggle-v1", "token-usage-v1"], ["integration-toggle-v1", "native-uninstall-v1", "token-usage-v1"],
+           ["integration-toggle-v1", "token-usage-v2"], ["integration-toggle-v1", "native-uninstall-v1", "token-usage-v2"],
+           ["integration-toggle-v1", "token-usage-v2", "token-usage-reset-v1"],
+           ["integration-toggle-v1", "native-uninstall-v1", "token-usage-v2", "token-usage-reset-v1"]].contains(value.capabilities),
           value.supportsTokenUsage == (value.tokenUsage != nil),
           object["tokenUsage"] == nil || value.tokenUsage != nil,
           (isVersion(value.version) || value.version == "unknown"),
           safeToken(value.state), value.actions.count <= CompanionAction.allCases.count,
           Set(value.actions).count == value.actions.count, value.issues.count <= 32,
           value.supportsNativeUninstall || !value.actions.contains(where: { [.uninstall, .uninstallPreview].contains($0) }),
+          value.supportsTokenUsageReset || !value.actions.contains(.usageReset),
           value.issues.allSatisfy({ safeCode($0.code) && $0.message.utf8.count <= 256 }),
           [value.desktop, value.installation, value.managedConfig, value.service,
            value.compatibility, value.accountCache, value.integration].allSatisfy({ safeToken($0.status) }),
@@ -128,6 +135,11 @@ public struct CompanionSnapshot: Decodable {
           value.recovery.phase.map({ recoveryPhases.contains($0) }) ?? true,
           value.recovery.operationId.map({ $0.range(of: "^[A-Za-z0-9-]{1,80}$", options: .regularExpression) != nil }) ?? true
     else { throw CompanionFailure.incompatibleProtocol }
+    // Keep the optional binding separate for Swift 6.3 optimized-build compatibility.
+    if let usage = value.tokenUsage {
+      let expectedSchema = value.capabilities.contains("token-usage-v2") ? 2 : 1
+      guard usage.schemaVersion == expectedSchema else { throw CompanionFailure.incompatibleProtocol }
+    }
     return value
   }
 }
@@ -185,6 +197,7 @@ public struct CompanionResult: Decodable {
   public let update: UpdateStatus?
   public let uninstallPreview: UninstallPreview?
   public let uninstallCompletion: UninstallCompletion?
+  public let usageReset: UsageResetCompletion?
   public let certificationIncomplete: Bool
   public let restartRequired: Bool
 
@@ -202,6 +215,7 @@ public struct CompanionResult: Decodable {
     let candidate = try? container.decode(UninstallPreview.self, forKey: .data)
     uninstallPreview = candidate?.status == "ready" ? candidate : nil
     uninstallCompletion = try? container.decode(UninstallCompletion.self, forKey: .data)
+    usageReset = try? container.decode(UsageResetCompletion.self, forKey: .data)
     let flags = try? container.nestedContainer(keyedBy: ResultDataKeys.self, forKey: .data)
     certificationIncomplete = (try? flags?.decode(Bool.self, forKey: .certificationIncomplete)) ?? false
     restartRequired = (try? flags?.decode(Bool.self, forKey: .restartRequired)) ?? false
@@ -255,6 +269,13 @@ public struct CompanionResult: Decodable {
             Set(fields.keys) == Set(["action", "status", "canApply", "previewToken", "changes"])
       else { throw CompanionFailure.incompatibleProtocol }
     }
+    if let fields = object["data"] as? [String: Any],
+       fields["action"] as? String == "usage-reset" || fields["resetAt"] != nil || fields["lastRequestPreserved"] != nil {
+      guard let reset = value.usageReset, value.ok, reset.action == "usage-reset", reset.status == "reset", reset.lastRequestPreserved,
+            canonicalTokenUsageDate(reset.resetAt) != nil,
+            Set(fields.keys) == Set(["action", "status", "resetAt", "lastRequestPreserved"])
+      else { throw CompanionFailure.incompatibleProtocol }
+    }
     return value
   }
 }
@@ -274,6 +295,10 @@ public func actionRequest(_ action: CompanionAction, confirmed: Bool = false, pr
   if action == .integrationDeactivate {
     guard confirmed else { throw CompanionFailure.incompatibleProtocol }
     object["confirmation"] = ["deactivateIntegration": true]
+  }
+  if action == .usageReset {
+    guard confirmed, previewToken == nil else { throw CompanionFailure.incompatibleProtocol }
+    object["confirmation"] = ["resetAccumulatedUsage": true]
   }
   if action == .uninstall {
     guard confirmed, let previewToken, previewToken.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil
@@ -359,6 +384,14 @@ public func companionActionFailureMessage(_ code: String) -> String {
     "UNINSTALL_PREFLIGHT_FAILED": "PickerMux could not verify all removal ownership. Keep the app installed and review the CLI installation before retrying.",
     "PURGE_INCOMPLETE": "Complete removal could not finish. Some registered credentials or files may already be removed. Keep the app installed for an explicit retry; Codex data is preserved.",
     "UNINSTALL_FAILED": "PickerMux removal could not finish. Keep the app installed, check status and retry only after reviewing the installation.",
+    "USAGE_RESET_FAILED": "The saved token totals could not be reset. Check status and retry from Settings.",
   ]
   return messages[code] ?? "PickerMux could not complete this action. Check status and open Help to review the installation."
+}
+
+public struct UsageResetCompletion: Decodable {
+  public let action: String
+  public let status: String
+  public let resetAt: String
+  public let lastRequestPreserved: Bool
 }

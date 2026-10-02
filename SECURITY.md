@@ -116,6 +116,29 @@ settings remain effective. Provider/feature migration uses the existing
 compare-and-swap and rollback boundary and requires the running search
 contract; uninstall removes only an unchanged feature block PickerMux owns.
 
+GPT-Live WebRTC bootstrap has a separate native-only boundary. The exact
+capability-scoped `POST /v1/live` accepts only the reviewed multipart SDP/session
+shape and converts it to JSON for the fixed native
+`/realtime/calls?intent=quicksilver&architecture=avas` destination. The
+compatibility gate, input validation, and transport bounds remain active.
+A voice-specific header policy admits native voice session headers without
+changing the external header allowlist. No external provider credential is
+resolved and no native credential reaches an external provider.
+
+SDP and call identifiers are validated before success; the returned Location
+is synthesized as a relative path instead of forwarding upstream URLs.
+Unsupported request or response schemas and native service failures return
+fixed redacted errors. PickerMux does not proxy WebRTC media or its direct
+native sideband, and bridge WebSocket upgrades remain rejected.
+
+Voice audio and conversation context are sent to OpenAI even when the selected
+task model is local. Client delegation retains the task's existing Responses
+route and certification checks; it grants no tools or local audio capabilities.
+SDP, call IDs, transcripts, capability paths, and raw native errors must stay
+out of diagnostics. This experimental support requires native account access,
+a compatible client, and manual target-Mac validation of voice and local
+delegation; see the [reviewed contract and acceptance procedure](docs/TECHNICAL_GUIDE.md#gpt-live-voice-and-local-tasks).
+
 LM Studio compaction has a separate request and replay boundary. Only an exact
 bare trailing `compaction_trigger` on full `/responses` replay is adapted. The
 usual certification gate, external sanitization, and tool-history validation
@@ -241,7 +264,7 @@ explicit schema of fixed enums, booleans, and non-negative byte/part counters.
 It excludes prompt text, raw annotation kinds, roles, hashes, model/provider
 names, URLs, paths, and request, message, turn, or conversation identifiers.
 Telemetry sink failures cannot change request routing or upstream bytes.
-Provider token telemetry is a separate in-memory projection. Only ordinary
+Provider token telemetry is a separate allowlisted projection. Only ordinary
 external inference admitted upstream is observed; native responses, standalone
 search, and recognized certification traffic remain outside it. The bounded
 observer cannot change forwarding, resolve credentials, execute tools, or send
@@ -252,10 +275,27 @@ The private health and companion projections expose only canonical configured
 provider IDs, fixed availability states, and non-negative safe integer counters.
 They exclude model identifiers, endpoints, capability paths, request/response
 IDs, prompt and response content, credentials, and arbitrary upstream metadata.
-The companion accepts token counts only from an instance-attested running
-service and reconstructs the allowlisted schema. Numeric overflow invalidates
-cumulative totals. Statistics are never persisted or written to logs, and
-observer failures cannot affect routing or lifecycle permissions.
+The companion accepts live token counts only from an instance-attested running
+service, or durable counts from the validated installed backend's private
+usage store, and reconstructs the allowlisted schema. Numeric overflow invalidates
+cumulative totals. PickerMux persists only this bounded provider/count/
+availability projection, reset time, and private generation bookkeeping in
+local usage storage so accumulated counts and the last model request survive
+bridge restarts. It stores no request
+history, prompts, response text, endpoints, capability paths, credentials or
+model/account/request identifiers, and does not write statistics to logs.
+The explicit Settings reset clears only accumulated counts and retains the
+last model request. The usage directory is private (`0700`) and the usage file
+is private (`0600`); unsafe links, invalid state and concurrent changes cannot
+authorize overwriting foreign data. Invalid or corrupt state is retained for
+review and reported as unavailable.
+An existing empty usage directory or missing statistics file cannot silently
+restart counters; only an explicit Settings reset recovers that missing-file
+state. Malformed or foreign files still cannot authorize a reset overwrite.
+Ordinary uninstall/CLI removal retain the usage file; complete purge removes
+only verified owned usage state. Graceful
+shutdown drains queued writes; a crash can lose observations not yet committed.
+Storage and observer failures cannot affect routing or lifecycle permissions.
 
 Every external text-only route also rejects secondary `additional_tools`
 inventory items before credential resolution; schemas cannot bypass the

@@ -1,7 +1,8 @@
 import http from "node:http";
 
 import { hasDisallowedOrigin, isExpectedHost } from "./header-policy.mjs";
-import { createResponsesProxy, createWebSearchProxy } from "./responses-proxy.mjs";
+import { createLiveProxy, createResponsesProxy, createWebSearchProxy } from "./responses-proxy.mjs";
+import { LIVE_CONTRACT_VERSION, LIVE_PATH } from "./live-wire.mjs";
 import { WEB_SEARCH_CONTRACT_VERSION, WEB_SEARCH_PATH } from "./web-search-wire.mjs";
 import { createTokenUsageTelemetry } from "./token-usage.mjs";
 
@@ -252,6 +253,7 @@ export function createBridgeServer({
   compatibilityGate,
   externalRequestGate,
   onTextOnlyCompaction,
+  tokenUsageStore,
 } = {}) {
   if (!registry || typeof registry.resolve !== "function" || typeof registry.listModels !== "function") {
     throw new TypeError("A model registry with resolve() and listModels() is required");
@@ -278,7 +280,11 @@ export function createBridgeServer({
     throw new TypeError("onTextOnlyCompaction must be a function");
   }
   const textOnlyContextTelemetry = createTextOnlyContextTelemetry();
-  const tokenUsageTelemetry = createTokenUsageTelemetry();
+  if (tokenUsageStore !== undefined && ["record", "readSnapshot", "flush"].some((name) =>
+    typeof tokenUsageStore?.[name] !== "function")) {
+    throw new TypeError("tokenUsageStore must provide record(), readSnapshot(), and flush()");
+  }
+  const tokenUsageTelemetry = tokenUsageStore ?? createTokenUsageTelemetry();
   const certificationPendingGateActive =
     typeof externalRequestGate === "function";
   const captureTextOnlyCompaction = (event) => {
@@ -310,6 +316,7 @@ export function createBridgeServer({
     httpsTransport,
     externalRequestGate,
   });
+  const handleLive = createLiveProxy({ nativeBaseUrl, limits, httpTransport, httpsTransport });
 
   const server = http.createServer({ maxHeaderSize: requestHeaderBytes }, async (request, response) => {
     const port = listenerPort(server);
@@ -342,15 +349,28 @@ export function createBridgeServer({
       return;
     }
     const path = url.pathname.slice(basePath.length);
+    if (path === LIVE_PATH && request.url !== `${basePath}${LIVE_PATH}`) {
+      writeRouteError(response, 404, "NOT_FOUND", "Endpoint not found");
+      return;
+    }
 
     if (request.method === "GET" && path === "/health") {
       const compatibility = publicCompatibilityState(compatibilityGate);
       const textOnlyContext = textOnlyContextTelemetry.snapshot();
+      let tokenUsage;
+      try {
+        tokenUsage = tokenUsageStore
+          ? await tokenUsageStore.readSnapshot()
+          : tokenUsageTelemetry.snapshot();
+      } catch {
+        tokenUsage = { schemaVersion: 2, status: "unavailable", resetAt: null, providers: [] };
+      }
       writeJson(response, 200, {
         ok: compatibility === null || compatibility.status === "compatible",
         webSearchContractVersion: WEB_SEARCH_CONTRACT_VERSION,
+        liveContractVersion: LIVE_CONTRACT_VERSION,
         instanceId,
-        tokenUsage: tokenUsageTelemetry.snapshot(),
+        tokenUsage,
         ...(certificationPendingGateActive
           ? {
               certificationPendingGateVersion:
@@ -390,7 +410,13 @@ export function createBridgeServer({
       return;
     }
 
-    if (path === "/v1/responses" || path === "/v1/responses/compact" || path === WEB_SEARCH_PATH) {
+    if (request.method === "POST" && path === LIVE_PATH) {
+      if (!(await admitModelRequest(compatibilityGate, response))) return;
+      await handleLive(request, response, path);
+      return;
+    }
+
+    if (path === "/v1/responses" || path === "/v1/responses/compact" || path === WEB_SEARCH_PATH || path === LIVE_PATH) {
       writeRouteError(response, 405, "METHOD_NOT_ALLOWED", "Method not allowed");
       return;
     }
@@ -415,6 +441,7 @@ export function createBridgeServer({
   server.keepAliveTimeout = 120_000;
   server.maxRequestsPerSocket = 100;
   Object.defineProperties(server, {
+    flushTokenUsage: { value: () => tokenUsageStore?.flush(), enumerable: false },
     capabilityPath: { value: basePath, enumerable: true },
     providerBaseUrl: {
       enumerable: true,

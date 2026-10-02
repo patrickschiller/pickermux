@@ -1371,6 +1371,320 @@ test("picker model and reasoning changes stay healthy while bridge identity rema
   assert.equal(await readFile(fixture.configPath, "utf8"), original);
 });
 
+test("picker service tier changes retain healthy read-only status and preview", async (t) => {
+  for (const eol of ["\n", "\r\n"]) {
+    for (const assignment of [
+      'service_tier = "priority"',
+      "  service_tier = 'auto' # retained picker choice",
+      'service_tier = "priority#choice" # comment',
+    ]) {
+      await t.test(`${JSON.stringify(eol)} ${assignment}`, async (subtest) => {
+        const fixture = await makeFixture(subtest);
+        await writeFile(fixture.configPath, ['model = "gpt-5.6-sol"', "[features]", "other = true", ""].join(eol));
+        await installConfig(fixture.options());
+        const installed = await readFile(fixture.configPath, "utf8");
+        const selected = installed
+          .replace('model = "lmstudio/qwen3.8-27b"', 'model = "gpt-5.5"')
+          .replace('model_reasoning_effort = "low"', 'model_reasoning_effort = "max"')
+          .replace(CONFIG_MARKERS.rootEnd, `${assignment}${eol}${CONFIG_MARKERS.rootEnd}`);
+        await writeFile(fixture.configPath, selected);
+        const beforeConfig = await snapshotFile(fixture.configPath);
+        const beforeState = await snapshotFile(fixture.statePath);
+        const status = await getConfigStatus(fixture.paths());
+        assert.deepEqual(pickStatus(status), { installed: true, healthy: true, status: "installed" });
+        assert.equal(status.model, "gpt-5.5");
+        assert.equal(status.modelReasoningEffort, "max");
+        assert.deepEqual(status.modifiedBlocks, []);
+        const preview = await previewConfigIntegration(fixture.paths());
+        assert.equal(preview.status, "pickermux");
+        assert.equal(preview.canApply, true);
+        assert.deepEqual(preview.changes, []);
+        assert.deepEqual(await snapshotFile(fixture.configPath), beforeConfig);
+        assert.deepEqual(await snapshotFile(fixture.statePath), beforeState);
+      });
+    }
+  }
+});
+
+test("managed picker updates preserve the exact user service tier line and immutable receipt", async (t) => {
+  for (const eol of ["\n", "\r\n"]) {
+    await t.test(JSON.stringify(eol), async (subtest) => {
+      const fixture = await makeFixture(subtest);
+      await writeFile(fixture.configPath, `user_setting = true${eol}`, { mode: 0o640 });
+      await installConfig(fixture.options());
+      const tierLine = `\tservice_tier  =  'priority'  # user preference${eol}`;
+      const installed = await readFile(fixture.configPath, "utf8");
+      const selected = installed.replace(CONFIG_MARKERS.rootEnd, `${tierLine}${CONFIG_MARKERS.rootEnd}`);
+      await writeFile(fixture.configPath, selected);
+      const beforeState = await readFile(fixture.statePath);
+      const beforeProvider = selected.slice(selected.indexOf(CONFIG_MARKERS.providerBegin));
+      const update = await setManagedPickerSelection({
+        ...fixture.paths(),
+        model: "lmstudio/changed",
+        modelReasoningEffort: "high",
+        expectedModel: "lmstudio/qwen3.8-27b",
+        expectedModelReasoningEffort: "low",
+      });
+      assert.equal(update.changed, true);
+      await restoreManagedPickerDefaults({ ...fixture.paths(), defaultModel: "lmstudio/qwen3.8-27b", defaultModelReasoningEffort: "low" });
+      const restored = await readFile(fixture.configPath, "utf8");
+      assert.equal(restored.split(tierLine).length - 1, 1);
+      assert.equal(restored.slice(restored.indexOf(CONFIG_MARKERS.providerBegin)), beforeProvider);
+      assert.deepEqual(await readFile(fixture.statePath), beforeState);
+      assert.equal((await stat(fixture.configPath)).mode & 0o777, 0o640);
+      assert.equal((await getConfigStatus(fixture.paths())).healthy, true);
+    });
+  }
+});
+
+test("provider and search migrations preserve service tier bytes through rollback and uninstall", async (t) => {
+  for (const migration of ["provider", "search"]) {
+    for (const eol of ["\n", "\r\n"]) {
+      await t.test(`${migration} ${JSON.stringify(eol)}`, async (subtest) => {
+        const fixture = await makeFixture(subtest);
+        const original = ['model = "gpt-5.6-sol"', "[features]", "other = true", ""].join(eol);
+        await writeFile(fixture.configPath, original);
+        await installConfig(fixture.options());
+        if (migration === "provider") await reorderReceiptedProvider(fixture, eol);
+        const tierLine = `service_tier = "priority" # retained on migration${eol}`;
+        const installed = await readFile(fixture.configPath, "utf8");
+        await writeFile(fixture.configPath, installed.replace(CONFIG_MARKERS.rootEnd, `${tierLine}${CONFIG_MARKERS.rootEnd}`));
+        const beforeConfig = await readFile(fixture.configPath);
+        const beforeState = await readFile(fixture.statePath);
+        const migrate = migration === "provider" ? migrateManagedConfiguration : enableManagedStandaloneWebSearch;
+        const update = await migrate(fixture.paths());
+        assert.equal(update.changed, true);
+        assert.equal((await readFile(fixture.configPath, "utf8")).split(tierLine).length - 1, 1);
+        assert.equal((await getConfigStatus(fixture.paths())).healthy, true);
+        const state = JSON.parse(await readFile(fixture.statePath, "utf8"));
+        assert.equal(state.blocks.root.sha256, JSON.parse(beforeState).blocks.root.sha256);
+        assert.equal(state.installedSha256, undefined);
+        await update.rollback();
+        assert.deepEqual(await readFile(fixture.configPath), beforeConfig);
+        assert.deepEqual(await readFile(fixture.statePath), beforeState);
+        await migrate(fixture.paths());
+        await uninstallConfig(fixture.paths());
+        const removed = await readFile(fixture.configPath, "utf8");
+        assert.equal(removed.split(tierLine).length - 1, 1);
+        assert.ok(removed.includes(`[features]${eol}other = true${eol}`));
+        assert.doesNotMatch(removed, /lm-studio-model-router:p2|pickermux:standalone-web-search/u);
+        if (eol === "\r\n") assert.doesNotMatch(removed, /(?<!\r)\n/u);
+      });
+    }
+  }
+});
+
+test("service tier survives normal removal, native removal, suspension and deactivation", async (t) => {
+  for (const action of ["uninstall", "native", "suspend", "deactivate"]) {
+    for (const eol of ["\n", "\r\n"]) {
+      await t.test(`${action} ${JSON.stringify(eol)}`, async (subtest) => {
+        const fixture = await makeFixture(subtest);
+        await writeFile(fixture.configPath, ['model = "gpt-5.6-sol"', "user_setting = true", "[features]", "other = true", ""].join(eol));
+        const options = fixture.options();
+        options.modelProvider = options.provider.id = "model_bridge";
+        await installConfig(options);
+        const tierLine = `  service_tier = 'priority' # preserve exact bytes${eol}`;
+        const installed = await readFile(fixture.configPath, "utf8");
+        await writeFile(fixture.configPath, installed.replace(CONFIG_MARKERS.rootEnd, `${tierLine}${CONFIG_MARKERS.rootEnd}`));
+        const beforeConfig = await readFile(fixture.configPath);
+        const beforeState = await readFile(fixture.statePath);
+        if (action === "suspend" || action === "deactivate") {
+          const suspend = action === "suspend" ? suspendManagedConfiguration : deactivateManagedConfiguration;
+          const update = await suspend(fixture.paths());
+          const native = await readFile(fixture.configPath, "utf8");
+          assert.equal(native.split(tierLine).length - 1, 1);
+          assert.doesNotMatch(native, /model_provider =|model_catalog_json =|model_reasoning_effort =/u);
+          await update.rollback();
+          assert.deepEqual(await readFile(fixture.configPath), beforeConfig);
+          assert.deepEqual(await readFile(fixture.statePath), beforeState);
+          await suspend(fixture.paths());
+          const receipt = action === "suspend"
+            ? await inventoryManagedConfigReactivation(fixture.paths())
+            : await inventoryDeactivatedConfigReactivation(fixture.paths());
+          await installConfig({ ...options, reactivationReceipt: receipt });
+          assert.equal((await getConfigStatus(fixture.paths())).healthy, true);
+          assert.equal((await readFile(fixture.configPath, "utf8")).split(tierLine).length - 1, 1);
+        }
+        await uninstallConfig({ ...fixture.paths(), restoreNative: action === "native" });
+        const removed = await readFile(fixture.configPath, "utf8");
+        assert.equal(removed.split(tierLine).length - 1, 1);
+        assert.ok(removed.includes(`user_setting = true${eol}`));
+        assert.ok(removed.includes(`[features]${eol}other = true${eol}`));
+        assert.doesNotMatch(removed, /lm-studio-model-router:p2|model_provider =|model_catalog_json =/u);
+        if (action === "native") assert.doesNotMatch(removed, /^model\s*=/mu);
+        else assert.ok(removed.includes(`model = "gpt-5.6-sol"${eol}`));
+        if (eol === "\r\n") assert.doesNotMatch(removed, /(?<!\r)\n/u);
+      });
+    }
+  }
+});
+
+test("a pre-existing service tier outside the managed root stays user-owned", async (t) => {
+  const fixture = await makeFixture(t);
+  const tierLine = "service_tier = 'flex' # pre-existing user setting\r\n";
+  const original = `${tierLine}model = "gpt-5.6-sol"\r\n[features]\r\nother = true\r\n`;
+  await writeFile(fixture.configPath, original);
+  await installConfig(fixture.options());
+  await setManagedPickerSelection({ ...fixture.paths(), model: "gpt-5.5", modelReasoningEffort: "max" });
+  await enableManagedStandaloneWebSearch(fixture.paths());
+  assert.equal((await getConfigStatus(fixture.paths())).healthy, true);
+  const installed = await readFile(fixture.configPath, "utf8");
+  assert.equal(installed.split(tierLine).length - 1, 1);
+  const root = installed.slice(installed.indexOf(CONFIG_MARKERS.rootBegin), installed.indexOf(CONFIG_MARKERS.rootEnd));
+  assert.equal(root.includes("service_tier"), false);
+  await uninstallConfig(fixture.paths());
+  assert.equal(await readFile(fixture.configPath, "utf8"), original);
+});
+
+test("service tier scanning respects multiline string contents, comments and unrelated table scopes", async (t) => {
+  for (const delimiter of ['"""', "'''"]) {
+    await t.test(delimiter, async (subtest) => {
+      const fixture = await makeFixture(subtest);
+      const original = [
+        `prompt = ${delimiter}`,
+        'service_tier = "quoted-data"',
+        '[service_tier]',
+        delimiter,
+        '# service_tier = "comment-only"',
+        "[features]",
+        'service_tier = "table-scoped-data"',
+        "[profiles.operator]",
+        'service_tier = "profile-scoped-data"',
+        "",
+      ].join("\n");
+      await writeFile(fixture.configPath, original);
+      await installConfig(fixture.options());
+      const tierLine = 'service_tier = "priority" # actual root setting\n';
+      const installed = await readFile(fixture.configPath, "utf8");
+      await writeFile(fixture.configPath, installed.replace(CONFIG_MARKERS.rootEnd, `${tierLine}${CONFIG_MARKERS.rootEnd}`));
+      assert.equal((await getConfigStatus(fixture.paths())).healthy, true);
+      assert.equal((await previewConfigIntegration(fixture.paths())).canApply, true);
+      await setManagedPickerSelection({ ...fixture.paths(), model: "gpt-5.5", modelReasoningEffort: "max" });
+      await uninstallConfig(fixture.paths());
+      const restored = await readFile(fixture.configPath, "utf8");
+      assert.ok(restored.includes(original.slice(0, original.indexOf("[features]"))));
+      assert.ok(restored.includes('[features]\nservice_tier = "table-scoped-data"\n'));
+      assert.ok(restored.includes('[profiles.operator]\nservice_tier = "profile-scoped-data"\n'));
+      assert.equal(restored.split(tierLine).length - 1, 1);
+    });
+  }
+});
+
+test("direct removal of a suspended or deactivated integration preserves service tier", async (t) => {
+  for (const action of ["suspended", "deactivated", "deactivated-native"]) {
+    for (const eol of ["\n", "\r\n"]) {
+      await t.test(`${action} ${JSON.stringify(eol)}`, async (subtest) => {
+        const fixture = await makeFixture(subtest);
+        await writeFile(fixture.configPath, `model = "gpt-5.6-sol"${eol}user_setting = true${eol}`);
+        const options = fixture.options();
+        options.modelProvider = options.provider.id = "model_bridge";
+        await installConfig(options);
+        const tierLine = `service_tier = 'priority' # retained after OFF${eol}`;
+        const installed = await readFile(fixture.configPath, "utf8");
+        await writeFile(fixture.configPath, installed.replace(CONFIG_MARKERS.rootEnd, `${tierLine}${CONFIG_MARKERS.rootEnd}`));
+        if (action === "suspended") await suspendManagedConfiguration(fixture.paths());
+        else await deactivateManagedConfiguration(fixture.paths());
+        await uninstallConfig({ ...fixture.paths(), restoreNative: action === "deactivated-native" });
+        const restored = await readFile(fixture.configPath, "utf8");
+        assert.equal(restored.split(tierLine).length - 1, 1);
+        assert.ok(restored.includes(`user_setting = true${eol}`));
+        if (action === "deactivated-native") assert.doesNotMatch(restored, /^model\s*=/mu);
+        else assert.ok(restored.includes(`model = "gpt-5.6-sol"${eol}`));
+        if (eol === "\r\n") assert.doesNotMatch(restored, /(?<!\r)\n/u);
+      });
+    }
+  }
+});
+
+test("service tier tolerance rejects ambiguous values, duplicate aliases and every other managed edit", async (t) => {
+  const tierLine = 'service_tier = "private-tier-fixture"\n';
+  const cases = [
+    { name: "duplicate inside root", mutate: (source) => source.replace(CONFIG_MARKERS.rootEnd, `${tierLine}${CONFIG_MARKERS.rootEnd}`) },
+    { name: "duplicate outside root", mutate: (source) => `${tierLine}${source}` },
+    { name: "quoted duplicate outside root", mutate: (source) => `"service_tier" = "auto"\n${source}` },
+    { name: "literal-key duplicate outside root", mutate: (source) => `'service_tier' = 'auto'\n${source}` },
+    { name: "dotted duplicate outside root", mutate: (source) => `service_tier.value = "auto"\n${source}` },
+    { name: "escaped-key duplicate outside root", mutate: (source) => `"service_\\u0074ier" = "auto"\n${source}` },
+    { name: "table collision outside root", mutate: (source) => `${source}[service_tier]\nvalue = "auto"\n` },
+    { name: "array-table collision outside root", mutate: (source) => `${source}[[service_tier]]\nvalue = "auto"\n` },
+    { name: "quoted table collision outside root", mutate: (source) => `${source}["service_tier"]\nvalue = "auto"\n` },
+    { name: "table-scope relocation", mutate: (source) => `[features]\n${source}` },
+    { name: "multiline context relocation", mutate: (source) => `prompt = """\n${source}"""\n` },
+    { name: "quoted managed key", mutate: (source) => source.replace(tierLine, '"service_tier" = "priority"\n') },
+    { name: "dotted managed key", mutate: (source) => source.replace(tierLine, 'service_tier.value = "priority"\n') },
+    { name: "boolean value", mutate: (source) => source.replace(tierLine, "service_tier = true\n") },
+    { name: "array value", mutate: (source) => source.replace(tierLine, 'service_tier = ["priority"]\n') },
+    { name: "empty string", mutate: (source) => source.replace(tierLine, 'service_tier = ""\n') },
+    { name: "whitespace-only string", mutate: (source) => source.replace(tierLine, 'service_tier = " "\n') },
+    { name: "unclosed string", mutate: (source) => source.replace(tierLine, 'service_tier = "priority\n') },
+    { name: "multiline string", mutate: (source) => source.replace(tierLine, 'service_tier = """priority"""\n') },
+    { name: "invalid escape", mutate: (source) => source.replace(tierLine, 'service_tier = "prior\\qity"\n') },
+    { name: "control escape", mutate: (source) => source.replace(tierLine, 'service_tier = "prior\\nity"\n') },
+    { name: "surrogate escape", mutate: (source) => source.replace(tierLine, 'service_tier = "\\uD800"\n') },
+    { name: "long surrogate escape", mutate: (source) => source.replace(tierLine, 'service_tier = "\\U0000DFFF"\n') },
+    { name: "paired surrogate escapes", mutate: (source) => source.replace(tierLine, 'service_tier = "\\uD83D\\uDE00"\n') },
+    { name: "unknown root setting", mutate: (source) => source.replace(CONFIG_MARKERS.rootEnd, `user_added = true\n${CONFIG_MARKERS.rootEnd}`) },
+    { name: "root comment edit", mutate: (source) => source.replace(CONFIG_MARKERS.rootEnd, `# edited managed bytes\n${CONFIG_MARKERS.rootEnd}`) },
+    { name: "provider identity edit", mutate: (source) => source.replace('model_provider = "model_bridge"', 'model_provider = "foreign"') },
+    { name: "catalog edit", mutate: (source) => source.replace(/^model_catalog_json = .*$/mu, 'model_catalog_json = "/unowned/catalog.json"') },
+    { name: "provider transport edit", mutate: (source) => source.replace('wire_api = "responses"', 'wire_api = "chat"') },
+  ];
+  for (const entry of cases) {
+    await t.test(entry.name, async (subtest) => {
+      const fixture = await makeFixture(subtest);
+      const options = fixture.options();
+      options.modelProvider = options.provider.id = "model_bridge";
+      await installConfig(options);
+      const installed = await readFile(fixture.configPath, "utf8");
+      const withTier = installed.replace(CONFIG_MARKERS.rootEnd, `${tierLine}${CONFIG_MARKERS.rootEnd}`);
+      await writeFile(fixture.configPath, entry.mutate(withTier));
+      const beforeConfig = await readFile(fixture.configPath);
+      const beforeState = await readFile(fixture.statePath);
+      assert.equal((await getConfigStatus(fixture.paths())).healthy, false);
+      assert.equal((await previewConfigIntegration(fixture.paths())).canApply, false);
+      const redactedFailure = (error) => {
+        assert.doesNotMatch(`${error.message}${JSON.stringify(error.details)}`, /private-tier-fixture|\/unowned\/catalog\.json/u);
+        return true;
+      };
+      await assert.rejects(setManagedPickerSelection({ ...fixture.paths(), model: "lmstudio/changed", modelReasoningEffort: "high" }), redactedFailure);
+      await assert.rejects(migrateManagedConfiguration(fixture.paths()), redactedFailure);
+      await assert.rejects(enableManagedStandaloneWebSearch(fixture.paths()), redactedFailure);
+      await assert.rejects(suspendManagedConfiguration(fixture.paths()), redactedFailure);
+      await assert.rejects(deactivateManagedConfiguration(fixture.paths()), redactedFailure);
+      await assert.rejects(uninstallConfig(fixture.paths()), redactedFailure);
+      await assert.rejects(uninstallConfig({ ...fixture.paths(), restoreNative: true }), redactedFailure);
+      assert.deepEqual(await readFile(fixture.configPath), beforeConfig);
+      assert.deepEqual(await readFile(fixture.statePath), beforeState);
+    });
+  }
+});
+
+test("service tier selection changes remain protected by compare-and-swap", async (t) => {
+  const fixture = await makeFixture(t);
+  await installConfig(fixture.options());
+  const installed = await readFile(fixture.configPath, "utf8");
+  const selected = installed.replace(CONFIG_MARKERS.rootEnd, `service_tier = "priority"\n${CONFIG_MARKERS.rootEnd}`);
+  await writeFile(fixture.configPath, selected);
+  const beforeState = await readFile(fixture.statePath);
+  const concurrent = selected.replace('service_tier = "priority"', 'service_tier = "auto"');
+  await assert.rejects(setManagedPickerSelection({
+    ...fixture.paths(),
+    model: "lmstudio/changed",
+    modelReasoningEffort: "high",
+    beforeConfigCommit: () => writeFile(fixture.configPath, concurrent),
+  }), { code: "CONFIG_CHANGED_CONCURRENTLY" });
+  assert.equal(await readFile(fixture.configPath, "utf8"), concurrent);
+  await assert.rejects(setManagedPickerSelection({
+    ...fixture.paths(),
+    model: "lmstudio/changed",
+    modelReasoningEffort: "high",
+    expectedModel: "gpt-5.5",
+    expectedModelReasoningEffort: "max",
+  }), { code: "SELECTION_CHANGED_CONCURRENTLY" });
+  assert.equal(await readFile(fixture.configPath, "utf8"), concurrent);
+  assert.deepEqual(await readFile(fixture.statePath), beforeState);
+});
+
 test("managed picker defaults are restored without changing provider, state, or unrelated config", async (t) => {
   const fixture = await makeFixture(t);
   await writeFile(

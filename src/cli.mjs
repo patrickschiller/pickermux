@@ -51,6 +51,7 @@ import { runCompanionCli } from "./companion-cli.mjs";
 import { loadCompanionServiceConfig } from "./companion-config.mjs";
 import { CompanionControlError, COMPANION_UNINSTALL_CHANGES, collectCompanionStatus, createCompanionReadOnlyProbes } from "./companion-control.mjs";
 import { applyCompanionUpdate, checkForCompanionUpdate } from "./companion-update.mjs";
+import { createUsageStore, inventoryUsageStore, revalidateUsageStoreInventory, removeUsageStoreInventory } from "./usage-store.mjs";
 import { WEB_SEARCH_CONTRACT_VERSION } from "./web-search-wire.mjs";
 import {
   createCatalogSynchronizer,
@@ -178,6 +179,9 @@ const COMMANDS = new Set([
   "version",
 ]);
 
+const HISTORICAL_CHAT_RECOVERY_DOC =
+  "https://github.com/patrickschiller/pickermux/blob/main/docs/TROUBLESHOOTING.md#reconnecting-in-an-old-chat-after-deactivation-or-uninstall";
+
 function usage() {
   return `PickerMux — Codex + Responses providers, one model picker
 
@@ -212,22 +216,32 @@ Companion schema 1 advertises integration-toggle-v1. configuration-apply require
 its previewToken and replaceIntegration:true; integration-deactivate requires
 deactivateIntegration:true. Deactivation retains setup, historical aliases and
 private runtime identity for confirmed reactivation without full-refresh purge.
-Companion status also advertises token-usage-v1: per-provider input, output and
-total tokens for the last model request and reported usage since bridge start.
+Companion status advertises token-usage-v2: per-provider input, output and
+total tokens for the last model request and private saved totals since reset.
+Settings resets accumulated counts through usage-reset with exact
+resetAccumulatedUsage:true consent; the last model request is retained.
+Legacy token-usage-v1 backends still show counts since bridge start.
 Missing usage remains unavailable; native and certification requests are excluded.
 Companion update-check recognizes the DMG release channel. An update request
 for a DMG returns DOWNLOAD_REQUIRED; replace the app, then explicitly review
 Update installed backend in Settings. No downloaded DMG is executed by the CLI.
 repair-chats restores only the inert model_bridge table used to open historical
-chats after uninstall. Select a native model before sending a new turn.
+chats after uninstall. Saved chat providers are unchanged.
 refresh --full (also --FULL) recovers an account cache after a Codex update.
 It requires interactive confirmation and unchanged managed configuration.
-After uninstall, fully restart Codex and select a native model in existing chats.
+One valid, unowned root service_tier setting inside the managed block is
+preserved; duplicate or malformed settings and routing edits still block changes.
+After uninstall, fully restart Codex. Changing the selected model may leave
+an existing chat on model_bridge. Native provider recovery:
+${HISTORICAL_CHAT_RECOVERY_DOC}
 The bundled Codex executable is detected in the current or legacy Desktop layout.
 CODEX_BINARY overrides discovery for this command; it is not saved to the service.
 
 Install and refresh enable shared Codex web search unless explicitly disabled.
 External models still require tool certification; search uses the native Codex backend.
+GPT-Live WebRTC bootstrap uses the native ChatGPT service; delegated tasks retain
+their selected model. Voice audio and startup context go to OpenAI. This requires
+account voice availability and a compatible Codex client; unknown schemas fail closed.
 Setup and install automatically certify discovered models without a valid tool receipt.
 Live tests can take several minutes per model. Keep configured models available and Codex fully closed.
 Progress is written to stderr; --json keeps stdout machine-readable.
@@ -1151,6 +1165,9 @@ async function serve({
     credentialResolver,
     port: config.bridge.port,
     compatibilityGate,
+    tokenUsageStore: createUsageStore({
+      directory: path.join(resolveDistributionPaths().applicationDirectory, "usage"),
+    }),
     externalRequestGate({
       publicModelId,
       certificationRequest,
@@ -1181,7 +1198,10 @@ async function serve({
         shuttingDown = true;
         synchronizer?.stop();
         compatibilityGate.stop();
-        server.close((error) => (error ? reject(error) : resolve()));
+        server.close((error) => {
+          if (error) reject(error);
+          else Promise.resolve(server.flushTokenUsage()).then(resolve, reject);
+        });
       };
       process.once("SIGTERM", shutdown);
       process.once("SIGINT", shutdown);
@@ -2449,6 +2469,7 @@ export async function previewPickerMuxUninstall({
   inventoryConfigImpl = inventoryManagedConfigOwnership,
   inventoryNativeConfigImpl = inventoryNativeConfigRestoration,
   listProviderIdsImpl = listRegisteredKeychainProviderIds,
+  inventoryUsageImpl = inventoryUsageStore,
 } = {}) {
   try {
     await assertNoPendingFullRefreshImpl();
@@ -2461,6 +2482,7 @@ export async function previewPickerMuxUninstall({
     const installInventory = await inventoryInstallImpl({ installDirectory: paths.installDirectory });
     const backupInventory = await inventoryBackupsImpl({ backupDirectory: paths.backupDirectory, configPath: paths.configPath });
     await inventoryRuntimeImpl({ serviceDirectory: paths.serviceDirectory, sourceRoot: distribution.activeDirectory });
+    await inventoryUsageImpl({ directory: path.join(distributionPaths.applicationDirectory, "usage") });
     const configOwnership = await inventoryConfigImpl({
       configPath: paths.configPath, statePath: paths.statePath,
       backupDirectory: paths.backupDirectory, backupDirectoryInventory: backupInventory,
@@ -2500,6 +2522,9 @@ export async function purgePickerMux({
   revalidateConfigImpl = revalidateManagedConfigOwnership,
   inventoryNativeConfigImpl = inventoryNativeConfigRestoration,
   revalidateNativeConfigImpl = revalidateNativeConfigRestoration,
+  inventoryUsageImpl = inventoryUsageStore,
+  revalidateUsageImpl = revalidateUsageStoreInventory,
+  removeUsageImpl = removeUsageStoreInventory,
   listProviderIdsImpl = listRegisteredKeychainProviderIds,
   removeDistributionImpl = removeManagedDistribution,
   uninstallIntegrationImpl = uninstallIntegration,
@@ -2543,6 +2568,9 @@ export async function purgePickerMux({
     serviceDirectory: paths.serviceDirectory,
     sourceRoot: distribution.activeDirectory,
   });
+  const usageStoreInventory = await inventoryUsageImpl({
+    directory: path.join(distributionPaths.applicationDirectory, "usage"),
+  });
   const providerIds = await listProviderIdsImpl({
     registryPath: paths.keychainRegistryPath,
   });
@@ -2562,6 +2590,7 @@ export async function purgePickerMux({
   const result = await removeDistributionImpl({
     paths: distributionPaths,
     requireExclusiveApplicationDirectory: true,
+    usageStoreInventory,
     async beforeRemove(confirmedDistribution) {
       await assertNoPendingFullRefreshImpl();
       assertSameDistributionOwnership(distribution, confirmedDistribution);
@@ -2571,6 +2600,9 @@ export async function purgePickerMux({
       await revalidateBackupsImpl(backupInventory);
       await revalidateRuntimeImpl(runtimeInventory);
       await revalidateConfigImpl(configOwnership);
+      await revalidateUsageImpl(usageStoreInventory, {
+        directory: path.join(distributionPaths.applicationDirectory, "usage"),
+      });
       if (restoreNative) await revalidateNativeConfigImpl(nativeRestorationReceipt);
       const confirmedProviderIds = await listProviderIdsImpl({
         registryPath: paths.keychainRegistryPath,
@@ -2600,6 +2632,9 @@ export async function purgePickerMux({
                 await assertCodexDesktopClosed(desktopRunningImpl);
                 await revalidateNativeConfigImpl(nativeRestorationReceipt, { readBackupImpl: readBackup });
               }
+              await revalidateUsageImpl(usageStoreInventory, {
+                directory: path.join(distributionPaths.applicationDirectory, "usage"),
+              });
               // Keychain values are deliberately never read, so a successful
               // deletion cannot be recreated. Perform every receipt check and
               // reversible quarantine first. On a partial deletion failure,
@@ -2669,6 +2704,28 @@ export async function purgePickerMux({
         throw error;
       }
 
+      let usage;
+      try {
+        // Service shutdown has completed and flushed queued observations. The
+        // original exact proof still owns cleanup; a late change needs review.
+        usage = await removeUsageImpl(usageStoreInventory);
+      } catch (cause) {
+        const error = new Error(
+          "PickerMux full uninstall could not verify usage cleanup; the CLI will be retained for recovery",
+          { cause },
+        );
+        error.code = "PICKERMUX_PURGE_INCOMPLETE";
+        throw error;
+      }
+      if (usage.cleanupPendingPath) {
+        const error = new Error(
+          `PickerMux full uninstall stopped with private cleanup pending at ${usage.cleanupPendingPath}; the CLI will be retained for recovery`,
+        );
+        error.code = "PICKERMUX_PURGE_INCOMPLETE";
+        error.cleanupPendingPath = usage.cleanupPendingPath;
+        throw error;
+      }
+
       let installDirectoryRemoved = false;
       try {
         await rmdirImpl(paths.installDirectory);
@@ -2690,6 +2747,7 @@ export async function purgePickerMux({
         credentials: Object.freeze(credentials),
         backups,
         registry,
+        usage,
         installDirectoryRemoved,
       };
     },
@@ -3462,6 +3520,13 @@ export async function runPickerMuxCompanion(argv, {
         assertNoPendingFullRefreshImpl: noRecovery,
       });
     },
+    async "usage-reset"() {
+      const usage = await createUsageStore({
+        directory: path.join(distributionPaths.applicationDirectory, "usage"),
+      }).resetCumulative();
+      if (usage.status !== "available" || !usage.resetAt) throw new CompanionControlError("ACTION_FAILED");
+      return { status: "reset", resetAt: usage.resetAt, lastRequestPreserved: true };
+    },
     "uninstall-preview"() {
       return previewUninstallImpl({ paths, distributionPaths, sourceRoot, desktopRunningImpl, assertNoPendingFullRefreshImpl: noRecovery });
     },
@@ -3629,11 +3694,16 @@ export async function runCli(argv, {
       assertNoPendingFullRefreshImpl: assertNoPendingFullRefreshLocked,
     });
     if (options.json) printJson(result);
-    else process.stdout.write(
-      result.changed
-        ? "Historical model_bridge chats can be reopened. Select a native model before sending a new turn.\n"
-        : "Historical model_bridge chat compatibility is already present. Select a native model before sending a new turn.\n",
-    );
+    else {
+      process.stdout.write(
+        result.changed
+          ? "Historical model_bridge chats can be reopened. Saved chat providers are unchanged.\n"
+          : "Historical model_bridge chat compatibility is already present. Saved chat providers are unchanged.\n",
+      );
+      process.stdout.write(
+        `This restores parsing compatibility only. Native provider recovery: ${HISTORICAL_CHAT_RECOVERY_DOC}\n`,
+      );
+    }
     return result;
   }
   if (options.command === "uninstall") {
@@ -3723,11 +3793,11 @@ export async function runCli(argv, {
       );
       if (!options.purge && historicalCompatibility) {
         process.stdout.write(
-          "An inert model_bridge table remains so historical chats open. Select a native model before sending a new turn.\n",
+          "An inert model_bridge table remains so historical chats open; it cannot serve new turns.\n",
         );
       }
       process.stdout.write(
-        "Fully quit and reopen Codex Desktop after removal. In existing PickerMux chats, select a native model before sending; the removed bridge cannot serve new turns.\n",
+        `Fully quit and reopen Codex Desktop after removal. Changing the selected model may leave an existing chat on model_bridge.\nNative provider recovery: ${HISTORICAL_CHAT_RECOVERY_DOC}\n`,
       );
       if (options.removeCli && result.removed.cleanupPendingPath) {
         process.stderr.write(
