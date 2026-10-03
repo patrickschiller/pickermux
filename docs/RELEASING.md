@@ -42,7 +42,7 @@ https://github.com/patrickschiller/pickermux/releases/latest/download/PickerMux-
 The release tag still makes a download immutable:
 
 ```text
-https://github.com/patrickschiller/pickermux/releases/download/v0.22.1/PickerMux-macos-universal.dmg
+https://github.com/patrickschiller/pickermux/releases/download/v0.22.2/PickerMux-macos-universal.dmg
 ```
 
 The build retains its versioned DMG, app archive, backend manifest, companion
@@ -65,9 +65,9 @@ key available to `codesign`; the profile must already be usable by `notarytool`.
 Use fresh output directories, since the tools refuse to replace existing ones:
 
 ```bash
-node scripts/build-companion.mjs --release --output /tmp/pickermux-signed-0.22.1
-node scripts/prepare-dmg-release.mjs --source /tmp/pickermux-signed-0.22.1 --output /tmp/pickermux-public-0.22.1 --tag v0.22.1
-node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.22.1 --tag v0.22.1
+node scripts/build-companion.mjs --release --output /tmp/pickermux-signed-0.22.2
+node scripts/prepare-dmg-release.mjs --source /tmp/pickermux-signed-0.22.2 --output /tmp/pickermux-public-0.22.2 --tag v0.22.2
+node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.22.2 --tag v0.22.2
 ```
 
 The release builder signs and notarizes the app and DMG separately, staples
@@ -117,8 +117,8 @@ maintainer's Mac when using the local production route.
 After the exact approved commit is on main and all gates are ready:
 
 ```bash
-git tag -a v0.22.1 -m "PickerMux v0.22.1"
-git push origin v0.22.1
+git tag -a v0.22.2 -m "PickerMux v0.22.2"
+git push origin v0.22.2
 ```
 
 Watch the workflow through publication. If a candidate is wrong, fix the
@@ -142,10 +142,10 @@ production signing requirements above remain mandatory.
    replace its assets.
 
 ```bash
-node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.22.1 --tag v0.22.1
-gh release create v0.22.1 /tmp/pickermux-public-0.22.1/PickerMux-macos-universal.dmg \
-  --verify-tag --title "PickerMux v0.22.1" \
-  --notes-file /tmp/pickermux-public-0.22.1/release-notes.md
+node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.22.2 --tag v0.22.2
+gh release create v0.22.2 /tmp/pickermux-public-0.22.2/PickerMux-macos-universal.dmg \
+  --verify-tag --title "PickerMux v0.22.2" \
+  --notes-file /tmp/pickermux-public-0.22.2/release-notes.md
 ```
 
 Complete the independent public-download verification below before announcing
@@ -174,6 +174,49 @@ pinned backend upgrades through the existing setup transaction, preserving
 installed provider settings. Cancellation and failed activation must retain
 usable prior state; ordinary removal and deactivation continue using the
 validated installed backend.
+
+## 0.22.2 automatic backend review and explainer acceptance
+
+This patch changes companion review presentation, version guidance, and the
+confirmation flow. The finite backend protocol, pinned preview/apply setup
+transaction, configuration ownership, certification, and rollback contracts
+are unchanged. Source review and injected offline tests cover readiness gates,
+one offer per version pair and app process, cancellation, failure, manual retry,
+and the existing one-confirmation apply path. These checks do not establish an
+actual upgrade of the app or backend on the target Mac; that upgrade has not
+been performed for this candidate. Publication authorization does not authorize
+changing a live target installation. All existing preflight, production signing,
+public verification, and applicable live acceptance gates remain in force.
+
+On an explicitly authorized target, retain the previous installation for
+recovery and record the starting app and backend versions without private data:
+
+1. Replace the app with the reviewed 0.22.2 bundle and reopen it while Codex is
+   running. Confirm the version mismatch and Settings action are visible and
+   that no automatic upgrade review opens or closes Codex.
+2. Quit Codex normally. Once a successful status check confirms an active,
+   validated older backend, ready cache and compatibility, no pending recovery,
+   and an idle operation/confirmation queue, require one automatic review of
+   the existing backend upgrade. Review the proposed versions and setup change.
+3. Cancel that review. Confirm that installed state is unchanged and subsequent
+   checks do not repeat the popup for that pair in the same app process. Retry
+   explicitly through **Settings → Update installed backend…** and cancel that
+   manual review to retain the previous backend for the next check.
+4. Restart PickerMux, require the automatic review again, and confirm it once.
+   This checks that the offer history belongs only to the current app process.
+   Require the existing pinned preview/apply
+   transaction, with no second confirmation, and verify both app and installed
+   backend report 0.22.2. Check preservation of provider configuration, valid
+   certification, and normal status/deactivation/removal authority.
+5. Use isolated injected state to exercise failed activation, blocked cache,
+   recovery or compatibility, and inactive, foreign, or unsafe integrations.
+   Preserve the existing rollback checks; no automatic activation or repeated
+   failure popup may occur. Also test the manual apply path with one confirmation.
+
+The README's 36-second German GIF/MP4 is a synthetic vector explainer of the
+existing request and tool paths. Its source, rendering, media properties, and
+fixed example content were reviewed offline. It contains no captured user
+state and provides no evidence that a live model chose or used a tool correctly.
 
 ## 0.22.1 web and tool-discovery guidance acceptance
 

@@ -66,12 +66,12 @@ Only models that pass their exact certification receive tool access. Copying
 the app alone does not change Codex or install the integration.
 
 For upgrades, download the new DMG, quit PickerMux, and replace its app. App
-and installed backend versions are separate. In the released 0.22.1 app, fully
-quit Codex and choose **Settings → Update installed backend…** to review the
-upgrade. The development companion also presents that review automatically
+and installed backend versions are separate. PickerMux 0.22.2 shows the
+version difference and automatically presents the backend upgrade review
 when an active, verified installation is ready and Codex is fully closed.
-Confirm the review to update the backend while preserving your provider
-configuration. See
+Confirm once to update the backend while preserving your provider
+configuration. **Settings → Update installed backend…** remains available
+for a manual retry and is the upgrade path in 0.22.1. See
 [upgrade details](docs/TECHNICAL_GUIDE.md#installation-and-upgrades).
 
 ## Everyday use

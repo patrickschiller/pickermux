@@ -205,12 +205,12 @@ An older installed CLI can remain the source for safe deactivation and removal.
 ### The app is newer but the installed backend still uses the old version
 
 Copying a new app from the DMG changes the app bundle; the installed CLI and
-bridge need their own reviewed upgrade. In the released 0.22.1 app, fully quit
+bridge need their own reviewed upgrade. In the 0.22.1 app, fully quit
 Codex and choose **Settings → Update installed backend…**. Review the versions
 and confirm the proposed setup. Existing provider configuration and valid
 certifications are preserved through the normal activation and rollback checks.
 
-The development companion presents that review automatically once a successful
+Since 0.22.2, the companion presents that review automatically once a successful
 status check confirms an active, validated integration with an older backend,
 Codex fully closed, ready cache and compatibility checks, no pending recovery,
 and no operation or confirmation in progress. The menu's version guidance and
@@ -222,8 +222,9 @@ After cancellation or a failed upgrade, the automatic popup does not repeat for
 the same app/backend version pair in that app process. Address the reported
 problem and retry manually through Settings. The app does not automatically
 activate an inactive, foreign, or unsafe integration, and it does not quit
-Codex to make an upgrade possible. This automatic review is development
-behavior; it is not included in the released 0.22.1 app.
+Codex to make an upgrade possible. Confirming the review once uses the same
+pinned setup transaction; no second confirmation is required. The 0.22.1 app
+requires the manual Settings review.
 
 If an operation times out or the app closes, recheck status before retrying.
 The recovery helper runs independently once armed. Setup can also retain a

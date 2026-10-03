@@ -11,20 +11,26 @@ published as GitHub Releases.
 
 ## [Unreleased]
 
+## [0.22.2] - 2026-10-03
+
 ### Added
 
-- In the development companion, automatically offer the existing backend
+- Automatically offer the existing backend
   upgrade review when a newer app has a verified older installed backend,
   the integration is active, Codex is fully closed, and status confirms that
   cache, compatibility, recovery, and operation state permit the upgrade.
   One confirmation authorizes the existing pinned configuration preview/apply
   transaction, preserving provider configuration, valid certification, and
   activation rollback. The offer does not quit Codex or apply an update by itself.
-- Show differing app and installed backend versions in the development menu,
+- Show differing app and installed backend versions in the menu,
   with a Settings action available while Codex is running. Offer the automatic
   review once per version pair and app process; cancellation or failure leaves
   **Settings → Update installed backend…** available for a deliberate retry.
   Inactive, foreign, or unsafe integrations are not automatically activated.
+- Add a 36-second German explainer to the README as a looping GIF with an MP4
+  download and a reproducible vector renderer. All model names and views are
+  synthetic examples of the existing routing and certified-tool architecture;
+  the clip contains no captured user state and does not establish live behavior.
 
 ## [0.22.1] - 2026-10-03
 
@@ -877,7 +883,8 @@ confirm the release date before tagging. See the
   paths and file types, refuses root execution and foreign launchers, and
   restores the previous distribution state when activation fails.
 
-[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.22.1...HEAD
+[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.22.2...HEAD
+[0.22.2]: https://github.com/patrickschiller/pickermux/releases/tag/v0.22.2
 [0.22.1]: https://github.com/patrickschiller/pickermux/releases/tag/v0.22.1
 [0.22.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.22.0
 [0.20.1]: https://github.com/patrickschiller/pickermux/releases/tag/v0.20.1

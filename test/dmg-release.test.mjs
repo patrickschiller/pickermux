@@ -206,6 +206,41 @@ test("0.22.1 web guidance patch preserves the signed DMG update contract", async
   }), { code: "UPDATE_INVALID" });
 });
 
+test("0.22.2 automatic review and video retain one immutable DMG update contract", async (t) => {
+  const value = await fixture(t, "0.22.2");
+  const result = await prepareDmgRelease({ ...value, tag: "v0.22.2" });
+  const body = await readFile(path.join(value.outputDirectory, "release-notes.md"), "utf8");
+  assert.match(body, /One confirmation starts the existing upgrade transaction/u);
+  assert.match(body, /never enables an inactive integration or quits Codex/u);
+  assert.match(body, /cancellation or failure suppresses repeated automatic offers/u);
+  assert.match(body, /confirm \*\*Update backend\*\*/u);
+  assert.match(body, /Settings → Update installed backend…/u);
+  assert.match(body, /36-second German explainer.*\/blob\/v0\.22\.2\/README\.md/u);
+  assert.match(body, /A live app\/backend upgrade has not been exercised/u);
+  assert.doesNotMatch(body, /live acceptance passed|automatically installs without confirmation/iu);
+  assert.equal(body.split("pickermux-dmg-release-v1").length, 2);
+  assert.deepEqual(await verifyDmgPublication({ directory: value.outputDirectory, tag: "v0.22.2" }), result);
+  const expectedUrl = `https://github.com/patrickschiller/pickermux/releases/download/v0.22.2/${PICKERMUX_DMG_ASSET}`;
+  const release = {
+    tag_name: "v0.22.2", draft: false, prerelease: false, body,
+    assets: [{ name: PICKERMUX_DMG_ASSET, browser_download_url: expectedUrl }],
+  };
+  for (const currentVersion of ["0.22.0", "0.22.1"]) {
+    assert.deepEqual(await checkForCompanionUpdate({ currentVersion, fetchImpl: async () => Response.json(release) }), {
+      status: "available", distribution: "dmg", currentVersion, targetVersion: "0.22.2",
+      assets: { [PICKERMUX_DMG_ASSET]: expectedUrl }, diskImageSha256: result.sha256,
+    });
+  }
+  for (const mutate of [
+    (candidate) => { candidate.body = dmgReleaseMarker({ version: "0.22.1", sha256: result.sha256 }); },
+    (candidate) => { candidate.assets.push({ name: "explainer.mp4", browser_download_url: `${expectedUrl}/explainer.mp4` }); },
+  ]) {
+    const candidate = structuredClone(release);
+    mutate(candidate);
+    await assert.rejects(checkForCompanionUpdate({ currentVersion: "0.22.1", fetchImpl: async () => Response.json(candidate) }), { code: "UPDATE_INVALID" });
+  }
+});
+
 test("unsigned and Apple Development builds cannot become public releases", async (t) => {
   for (const signing of ["unsigned-development", "apple-development"]) {
     const value = await fixture(t);
