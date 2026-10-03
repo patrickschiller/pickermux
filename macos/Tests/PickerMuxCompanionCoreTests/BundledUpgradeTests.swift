@@ -154,6 +154,46 @@ final class BundledUpgradeTests: XCTestCase {
     XCTAssertEqual(executor.requests.map(\.source), ["bundled"])
     XCTAssertEqual(executor.requests.map(\.action), ["configuration-apply"])
   }
+
+  @MainActor
+  func testAutomaticReviewedUpgradeUsesPinnedSourceAndRevalidatesEveryPhase() async throws {
+    let executor = UpgradeExecutor()
+    let setup = client(executor).bundledSetupClient(appVersion: "0.10.0")
+    var reviews = 0
+    let outcome = try await changePickerMuxIntegration(true, reviewInstalledSetup: true, client: setup,
+      consent: .automaticUpgradeReview) { review in
+        reviews += 1
+        XCTAssertFalse(review.text.contains("also enables"))
+        return true
+      }
+    guard case .completed(let result) = outcome else { return XCTFail("The confirmed active upgrade should complete") }
+    XCTAssertTrue(result.ok)
+    XCTAssertEqual(reviews, 1)
+    XCTAssertEqual(executor.requests.map(\.source), ["bundled", "bundled"])
+    XCTAssertEqual(executor.requests.map(\.action), ["configuration-preview", "configuration-apply"])
+    XCTAssertEqual(executor.installedStatusCalls, 5)
+    XCTAssertEqual(executor.bundledStatusCalls, 5)
+    XCTAssertEqual(executor.requests.last?.token, String(repeating: "b", count: 64))
+  }
+
+  @MainActor
+  func testAutomaticReviewConcurrentUpgradeAndMalformedApplyNeverRetry() async throws {
+    for failure in ["concurrent", "malformed"] {
+      let executor = UpgradeExecutor()
+      let setup = client(executor).bundledSetupClient(appVersion: "0.10.0")
+      do {
+        _ = try await changePickerMuxIntegration(true, reviewInstalledSetup: true, client: setup,
+          consent: .automaticUpgradeReview) { _ in
+            if failure == "concurrent" { executor.installedVersion = "0.10.0" }
+            else { executor.malformedApply = true }
+            return true
+          }
+        XCTFail("A concurrent or indeterminate mutation cannot report success")
+      } catch { XCTAssertEqual(error as? CompanionFailure, .incompatibleProtocol) }
+      XCTAssertEqual(executor.requests.map(\.source), failure == "concurrent" ? ["bundled"] : ["bundled", "bundled"])
+      XCTAssertEqual(executor.requests.map(\.action), failure == "concurrent" ? ["configuration-preview"] : ["configuration-preview", "configuration-apply"])
+    }
+  }
 }
 
 private final class UpgradeExecutor: CompanionExecuting {

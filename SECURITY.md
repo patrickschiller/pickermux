@@ -497,6 +497,18 @@ app's pinned source through the existing setup transaction, preserving the
 installed configuration and rollback checks. Installed service and removal
 authority remain with the validated installed source.
 
+The development companion may automatically present the existing backend
+upgrade review after a successful status check confirms a validated older
+installed source, an active integration, Codex fully closed, ready cache and
+compatibility state, no pending recovery, and an idle operation and confirmation
+queue. Presentation grants no apply authority; one explicit confirmation is
+still required before the pinned preview/apply transaction. It neither quits
+Codex nor automatically activates an inactive, foreign, or unsafe integration.
+Presented version pairs are tracked only in process memory. Cancellation or
+failure suppresses repeated automatic offers for the same pair until the app
+restarts; manual retry retains the same backend checks. This unreleased behavior
+adds no backend action, credential access, or direct Swift filesystem mutation.
+
 The following describes immutable earlier CLI installer releases.
 
 Official end-user installation assets are attached to versioned releases in

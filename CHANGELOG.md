@@ -11,6 +11,21 @@ published as GitHub Releases.
 
 ## [Unreleased]
 
+### Added
+
+- In the development companion, automatically offer the existing backend
+  upgrade review when a newer app has a verified older installed backend,
+  the integration is active, Codex is fully closed, and status confirms that
+  cache, compatibility, recovery, and operation state permit the upgrade.
+  One confirmation authorizes the existing pinned configuration preview/apply
+  transaction, preserving provider configuration, valid certification, and
+  activation rollback. The offer does not quit Codex or apply an update by itself.
+- Show differing app and installed backend versions in the development menu,
+  with a Settings action available while Codex is running. Offer the automatic
+  review once per version pair and app process; cancellation or failure leaves
+  **Settings → Update installed backend…** available for a deliberate retry.
+  Inactive, foreign, or unsafe integrations are not automatically activated.
+
 ## [0.22.1] - 2026-10-03
 
 ### Fixed

@@ -214,6 +214,138 @@ final class IntegrationToggleTests: XCTestCase {
       }
     }
   }
+  private func automaticUpgradeClient(changes: [String: Any] = [:]) throws -> ToggleClient {
+    let bundled = try snapshot(active: true, changes: changes)
+      .allowingOnly([.configurationPreview, .configurationApply], bundledBackend: true)
+    let client = ToggleClient(snapshot: bundled)
+    client.previewResult = try CompanionResult.decode(Data("{\"schemaVersion\":1,\"ok\":true,\"code\":\"COMPLETE\",\"data\":{\"status\":\"pickermux\",\"canApply\":true,\"requiresConfirmation\":true,\"changes\":[\"activate-integration\"],\"previewToken\":\"\(String(repeating: "b", count: 64))\"}}".utf8))
+    return client
+  }
+
+  func testAutomaticUpgradeRequiresOneReviewAndFreshStatusBeforeApply() async throws {
+    let client = try automaticUpgradeClient()
+    var reviews = 0
+    let outcome = try await changePickerMuxIntegration(true, reviewInstalledSetup: true, client: client,
+      consent: .automaticUpgradeReview) { review in
+        reviews += 1
+        XCTAssertEqual(review.title, "Update installed PickerMux backend?")
+        XCTAssertEqual(review.button, "Update backend")
+        XCTAssertTrue(review.text.contains("The app is already updated"))
+        XCTAssertTrue(review.text.contains("backend version 0.9.0"))
+        XCTAssertTrue(review.text.contains("provider settings"))
+        XCTAssertTrue(review.text.contains("live certification"))
+        XCTAssertFalse(review.text.contains("also enables"))
+        XCTAssertEqual(client.statusCalls, 2)
+        return true
+      }
+    guard case .completed(let result) = outcome else { return XCTFail("A confirmed active upgrade should complete") }
+    XCTAssertTrue(result.ok)
+    XCTAssertEqual(reviews, 1)
+    XCTAssertEqual(client.statusCalls, 3)
+    XCTAssertEqual(client.calls.map(\.action), [.configurationPreview, .configurationApply])
+    XCTAssertEqual(client.calls.last?.confirmed, true)
+    XCTAssertEqual(client.calls.last?.previewToken, String(repeating: "b", count: 64))
+  }
+
+  func testAutomaticUpgradeCannotAuthorizeActivationDeactivationOrInitialSetup() async throws {
+    let inactive = try snapshot().allowingOnly([.configurationPreview, .configurationApply], bundledBackend: true)
+    for (enabled, reviewSetup, value) in [
+      (true, true, inactive), (false, true, try automaticUpgradeClient().snapshotValue),
+      (true, false, try automaticUpgradeClient().snapshotValue), (true, true, try snapshot(active: true)),
+    ] {
+      let client = ToggleClient(snapshot: value)
+      let outcome = try await changePickerMuxIntegration(enabled, reviewInstalledSetup: reviewSetup, client: client,
+        consent: .automaticUpgradeReview) { _ in XCTFail("An unsafe automatic offer cannot ask for consent"); return true }
+      guard case .blocked = outcome else { XCTFail("Automatic consent is limited to active upgrades"); continue }
+      XCTAssertTrue(client.calls.isEmpty)
+    }
+    for changes in [
+      ["state": "configuration-conflict"], ["compatibility": ["status": "update-required"]],
+      ["version": "unknown"], ["version": "0.9.0-beta"],
+      ["desktop": ["status": "running"]], ["desktop": ["status": "unknown"]],
+      ["accountCache": ["status": "missing"]], ["recovery": ["status": "pending", "phase": "suspended"]],
+      ["managedConfig": ["status": "modified"]],
+    ] as [[String: Any]] {
+      let client = try automaticUpgradeClient(changes: changes)
+      let outcome = try await changePickerMuxIntegration(true, reviewInstalledSetup: true, client: client,
+        consent: .automaticUpgradeReview) { _ in XCTFail("An unsafe upgrade cannot ask for consent"); return true }
+      guard case .blocked = outcome else { XCTFail("An unsafe upgrade must remain blocked"); continue }
+      XCTAssertTrue(client.calls.isEmpty)
+    }
+  }
+
+  func testAutomaticUpgradeRejectsActivationOrReplacementPreviewsWithoutReview() async throws {
+    for status in ["none", "ollama", "foreign", "conflict"] {
+      let client = try automaticUpgradeClient()
+      client.previewResult = try CompanionResult.decode(Data("{\"schemaVersion\":1,\"ok\":true,\"code\":\"COMPLETE\",\"data\":{\"status\":\"\(status)\",\"canApply\":true,\"requiresConfirmation\":true,\"changes\":[\"activate-integration\"],\"previewToken\":\"\(String(repeating: "b", count: 64))\"}}".utf8))
+      let outcome = try await changePickerMuxIntegration(true, reviewInstalledSetup: true, client: client,
+        consent: .automaticUpgradeReview) { _ in XCTFail("A changed integration must not be offered as an upgrade"); return true }
+      guard case .blocked = outcome else { XCTFail("A foreign or inactive preview must remain blocked"); continue }
+      XCTAssertEqual(client.calls.map(\.action), [.configurationPreview])
+    }
+  }
+
+  func testAutomaticUpgradeBlocksDeactivationOrCodexStartDuringPreviewAndConfirmation() async throws {
+    let changedSnapshots = [
+      try snapshot().allowingOnly([.configurationPreview, .configurationApply], bundledBackend: true),
+      try snapshot(active: true, changes: ["desktop": ["status": "running"]])
+        .allowingOnly([.configurationPreview, .configurationApply], bundledBackend: true),
+    ]
+    for changed in changedSnapshots {
+      let duringPreview = try automaticUpgradeClient()
+      duringPreview.snapshotAfterPreview = changed
+      let previewOutcome = try await changePickerMuxIntegration(true, reviewInstalledSetup: true, client: duringPreview,
+        consent: .automaticUpgradeReview) { _ in XCTFail("Changed preview-time state cannot request consent"); return true }
+      guard case .blocked = previewOutcome else { XCTFail("Changed preview-time state must remain blocked"); continue }
+      XCTAssertEqual(duringPreview.calls.map(\.action), [.configurationPreview])
+      let duringReview = try automaticUpgradeClient()
+      let reviewOutcome = try await changePickerMuxIntegration(true, reviewInstalledSetup: true, client: duringReview,
+        consent: .automaticUpgradeReview) { _ in duringReview.snapshotValue = changed; return true }
+      guard case .blocked = reviewOutcome else { XCTFail("Changed review-time state must remain blocked"); continue }
+      XCTAssertEqual(duringReview.calls.map(\.action), [.configurationPreview])
+      XCTAssertEqual(duringReview.statusCalls, 3)
+    }
+  }
+
+  func testAutomaticUpgradeHonorsDeclinedReviewAndTaskCancellation() async throws {
+    let declined = try automaticUpgradeClient()
+    let outcome = try await changePickerMuxIntegration(true, reviewInstalledSetup: true, client: declined,
+      consent: .automaticUpgradeReview) { _ in false }
+    guard case .cancelled = outcome else { return XCTFail("Automatic upgrade review must honor cancellation") }
+    XCTAssertEqual(declined.calls.map(\.action), [.configurationPreview])
+    XCTAssertEqual(declined.statusCalls, 2)
+    for phase in ["preview", "confirmation"] {
+      let client = try automaticUpgradeClient()
+      client.cancelDuringPreview = phase == "preview"
+      let task = Task {
+        try await changePickerMuxIntegration(true, reviewInstalledSetup: true, client: client,
+          consent: .automaticUpgradeReview) { _ in
+            if phase == "preview" { XCTFail("Cancelled preview cannot request consent") }
+            withUnsafeCurrentTask { $0?.cancel() }
+            return true
+          }
+      }
+      do { _ = try await task.value; XCTFail("Cancelled upgrade cannot apply") }
+      catch { XCTAssertTrue(error is CancellationError) }
+      XCTAssertEqual(client.calls.map(\.action), [.configurationPreview])
+    }
+  }
+
+  func testAutomaticUpgradeReturnsFailedPreviewOrApplyWithoutRetry() async throws {
+    for (phase, code) in [("preview", "PROVIDER_UNAVAILABLE"), ("apply", "PREVIEW_STALE"), ("apply", "SETUP_FAILED")] {
+      let client = try automaticUpgradeClient()
+      let failure = try CompanionResult.decode(Data("{\"schemaVersion\":1,\"ok\":false,\"code\":\"\(code)\"}".utf8))
+      if phase == "preview" { client.previewResult = failure } else { client.mutationResult = failure }
+      var reviews = 0
+      let outcome = try await changePickerMuxIntegration(true, reviewInstalledSetup: true, client: client,
+        consent: .automaticUpgradeReview) { _ in reviews += 1; return true }
+      guard case .completed(let result) = outcome else { XCTFail("The fixed backend failure must be returned"); continue }
+      XCTAssertFalse(result.ok)
+      XCTAssertEqual(result.code, code)
+      XCTAssertEqual(reviews, phase == "preview" ? 0 : 1)
+      XCTAssertEqual(client.calls.map(\.action), phase == "preview" ? [.configurationPreview] : [.configurationPreview, .configurationApply])
+    }
+  }
 }
 
 private final class ToggleClient: CompanionControlling {
@@ -225,6 +357,7 @@ private final class ToggleClient: CompanionControlling {
   var snapshotValue: CompanionSnapshot
   var statusCalls = 0
   var cancelDuringPreview = false
+  var snapshotAfterPreview: CompanionSnapshot?
   var calls = [Call]()
   var previewResult: CompanionResult
   var mutationResult: CompanionResult
@@ -240,6 +373,7 @@ private final class ToggleClient: CompanionControlling {
     if action == .configurationPreview && cancelDuringPreview {
       withUnsafeCurrentTask { $0?.cancel() }
     }
+    if action == .configurationPreview, let snapshotAfterPreview { snapshotValue = snapshotAfterPreview }
     return action == .configurationPreview ? previewResult : mutationResult
   }
 }

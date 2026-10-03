@@ -85,12 +85,24 @@ CLI path if `~/.local/bin` is absent from `PATH`.
 
 For an app upgrade, quit PickerMux before replacing its bundle from the new DMG.
 App and installed CLI/runtime versions are distinct: copying the bundle alone
-does not activate a new installed backend. The new app offers an explicit
-upgrade from its verified bundled payload while Codex is closed and reuses the
-installed provider configuration. Review and authorize the proposed change.
+does not activate a new installed backend. In the released 0.22.1 app, choose
+**Settings → Update installed backend…** while Codex is fully closed to review
+an upgrade from the verified bundled payload. It reuses the installed provider
+configuration. Review and authorize the proposed change.
 PickerMux does not update silently. Valid certifications are preserved; failed
 installation activation restores the previous state. A retained installation
 with incomplete certification is reported separately.
+
+The development companion also presents this review automatically after a
+successful status check finds an active, validated integration with an older
+backend, Codex fully closed, ready cache and compatibility checks, no pending
+recovery, and no other operation or confirmation in progress. Confirming the
+review authorizes the same pinned preview/apply transaction; the offer itself
+does not change the installation or quit Codex. It appears once per app/backend
+version pair in the current app process. Cancellation or failure leaves the
+manual Settings action available for a deliberate retry. While Codex runs,
+the menu shows the version difference and Settings action, and the automatic
+offer waits. Inactive or unsafe integrations are not automatically activated.
 
 Update checks in Settings identify the public DMG release and open its download.
 App replacement happens through the DMG; no separately published CLI archive is

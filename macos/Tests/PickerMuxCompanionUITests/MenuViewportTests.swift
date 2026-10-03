@@ -165,6 +165,26 @@ final class MenuViewportTests: XCTestCase {
     XCTAssertGreaterThan(host.frame.height - scroll.frame.height, 60)
   }
 
+  func testBackendVersionGuidanceKeepsMenuBoundedAndFooterVisible() throws {
+    let controller = CompanionController(pollingEnabled: false, appVersion: "0.22.1")
+    controller.snapshot = try menuSnapshot()
+    XCTAssertTrue(controller.backendUpgradeAvailable)
+    let host = NSHostingView(rootView: CompanionPanel(controller: controller)
+      .background(Color(nsColor: .windowBackgroundColor)).preferredColorScheme(.light))
+    host.appearance = NSAppearance(named: .aqua)
+    settle(host)
+    XCTAssertEqual(host.fittingSize.width, 320, accuracy: 0.5)
+    XCTAssertLessThanOrEqual(host.fittingSize.height, 620)
+    let scroll = try XCTUnwrap(findScrollView(host))
+    XCTAssertGreaterThan(host.frame.height - scroll.frame.height, 60)
+    if let path = ProcessInfo.processInfo.environment["PICKERMUX_BACKEND_UPDATE_PREVIEW_PATH"] {
+      let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+      host.cacheDisplay(in: host.bounds, to: bitmap)
+      let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+      try png.write(to: URL(fileURLWithPath: path), options: .atomic)
+    }
+  }
+
   private func menuSnapshot(providers: [[String: Any]]? = nil) throws -> CompanionSnapshot {
     let syntheticProvider: [String: Any] = [
       "providerId": "lmstudio", "requests": 8, "unavailableRequests": 0,

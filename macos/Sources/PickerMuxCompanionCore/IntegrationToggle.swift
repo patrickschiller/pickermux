@@ -90,6 +90,8 @@ public enum IntegrationToggleOutcome {
 
 public enum IntegrationConsent {
   case review
+  // An offered upgrade requires review and cannot authorize reactivation.
+  case automaticUpgradeReview
   // A deliberate switch or setup-button click is consent for this exact direction.
   case toggleIntent
 }
@@ -107,6 +109,10 @@ public func changePickerMuxIntegration(_ enabled: Bool, reviewInstalledSetup: Bo
   try Task.checkCancellation()
   let snapshot = try await client.status()
   let state = IntegrationToggleState(snapshot: snapshot)
+  let automaticUpgrade = consent == .automaticUpgradeReview
+  if automaticUpgrade {
+    guard enabled, reviewInstalledSetup, canAutomaticallyReviewBackendSetup(snapshot) else { return .blocked }
+  }
   let upgrading = enabled && reviewInstalledSetup && state.needsSetupUpgrade
   guard state.isEnabled != enabled || upgrading else { return .unchanged }
   guard upgrading ? state.canReviewSetup : state.canChange else { return .blocked }
@@ -124,17 +130,40 @@ public func changePickerMuxIntegration(_ enabled: Bool, reviewInstalledSetup: Bo
   let result = try await client.run(.configurationPreview, confirmed: false, previewToken: nil)
   guard result.ok else { return .completed(result) }
   guard let preview = result.preview, preview.canApply, let token = preview.previewToken else { return .blocked }
+  if automaticUpgrade {
+    guard preview.status == "pickermux" else { return .blocked }
+    try Task.checkCancellation()
+    let current = try await client.status()
+    try Task.checkCancellation()
+    guard canAutomaticallyReviewBackendSetup(current) else { return .blocked }
+  }
   let replacing = ["ollama", "foreign"].contains(preview.status)
-  let title = upgrading ? "Update PickerMux setup for this app?" :
+  let title = automaticUpgrade ? "Update installed PickerMux backend?" :
+    upgrading ? "Update PickerMux setup for this app?" :
     snapshot.installation.status == "installed" ? "Enable PickerMux in Codex?" : "Install and enable PickerMux?"
   let replacement = replacing ? "The current picker integration will be replaced after a verified backup. " : ""
-  let upgrade = upgrading ? "This app's verified bundled backend will install its CLI and bridge. If PickerMux is currently off, this also enables it in Codex. " : ""
+  let upgrade = automaticUpgrade ? "The app is already updated. Its verified bundled backend version \(snapshot.version) will update the installed CLI and bridge. " :
+    upgrading ? "This app's verified bundled backend will install its CLI and bridge. If PickerMux is currently off, this also enables it in Codex. " : ""
+  let operation = automaticUpgrade ? "PickerMux will update its active integration so configured provider models remain available alongside native Codex models. " :
+    "PickerMux will install or activate its CLI and bridge so configured provider models appear alongside native Codex models. New installations use LM Studio by default. "
   let review = IntegrationReview(title: title,
-    text: "\(upgrade)\(replacement)PickerMux will install or activate its CLI and bridge so configured provider models appear alongside native Codex models. New installations use LM Studio by default. Existing provider settings are preserved and the earlier configuration remains restorable. Keep Codex fully closed and provider models available. Setup can send live certification test prompts to those models. Reopen Codex after setup finishes.",
-    button: upgrading ? "Update setup" : snapshot.installation.status == "installed" ? "Enable PickerMux" : "Install and enable", preview: preview)
-  if consent == .review {
+    text: "\(upgrade)\(replacement)\(operation)Existing provider settings are preserved and the earlier configuration remains restorable. Keep Codex fully closed and provider models available. Setup can send live certification test prompts to those models. Reopen Codex after setup finishes.",
+    button: automaticUpgrade ? "Update backend" : upgrading ? "Update setup" : snapshot.installation.status == "installed" ? "Enable PickerMux" : "Install and enable", preview: preview)
+  if consent == .review || automaticUpgrade {
     guard await confirm(review) else { return .cancelled }
   }
   try Task.checkCancellation()
+  if automaticUpgrade {
+    let current = try await client.status()
+    try Task.checkCancellation()
+    guard canAutomaticallyReviewBackendSetup(current) else { return .blocked }
+  }
   return .completed(try await client.run(.configurationApply, confirmed: true, previewToken: token))
+}
+
+private func canAutomaticallyReviewBackendSetup(_ snapshot: CompanionSnapshot) -> Bool {
+  let state = IntegrationToggleState(snapshot: snapshot)
+  return snapshot.state == "ready" && snapshot.compatibility.status == "compatible" &&
+    compareCompanionVersions(snapshot.version, snapshot.version) == 0 &&
+    state.needsSetupUpgrade && state.isEnabled && state.canReviewSetup
 }
