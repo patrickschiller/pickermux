@@ -1,6 +1,6 @@
 # PickerMux Architecture
 
-This document describes PickerMux v0.22.1.
+This document describes PickerMux v0.22.2.
 It is intended for contributors, security reviewers, and users who want to
 understand what runs on their Mac.
 
@@ -877,7 +877,7 @@ The private health endpoint remains available with fixed safe status/reason
 enums so the LaunchAgent does not enter a restart loop and diagnostics can
 direct the user to refresh.
 
-Versions 0.6.0 through 0.22.1 use bridge contract
+Versions 0.6.0 through 0.22.2 use bridge contract
 `codex-responses-bridge/p6-v1`.
 The managed publisher emits the search claim only from valid model-bound
 evidence, and the runtime accepts it only on entries generated under that exact
@@ -1012,7 +1012,7 @@ actions remain bound to the installed source; version differences alone do not
 switch their authority. No possibly committed mutation is retried via another
 backend.
 
-In the development companion, a successful status observation can present the
+Since 0.22.2, a successful companion status observation can present the
 existing backend upgrade review automatically. Eligibility requires a
 validated installed source older than the app, an active integration, Codex
 fully closed, ready cache and compatibility state, no pending recovery, and an
@@ -1026,8 +1026,8 @@ pair, while the manual Settings review can retry explicitly. The automatic
 path never activates an inactive, foreign, or unsafe installation or quits
 Codex. User confirmation enters the same pinned preview/apply client described
 above, with fresh backend validation and the existing ownership, configuration,
-certification, lock, and rollback boundaries. This presentation change is
-unreleased; it does not change the finite backend protocol.
+certification, lock, and rollback boundaries. This changes review presentation
+and consent; it does not change the finite backend protocol or setup transaction.
 
 The historical CLI updater checks a fixed GitHub repository and exact versioned assets,
 restricts HTTPS redirects, and bounds downloaded/expanded data. Archive and

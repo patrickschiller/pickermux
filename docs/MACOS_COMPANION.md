@@ -1,6 +1,6 @@
 # macOS companion
 
-PickerMux 0.22.1 includes a SwiftUI menu-bar app with native macOS controls for inspecting and
+PickerMux 0.22.2 includes a SwiftUI menu-bar app with native macOS controls for inspecting and
 operating the existing PickerMux installation. It requires macOS 13 or newer,
 Apple silicon or Intel, and Node.js 22.15.0 or newer. The supported Node
 locations are `/opt/homebrew/bin/node`, `/usr/local/bin/node`, and
@@ -34,9 +34,8 @@ transaction described below. The app does not need to run from the mounted
 image after it has been copied.
 
 For an app upgrade, quit the existing companion before replacing its copied
-bundle with the matching reviewed release. In the released 0.22.1 app, explicitly
-review **Update installed backend** in Settings when the app includes a newer
-backend. The development companion can present the same review automatically
+bundle with the matching reviewed release. PickerMux 0.22.2 presents the existing
+backend upgrade review automatically
 when the installation is ready; see [Updates and app versions](#updates-and-app-versions).
 Setup preserves the installed provider configuration; replacing the app alone
 does not upgrade the CLI or runtime. The live release acceptance includes
@@ -67,7 +66,7 @@ expands below. **Settings…**, **Help…**, and **Quit** appear as separate men
 at the bottom. Bridge actions are offered according to the verified state
 and are disabled while another operation is running.
 
-The development menu also shows when the app includes a newer backend than the
+The menu also shows when the app includes a newer backend than the
 validated installed version, with an action to open Settings. That guidance
 remains visible while Codex is running; completing the upgrade still requires
 Codex to be fully closed.
@@ -407,7 +406,7 @@ integration with Codex stopped. It is available only through the receipt-owned
 installed CLI. The app detects older backends even when both versions are
 labelled 0.9.0; the missing capability marker selects its pinned setup backend
 before any mutation. Confirm setup to upgrade that CLI before deactivating.
-The current 0.22.1 payload installs into its own version directory; the older
+The current 0.22.2 payload installs into its own version directory; the older
 0.9.0 contents are never overwritten to add this feature.
 
 `usage-reset` requires exactly
@@ -459,13 +458,14 @@ closed, ensure its native account cache is ready, and review the setup change.
 Updating an inactive installation also activates it; the confirmation explains
 that setup can send live model-certification prompts.
 
-The development companion automatically presents this existing review after a
+Since 0.22.2, the companion automatically presents this existing review after a
 successful status check only when the installed backend is validated and older
 than the app, the integration is active, Codex is fully closed, the account
 cache and compatibility checks are ready, no recovery is pending, and no other
 operation or confirmation is in progress. It waits while Codex is running and
 does not count that wait as a presented offer. This upgrade path never quits
-Codex. The upgrade starts only after you confirm the review.
+Codex. One confirmation of the review starts the existing pinned preview/apply
+transaction.
 
 The automatic review appears at most once for each app/backend version pair
 within the running app process. Cancelling it or encountering an upgrade failure
@@ -473,8 +473,8 @@ prevents repeated popups for that pair during the same session. Use
 **Settings → Update installed backend…** to retry explicitly after addressing
 the problem. An inactive, foreign, or unsafe integration receives no automatic
 activation offer; the existing manual review remains available when its checks
-permit explicit setup. This automatic offer is development behavior and is not
-part of the released 0.22.1 app.
+permit explicit setup. The 0.22.1 app requires the manual Settings action and
+does not offer the review automatically.
 
 The explicit setup client proves the newer bundled version matches the app,
 validates the installed launcher and pinned backend afresh, and permits only
@@ -504,8 +504,8 @@ node scripts/build-companion.mjs --output /tmp/pickermux-companion-development
 
 Choose a new output directory for each build; the builder refuses to replace
 one. The output contains `PickerMux.app`,
-`PickerMux-v0.22.1-macos-universal.tar.gz`,
-`PickerMux-v0.22.1-macos-universal.dmg`, `companion-manifest.json`, and
+`PickerMux-v0.22.2-macos-universal.tar.gz`,
+`PickerMux-v0.22.2-macos-universal.dmg`, `companion-manifest.json`, and
 `SHA256SUMS`. The universal binary contains `arm64` and `x86_64` slices
 targeting macOS 13. The manifest distinguishes `unsigned-development`,
 `apple-development` and `developer-id-notarized` artifacts and binds the bundled backend manifest,

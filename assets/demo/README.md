@@ -1,6 +1,6 @@
 # PickerMux explainer
 
-A 36-second German animation without audio explains model selection, exact
+A 36-second English animation without audio explains model selection, exact
 provider routing, the response path, and certified web tool calls. The README
 uses the looping GIF for inline playback and links to the MP4. All views and
 model names are synthetic examples; the animation contains no screen capture,
@@ -14,9 +14,9 @@ live model behavior or factual accuracy.
 
 | File | Format |
 | --- | --- |
-| `pickermux-explainer-de.mp4` | 1280 × 720, 36 seconds, H.264/yuv420p, 30 fps, Faststart, no audio |
-| `pickermux-explainer-de.gif` | 960 × 540, 10 fps, looping README animation |
-| `pickermux-explainer-de-poster.png` | 1280 × 720 title frame |
+| `pickermux-explainer-en.mp4` | 1280 × 720, 36 seconds, H.264/yuv420p, 30 fps, Faststart, no audio |
+| `pickermux-explainer-en.gif` | 960 × 540, 10 fps, looping README animation |
+| `pickermux-explainer-en-poster.png` | 1280 × 720 title frame |
 
 The MP4 can also be attached to a GitHub issue or pull request. Keep the GIF
 and video beside this file when using the relative README links.

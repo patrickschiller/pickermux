@@ -40,6 +40,13 @@ const RELEASE_HIGHLIGHTS = Object.freeze({
     "- Preserve original discovery instructions, function identities, tool schemas, certification requirements, search settings, and native routing.",
     "- Verify alias translation and direct-URL calls with offline regression tests. Improved model decisions and factual accuracy still require live validation.",
   ],
+  "0.22.2": [
+    "- Automatically offer the reviewed backend upgrade after replacing the app, once PickerMux is enabled, the installed backend is verified and older, Codex is fully closed, and the installation is ready. One confirmation starts the existing upgrade transaction.",
+    "- Show app and backend versions near the top of the menu, with a direct Settings action. Waiting for Codex to close does not consume the offer; cancellation or failure suppresses repeated automatic offers for the same version pair during that app session. Settings remains available for manual retry.",
+    "- Revalidate active integration before the preview, before the review, and after confirmation. The automatic path never enables an inactive integration or quits Codex; provider settings, exact certification, ownership checks and rollback remain in the existing backend transaction.",
+    "- Add a [36-second English explainer](https://github.com/patrickschiller/pickermux/blob/v0.22.2/README.md) with an inline GIF and downloadable MP4, using synthetic examples to explain model routing and certified web tools.",
+    "- Offline regression tests cover the new review flow, cancellation, changing state and failed apply. The maintainer reported target-Mac acceptance for app startup, cancellation, manual retry and a confirmed backend upgrade to 0.22.2 with provider settings preserved.",
+  ],
 });
 
 function fail() {
@@ -105,6 +112,9 @@ export async function prepareDmgRelease({ sourceDirectory, outputDirectory, tag 
   const sha256 = hash(diskImage);
   if (sha256 !== manifest.diskImage.sha256) fail();
   const highlights = RELEASE_HIGHLIGHTS[version];
+  const upgradeInstructions = version === "0.22.2" ?
+    "Keep Codex fully quit and your provider models available. For an active, verified installation with an older backend, the app automatically offers a review; confirm **Update backend** to apply it. You can also choose **Settings → Update installed backend…** to review or retry the upgrade. " :
+    "Keep Codex fully quit and your provider models available, then choose **Settings → Update installed backend…** when offered to review and apply the bundled backend upgrade. ";
   const notes = `PickerMux ${tag} is distributed as one universal macOS DMG.\n\n` +
     (highlights ? `Changes in ${tag}:\n\n${highlights.join("\n")}\n\n` : "") +
     `Download **${PICKERMUX_DMG_ASSET}**, open it, and drag PickerMux into Applications. ` +
@@ -113,7 +123,7 @@ export async function prepareDmgRelease({ sourceDirectory, outputDirectory, tag 
     `Requires macOS 13 or newer and Node.js 22.15 or newer. Supports Apple silicon and Intel. ` +
     `The app and disk image are Developer ID signed, notarized and stapled.\n\n` +
     `Existing users quit PickerMux, replace the app in Applications, eject the disk image and reopen PickerMux from Applications. ` +
-    `Keep Codex fully quit and your provider models available, then choose **Settings → Update installed backend…** when offered to review and apply the bundled backend upgrade. ` +
+    upgradeInstructions +
     `Custom provider settings are preserved.\n\n` +
     `[App guide](${PICKERMUX_RELEASE_REPOSITORY}/blob/${tag}/README.md) · ` +
     `[Technical guide](${PICKERMUX_RELEASE_REPOSITORY}/blob/${tag}/docs/TECHNICAL_GUIDE.md)\n\n` +

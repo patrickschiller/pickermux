@@ -28,12 +28,12 @@ other local or remote Responses providers use a custom configuration.
 
 *Left: synthetic compact-menu preview with example usage. Right: Codex picker screenshot.*
 
-**See how PickerMux works — 36 seconds, German, no audio.**
+**See how PickerMux works — 36 seconds, English, no audio.**
 
-[![Synthetic animation of PickerMux model selection, exact provider routing, and certified web tools](assets/demo/pickermux-explainer-de.gif)](assets/demo/pickermux-explainer-de.mp4)
+[![How PickerMux works: model selection, exact routing, responses, and certified tool calls (synthetic animation)](assets/demo/pickermux-explainer-en.gif)](assets/demo/pickermux-explainer-en.mp4)
 
 *Synthetic examples explain the model and tool request paths.*
-[Download the MP4](assets/demo/pickermux-explainer-de.mp4) ·
+[Download the MP4](assets/demo/pickermux-explainer-en.mp4) ·
 [Media details and renderer](assets/demo/README.md)
 
 PickerMux is an unofficial community project. It is not affiliated with,
@@ -66,12 +66,12 @@ Only models that pass their exact certification receive tool access. Copying
 the app alone does not change Codex or install the integration.
 
 For upgrades, download the new DMG, quit PickerMux, and replace its app. App
-and installed backend versions are separate. In the released 0.22.1 app, fully
-quit Codex and choose **Settings → Update installed backend…** to review the
-upgrade. The development companion also presents that review automatically
+and installed backend versions are separate. PickerMux 0.22.2 shows the
+version difference and automatically presents the backend upgrade review
 when an active, verified installation is ready and Codex is fully closed.
-Confirm the review to update the backend while preserving your provider
-configuration. See
+Confirm once to update the backend while preserving your provider
+configuration. **Settings → Update installed backend…** remains available
+for a manual retry and is the upgrade path in 0.22.1. See
 [upgrade details](docs/TECHNICAL_GUIDE.md#installation-and-upgrades).
 
 ## Everyday use

@@ -119,11 +119,11 @@ func base(_ ctx: CGContext, _ t: Double) {
   let g = CGGradient(colorsSpace:CGColorSpaceCreateDeviceRGB(),colors:[color("213E4E",0.38).cgColor,color("bg",0).cgColor] as CFArray,locations:[0,1])!
   ctx.drawRadialGradient(g,startCenter:CGPoint(x:1120,y:0),startRadius:0,endCenter:CGPoint(x:1120,y:0),endRadius:650,options:[])
   mark(ctx,64,57,0.9);text("PickerMux",108,39,28,"white",.semibold)
-  text("SO FUNKTIONIERT’S",966,48,15,"muted",.semibold,250,.right)
+  text("HOW IT WORKS",966,48,15,"muted",.semibold,250,.right)
   line(ctx,[CGPoint(x:64,y:96),CGPoint(x:1216,y:96)],"stroke",1,0.65)
-  text("Schema · synthetische Beispiele",64,668,15,"dim")
+  text("Diagram · synthetic examples",64,668,15,"dim")
   text("macOS · Codex Desktop",946,668,15,"dim",.regular,270,.right)
-  let labels=["Auswahl","Routing","Antwort","Tools","PickerMux"]
+  let labels=["Selection","Routing","Response","Tools","PickerMux"]
   let bounds=[0.0,5,13,20,30,36]
   for i in 0..<5 {
     let x=64+Double(i)*233
@@ -134,25 +134,25 @@ func base(_ ctx: CGContext, _ t: Double) {
   _ = labels
 }
 func scene0(_ ctx: CGContext, _ t: Double) {
-  text("Dein Modell.\nDein Codex.",64,163,66,"white",.bold,580)
-  text("Lokale & native Modelle\nim selben Modellpicker.",67,340,27,"muted",.regular,565)
-  pill(ctx,"Einfach auswählen und loslegen.",66,464,392)
+  text("Your model.\nYour Codex.",64,163,66,"white",.bold,580)
+  text("Local & native models\nin one model picker.",67,340,27,"muted",.regular,565)
+  pill(ctx,"Choose your model and get started.",66,464,392)
   let x=680.0,y=153.0,w=536.0
   box(ctx,rect(x,y,w,415),26)
   circle(ctx,x+25,y+27,5,"dim",0.7);circle(ctx,x+43,y+27,5,"dim",0.7);circle(ctx,x+61,y+27,5,"dim",0.7)
   text("Codex Desktop",x+90,y+14,18,"muted",.medium,w-110)
   line(ctx,[CGPoint(x:x+1,y:y+54),CGPoint(x:x+w-1,y:y+54)],"stroke",1)
-  text("Modell auswählen",x+29,y+80,25,"white",.semibold,w-58)
+  text("Select a model",x+29,y+80,25,"white",.semibold,w-58)
   box(ctx,rect(x+22,y+137,w-44,88),17,"bg","stroke")
-  codexIcon(ctx,x+44,y+160);text("Natives Modell",x+101,y+152,21,"white",.medium,w-145)
-  text("Über deinen Codex-Zugang",x+102,y+185,16,"muted",.regular,w-145)
+  codexIcon(ctx,x+44,y+160);text("Native model",x+101,y+152,21,"white",.medium,w-145)
+  text("Through your Codex account",x+102,y+185,16,"muted",.regular,w-145)
   let active=t>1.35
   box(ctx,rect(x+22,y+238,w-44,112),17,active ? "1A383E" : "bg",active ? "mint" : "stroke")
   chipIcon(ctx,x+44,y+264)
-  text("LM Studio · Beispielmodell",x+102,y+253,21,"white",.medium,w-150)
+  text("LM Studio · Example model",x+102,y+253,21,"white",.medium,w-150)
   text("lmstudio/example-model",x+102,y+289,18,active ? "mint" : "muted",.regular,w-145,.left,true)
   if active { check(ctx,x+w-60,y+269) }
-  text("Beispielansicht",x+30,y+374,14,"dim")
+  text("Illustrative interface",x+30,y+374,14,"dim")
   let p=ease((t-0.7)/1.1)
   if t<2.4 {
     let cx=x+365,cy=y+200+82*p
@@ -161,14 +161,14 @@ func scene0(_ ctx: CGContext, _ t: Double) {
   }
 }
 func scene1(_ ctx: CGContext, _ t: Double) {
-  header(ctx,"01 / MODELL AUSWÄHLEN","PickerMux kennt den genauen Weg.","Die Modellauswahl bestimmt den Anbieter.")
+  header(ctx,"01 / CHOOSE A MODEL","Every model has one exact route.","The selected model determines the provider.")
   let local=t>=3.5
-  component(ctx,64,336,235,"Codex Desktop","Deine Oberfläche","blue")
+  component(ctx,64,336,235,"Codex Desktop","Your interface","blue")
   box(ctx,rect(421,336,303,155),22,"172C35","mint")
   mark(ctx,447,370,1.0);text("PickerMux",448,413,29,"white",.semibold,250)
-  text("Exakte Zuordnung",448,455,18,"muted",.regular,250)
-  component(ctx,925,276,291,"Natives Modell","Nativer Codex-Dienst","blue",!local)
-  component(ctx,925,466,291,"LM Studio","Lokales Modell auf deinem Mac","mint",local)
+  text("Exact routing",448,455,18,"muted",.regular,250)
+  component(ctx,925,276,291,"Native model","Native Codex service","blue",!local)
+  component(ctx,925,466,291,"LM Studio","Local model on your Mac","mint",local)
   let left=[CGPoint(x:299,y:413),CGPoint(x:421,y:413)]
   let native=[CGPoint(x:724,y:413),CGPoint(x:804,y:413),CGPoint(x:804,y:353),CGPoint(x:925,y:353)]
   let lm=[CGPoint(x:724,y:413),CGPoint(x:850,y:413),CGPoint(x:850,y:543),CGPoint(x:925,y:543)]
@@ -177,14 +177,14 @@ func scene1(_ ctx: CGContext, _ t: Double) {
   arrow(ctx,lm,"mint",local ? 1 : 0.2)
   let p=(t.truncatingRemainder(dividingBy:2.0))/2.0
   travel(ctx,left,p,"mint");travel(ctx,local ? lm : native,p,local ? "mint" : "blue")
-  pill(ctx,local ? "lmstudio/example-model → LM Studio" : "Native Auswahl → nativer Codex-Dienst",64,275,580,local ? "mint" : "blue")
-  text("Anmeldedaten bleiben beim jeweiligen Anbieter.",65,548,19,"muted",.regular,718)
+  pill(ctx,local ? "lmstudio/example-model → LM Studio" : "Native selection → native Codex service",64,275,580,local ? "mint" : "blue")
+  text("Credentials stay with their intended provider.",65,548,19,"muted",.regular,718)
 }
 func scene2(_ ctx: CGContext, _ t: Double) {
-  header(ctx,"02 / ANTWORT ERHALTEN","Die Antwort kommt zurück.","Das gewählte Modell antwortet in deiner Codex-Oberfläche.")
-  component(ctx,64,304,267,"Codex Desktop","Antwort im Chat","blue")
+  header(ctx,"02 / GET THE RESPONSE","The answer comes back.","The selected model replies in your Codex interface.")
+  component(ctx,64,304,267,"Codex Desktop","Response in chat","blue")
   box(ctx,rect(468,304,304,155),22,"172C35","mint")
-  mark(ctx,492,340,1.0);text("PickerMux",492,382,30,"white",.semibold,260);text("Bridge auf deinem Mac",492,423,18,"muted",.regular,264)
+  mark(ctx,492,340,1.0);text("PickerMux",492,382,30,"white",.semibold,260);text("Bridge on your Mac",492,423,18,"muted",.regular,264)
   component(ctx,931,304,285,"LM Studio","lmstudio/example-model","mint")
   let first=[CGPoint(x:331,y:350),CGPoint(x:468,y:350)]
   let second=[CGPoint(x:772,y:350),CGPoint(x:931,y:350)]
@@ -195,17 +195,17 @@ func scene2(_ ctx: CGContext, _ t: Double) {
   arrow(ctx,return2,"mint",responding ? 1 : 0.16);arrow(ctx,return1,"mint",responding ? 1 : 0.16)
   let p=(t.truncatingRemainder(dividingBy:1.7))/1.7
   if responding { travel(ctx,return2,p,"mint");travel(ctx,return1,p,"mint") } else { travel(ctx,first,p,"blue");travel(ctx,second,p,"blue") }
-  text("Anfrage",348,312,16,"dim",.medium,110,.center);text("Antwort",798,455,16,"mint",.medium,114,.center)
+  text("Request",348,312,16,"dim",.medium,110,.center);text("Response",798,455,16,"mint",.medium,114,.center)
   box(ctx,rect(64,504,1152,107),18,"card",nil)
   circle(ctx,101,543,15,"blue",0.13);codexIcon(ctx,91,533,"blue")
-  text("Du liest die Antwort direkt in Codex.",152,522,25,"white",.semibold,1010)
-  text("Du kannst im selben Picker zwischen lokalem und nativem Modell wechseln.",152,563,19,"muted",.regular,1010)
+  text("Read the response directly in Codex.",152,522,25,"white",.semibold,1010)
+  text("Switch between local and native models in the same picker.",152,563,19,"muted",.regular,1010)
 }
 func scene3(_ ctx: CGContext, _ t: Double) {
-  header(ctx,"03 / WERKZEUGE NUTZEN","Tools: Codex führt aus.","Nur exakt zertifizierte Modelle erhalten Toolzugriff.")
-  component(ctx,64,331,274,"Lokales Modell","Fordert ein Werkzeug an","mint")
-  component(ctx,503,331,274,"Codex Desktop","Führt den Aufruf aus","blue")
-  component(ctx,942,331,274,"Webrecherche","Über den nativen Dienst","violet")
+  header(ctx,"03 / USE TOOLS","Tools: Codex runs the call.","Tool access requires certification for the exact model.")
+  component(ctx,64,331,274,"Local model","Requests a tool","mint")
+  component(ctx,503,331,274,"Codex Desktop","Runs the tool call","blue")
+  component(ctx,942,331,274,"Web research","Via the native service","violet")
   let paths: [[CGPoint]] = [
     [CGPoint(x:338,y:369),CGPoint(x:503,y:369)],
     [CGPoint(x:777,y:369),CGPoint(x:942,y:369)],
@@ -217,24 +217,24 @@ func scene3(_ ctx: CGContext, _ t: Double) {
   for i in 0..<4 { arrow(ctx,paths[i],keys[i],phase==i ? 1 : 0.22) }
   let phaseElapsed=t-Double(phase)*2.2
   if phaseElapsed<2.2 { travel(ctx,paths[phase],clamp(phaseElapsed/1.6),keys[phase]) }
-  let descriptions=["1  Toolaufruf zum Client","2  Codex fragt die Quelle ab","3  Recherche-Ergebnis zurück","4  Das Modell verarbeitet das Ergebnis"]
+  let descriptions=["1  Model requests a tool","2  Codex queries the source","3  Research results return","4  Results go back to the model"]
   pill(ctx,descriptions[phase],64,273,672,keys[phase])
-  text("Aufruf",349,330,15,"muted",.medium,143,.center);text("Webtool",794,330,15,"muted",.medium,126,.center)
-  text("Ergebnis",793,483,15,"muted",.medium,133,.center);text("Ergebnis",347,483,15,"muted",.medium,143,.center)
+  text("Tool call",349,330,15,"muted",.medium,143,.center);text("Web tool",794,330,15,"muted",.medium,126,.center)
+  text("Result",793,483,15,"muted",.medium,133,.center);text("Result",347,483,15,"muted",.medium,143,.center)
   box(ctx,rect(64,535,1152,78),18,"card",nil)
   globe(ctx,89,555)
-  text("Webzugriff braucht Internet und native Codex-Anmeldung.",147,552,22,"white",.medium,1010)
-  text("Tool-Verfügbarkeit und richtige Nutzung hängen auch vom Modell ab.",147,583,17,"muted",.regular,1010)
+  text("Web access needs internet and native Codex sign-in.",147,552,22,"white",.medium,1010)
+  text("Tool availability and correct use also depend on the model.",147,583,17,"muted",.regular,1010)
 }
 func scene4(_ ctx: CGContext, _ t: Double) {
   mark(ctx,452,173,2.4);text("PickerMux",556,139,48,"white",.bold,475)
-  text("Dein Modell.\nDie vertraute Oberfläche.",64,255,56,"white",.bold,1152,.center)
+  text("Your model.\nThe familiar interface.",64,255,56,"white",.bold,1152,.center)
   let p=ease(t/0.7)
   ctx.saveGState();ctx.setAlpha(p)
-  pill(ctx,"Ein Picker",220,454,244,"mint");pill(ctx,"Klare Wege",518,454,244,"blue");pill(ctx,"Geprüfte Tools",816,454,244,"violet")
+  pill(ctx,"One picker",220,454,244,"mint");pill(ctx,"Exact routing",518,454,244,"blue");pill(ctx,"Certified tools",816,454,244,"violet")
   ctx.restoreGState()
-  text("Ein unabhängiges Community-Projekt.",64,539,21,"muted",.medium,1152,.center)
-  text("Nicht mit OpenAI, Codex oder LM Studio verbunden oder von ihnen unterstützt.",64,576,17,"muted",.regular,1152,.center)
+  text("An independent community project.",64,539,21,"muted",.medium,1152,.center)
+  text("Not affiliated with, endorsed by, or supported by OpenAI, Codex, or LM Studio.",64,576,17,"muted",.regular,1152,.center)
 }
 let frameBytes = width * height * 4
 let buffer = UnsafeMutableRawPointer.allocate(byteCount: frameBytes, alignment: 64)
