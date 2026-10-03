@@ -80,10 +80,13 @@ test("projects exactly one client tool_search into one deterministic LM function
 
   assert.equal(first.tools.length, 2);
   assert.strictEqual(first.tools[0], direct);
+  assert.match(first.tools[1].description, /^Tool discovery \(Codex tool_search\)\./u);
+  assert.match(first.tools[1].description, /Find and load available tools/u);
+  assert.ok(first.tools[1].description.endsWith(`\n\n${sourceSearch.description}`));
   assert.deepEqual(first.tools[1], {
     type: "function",
     name: first.codec.wireName,
-    description: sourceSearch.description,
+    description: first.tools[1].description,
     parameters: sourceSearch.parameters,
   });
   assert.match(
@@ -91,7 +94,39 @@ test("projects exactly one client tool_search into one deterministic LM function
     new RegExp(`^${EFFICIENT_FIDELITY_WIRE_PREFIX}[0-9a-f]{56}$`, "u"),
   );
   assert.equal(first.codec.wireName, second.codec.wireName);
+  assert.equal(
+    first.codec.wireName,
+    "mbts_65ff999e306b364ce4c892df80608bdb91cd2ec18e3d58711b886017",
+  );
   assert.deepEqual(source, [direct, sourceSearch]);
+});
+
+test("discovery guidance preserves caller descriptions and does not advertise deferred tools", () => {
+  for (const description of [undefined, "", "\n", "Werkzeuge: öffnen und suchen. 🔎\nKeep original policy."]) {
+    const source = [loadedFunction(), searchTool({ description })];
+    const original = structuredClone(source);
+    const projection = projectClientToolSearch(source, { toolChoice: "auto" });
+    assert.equal(projection.tools.length, 1);
+    const discovery = projection.tools[0];
+    assert.match(discovery.description, /^Tool discovery \(Codex tool_search\)\./u);
+    assert.match(discovery.description, /not currently loaded/u);
+    assert.match(discovery.description, /before declaring it unavailable/u);
+    assert.match(discovery.description, /advertised name/u);
+    if (description !== undefined) {
+      assert.ok(discovery.description.endsWith(`\n\n${description}`));
+    } else {
+      assert.doesNotMatch(discovery.description, /undefined|null/u);
+    }
+    assert.deepEqual(discovery.parameters, source[1].parameters);
+    assert.deepEqual(source, original);
+    assert.doesNotMatch(JSON.stringify(projection.tools), /workspace_read/u);
+  }
+  for (const description of [null, false, {}, []]) {
+    assertEfficientError(
+      () => projectClientToolSearch([searchTool({ description })], { toolChoice: "auto" }),
+      { code: "INVALID_TOOL_SEARCH", statusCode: 400 },
+    );
+  }
 });
 
 test("allocates around a real function collision without confusing its calls", () => {
@@ -182,7 +217,7 @@ test("requires the explicit auto tool choice and rejects malformed defer flags",
   const fallback = projectClientToolSearch([
     searchTool({ description: undefined }),
   ], { toolChoice: "auto" });
-  assert.match(fallback.tools[0].description, /^Search for only/u);
+  assert.match(fallback.tools[0].description, /^Tool discovery \(Codex tool_search\)\./u);
 
   assertEfficientError(
     () => projectClientToolSearch([searchTool()], {
@@ -329,15 +364,18 @@ test("accepts only the canonical semantic tool-search parameter schema", () => {
 });
 
 test("accepts Codex-sized public search descriptions without relaxing loaded tools", () => {
-  const searchDescription = "s".repeat(512 * 1024);
+  const maxSearchDescriptionBytes = 513 * 1024;
+  const searchDescription = "s".repeat(maxSearchDescriptionBytes - 2) + "ü";
   const projection = projectClientToolSearch([
     searchTool({ description: searchDescription }),
   ], { toolChoice: "auto" });
-  assert.equal(projection.tools[0].description, searchDescription);
+  assert.ok(projection.tools[0].description.endsWith(`\n\n${searchDescription}`));
+  assert.equal(Buffer.byteLength(searchDescription), maxSearchDescriptionBytes);
+  assert.match(projection.tools[0].description, /^Tool discovery \(Codex tool_search\)\./u);
 
   assertEfficientError(
     () => projectClientToolSearch([
-      searchTool({ description: "s".repeat(514 * 1024) }),
+      searchTool({ description: `${searchDescription}s` }),
     ], { toolChoice: "auto" }),
     { code: "INVALID_TOOL_SEARCH", statusCode: 400 },
   );

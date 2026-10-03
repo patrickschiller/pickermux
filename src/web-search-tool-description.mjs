@@ -9,7 +9,8 @@ const UPSTREAM_DESCRIPTION_LENGTH = 7507;
 const UPSTREAM_DESCRIPTION_SHA256 =
   "1f3879b44690eb7aad9ba97351acda16c4d0c26847bcb4af2964d5989404407e";
 
-const COMPACT_DESCRIPTION = `Internet access: search_query, image_query, open, click, find, screenshot (PDF pages), finance, weather, sports, and time. Use the supplied parameter schema.
+const COMPACT_DESCRIPTION = `Codex web.run internet tool. Call its advertised function name, even when renamed by the bridge. Operations are parameters, not separate tools: search_query, image_query, open, click, find, screenshot (PDF pages), finance, weather, sports, and time. Use the supplied parameter schema.
+open.ref_id accepts a full URL or result ID: {"open":[{"ref_id":"https://example.org/source"}]}. find searches text within a page.
 
 Efficiency: batch independent queries/operations in one call. response_length controls result count; omit for short. Omit unneeded optional parameters, empty lists, and nulls. At most 4 search_query entries per call; 4 require response_length medium or long. After an accidental web.run call, send {"search_query":[{"q":""}]}.
 

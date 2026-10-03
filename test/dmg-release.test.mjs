@@ -172,6 +172,40 @@ test("0.22.0 publication combines menu, usage, recovery and experimental voice c
   }
 });
 
+test("0.22.1 web guidance patch preserves the signed DMG update contract", async (t) => {
+  const value = await fixture(t, "0.22.1");
+  const result = await prepareDmgRelease({ ...value, tag: "v0.22.1" });
+  const body = await readFile(path.join(value.outputDirectory, "release-notes.md"), "utf8");
+  assert.match(body, /Changes in v0\.22\.1/u);
+  assert.match(body, /Codex web\.run.*advertised function alias/u);
+  assert.match(body, /source URL directly with open\.ref_id/u);
+  assert.match(body, /open and find are parameters/u);
+  assert.match(body, /find and load a needed tool before declaring it unavailable/u);
+  assert.match(body, /Preserve original discovery instructions.*certification requirements/u);
+  assert.match(body, /offline regression tests.*still require live validation/u);
+  assert.doesNotMatch(body, /live acceptance passed|guarantee(?:d|s)? factual accuracy/iu);
+  assert.equal(body.split("pickermux-dmg-release-v1").length, 2);
+  assert.deepEqual(await verifyDmgPublication({ directory: value.outputDirectory, tag: "v0.22.1" }), result);
+  const expectedUrl = `https://github.com/patrickschiller/pickermux/releases/download/v0.22.1/${PICKERMUX_DMG_ASSET}`;
+  const release = {
+    tag_name: "v0.22.1", draft: false, prerelease: false, body,
+    assets: [{ name: PICKERMUX_DMG_ASSET, browser_download_url: expectedUrl }],
+  };
+  assert.deepEqual(await checkForCompanionUpdate({
+    currentVersion: "0.22.0",
+    fetchImpl: async () => Response.json(release),
+  }), {
+    status: "available", distribution: "dmg", currentVersion: "0.22.0", targetVersion: "0.22.1",
+    assets: { [PICKERMUX_DMG_ASSET]: expectedUrl }, diskImageSha256: result.sha256,
+  });
+  const mismatched = structuredClone(release);
+  mismatched.body = dmgReleaseMarker({ version: "0.22.0", sha256: result.sha256 });
+  await assert.rejects(checkForCompanionUpdate({
+    currentVersion: "0.22.0",
+    fetchImpl: async () => Response.json(mismatched),
+  }), { code: "UPDATE_INVALID" });
+});
+
 test("unsigned and Apple Development builds cannot become public releases", async (t) => {
   for (const signing of ["unsigned-development", "apple-development"]) {
     const value = await fixture(t);

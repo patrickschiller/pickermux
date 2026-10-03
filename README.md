@@ -123,6 +123,8 @@ See [removal details](docs/TECHNICAL_GUIDE.md#deactivation-and-removal).
 - Tool capabilities are certified for each model and configuration.
 - LM Studio supports loaded-model discovery, deferred tool schemas, and local
   context compaction; other Responses providers use explicit model allowlists.
+- Tool descriptions explain how LM Studio's translated web tool opens source
+  URLs and how to discover missing tools; factual accuracy depends on the model.
 - Install, refresh, recovery, and removal use verified ownership and rollback.
 - The SwiftUI app bundles the Node.js backend, with no third-party runtime npm
   dependencies. Node.js remains an external prerequisite.

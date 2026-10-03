@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import { compactWebSearchToolDescription } from "../src/web-search-tool-description.mjs";
+import { validateWebSearchRequest } from "../src/web-search-wire.mjs";
 
 const upstreamDescription = await readFile(
   new URL("./fixtures/web-search-tool-description/web_run_description.md", import.meta.url),
@@ -56,6 +57,20 @@ test("retains the search obligations, exceptions, citation rules, and numeric so
   ]) {
     assert.ok(result.includes(required), `Missing reviewed policy clause: ${required}`);
   }
+});
+
+test("explains the web identity, advertised alias, and direct URL operations", () => {
+  const result = compact();
+  assert.match(result, /Codex web\.run internet tool/u);
+  assert.match(result, /Call its advertised function name/u);
+  assert.match(result, /Operations are parameters, not separate tools/u);
+  assert.match(result, /open\.ref_id accepts a full URL or result ID/u);
+  assert.match(result, /find searches text within a page/u);
+
+  const example = JSON.parse(result.match(/\{"open":\[.*?\]\}/u)[0]);
+  assert.deepEqual(example, { open: [{ ref_id: "https://example.org/source" }] });
+  const request = { id: "session-example", model: "example-model", commands: example };
+  assert.strictEqual(validateWebSearchRequest(request), request);
 });
 
 test("preserves every unknown or edited description including equal-length policy changes", () => {

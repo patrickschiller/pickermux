@@ -2,8 +2,10 @@ import { createHash } from "node:crypto";
 
 const CODEC_BRAND = Symbol("PickerMux efficient fidelity codec");
 const WIRE_PREFIX = "mbts_";
-const FALLBACK_SEARCH_DESCRIPTION =
-  "Search for only the tools needed to continue the task.";
+const TOOL_DISCOVERY_DESCRIPTION =
+  "Tool discovery (Codex tool_search). Find and load available tools for the next turn. " +
+  "If a needed tool is not currently loaded, search for it here before declaring it unavailable. " +
+  "Call this function by its advertised name.";
 const SEARCH_RESULT_OUTPUT = "Selected tools are now available.";
 const DEFAULT_LIMITS = Object.freeze({
   maxArgumentBytes: 64 * 1024,
@@ -758,10 +760,13 @@ export function projectClientToolSearch(tools, options) {
 
   const occupied = collectOccupiedNames(tools);
   const wireName = allocateWireName(searchTool, occupied);
+  // Explain the synthetic alias without changing its identity or caller policy.
   const syntheticTool = {
     type: "function",
     name: wireName,
-    description: searchTool.description ?? FALLBACK_SEARCH_DESCRIPTION,
+    description: searchTool.description === undefined
+      ? TOOL_DISCOVERY_DESCRIPTION
+      : `${TOOL_DISCOVERY_DESCRIPTION}\n\n${searchTool.description}`,
     parameters: searchTool.parameters,
   };
   const projected = tools

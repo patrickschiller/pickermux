@@ -796,6 +796,24 @@ then restart Codex. Do not force-enable tool flags. Efficient Fidelity's
 tool-inventory search is a different capability; a valid Direct-certified
 model can use `web.run` without passing its optional deferred-tool probe.
 
+If the model says it cannot open a link, check whether an actual web tool call
+ran and whether it returned an error. LM Studio sees translated function names;
+the reviewed web description identifies `web.run` and directs the model to its
+advertised alias. `open` and `find` are operations of that one tool, not separate
+tools. A direct URL is valid in `open.ref_id`, as is a previous result ID.
+With Efficient Fidelity, a missing deferred tool must be found and loaded again
+through tool discovery; a previous search or compacted summary is insufficient.
+The discovery description explains that step while preserving Codex's original
+description. Try an instruction that does not depend on the translated name:
+
+> Use the available web tool to open this source URL and verify the requested
+> figures from its text. If the tool is missing, discover and load it first.
+> Report an actual tool error if retrieval fails; do not guess the figures.
+
+Substitute the public source URL and requested figures in the message. A model's
+statement that a tool is unavailable alone does not establish which schemas
+were supplied or whether a retrieval failed.
+
 An existing `features.standalone_web_search = false`, `web_search = "disabled"`,
 or managed search restriction is respected. Check user-owned settings without
 changing PickerMux's marked blocks. `WEB_SEARCH_CONFIG_CONFLICT` can indicate

@@ -1,6 +1,6 @@
 # PickerMux Architecture
 
-This document describes PickerMux v0.22.0.
+This document describes PickerMux v0.22.1.
 It is intended for contributors, security reviewers, and users who want to
 understand what runs on their Mac.
 
@@ -159,8 +159,11 @@ bridge does not cache, summarize, truncate, or duplicate search output.
 One public `web.run` description is compacted only when namespace, name, text
 length, and SHA-256 match the reviewed fixture. The replacement preserves all
 search obligations, citation rules, source limits, and exceptions while
-reducing 7,507 UTF-8 bytes to 3,475. Unknown or edited text remains unchanged;
-tool parameters and loading policy are never inferred from this match.
+reducing 7,507 UTF-8 bytes to 3,733. It identifies Codex's `web.run` while
+directing the model to call its advertised function alias, explains that
+operations such as `open` and `find` are parameters, and includes a direct-URL
+opening example. Unknown or edited text remains unchanged; tool parameters
+and loading policy are never inferred from this match.
 
 The protocol is experimental. Native search/open smoke checks, full model
 certification, and external-model search with a correct sourced answer have
@@ -433,6 +436,13 @@ prefill without reducing the Codex harness. It does not replace Codex with a
 PickerMux agent, broker, planner, or tool executor. Codex remains responsible
 for its complete instruction stack and conversation, deferred-tool search,
 sandbox and approval policy, tool execution, and result delivery.
+
+The synthetic search function prepends a fixed tool-discovery explanation to
+the caller's validated description, which remains intact. It tells the model
+to find and load a missing tool and call the advertised function name. The
+function alias is still derived from the original validated definition; this
+guidance changes neither selected schemas nor execution authority. The input
+description and final outbound request keep their existing size bounds.
 
 ```mermaid
 sequenceDiagram
@@ -867,7 +877,7 @@ The private health endpoint remains available with fixed safe status/reason
 enums so the LaunchAgent does not enter a restart loop and diagnostics can
 direct the user to refresh.
 
-Versions 0.6.0 through 0.22.0 use bridge contract
+Versions 0.6.0 through 0.22.1 use bridge contract
 `codex-responses-bridge/p6-v1`.
 The managed publisher emits the search claim only from valid model-bound
 evidence, and the runtime accepts it only on entries generated under that exact

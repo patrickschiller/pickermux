@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import http from "node:http";
 import test from "node:test";
 
@@ -342,7 +343,133 @@ test("Efficient Fidelity accepts Codex-sized search source descriptions", async 
   const projectedSearch = harness.requests[0].body.tools.find(
     (tool) => tool.name?.startsWith("mbts_"),
   );
-  assert.equal(projectedSearch.description, description);
+  assert.match(projectedSearch.description, /^Tool discovery \(Codex tool_search\)\./u);
+  assert.match(projectedSearch.description, /search for it here before declaring it unavailable/u);
+  assert.match(projectedSearch.description, /advertised name/u);
+  assert.equal(projectedSearch.description.split("\n\n").slice(1).join("\n\n"), description);
+});
+
+test("Efficient Fidelity discovers web.run, preserves its schema, and restores only advertised calls", async (t) => {
+  const description = await readFile(
+    new URL("./fixtures/web-search-tool-description/web_run_description.md", import.meta.url),
+    "utf8",
+  );
+  const parameters = {
+    type: "object",
+    properties: {
+      open: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: { ref_id: { type: "string" } },
+          required: ["ref_id"],
+          additionalProperties: false,
+        },
+      },
+      find: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: { ref_id: { type: "string" }, pattern: { type: "string" } },
+          required: ["ref_id", "pattern"],
+          additionalProperties: false,
+        },
+      },
+    },
+    additionalProperties: false,
+  };
+  const selectedTool = {
+    type: "namespace",
+    name: "web",
+    tools: [{
+      type: "function",
+      name: "run",
+      description,
+      parameters,
+      defer_loading: true,
+    }],
+  };
+  const originalTool = structuredClone(selectedTool);
+  const searchDescription = "Find the internet tool for opening a source URL.";
+  const openArguments = '{"open":[{"ref_id":"https://example.org/source"}]}';
+  const harness = await createHarness(t, {
+    respond({ body, index, response }) {
+      if (index === 0) {
+        jsonResponse(response, {
+          output: [{
+            type: "function_call",
+            name: body.tools.find((tool) => tool.name?.startsWith("mbts_"))?.name,
+            call_id: "call-discover-web",
+            status: "completed",
+            arguments: '{"query":"open a web source URL","limit":1}',
+          }],
+        });
+        return;
+      }
+      jsonResponse(response, {
+        output: [{
+          type: "function_call",
+          name: index === 1
+            ? body.tools.find((tool) => tool.name?.startsWith("mbns_"))?.name
+            : "web.run",
+          call_id: "call-open-source",
+          status: "completed",
+          arguments: openArguments,
+        }],
+      });
+    },
+  });
+  const request = efficientRequest({
+    tools: [selectedTool, searchTool({ description: searchDescription })],
+  });
+  const discovery = await requestProxy({ port: harness.port, body: request });
+  assert.equal(discovery.statusCode, 200);
+  const [searchCall] = JSON.parse(discovery.body).output;
+  assert.equal(searchCall.type, "tool_search_call");
+  const [discoveryTool] = harness.requests[0].body.tools;
+  assert.match(discoveryTool.name, /^mbts_[0-9a-f]{56}$/u);
+  assert.match(discoveryTool.description, /search for it here before declaring it unavailable/u);
+  assert.ok(discoveryTool.description.endsWith(`\n\n${searchDescription}`));
+  assert.deepEqual(discoveryTool.parameters, request.tools[1].parameters);
+
+  const replay = {
+    ...request,
+    input: [
+      ...fullHarnessInput(),
+      searchCall,
+      {
+        type: "tool_search_output",
+        execution: "client",
+        call_id: searchCall.call_id,
+        status: "completed",
+        tools: [selectedTool],
+      },
+    ],
+  };
+  const result = await requestProxy({ port: harness.port, body: replay });
+  assert.equal(result.statusCode, 200);
+  const wireTool = harness.requests[1].body.tools.find((tool) => tool.name?.startsWith("mbns_"));
+  assert.match(wireTool.name, /^mbns_[0-9a-f]{56}$/u);
+  assert.match(wireTool.description, /web\.run/u);
+  assert.match(wireTool.description, /advertised (?:function )?name/u);
+  assert.match(wireTool.description, /"open"\s*:\s*\[\s*\{\s*"ref_id"\s*:\s*"https:\/\/[^" ]+"/u);
+  assert.deepEqual(wireTool.parameters, parameters);
+  assert.equal(Object.hasOwn(wireTool, "defer_loading"), false);
+  assert.deepEqual(JSON.parse(result.body).output, [{
+    type: "function_call",
+    namespace: "web",
+    name: "run",
+    call_id: "call-open-source",
+    status: "completed",
+    arguments: openArguments,
+  }]);
+  assert.deepEqual(selectedTool, originalTool);
+
+  const unadvertised = await requestProxy({ port: harness.port, body: replay });
+  assert.equal(unadvertised.statusCode, 502);
+  assert.equal(JSON.parse(unadvertised.body).error.code, "UPSTREAM_RESPONSE_ERROR");
+  assert.doesNotMatch(unadvertised.body.toString("utf8"), /web\.run|example\.org|call-open-source/u);
+  assert.equal(harness.requests.length, 3);
 });
 
 test("Efficient Fidelity full replay injects only the selected namespace tool and restores its identity", async (t) => {
