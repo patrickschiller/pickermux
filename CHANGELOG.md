@@ -11,6 +11,19 @@ published as GitHub Releases.
 
 ## [Unreleased]
 
+## [0.22.1] - 2026-10-03
+
+### Fixed
+
+- Clarify the reviewed web tool description for LM Studio's translated function
+  names: identify canonical `web.run`, call the advertised alias, and use
+  `open.ref_id` with a source URL or result ID. Explain that `open` and `find`
+  are operations of that tool.
+- Explain finding and loading missing tools in Efficient Fidelity's discovery
+  description while preserving Codex's original description. Tool schemas,
+  certification grants, and native routing remain unchanged. This guidance does
+  not guarantee correct facts or successful retrieval; live acceptance is pending.
+
 ## [0.22.0] - 2026-10-02
 
 This release includes the menu, durable usage, and configuration recovery work
@@ -849,7 +862,8 @@ confirm the release date before tagging. See the
   paths and file types, refuses root execution and foreign launchers, and
   restores the previous distribution state when activation fails.
 
-[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.22.0...HEAD
+[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.22.1...HEAD
+[0.22.1]: https://github.com/patrickschiller/pickermux/releases/tag/v0.22.1
 [0.22.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.22.0
 [0.20.1]: https://github.com/patrickschiller/pickermux/releases/tag/v0.20.1
 [0.20.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.20.0

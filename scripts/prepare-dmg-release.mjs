@@ -34,6 +34,12 @@ const RELEASE_HIGHLIGHTS = Object.freeze({
     "- Explain Reconnecting in historical chats after deactivation or uninstall: fully restart Codex and review the saved chat provider. Changing the selected model can leave an existing chat on model_bridge; saved chat providers are unchanged.",
     "- Add experimental GPT-Live WebRTC bootstrap support for the reviewed POST /v1/live request. OpenAI receives voice audio and conversation context; delegated tasks retain the selected Responses model, including certified local models. A compatible Codex client, native account and voice access, and target-Mac voice acceptance are required; bridge WebSocket upgrades remain unsupported.",
   ],
+  "0.22.1": [
+    "- Clarify the reviewed internet tool description for local models: identify Codex web.run, call the advertised function alias, and open a source URL directly with open.ref_id.",
+    "- Explain that open and find are parameters of the internet tool, and guide tool discovery to find and load a needed tool before declaring it unavailable.",
+    "- Preserve original discovery instructions, function identities, tool schemas, certification requirements, search settings, and native routing.",
+    "- Verify alias translation and direct-URL calls with offline regression tests. Improved model decisions and factual accuracy still require live validation.",
+  ],
 });
 
 function fail() {

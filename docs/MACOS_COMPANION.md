@@ -1,6 +1,6 @@
 # macOS companion
 
-PickerMux 0.22.0 includes a SwiftUI menu-bar app with native macOS controls for inspecting and
+PickerMux 0.22.1 includes a SwiftUI menu-bar app with native macOS controls for inspecting and
 operating the existing PickerMux installation. It requires macOS 13 or newer,
 Apple silicon or Intel, and Node.js 22.15.0 or newer. The supported Node
 locations are `/opt/homebrew/bin/node`, `/usr/local/bin/node`, and
@@ -400,7 +400,7 @@ integration with Codex stopped. It is available only through the receipt-owned
 installed CLI. The app detects older backends even when both versions are
 labelled 0.9.0; the missing capability marker selects its pinned setup backend
 before any mutation. Confirm setup to upgrade that CLI before deactivating.
-The current 0.22.0 payload installs into its own version directory; the older
+The current 0.22.1 payload installs into its own version directory; the older
 0.9.0 contents are never overwritten to add this feature.
 
 `usage-reset` requires exactly
@@ -480,8 +480,8 @@ node scripts/build-companion.mjs --output /tmp/pickermux-companion-development
 
 Choose a new output directory for each build; the builder refuses to replace
 one. The output contains `PickerMux.app`,
-`PickerMux-v0.22.0-macos-universal.tar.gz`,
-`PickerMux-v0.22.0-macos-universal.dmg`, `companion-manifest.json`, and
+`PickerMux-v0.22.1-macos-universal.tar.gz`,
+`PickerMux-v0.22.1-macos-universal.dmg`, `companion-manifest.json`, and
 `SHA256SUMS`. The universal binary contains `arm64` and `x86_64` slices
 targeting macOS 13. The manifest distinguishes `unsigned-development`,
 `apple-development` and `developer-id-notarized` artifacts and binds the bundled backend manifest,

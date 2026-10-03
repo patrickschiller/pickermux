@@ -198,6 +198,10 @@ supplies selected public schemas for the next inference. Non-deferred functions
 remain available. PickerMux translates the roundtrip; it does not choose or
 execute tools, approve actions, or run a separate agent. The current path uses
 full replay rather than provider-side `previous_response_id` state.
+Its discovery description explicitly explains how to find and load a missing
+tool while retaining Codex's original description and tool inventory. Tool
+schemas are reconstructed from each request; an earlier lookup or a compacted
+summary alone does not keep a deferred tool loaded.
 See [Efficient Fidelity architecture](ARCHITECTURE.md#efficient-fidelity).
 
 Uncertified text-only LM Studio routes instead use a compact assistant profile
@@ -223,6 +227,15 @@ lets the selected external model write the answer. Search uses native credential
 only on the native route; it requires no extra provider key. PickerMux makes no
 additional external inference call to execute a search and does not cache or
 truncate search results.
+
+LM Studio receives translated function names. For the reviewed `web.run`
+description, PickerMux explicitly identifies the canonical tool and tells the
+model to call its currently advertised function alias. `open` and `find` are
+operations within that tool. `open.ref_id` accepts a direct source URL or a
+previous result ID, so opening a user-supplied link needs no preceding search.
+Unknown or edited web descriptions remain unchanged. This guidance changes no
+tool parameters, certification grants, or native request behavior and does not
+guarantee correct facts or a successful source retrieval.
 
 Search requires native search access and an exact valid tool certification.
 `bridge.webSearchModel`, or `bridge.defaultModel` when omitted, identifies the

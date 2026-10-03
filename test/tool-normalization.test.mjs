@@ -35,6 +35,24 @@ test("compacts the reviewed web.run wire description without changing schema, hi
           additionalProperties: false,
         },
       },
+      open: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: { ref_id: { type: "string" } },
+          required: ["ref_id"],
+          additionalProperties: false,
+        },
+      },
+      find: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: { ref_id: { type: "string" }, pattern: { type: "string" } },
+          required: ["ref_id", "pattern"],
+          additionalProperties: false,
+        },
+      },
       response_length: { type: "string", enum: ["short", "medium", "long"] },
     },
     additionalProperties: false,
@@ -63,6 +81,10 @@ test("compacts the reviewed web.run wire description without changing schema, hi
   const [wireTool] = JSON.parse(JSON.stringify(rewritten)).tools;
 
   assert.ok(Buffer.byteLength(wireTool.description) < Buffer.byteLength(description) / 2);
+  assert.match(wireTool.description, /Codex web\.run internet tool/u);
+  assert.match(wireTool.description, /Call its advertised function name/u);
+  assert.match(wireTool.description, /open\.ref_id accepts a full URL or result ID/u);
+  assert.notEqual(wireTool.name, "web.run");
   assert.deepEqual(wireTool.parameters, parameters);
   assert.deepEqual(source, original);
   assert.deepEqual(rewritten.input[1], source.input[1]);
@@ -84,6 +106,17 @@ test("compacts the reviewed web.run wire description without changing schema, hi
     call_id: "call_next_search",
     arguments: '{"open":[{"ref_id":"https://example.org/venue"}]}',
   });
+  assert.throws(
+    () => rewriteResponseFunctionCalls({
+      output: [{
+        type: "function_call",
+        name: "web.run",
+        call_id: "call_unadvertised_alias",
+        arguments: '{"open":[{"ref_id":"https://example.org/venue"}]}',
+      }],
+    }, codec),
+    /was not advertised/u,
+  );
 
   for (const editedDescription of [description.replace("25 words", "99 words"), "A custom web tool."]) {
     const changed = structuredClone(source);

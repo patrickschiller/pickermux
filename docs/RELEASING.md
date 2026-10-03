@@ -42,7 +42,7 @@ https://github.com/patrickschiller/pickermux/releases/latest/download/PickerMux-
 The release tag still makes a download immutable:
 
 ```text
-https://github.com/patrickschiller/pickermux/releases/download/v0.22.0/PickerMux-macos-universal.dmg
+https://github.com/patrickschiller/pickermux/releases/download/v0.22.1/PickerMux-macos-universal.dmg
 ```
 
 The build retains its versioned DMG, app archive, backend manifest, companion
@@ -65,9 +65,9 @@ key available to `codesign`; the profile must already be usable by `notarytool`.
 Use fresh output directories, since the tools refuse to replace existing ones:
 
 ```bash
-node scripts/build-companion.mjs --release --output /tmp/pickermux-signed-0.22.0
-node scripts/prepare-dmg-release.mjs --source /tmp/pickermux-signed-0.22.0 --output /tmp/pickermux-public-0.22.0 --tag v0.22.0
-node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.22.0 --tag v0.22.0
+node scripts/build-companion.mjs --release --output /tmp/pickermux-signed-0.22.1
+node scripts/prepare-dmg-release.mjs --source /tmp/pickermux-signed-0.22.1 --output /tmp/pickermux-public-0.22.1 --tag v0.22.1
+node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.22.1 --tag v0.22.1
 ```
 
 The release builder signs and notarizes the app and DMG separately, staples
@@ -117,8 +117,8 @@ maintainer's Mac when using the local production route.
 After the exact approved commit is on main and all gates are ready:
 
 ```bash
-git tag -a v0.22.0 -m "PickerMux v0.22.0"
-git push origin v0.22.0
+git tag -a v0.22.1 -m "PickerMux v0.22.1"
+git push origin v0.22.1
 ```
 
 Watch the workflow through publication. If a candidate is wrong, fix the
@@ -142,10 +142,10 @@ production signing requirements above remain mandatory.
    replace its assets.
 
 ```bash
-node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.22.0 --tag v0.22.0
-gh release create v0.22.0 /tmp/pickermux-public-0.22.0/PickerMux-macos-universal.dmg \
-  --verify-tag --title "PickerMux v0.22.0" \
-  --notes-file /tmp/pickermux-public-0.22.0/release-notes.md
+node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.22.1 --tag v0.22.1
+gh release create v0.22.1 /tmp/pickermux-public-0.22.1/PickerMux-macos-universal.dmg \
+  --verify-tag --title "PickerMux v0.22.1" \
+  --notes-file /tmp/pickermux-public-0.22.1/release-notes.md
 ```
 
 Complete the independent public-download verification below before announcing
@@ -174,6 +174,26 @@ pinned backend upgrades through the existing setup transaction, preserving
 installed provider settings. Cancellation and failed activation must retain
 usable prior state; ordinary removal and deactivation continue using the
 validated installed backend.
+
+## 0.22.1 web and tool-discovery guidance acceptance
+
+This patch changes LM Studio tool descriptions. It preserves tool schemas,
+certification grants, routing, and the discovery and lifecycle contracts.
+Offline tests verify the advertised alias, direct-URL example, original
+discovery-description preservation, and rejection of unadvertised calls. They
+do not establish that a real model chooses the tool or returns correct facts;
+that effect remains unverified until a targeted live check passes. All
+applicable release and announcement gates remain in force.
+
+On an explicitly authorized target with the exact installed backend and a
+valid certification for the selected model, repeat the reported source-opening
+failure. Supply a public source URL and ask the model to open it with the
+available web tool, discover and load that tool if needed, and verify the
+requested facts from the returned text. Confirm an actual tool execution and
+a sourced answer, or record the fixed failure code. Test an already loaded
+tool and deferred discovery when available; retain the exact existing
+certification and capability settings rather than granting broader access.
+Keep private conversation, account, and capability data out of release evidence.
 
 ## 0.22.0 native menu, durable usage, and updater acceptance
 
