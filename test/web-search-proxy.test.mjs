@@ -32,7 +32,9 @@ function request(port, { path = SEARCH, method = "POST", headers = {}, body = se
   return new Promise((resolve, reject) => {
     const outgoing = http.request({
       hostname: "127.0.0.1", port, path, method,
-      headers: { "content-type": "application/json", ...headers },
+      // Frame GET payloads too, so the HTTP parser reaches the method boundary
+      // instead of treating unframed JSON as another request on the connection.
+      headers: { "content-type": "application/json", "content-length": bytes.length, ...headers },
     }, (incoming) => {
       const chunks = [];
       incoming.on("data", (chunk) => chunks.push(chunk));
