@@ -27,7 +27,7 @@ published as GitHub Releases.
   review once per version pair and app process; cancellation or failure leaves
   **Settings → Update installed backend…** available for a deliberate retry.
   Inactive, foreign, or unsafe integrations are not automatically activated.
-- Add a 36-second German explainer to the README as a looping GIF with an MP4
+- Add a 36-second English explainer to the README as a looping GIF with an MP4
   download and a reproducible vector renderer. All model names and views are
   synthetic examples of the existing routing and certified-tool architecture;
   the clip contains no captured user state and does not establish live behavior.

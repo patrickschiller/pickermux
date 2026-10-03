@@ -223,7 +223,7 @@ recovery and record the starting app and backend versions without private data:
    Preserve the existing rollback checks; no automatic activation or repeated
    failure popup may occur. Also test the manual apply path with one confirmation.
 
-The README's 36-second German GIF/MP4 is a synthetic vector explainer of the
+The README's 36-second English GIF/MP4 is a synthetic vector explainer of the
 existing request and tool paths. Its source, rendering, media properties, and
 fixed example content were reviewed offline. It contains no captured user
 state and provides no evidence that a live model chose or used a tool correctly.

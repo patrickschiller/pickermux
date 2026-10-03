@@ -28,12 +28,12 @@ other local or remote Responses providers use a custom configuration.
 
 *Left: synthetic compact-menu preview with example usage. Right: Codex picker screenshot.*
 
-**See how PickerMux works — 36 seconds, German, no audio.**
+**See how PickerMux works — 36 seconds, English, no audio.**
 
-[![Synthetic animation of PickerMux model selection, exact provider routing, and certified web tools](assets/demo/pickermux-explainer-de.gif)](assets/demo/pickermux-explainer-de.mp4)
+[![How PickerMux works: model selection, exact routing, responses, and certified tool calls (synthetic animation)](assets/demo/pickermux-explainer-en.gif)](assets/demo/pickermux-explainer-en.mp4)
 
 *Synthetic examples explain the model and tool request paths.*
-[Download the MP4](assets/demo/pickermux-explainer-de.mp4) ·
+[Download the MP4](assets/demo/pickermux-explainer-en.mp4) ·
 [Media details and renderer](assets/demo/README.md)
 
 PickerMux is an unofficial community project. It is not affiliated with,
