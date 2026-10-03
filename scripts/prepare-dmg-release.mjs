@@ -45,7 +45,7 @@ const RELEASE_HIGHLIGHTS = Object.freeze({
     "- Show app and backend versions near the top of the menu, with a direct Settings action. Waiting for Codex to close does not consume the offer; cancellation or failure suppresses repeated automatic offers for the same version pair during that app session. Settings remains available for manual retry.",
     "- Revalidate active integration before the preview, before the review, and after confirmation. The automatic path never enables an inactive integration or quits Codex; provider settings, exact certification, ownership checks and rollback remain in the existing backend transaction.",
     "- Add a [36-second German explainer](https://github.com/patrickschiller/pickermux/blob/v0.22.2/README.md) with an inline GIF and downloadable MP4, using synthetic examples to explain model routing and certified web tools.",
-    "- Offline regression tests cover the new review flow, cancellation, changing state and failed apply. A live app/backend upgrade has not been exercised for this patch.",
+    "- Offline regression tests cover the new review flow, cancellation, changing state and failed apply. The maintainer reported target-Mac acceptance for app startup, cancellation, manual retry and a confirmed backend upgrade to 0.22.2 with provider settings preserved.",
   ],
 });
 

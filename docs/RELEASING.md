@@ -182,11 +182,21 @@ confirmation flow. The finite backend protocol, pinned preview/apply setup
 transaction, configuration ownership, certification, and rollback contracts
 are unchanged. Source review and injected offline tests cover readiness gates,
 one offer per version pair and app process, cancellation, failure, manual retry,
-and the existing one-confirmation apply path. These checks do not establish an
-actual upgrade of the app or backend on the target Mac; that upgrade has not
-been performed for this candidate. Publication authorization does not authorize
-changing a live target installation. All existing preflight, production signing,
+and the existing one-confirmation apply path. These offline checks do not
+establish an actual upgrade of the app or backend on the target Mac.
+Publication authorization does not authorize changing a live target
+installation. All existing preflight, production signing,
 public verification, and applicable live acceptance gates remain in force.
+
+On 2026-10-03, the maintainer reported all targeted copied-app checks below
+as passed against the reviewed, Developer ID signed and notarized candidate:
+the version hint without an automatic offer while Codex was running; one
+offer after Codex quit; unchanged state and no repeated offer after cancel;
+manual review cancellation; a new offer after restarting PickerMux; and one
+confirmation upgrading the backend to 0.22.2, with both displayed versions
+matching and provider settings preserved. This is maintainer-reported
+target-Mac evidence, distinct from the automated offline tests. It does not
+establish new live inference, TCC, or login-startup behavior.
 
 On an explicitly authorized target, retain the previous installation for
 recovery and record the starting app and backend versions without private data:

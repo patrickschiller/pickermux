@@ -216,7 +216,8 @@ test("0.22.2 automatic review and video retain one immutable DMG update contract
   assert.match(body, /confirm \*\*Update backend\*\*/u);
   assert.match(body, /Settings → Update installed backend…/u);
   assert.match(body, /36-second German explainer.*\/blob\/v0\.22\.2\/README\.md/u);
-  assert.match(body, /A live app\/backend upgrade has not been exercised/u);
+  assert.match(body, /maintainer reported target-Mac acceptance/u);
+  assert.match(body, /confirmed backend upgrade to 0\.22\.2 with provider settings preserved/u);
   assert.doesNotMatch(body, /live acceptance passed|automatically installs without confirmation/iu);
   assert.equal(body.split("pickermux-dmg-release-v1").length, 2);
   assert.deepEqual(await verifyDmgPublication({ directory: value.outputDirectory, tag: "v0.22.2" }), result);
