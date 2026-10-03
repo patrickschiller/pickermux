@@ -34,10 +34,12 @@ transaction described below. The app does not need to run from the mounted
 image after it has been copied.
 
 For an app upgrade, quit the existing companion before replacing its copied
-bundle with the matching reviewed release. Then explicitly review **Update
-installed backend** in Settings when the app includes a newer backend. Setup
-preserves the installed provider configuration; replacing the app alone does
-not upgrade the CLI or runtime. The live release acceptance includes
+bundle with the matching reviewed release. In the released 0.22.1 app, explicitly
+review **Update installed backend** in Settings when the app includes a newer
+backend. The development companion can present the same review automatically
+when the installation is ready; see [Updates and app versions](#updates-and-app-versions).
+Setup preserves the installed provider configuration; replacing the app alone
+does not upgrade the CLI or runtime. The live release acceptance includes
 mounting the image, copying and opening the app, and testing the app upgrade
 on the target Mac.
 
@@ -64,6 +66,11 @@ the full-width **Refresh picker**, **Open Codex**, **Check status**, and
 expands below. **Settings…**, **Help…**, and **Quit** appear as separate menu rows
 at the bottom. Bridge actions are offered according to the verified state
 and are disabled while another operation is running.
+
+The development menu also shows when the app includes a newer backend than the
+validated installed version, with an action to open Settings. That guidance
+remains visible while Codex is running; completing the upgrade still requires
+Codex to be fully closed.
 
 **Check status**, **Help…**, **Settings…**, and **Quit** remain visible when a
 status check fails. Help explains the Node.js requirement and opens
@@ -451,6 +458,23 @@ installed backend, Settings offers **Update installed backend**. Keep Codex
 closed, ensure its native account cache is ready, and review the setup change.
 Updating an inactive installation also activates it; the confirmation explains
 that setup can send live model-certification prompts.
+
+The development companion automatically presents this existing review after a
+successful status check only when the installed backend is validated and older
+than the app, the integration is active, Codex is fully closed, the account
+cache and compatibility checks are ready, no recovery is pending, and no other
+operation or confirmation is in progress. It waits while Codex is running and
+does not count that wait as a presented offer. This upgrade path never quits
+Codex. The upgrade starts only after you confirm the review.
+
+The automatic review appears at most once for each app/backend version pair
+within the running app process. Cancelling it or encountering an upgrade failure
+prevents repeated popups for that pair during the same session. Use
+**Settings → Update installed backend…** to retry explicitly after addressing
+the problem. An inactive, foreign, or unsafe integration receives no automatic
+activation offer; the existing manual review remains available when its checks
+permit explicit setup. This automatic offer is development behavior and is not
+part of the released 0.22.1 app.
 
 The explicit setup client proves the newer bundled version matches the app,
 validates the installed launcher and pinned backend afresh, and permits only

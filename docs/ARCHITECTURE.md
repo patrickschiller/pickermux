@@ -1012,6 +1012,23 @@ actions remain bound to the installed source; version differences alone do not
 switch their authority. No possibly committed mutation is retried via another
 backend.
 
+In the development companion, a successful status observation can present the
+existing backend upgrade review automatically. Eligibility requires a
+validated installed source older than the app, an active integration, Codex
+fully closed, ready cache and compatibility state, no pending recovery, and an
+idle operation and confirmation queue. Version mismatch alone grants no
+mutation authority. The menu retains the mismatch and Settings guidance while
+Codex runs, and a blocked observation does not consume the future offer.
+
+The app records presented app/backend version pairs in memory for its current
+process. Cancellation or failure suppresses another automatic review for that
+pair, while the manual Settings review can retry explicitly. The automatic
+path never activates an inactive, foreign, or unsafe installation or quits
+Codex. User confirmation enters the same pinned preview/apply client described
+above, with fresh backend validation and the existing ownership, configuration,
+certification, lock, and rollback boundaries. This presentation change is
+unreleased; it does not change the finite backend protocol.
+
 The historical CLI updater checks a fixed GitHub repository and exact versioned assets,
 restricts HTTPS redirects, and bounds downloaded/expanded data. Archive and
 manifest checksums, embedded-manifest equality, every file's mode/size/digest,

@@ -67,7 +67,10 @@ final class CompanionController: ObservableObject {
   @Published var refreshOnClose = UserDefaults.standard.bool(forKey: "refreshOnClose") {
     didSet { UserDefaults.standard.set(refreshOnClose, forKey: "refreshOnClose") }
   }
-  private let client = PickerMuxClient()
+  private let client: PickerMuxClient
+  private let versionOverride: String?
+  private let integrationConfirmation: (@MainActor (IntegrationReview) async -> Bool)?
+  private var backendUpgradePrompt = BackendUpgradePrompt()
   private var polling: Task<Void, Never>?
   private let operationQueue = CompanionOperationQueue()
   private var pendingManualChecks = 0
@@ -92,7 +95,7 @@ final class CompanionController: ObservableObject {
   }
 
   var appVersion: String {
-    Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "development"
+    versionOverride ?? (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "development"
   }
 
   var integrationState: IntegrationToggleState {
@@ -123,7 +126,11 @@ final class CompanionController: ObservableObject {
     operationFailed && busy == nil && operationNoticeAction == .configurationApply
   }
 
-  init(pollingEnabled: Bool = true) {
+  init(pollingEnabled: Bool = true, client: PickerMuxClient = PickerMuxClient(), appVersion: String? = nil,
+       integrationConfirmation: (@MainActor (IntegrationReview) async -> Bool)? = nil) {
+    self.client = client
+    versionOverride = appVersion
+    self.integrationConfirmation = integrationConfirmation
     if pollingEnabled { startPolling() }
   }
 
@@ -183,7 +190,14 @@ final class CompanionController: ObservableObject {
       if busy == nil { message = failureMessage(error) }
       if manual { statusCheckNotice = "Status check failed: \(failureMessage(error))" }
     }
-    if autoRefresh && removal.permitsActivity(generation) { refreshQueued = false; perform(.refresh) }
+    if autoRefresh && removal.permitsActivity(generation) {
+      refreshQueued = false
+      perform(.refresh)
+    } else if removal.permitsActivity(generation), backendUpgradePrompt.reserveReview(
+      appVersion: appVersion, snapshot: snapshot,
+      busy: busy != nil || !activityAllowed || confirmationWindow != nil || operationQueue.waitingCount > 0) {
+      setIntegrationEnabled(true, reviewInstalledSetup: true, automaticallyOffered: true)
+    }
   }
 
   func canRun(_ action: CompanionAction) -> Bool {
@@ -193,7 +207,7 @@ final class CompanionController: ObservableObject {
     return true
   }
 
-  func setIntegrationEnabled(_ enabled: Bool, reviewInstalledSetup: Bool = false) {
+  func setIntegrationEnabled(_ enabled: Bool, reviewInstalledSetup: Bool = false, automaticallyOffered: Bool = false) {
     guard activityAllowed, busy == nil else { return }
     let generation = removal.generation
     if reviewInstalledSetup {
@@ -202,6 +216,10 @@ final class CompanionController: ObservableObject {
       guard integrationState.canChange, integrationState.isEnabled != enabled else { return }
     }
     let upgradingBundledBackend = reviewInstalledSetup && backendUpgradeAvailable
+    if automaticallyOffered {
+      guard upgradingBundledBackend, integrationState.isEnabled else { return }
+    }
+    if upgradingBundledBackend { backendUpgradePrompt.markReviewed(appVersion: appVersion, snapshot: snapshot) }
     busy = enabled ? .configurationApply : .integrationDeactivate
     operationNotice = nil
     operationNoticeAction = busy
@@ -216,9 +234,10 @@ final class CompanionController: ObservableObject {
         let setupClient: any CompanionControlling = upgradingBundledBackend ?
           client.bundledSetupClient(appVersion: appVersion) : client
         let outcome = try await changePickerMuxIntegration(enabled, reviewInstalledSetup: reviewInstalledSetup,
-          client: setupClient, consent: reviewInstalledSetup ? .review : .toggleIntent,
+          client: setupClient, consent: automaticallyOffered ? .automaticUpgradeReview : reviewInstalledSetup ? .review : .toggleIntent,
           confirm: { review in
-            await self.confirmation(title: review.title, text: review.text, button: review.button)
+            if let confirmation = self.integrationConfirmation { return await confirmation(review) }
+            return await self.confirmation(title: review.title, text: review.text, button: review.button)
           })
         switch outcome {
         case .unchanged: operationNotice = "The integration already has the requested state."
@@ -558,6 +577,22 @@ struct CompanionPanel: View {
           Button("Complete PickerMux setup") { controller.setIntegrationEnabled(true, reviewInstalledSetup: true) }
             .disabled(!controller.canReviewBundledBootstrap)
         }
+        if controller.backendUpgradeAvailable {
+          VStack(alignment: .leading, spacing: 4) {
+            Text("Backend update available").font(MenuTypography.body.weight(.semibold))
+            Text("App \(controller.appVersion) · Backend \(controller.snapshot?.version ?? "unavailable")")
+              .font(MenuTypography.metadata).foregroundStyle(.secondary)
+            Text(["running", "open"].contains(controller.snapshot?.desktop.status ?? "") ?
+              "Fully quit Codex to review the update. You can also start it from Settings." :
+              "Review this app's backend update in Settings.")
+              .font(MenuTypography.metadata).foregroundStyle(.secondary)
+              .fixedSize(horizontal: false, vertical: true)
+            Button("Open update settings…") { controller.showSettings() }
+              .disabled(!controller.activityAllowed || controller.busy != nil)
+          }
+          .padding(.horizontal, 14)
+          .padding(.vertical, 6)
+        }
         if let snapshot = controller.snapshot {
           Divider()
           TokenUsageView(snapshot: snapshot)
@@ -583,7 +618,9 @@ struct CompanionPanel: View {
                 .foregroundStyle(controller.operationFailed ? .red : .primary)
                 .fixedSize(horizontal: false, vertical: true)
               if controller.lastSetupFailed {
-                Text("After fixing the cause, turn the switch on again. Check status does not retry setup.")
+                Text(controller.backendUpgradeAvailable ?
+                  "After fixing the cause, retry Update installed backend in Settings." :
+                  "After fixing the cause, turn the switch on again. Check status does not retry setup.")
                   .fixedSize(horizontal: false, vertical: true)
               }
             } else if controller.snapshot == nil {
@@ -827,7 +864,7 @@ private struct CompanionSettings: View {
                   .foregroundStyle(.primary)
                   .fixedSize(horizontal: false, vertical: true)
               }
-              Text("Updates are distributed as a DMG. Quit PickerMux before replacing the app, then reopen it to review an installed backend upgrade. Nothing updates automatically.")
+              Text("App updates are distributed as a DMG. Quit PickerMux before replacing the app, then reopen it. With PickerMux enabled and Codex fully closed, the app offers its newer backend automatically. One confirmation starts the update. Cancelling leaves the current backend in place; you can retry here.")
                 .font(CompanionTypography.body).foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
