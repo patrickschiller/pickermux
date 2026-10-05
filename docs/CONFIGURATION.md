@@ -134,6 +134,12 @@ compaction controls are rejected. No certification record can enable tools,
 shell access or Efficient Fidelity for this provider. Native models keep their
 existing routing and credentials.
 
+Codex may retain native reasoning-summary display preferences when switching
+models. Reviewed summary preferences and delivery controls are validated and
+omitted on this route; they never enable reasoning. Completed assistant text
+can be replayed as history, including the bridge's own empty probability fields.
+Unknown controls and nonempty probability data still stop the request safely.
+
 The launcher counts the rendered tokenizer prompt and reserves the requested
 output budget before generation. Its default combined limit is 8,192 tokens,
 with at most 1,024 output tokens per request. A smaller launcher context between

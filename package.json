@@ -1,6 +1,6 @@
 {
   "name": "pickermux",
-  "version": "0.23.0",
+  "version": "0.23.1",
   "private": true,
   "description": "Use local and remote Responses providers and text-only MLX Kolibri in Codex Desktop",
   "license": "MIT",

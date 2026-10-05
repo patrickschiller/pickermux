@@ -9,12 +9,14 @@ const REQUEST_KEYS = new Set([
   "tools", "tool_choice", "parallel_tool_calls", "store", "include", "metadata",
   "client_metadata", "text", "prompt_cache_key", "previous_response_id",
   "truncation", "service_tier", "background",
+  "stream_options",
 ]);
 const MESSAGE_KEYS = new Set([
   "type", "role", "content", "id", "status",
   "internal_chat_message_metadata_passthrough", "phase",
 ]);
-const PART_KEYS = new Set(["type", "text", "annotations"]);
+const PART_KEYS = new Set(["type", "text", "annotations", "logprobs"]);
+const REASONING_SUMMARIES = new Set(["none", "auto", "concise", "detailed"]);
 const RESPONSE_KEYS = new Set([
   "id", "object", "created", "model", "choices", "usage", "system_fingerprint",
 ]);
@@ -64,7 +66,9 @@ function textContent(content, role) {
   return content.map((part) => {
     requestAssert(onlyKeys(part, PART_KEYS) && typeof part.text === "string" &&
       (part.type === "input_text" || (role === "assistant" && part.type === "output_text")) &&
-      (part.annotations === undefined || Array.isArray(part.annotations)));
+      (part.annotations === undefined || Array.isArray(part.annotations)) &&
+      (part.logprobs === undefined || (role === "assistant" && part.type === "output_text" &&
+        (part.logprobs === null || (Array.isArray(part.logprobs) && part.logprobs.length === 0)))));
     return part.text;
   }).join("");
 }
@@ -86,11 +90,19 @@ export function createMlxChatRequest(body, route, { maxBytes = DEFAULT_MAX_BYTES
   requestAssert(body.store === undefined || typeof body.store === "boolean");
   requestAssert(body.include === undefined || (Array.isArray(body.include) &&
     body.include.every((entry) => typeof entry === "string")));
+  // Codex may retain native summary presentation preferences after a model
+  // switch. Validate the reviewed controls, then omit them: this route always
+  // generates plain text with reasoning disabled and owns its SSE lifecycle.
+  if (body.stream_options !== undefined && body.stream_options !== null) {
+    requestAssert(onlyKeys(body.stream_options, new Set(["reasoning_summary_delivery"])) &&
+      (body.stream_options.reasoning_summary_delivery === undefined ||
+        body.stream_options.reasoning_summary_delivery === "sequential_cutoff"));
+  }
   if (body.reasoning !== undefined && body.reasoning !== null) {
     requestAssert(onlyKeys(body.reasoning, new Set(["effort", "summary"])) &&
       (body.reasoning.effort === undefined || body.reasoning.effort === "none") &&
       (body.reasoning.summary === undefined || body.reasoning.summary === null ||
-        body.reasoning.summary === "none"));
+        REASONING_SUMMARIES.has(body.reasoning.summary)));
   }
   if (body.text !== undefined) {
     requestAssert(onlyKeys(body.text, new Set(["format", "verbosity"])) &&

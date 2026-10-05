@@ -36,7 +36,7 @@ test("release metadata and both CLI entry points identify PickerMux", async () =
     await readFile(path.join(projectDirectory, "package.json"), "utf8"),
   );
   assert.equal(packageMetadata.name, "pickermux");
-  assert.equal(packageMetadata.version, "0.23.0");
+  assert.equal(packageMetadata.version, "0.23.1");
   assert.equal(packageMetadata.license, "MIT");
 
   for (const entryPoint of ["pickermux.mjs", "lmstudio-picker.mjs"]) {
@@ -73,7 +73,7 @@ test("release metadata and both CLI entry points identify PickerMux", async () =
         [path.join(projectDirectory, "bin", entryPoint), versionArgument],
         { encoding: "utf8" },
       );
-      assert.equal(stdout, "pickermux 0.23.0\n");
+      assert.equal(stdout, "pickermux 0.23.1\n");
     }
   }
 });

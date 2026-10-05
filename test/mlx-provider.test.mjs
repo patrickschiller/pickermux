@@ -183,12 +183,43 @@ test("MLX catalog ignores all certification claims and publishes only compact te
   assert.equal(model.multi_agent_version, null);
   assert.equal(model.context_window, 8_192);
   assert.equal(model.default_reasoning_level, "none");
+  assert.equal(model.supports_reasoning_effort_updates, false);
+  assert.equal(model.supports_reasoning_summary_parameter, false);
   assert.deepEqual(model.input_modalities, ["text"]);
   assert.equal(model.base_instructions, TEXT_ONLY_MODEL_INSTRUCTIONS);
   assert.deepEqual(model.model_messages, {
     instructions_template: TEXT_ONLY_MODEL_INSTRUCTIONS,
     instructions_variables: null,
   });
+});
+
+test("MLX catalog blocks donor reasoning control claims while preserving native and LM Studio descriptors", () => {
+  const native = nativeCatalog();
+  Object.assign(native.models[0], {
+    supports_reasoning_effort_updates: true,
+    supports_reasoning_summary_parameter: true,
+  });
+  const before = structuredClone(native);
+  const mixed = buildMixedCodexCatalog({
+    discoveredModels: [
+      { ...discoveredModel(), supports_reasoning_effort_updates: true,
+        supports_reasoning_summary_parameter: true },
+      { id: "lmstudio/example", displayName: "LM Studio example", type: "llm",
+        contextWindow: 32_768, providerKind: "lmstudio-responses", source: "lmstudio-v1" },
+    ],
+    bundledCatalog: native,
+    donorSlug: "gpt-5.6-sol",
+  });
+  const mlx = mixed.models.find((model) => model.slug === publicModelId);
+  assert.equal(mlx.supports_reasoning_effort_updates, false);
+  assert.equal(mlx.supports_reasoning_summary_parameter, false);
+  assert.equal(mlx.default_reasoning_level, "none");
+  assert.deepEqual(mlx.supported_reasoning_levels.map(({ effort }) => effort), ["none"]);
+  assert.deepEqual(mixed.models[0], before.models[0]);
+  assert.deepEqual(native, before);
+  const lmstudio = mixed.models.find((model) => model.slug === "lmstudio/example");
+  assert.equal(lmstudio.supports_reasoning_effort_updates, true);
+  assert.equal(lmstudio.supports_reasoning_summary_parameter, true);
 });
 
 test("MLX registry ignores forged catalog and discovery tool, identity, context and reasoning claims", () => {

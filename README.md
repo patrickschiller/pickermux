@@ -127,7 +127,8 @@ The model download is about 41 GiB and the conversion targets Macs with at least
 
 Kolibri appears as **Kolibri 1 MLX 4-bit** alongside the native models. This
 initial integration supports text replies and streamed text with reasoning
-disabled. Tools, shell access, images, audio, certification and context
+disabled. Reviewed native summary display preferences are ignored. Tools,
+shell access, images, audio, certification and context
 compaction are unavailable. The launcher enforces an 8,192-token combined
 prompt/output limit; an oversized conversation is rejected without dropping
 history. See [setup and limitations](docs/CONFIGURATION.md#kolibri-mlx-text-provider).

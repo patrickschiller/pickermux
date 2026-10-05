@@ -9,6 +9,20 @@ The 0.9.x entries describe local companion development builds. Their features
 are included in the first public companion release, 0.10.0; they were not
 published as GitHub Releases.
 
+## [0.23.1] - 2026-10-05
+
+Local development build; no public release has been published.
+
+### Fixed
+
+- Accept reviewed Codex reasoning-summary presentation preferences on Kolibri
+  text turns and omit them from the MLX request. A native `auto` summary setting
+  previously rejected even a fresh text chat. The MLX catalog now disables
+  reasoning-summary and mid-turn reasoning-effort controls explicitly.
+- Allow Kolibri's own completed text messages to be replayed in conversation
+  history, validating and removing empty probability metadata. Tools, media,
+  encrypted reasoning, stored continuation and unknown schemas remain rejected.
+
 ## [0.23.0] - 2026-10-05
 
 Local development build; no public release has been published.
@@ -900,6 +914,7 @@ confirm the release date before tagging. See the
   restores the previous distribution state when activation fails.
 
 [Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.22.2...HEAD
+[0.23.1]: https://github.com/patrickschiller/pickermux/releases/tag/v0.23.1
 [0.23.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.23.0
 [0.22.2]: https://github.com/patrickschiller/pickermux/releases/tag/v0.22.2
 [0.22.1]: https://github.com/patrickschiller/pickermux/releases/tag/v0.22.1

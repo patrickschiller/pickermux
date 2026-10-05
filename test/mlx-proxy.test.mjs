@@ -100,6 +100,22 @@ test("MLX stream reconstruction retains text and usage with a Responses terminal
   assert.equal(h.usage.length, 1);
 });
 
+test("MLX native summary settings do not reject a fresh Codex text turn or reach the provider", async (t) => {
+  const h = await harness(t);
+  const result = await post(h.port, {
+    reasoning: { effort: "ultra", summary: "auto" },
+    stream_options: { reasoning_summary_delivery: "sequential_cutoff" },
+    client_metadata: { secret: "native-private-account" },
+  });
+  assert.equal(result.status, 200);
+  assert.equal(JSON.parse(result.body).output[0].content[0].text, "Hallo zurück!");
+  assert.deepEqual(h.requests[0].body.chat_template_kwargs, { reasoning_effort: "none" });
+  assert.equal(Object.hasOwn(h.requests[0].body, "reasoning"), false);
+  assert.equal(Object.hasOwn(h.requests[0].body, "stream_options"), false);
+  assert.doesNotMatch(JSON.stringify(h.requests), /native-private-account|sequential_cutoff/u);
+  assert.equal(h.credentialReads(), 0);
+});
+
 test("MLX rejects forced tools, history, attachments, compaction and certification before I/O", async (t) => {
   const h = await harness(t, { routeChanges: { toolsEnabled: true } });
   for (const [body, headers, endpoint] of [
@@ -107,6 +123,8 @@ test("MLX rejects forced tools, history, attachments, compaction and certificati
     [{ input: [{ type: "function_call", call_id: "call", name: "exec", arguments: "{}" }] }, {}, undefined],
     [{ input: [{ role: "user", content: [{ type: "input_image", image_url: "https://example.invalid/image" }] }] }, {}, undefined],
     [{ previous_response_id: "previous" }, {}, undefined],
+    [{ reasoning: { summary: "unknown" } }, {}, undefined],
+    [{ stream_options: { include_usage: true } }, {}, undefined],
     [{}, { "x-pickermux-certification": "private-certification-marker" }, undefined],
     [{}, {}, "/v1/responses/compact"],
   ]) {

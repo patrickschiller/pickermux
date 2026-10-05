@@ -365,6 +365,10 @@ function catalogEntry(
   if (mlx) {
     certifiedForTools = false;
     certifiedForEfficientFidelity = false;
+    // Native donor flags can make Codex emit controls this text adapter does
+    // not implement, even when the only advertised reasoning level is none.
+    entry.supports_reasoning_effort_updates = false;
+    entry.supports_reasoning_summary_parameter = false;
     model.reasoningEffort = "none";
     model.reasoningEfforts = ["none"];
     model.reasoningOmitEfforts = [];

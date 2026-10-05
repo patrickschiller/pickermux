@@ -112,6 +112,34 @@ test("MLX accepts a simple nonstreaming text query", () => {
   });
 });
 
+test("MLX discards reviewed native summary presentation preferences without enabling reasoning", () => {
+  for (const summary of ["none", "auto", "concise", "detailed", null]) {
+    const projected = JSON.parse(createMlxChatRequest({
+      input: "Hello", stream: true, reasoning: { effort: "none", summary },
+      stream_options: { reasoning_summary_delivery: "sequential_cutoff" },
+    }, route));
+    assert.deepEqual(projected.messages, [{ role: "user", content: "Hello" }]);
+    assert.deepEqual(projected.chat_template_kwargs, { reasoning_effort: "none" });
+    assert.deepEqual(projected.stream_options, { include_usage: true });
+    assert.equal(Object.hasOwn(projected, "reasoning"), false);
+  }
+});
+
+test("MLX can replay its own completed text output without forwarding probability metadata", () => {
+  const answer = transform(chatResponse({ text: "Hallo!" }));
+  const projected = JSON.parse(createMlxChatRequest({ input: [
+    { role: "user", content: "Hello" }, ...answer.output,
+    { role: "user", content: "Continue" },
+  ] }, route));
+  assert.deepEqual(projected.messages, [
+    { role: "user", content: "Hello" },
+    { role: "assistant", content: "Hallo!" },
+    { role: "user", content: "Continue" },
+  ]);
+  assert.equal(JSON.stringify(projected).includes("logprobs"), false);
+  assert.equal(JSON.stringify(projected).includes("annotations"), false);
+});
+
 test("MLX rejects tools, forced choice, stored continuation, compaction, media, and unknown history", () => {
   const invalid = [
     { tools: [{ type: "function", name: "read_file" }] },
@@ -122,7 +150,12 @@ test("MLX rejects tools, forced choice, stored continuation, compaction, media, 
     { background: true },
     { instructions: {} },
     { reasoning: { effort: "high" } },
-    { reasoning: { effort: "none", summary: "auto" } },
+    { reasoning: { effort: "none", summary: "unknown" } },
+    { reasoning: { effort: "none", summary: {} } },
+    { stream_options: { reasoning_summary_delivery: "unknown" } },
+    { stream_options: { include_usage: true } },
+    { stream_options: { reasoning_summary_delivery: "sequential_cutoff", unknown: true } },
+    { stream_options: [] },
     { text: { format: { type: "json_object" } } },
     { max_output_tokens: 0 },
     { stream: "true" },
@@ -137,6 +170,9 @@ test("MLX rejects tools, forced choice, stored continuation, compaction, media, 
     { input: [{ role: "user", content: "Text", unknown: "private-value" }] },
     { input: [{ role: "user", content: [{ type: "input_text", text: "Text", unknown: "private-value" }] }] },
     { input: [{ role: "assistant", status: "incomplete", content: "truncated" }] },
+    { input: [{ role: "assistant", content: [{ type: "output_text", text: "Text", logprobs: [{ token: "private-token" }] }] }] },
+    { input: [{ role: "assistant", content: [{ type: "output_text", text: "Text", logprobs: {} }] }] },
+    { input: [{ role: "user", content: [{ type: "input_text", text: "Text", logprobs: [] }] }] },
   ];
   for (const overrides of invalid) {
     assert.throws(() => createMlxChatRequest({ input: "Hello", ...overrides }, route), (error) =>
