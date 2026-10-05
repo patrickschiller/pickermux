@@ -11,8 +11,8 @@ Codex model picker, alongside the native models available to your account.
 Its macOS app installs the integration with one switch, refreshes the picker,
 and guides recovery after a Codex update. LM Studio is the default provider;
 other local or remote Responses providers use a custom configuration.
-An experimental Kolibri MLX configuration adds one pinned local model through
-a dedicated text-only Chat Completions adapter.
+An experimental MLX configuration adds pinned local HF models through
+a dedicated text and certified function adapter.
 
 **[Download PickerMux for macOS](https://github.com/patrickschiller/pickermux/releases/latest/download/PickerMux-macos-universal.dmg)**
 — one universal DMG for Apple silicon and Intel.
@@ -126,12 +126,13 @@ The model download is about 41 GiB and the conversion targets Macs with at least
 64 GB of unified memory.
 
 Kolibri appears as **Kolibri 1 MLX 4-bit** alongside the native models. This
-initial integration supports text replies and streamed text with reasoning
-disabled. Reviewed native summary display preferences are ignored. Tools,
-shell access, images, audio, certification and context
-compaction are unavailable. The launcher enforces an 8,192-token combined
+integration supports text replies and strict function calls after model-bound
+certification, including Codex web research, file and shell tools. Reasoning
+remains disabled. Images, audio and context compaction are unavailable. The launcher enforces an 8,192-token combined
 prompt/output limit; an oversized conversation is rejected without dropping
-history. See [setup and limitations](docs/CONFIGURATION.md#kolibri-mlx-text-provider).
+history. Load models from the shell with `pickermux mlx-load`; the companion shows
+last-request and accumulated tokens plus measured MLX output tokens/s.
+See [setup and limitations](docs/CONFIGURATION.md#kolibri-mlx-provider).
 
 ## Switch off or remove
 
@@ -155,8 +156,8 @@ See [removal details](docs/TECHNICAL_GUIDE.md#deactivation-and-removal).
 - Tool capabilities are certified for each model and configuration.
 - LM Studio supports loaded-model discovery, deferred tool schemas, and local
   context compaction; other Responses providers use explicit model allowlists.
-- The experimental Kolibri MLX adapter translates only reviewed text requests
-  and replies and verifies its context limit against the dedicated launcher.
+- The experimental MLX adapter translates reviewed text/function requests
+  and replies, verifies profile/context identity, and certifies Kolibri tools.
 - Tool descriptions explain how LM Studio's translated web tool opens source
   URLs and how to discover missing tools; factual accuracy depends on the model.
 - Install, refresh, recovery, and removal use verified ownership and rollback.

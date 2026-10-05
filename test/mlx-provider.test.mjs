@@ -6,7 +6,8 @@ import test from "node:test";
 
 import { validateBridgeConfig } from "../src/bridge-config.mjs";
 import { discoverBridgeModels } from "../src/bridge-discovery.mjs";
-import { TEXT_ONLY_MODEL_INSTRUCTIONS, buildMixedCodexCatalog } from "../src/catalog.mjs";
+import { MLX_TOOL_MODEL_INSTRUCTIONS, TEXT_ONLY_MODEL_INSTRUCTIONS, buildMixedCodexCatalog } from "../src/catalog.mjs";
+import { normalizeMlxCapabilities, supportsMlxTools } from "../src/mlx-capabilities.mjs";
 import { buildProviderRegistry } from "../src/provider-registry.mjs";
 import {
   REQUIRED_CERTIFICATION_GATES,
@@ -14,6 +15,8 @@ import {
   evaluateEfficientFidelityCertification,
   evaluateModelCertification,
   recordPassedCertification,
+  recordPassedEfficientFidelityCertification,
+  readCertificationStore,
 } from "../src/model-certification.mjs";
 
 const modelId = "kolibri-1-mlx-4bit";
@@ -269,6 +272,106 @@ test("MLX certification ignores forged complete receipts and rejects recording a
   store.pendingDeactivations = [publicModelId];
   assert.equal(evaluateModelCertification(store, subject).status, "pending");
   const storePath = path.join(directory, "certifications.json");
-  await assert.rejects(recordPassedCertification(storePath, subject, gates), /text only/u);
+  await assert.rejects(recordPassedCertification(storePath, subject, gates), /no reviewed tool protocol/u);
   await assert.rejects(access(storePath), { code: "ENOENT" });
+});
+
+const toolCapabilities = {
+  mlxToolProtocol: "pickermux-mlx-tools-v1",
+  modelFingerprint: `sha256:${"a".repeat(64)}`,
+  runtimeFingerprint: `sha256:${"b".repeat(64)}`,
+  mlxMaxOutputTokens: 1024,
+};
+
+test("MLX protocol declarations are exact identities and never a generic tools claim", () => {
+  assert.equal(supportsMlxTools(toolCapabilities), true);
+  assert.deepEqual(normalizeMlxCapabilities(), {});
+  for (const change of [
+    { tools: true }, { mlxToolProtocol: "future" }, { modelFingerprint: "sha256:bad" },
+    { runtimeFingerprint: undefined }, { mlxProfileDigest: "invalid" },
+    { mlxMaxOutputTokens: 0 }, { mlxMaxOutputTokens: 2049 },
+    { mlxMaxOutputTokens: undefined },
+    { modelFingerprint: [`sha256:${"a".repeat(64)}`] },
+  ]) {
+    const value = { ...toolCapabilities, ...change };
+    assert.throws(() => normalizeMlxCapabilities(value));
+    assert.equal(supportsMlxTools(value), false);
+  }
+});
+
+test("managed HF model aliases require an exact profile digest during configuration and discovery", async () => {
+  const input = config();
+  const model = input.providers[0].models[0];
+  model.id = "example-model";
+  model.slug = "kolibri/example-model";
+  model.mlxProfileDigest = `sha256:${"c".repeat(64)}`;
+  const normalized = validateBridgeConfig(input);
+  for (const digest of [model.mlxProfileDigest, `sha256:${"d".repeat(64)}`, undefined]) {
+    const discovery = discoverBridgeModels({ config: normalized,
+      credentialResolver: () => { throw new Error("Must not resolve credentials"); },
+      fetchImpl: async () => new Response(JSON.stringify({ data: [{
+        id: model.id, object: "model", context_window: model.contextWindow,
+        capabilities: digest === undefined ? {} : { mlxProfileDigest: digest },
+      }] })),
+    });
+    if (digest === model.mlxProfileDigest) {
+      const result = await discovery;
+      assert.equal(result.models[0].capabilities.mlxProfileDigest, digest);
+    } else await assert.rejects(discovery, (error) => error.code === "PROVIDER_RESPONSE_INVALID");
+  }
+  const foreign = config();
+  foreign.providers[0].kind = "openai-responses";
+  foreign.providers[0].models[0].mlxProfileDigest = model.mlxProfileDigest;
+  assert.throws(() => validateBridgeConfig(foreign), /only for local MLX/u);
+});
+
+test("MLX tools require both a reviewed live protocol and the certified catalog grant", () => {
+  for (const certified of [false, true]) {
+    for (const capabilities of [{}, toolCapabilities]) {
+      const model = { ...discoveredModel(), capabilities };
+      const mixedCatalog = buildMixedCodexCatalog({
+        discoveredModels: [model], bundledCatalog: nativeCatalog(), donorSlug: "gpt-5.6-sol",
+        certifiedModelSlugs: certified ? [publicModelId] : [],
+        efficientFidelityModelSlugs: certified ? [publicModelId] : [],
+      });
+      const expected = certified && capabilities === toolCapabilities;
+      const entry = mixedCatalog.models[1];
+      assert.equal(entry.tool_mode, expected ? "direct" : null);
+      assert.equal(entry.shell_type, expected ? "unified_exec" : "disabled");
+      assert.equal(entry.supports_search_tool, expected);
+      assert.equal(entry.base_instructions, expected ? MLX_TOOL_MODEL_INSTRUCTIONS : TEXT_ONLY_MODEL_INSTRUCTIONS);
+      const route = buildProviderRegistry({ config: config(), mixedCatalog, discoveredModels: [model] }).resolve(publicModelId);
+      assert.equal(route.toolsEnabled, expected);
+      assert.equal(route.clientToolSearchEnabled, expected);
+      assert.equal(route.upstreamModel, modelId);
+      assert.equal(route.model.contextWindow, 8192);
+    }
+  }
+});
+
+test("MLX receipts bind model files, runtime parser and profile; Efficient Fidelity remains additive", async (t) => {
+  const directory = await mkdtemp(path.join(tmpdir(), "mlx-tools-certification-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const storePath = path.join(directory, "certifications.json");
+  const subject = {
+    providerId: "kolibri", providerKind: "mlx-chat-completions",
+    baseUrl: "http://127.0.0.1:8080/v1", publicModelId, upstreamModelId: modelId,
+    contextWindow: 8192, reasoning: { effort: "none", efforts: ["none"] },
+    capabilities: toolCapabilities, codexClientVersion: "0.116.0",
+  };
+  const gates = Object.fromEntries(REQUIRED_CERTIFICATION_GATES.map((gate) => [gate, true]));
+  await assert.rejects(recordPassedCertification(storePath, subject, { ...gates, toolResult: false }));
+  await recordPassedCertification(storePath, subject, gates);
+  let store = await readCertificationStore(storePath);
+  assert.equal(evaluateModelCertification(store, subject).status, "valid");
+  assert.equal(evaluateEfficientFidelityCertification(store, subject).status, "missing");
+  await recordPassedEfficientFidelityCertification(storePath, subject, { toolSearch: true });
+  store = await readCertificationStore(storePath);
+  assert.equal(evaluateEfficientFidelityCertification(store, subject).status, "valid");
+  for (const key of ["modelFingerprint", "runtimeFingerprint", "mlxProfileDigest", "mlxMaxOutputTokens"]) {
+    const changed = { ...subject, capabilities: { ...toolCapabilities,
+      [key]: key === "mlxMaxOutputTokens" ? 2048 : `sha256:${"e".repeat(64)}` } };
+    assert.equal(evaluateModelCertification(store, changed).status, "stale");
+    assert.equal(evaluateEfficientFidelityCertification(store, changed).status, "stale");
+  }
 });

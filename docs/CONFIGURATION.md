@@ -16,27 +16,28 @@ destinations are rejected.
 PickerMux connects Codex Desktop to local or remote external models through
 the Responses API. LM Studio is the default provider, and the core also
 supports explicitly configured compatible Responses providers.
-An experimental dedicated adapter also supports the pinned Kolibri MLX text
+An experimental dedicated adapter also supports the managed HF MLX
 server described below.
 
 | Kind | Discovery | Required model information |
 | --- | --- | --- |
 | `lmstudio-responses` | Automatic loaded-model metadata or an explicit allowlist. | Loaded LM Studio instances supply metadata; configured entries may provide overrides. |
 | `openai-responses` | Explicit allowlist verified against `<baseUrl>/models`. | Each model must specify `type: "llm"` and a positive `contextWindow`. |
-| `mlx-chat-completions` | One explicit Kolibri alias verified against the dedicated launcher's `/models`. | Exact `kolibri-1-mlx-4bit` ID, `type: "llm"`, matching enforced `contextWindow` and reasoning `none` only. |
+| `mlx-chat-completions` | One explicit managed alias verified against `/models`. | `type: "llm"`, matching enforced `contextWindow`, reasoning `none`, and managed `mlxProfileDigest` (legacy Kolibri alias excepted). |
 
 A generic provider's model list must have the OpenAI-compatible
 `{"data": [{"id": "example-model"}]}` shape, and inference must implement
 `<baseUrl>/responses`. Chat Completions compatibility alone does not satisfy
-this contract. The explicit Kolibri kind is a separate, bounded text-only
+this contract. The explicit Kolibri kind is a separate, bounded
 exception and does not accept arbitrary Chat Completions providers. Provider
 credentials remain scoped to the configured provider;
 native Codex credentials are never reused for an external endpoint. Tool
 access requires the model-bound live certification matrix to pass.
-The Kolibri kind cannot be certified for tool access in this version.
+Reviewed Kolibri tool protocols require the same complete model-bound certification as other tool-capable providers.
 
-Automatic loaded-model discovery, Efficient Fidelity, and PickerMux's local
-context-compaction adapter are specific to LM Studio. Other providers use
+Automatic loaded-model discovery and PickerMux's local context-compaction
+adapter are specific to LM Studio. Reviewed MLX tools can also certify
+Efficient Fidelity. Other providers use
 their explicit configuration and supported Responses behavior. Configure
 private-network access explicitly when the endpoint is local or on a trusted
 private network; the bridge itself always remains loopback-only.
@@ -69,91 +70,77 @@ An incomplete certification exits with status 1 while retaining the activated
 installation and the existing certification recovery boundary. Ordinary
 `refresh` does not submit certification prompts.
 
-The text-only Kolibri kind is excluded from automatic certification. An
-explicit `certify` for it fails before submitting inference or granting tools.
+Legacy MLX servers and generic HF profiles without a reviewed tool protocol
+remain text-only and are excluded from tool certification.
 
-## Kolibri MLX text provider
+## Kolibri MLX provider
 
-This experimental provider connects the exact `velaia/Kolibri-1-MLX-4bit`
-conversion to the Codex picker through a narrow Responses-to-Chat adapter.
-It requires an Apple silicon Mac, an isolated Python 3.12 environment, and
-enough memory for the 4-bit model. The conversion's model card lists about
-41 GiB of weights and a 64 GB minimum Mac configuration; leave room for
-Codex and prompt memory. See the [conversion model card](https://huggingface.co/velaia/Kolibri-1-MLX-4bit).
+The MLX provider needs an Apple silicon Mac and an isolated Python environment
+with `mlx==0.32.3`, `mlx-lm==0.32.0`, `transformers==5.7.0` and
+`huggingface-hub==1.5.0`. These are the currently reviewed pins, not arbitrary
+installed versions. The Kolibri conversion has about 41 GiB of weights and
+requires ample unified memory; see its [model card](https://huggingface.co/velaia/Kolibri-1-MLX-4bit).
 
-From a source checkout, create the optional runtime and start the server:
-
-```bash
-python3.12 -m venv .artifacts/kolibri-venv
-.artifacts/kolibri-venv/bin/python -m pip install -r scripts/kolibri-requirements.txt
-.artifacts/kolibri-venv/bin/python scripts/serve-kolibri.py \
-  --download --model-dir .artifacts/Kolibri-1-MLX-4bit \
-  --context-window 8192 --max-tokens 1024 --port 8080
-```
-
-`--download` explicitly retrieves the public model at revision
-`3f5adf3fc8149f57738cc5a99f02ae26b601e7b0`. Omit this flag for later starts.
-The launcher checks the pinned `mlx==0.32.3`, `mlx-lm==0.32.0`,
-`transformers==5.7.0` and `huggingface-hub==1.5.0` versions, and verifies SHA-256
-for its architecture, tokenizer, template, configuration and all weight shards
-before loading. It rejects edited or foreign files instead of overwriting
-them. A download retry may fill missing files after checking existing ones.
-Model files and their directory must be private and owned by the current user;
-the launcher creates downloads with a private umask. It executes only the
-verified architecture and never enables `trust_remote_code`.
-
-Keep that process running. The launcher always binds to `127.0.0.1`; its public
-model ID is exactly `kolibri-1-mlx-4bit`, irrespective of the model directory.
-It does not scan the Hugging Face cache or expose filesystem model paths.
-The source checkout's [kolibri-picker.config.json](../kolibri-picker.config.json)
-uses that ID at `http://127.0.0.1:8080/v1` and presents the public slug
-`kolibri/kolibri-1-mlx-4bit`. It contains no credential. The bridge verifies
-that `/models` reports this single alias and an enforced `context_window`
-exactly matching the configured `contextWindow`.
-
-Preview the catalog, then activate the custom configuration with Codex fully
-closed and restart Codex to load the picker:
+From a source checkout, install the optional Python environment and load the model:
 
 ```bash
-node bin/pickermux.mjs build --config kolibri-picker.config.json
-node bin/pickermux.mjs setup --config kolibri-picker.config.json
+python3.12 -m venv .artifacts/mlx-venv
+.artifacts/mlx-venv/bin/python -m pip install -r scripts/kolibri-requirements.txt
+node bin/pickermux.mjs mlx-load velaia/Kolibri-1-MLX-4bit \
+  --alias kolibri-1-mlx-4bit --python "$PWD/.artifacts/mlx-venv/bin/python" \
+  --revision 3f5adf3fc8149f57738cc5a99f02ae26b601e7b0 --port 8081
 ```
 
-`setup` installs the new version through the managed distribution and applies
-this explicit configuration to a healthy existing bridge or a fresh installation.
-It retains lifecycle ownership and rollback; keep any needed providers and
-bridge settings in your reviewed custom configuration. Do not edit the installed
-runtime directly. The optional Python server is separate
-from the bridge's LaunchAgent; this source workflow does not install it as a
-login service.
+The command prints a conservative provider stanza with `mlxProfileDigest`.
+Add it to your reviewed custom configuration, retaining needed providers and
+bridge settings. Use a provider-specific namespace; the printed example uses
+`mlx/kolibri-1-mlx-4bit`. With Codex fully closed, activate that configuration:
 
-This version supports only system/user/assistant text, reasoning `none`, and
-text output. Optional Codex tool inventories are withheld; forced choices,
-tool-call history, tool results, images, audio, encrypted reasoning and
-compaction controls are rejected. No certification record can enable tools,
-shell access or Efficient Fidelity for this provider. Native models keep their
-existing routing and credentials.
+```bash
+node bin/pickermux.mjs setup --config /private/path/pickermux.config.json
+```
 
-Codex may retain native reasoning-summary display preferences when switching
-models. Reviewed summary preferences and delivery controls are validated and
-omitted on this route; they never enable reasoning. Completed assistant text
-can be replayed as history, including the bridge's own empty probability fields.
-Unknown controls and nonempty probability data still stop the request safely.
+Setup automatically certifies eligible models without a current receipt. Later,
+`pickermux certify --model mlx/kolibri-1-mlx-4bit` repeats the complete matrix.
+Only passing Direct gates enable function, file and shell tools. Passing the
+additional tool-search roundtrip enables Efficient Fidelity. Web research uses
+Codex's configured native search service and requires its normal account access;
+search credentials never reach the local model. Generic HF models remain text-only
+until their architecture/tool protocol has been reviewed and measured.
 
-The launcher counts the rendered tokenizer prompt and reserves the requested
-output budget before generation. Its default combined limit is 8,192 tokens,
-with at most 1,024 output tokens per request. A smaller launcher context between
-1,024 and 8,192 tokens must have the same value in the configuration. The
-model's theoretical larger context is not advertised. Oversized prompts fail
-without clipping instructions or history; start a new chat when this limit is
-reached. Codex compaction is unavailable on this route.
+`mlx-prepare` downloads/verifies without starting inference. `mlx-start --model
+NAME --port 8081`, `mlx-status --json`, and `mlx-stop --model NAME` manage prepared
+profiles. `--context-window` (1024–8192) and `--max-output-tokens` (1–2048) bind
+profile identity; the tokenizer enforces the combined prompt/output reservation.
+An omitted HF revision resolves `main` to a fixed commit before downloading.
+Existing aliases cannot be reassigned to different weights/settings. New public
+HF models must use built-in MLX architectures; downloaded executable Python and
+remote-code loading are rejected. Commands never use an implicit HF login token.
+Repeating preparation with `main` reuses and verifies the already pinned profile;
+use a new alias to load a newer revision or different settings.
 
-The server buffers each generation before returning JSON or emitting Chat
-SSE chunks. This prevents unsupported tool/reasoning markers or invalid model
-output from being accepted partially, but text becomes visible only after the
-generation finishes. No prompts or responses are saved or written to logs.
-Only explicit `--download` uses the network; ordinary model inference stays
-local. A local response can still be incorrect, so review its answer normally.
+If the reviewed Kolibri snapshot already exists, add `--model-dir
+/private/path/verified-model` to import it in place after checking all hashes,
+ownership and private permissions. The manager never scans the HF cache or copies
+those weights. Failed downloads resume their fixed staging plan and preserve
+working profiles. The detached inference process survives shell exit, but is not
+a login service; start it again after reboot. Stop verifies the exact owned
+instance and refuses to interrupt an active generation.
+
+The legacy `scripts/serve-kolibri.py` source launcher remains available with
+[kolibri-picker.config.json](../kolibri-picker.config.json), using port 8080 and
+`kolibri/kolibri-1-mlx-4bit`. Its updated reviewed server can also certify tools;
+older text-only copies must be replaced through source/managed workflows.
+Do not patch the installed bridge runtime directly.
+
+MLX supports text and certified functions with reasoning `none`. Native summary
+display preferences are ignored. Images, audio, stored continuation IDs and
+context compaction remain unsupported. Oversized history is rejected intact.
+The companion shows latest input/output/total and saved accumulated tokens.
+`token-performance-v1` adds the measured output generation tokens/s after a
+finalized MLX request, excluding prompt prefill and network time. Timing resets
+with the bridge and is never written into the usage ledger; missing measurements
+are shown as unavailable.
 
 ## Codex executable discovery
 

@@ -90,6 +90,24 @@ final class MenuViewportTests: XCTestCase {
     XCTAssertLessThan(size.height, 600)
   }
 
+  func testGenerationRateFitsTheExistingCompactTokenPanel() throws {
+    let performance: [String: Any] = ["schemaVersion": 1, "status": "available", "providers": [[
+      "providerId": "lmstudio", "status": "available", "inputTokens": 14900,
+      "outputTokens": 320, "totalTokens": 15220, "generationDurationMs": 1500,
+    ]]]
+    let snapshot = try menuSnapshot(performance: performance)
+    let measurements = Measurements()
+    let host = NSHostingView(rootView: CompanionMenuViewport {
+      ContentProbe(measurements: measurements) { TokenUsageView(snapshot: snapshot).padding(14) }
+    })
+    settle(host)
+    let size = try XCTUnwrap(measurements.contentSize)
+    XCTAssertLessThanOrEqual(size.width, 320)
+    XCTAssertGreaterThan(size.height, 100)
+    XCTAssertLessThan(size.height, 600)
+    XCTAssertEqual(snapshot.tokenPerformance?.outputTokensPerSecond(for: try XCTUnwrap(snapshot.tokenUsage?.providers.first)), 320_000.0 / 1500)
+  }
+
   func testDirectMenuUsesVerifiedHeaderAndRendersSyntheticNativePreview() throws {
     let controller = CompanionController(pollingEnabled: false)
     controller.snapshot = try menuSnapshot()
@@ -185,13 +203,13 @@ final class MenuViewportTests: XCTestCase {
     }
   }
 
-  private func menuSnapshot(providers: [[String: Any]]? = nil) throws -> CompanionSnapshot {
+  private func menuSnapshot(providers: [[String: Any]]? = nil, performance: [String: Any]? = nil) throws -> CompanionSnapshot {
     let syntheticProvider: [String: Any] = [
       "providerId": "lmstudio", "requests": 8, "unavailableRequests": 0,
       "last": ["status": "available", "inputTokens": 14900, "outputTokens": 320, "totalTokens": 15220],
       "totals": ["inputTokens": 140000, "outputTokens": 3250, "totalTokens": 143250],
     ]
-    return try CompanionSnapshot.decode(JSONSerialization.data(withJSONObject: [
+    var fields: [String: Any] = [
       "schemaVersion": 1, "version": "0.22.0", "state": "ready",
       "capabilities": ["integration-toggle-v1", "native-uninstall-v1", "token-usage-v2", "token-usage-reset-v1"],
       "desktop": ["status": "running"], "installation": ["status": "installed"],
@@ -200,7 +218,12 @@ final class MenuViewportTests: XCTestCase {
       "integration": ["status": "pickermux"], "recovery": ["status": "idle"], "issues": [],
       "actions": ["refresh", "open", "diagnose", "certify", "recover", "usage-reset"],
       "tokenUsage": ["schemaVersion": 2, "status": "available", "resetAt": NSNull(), "providers": providers ?? [syntheticProvider]],
-    ]))
+    ]
+    if let performance {
+      fields["tokenPerformance"] = performance
+      fields["capabilities"] = ["integration-toggle-v1", "native-uninstall-v1", "token-usage-v2", "token-usage-reset-v1", "token-performance-v1"]
+    }
+    return try CompanionSnapshot.decode(JSONSerialization.data(withJSONObject: fields))
   }
 
   private func assertViewport<V: View>(_ host: NSHostingView<V>, measurements: Measurements,

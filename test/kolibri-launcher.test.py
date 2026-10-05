@@ -14,13 +14,17 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 
-spec = importlib.util.spec_from_file_location("kolibri_launcher", Path(__file__).parents[1] / "scripts" / "serve-kolibri.py")
+spec = importlib.util.spec_from_file_location("kolibri_launcher", Path(__file__).parents[1] / "runtime" / "mlx" / "kolibri.py")
 launcher = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(launcher)
 
 
 def request_body(**overrides):
   return {"model": launcher.MODEL_ALIAS, "messages": [{"role": "user", "content": "Hallo"}], **overrides}
+
+
+def function_tool():
+  return {"type": "function", "function": {"name": "lookup", "parameters": {"type": "object", "properties": {"query": {"type": "string"}}}}}
 
 
 class LauncherTests(unittest.TestCase):
@@ -79,8 +83,8 @@ class LauncherTests(unittest.TestCase):
     for body in [
       request_body(model="default_model"),
       request_body(model="/private/model"),
-      request_body(tools=[]),
-      request_body(tool_choice="none"),
+      request_body(tools={}),
+      request_body(tool_choice="unknown"),
       request_body(adapters="private"),
       request_body(max_tokens=True),
       request_body(max_tokens=33),
@@ -103,7 +107,7 @@ class LauncherTests(unittest.TestCase):
     part = SimpleNamespace(text="Hallo!", finish_reason="stop", prompt_tokens=10, generation_tokens=3)
     runtime = launcher.KolibriRuntime(None, tokenizer, lambda *args, **kwargs: iter([part]), lambda *args, **kwargs: None, 16)
     result = runtime.complete(launcher.validate_request(request_body(max_tokens=6), 32))
-    self.assertEqual(result, ("Hallo!", "stop", {"prompt_tokens": 10, "completion_tokens": 3, "total_tokens": 13}))
+    self.assertEqual(result, ("Hallo!", "stop", {"prompt_tokens": 10, "completion_tokens": 3, "total_tokens": 13}, [], None))
     self.assertEqual(calls[0]["reasoning_effort"], "none")
     self.assertFalse(calls[0]["enable_thinking"])
     with self.assertRaisesRegex(launcher.ContractError, "configured context"):
@@ -122,6 +126,136 @@ class LauncherTests(unittest.TestCase):
         runtime.complete(launcher.validate_request(request_body(max_tokens=6), 32))
     finally:
       runtime.lock.release()
+
+  def test_strict_function_parser_and_choices(self):
+    request = launcher.validate_request(request_body(tools=[function_tool()]), 32)
+    text, finish, calls = launcher.parse_completion('<tool_call>\n{"name":"lookup","arguments":{"query":"Example"}}\n</tool_call>', "stop", request)
+    self.assertEqual(text, "")
+    self.assertEqual(finish, "tool_calls")
+    self.assertEqual(len(calls), 1)
+    self.assertEqual(calls[0]["function"], {"name": "lookup", "arguments": '{"query":"Example"}'})
+    self.assertTrue(calls[0]["id"].startswith("call_"))
+    for output in [
+      '<tool_call>{"name":"unknown","arguments":{}}</tool_call>',
+      '<tool_call>{"name":"lookup","arguments":[]}</tool_call>',
+      '<tool_call>{"name":"lookup","arguments":{},"extra":true}</tool_call>',
+      '<tool_call>{"name":"lookup","name":"other","arguments":{}}</tool_call>',
+      '<tool_call>{"name":"lookup","arguments":{"query":"a","query":"b"}}</tool_call>',
+      '<tool_call>{"name":"lookup","arguments":{}}',
+      '<tool_call>{"name":"lookup","arguments":{}}</tool_call> extra',
+      '<tool_call>{"name":"lookup","arguments":{}}</tool_call><tool_call>{}</tool_call>',
+      '<think>private</think><tool_call>{"name":"lookup","arguments":{}}</tool_call>',
+    ]:
+      with self.subTest(output=output):
+        with self.assertRaises(launcher.ContractError):
+          launcher.parse_completion(output, "stop", request)
+    with self.assertRaises(launcher.ContractError):
+      launcher.parse_completion('<tool_call>{"name":"lookup","arguments":{}}</tool_call>', "length", request)
+    with self.assertRaises(launcher.ContractError):
+      launcher.parse_completion('<tool_call>{"name":"lookup","arguments":{}}</tool_call>', "stop", {**request, "tool_choice": "none"})
+    with self.assertRaises(launcher.ContractError):
+      launcher.parse_completion("No function", "stop", {**request, "tool_choice": "required"})
+
+  def test_complete_function_stops_generation_without_consuming_or_repairing_later_output(self):
+    observed = []
+    def generate(*args, **kwargs):
+      try:
+        observed.append("first")
+        yield SimpleNamespace(text='<tool_call>{"name":"lookup","arguments":{"query":"Example"}}', finish_reason=None, prompt_tokens=10, generation_tokens=3, generation_tps=2)
+        observed.append("closing")
+        yield SimpleNamespace(text="</tool_call>", finish_reason=None, prompt_tokens=10, generation_tokens=4, generation_tps=2)
+        observed.append("later")
+        yield SimpleNamespace(text='<tool_call>{"name":"lookup","arguments":{}}</tool_call>', finish_reason="stop", prompt_tokens=10, generation_tokens=5, generation_tps=2)
+      finally:
+        observed.append("closed")
+    tokenizer = SimpleNamespace(apply_chat_template=lambda *args, **kwargs: [1] * 10)
+    runtime = launcher.KolibriRuntime(None, tokenizer, generate, lambda *args, **kwargs: None, 64)
+    result = runtime.complete(launcher.validate_request(request_body(tools=[function_tool()], max_tokens=16), 32))
+    self.assertEqual(observed, ["first", "closing", "closed"])
+    self.assertEqual(result[1], "tool_calls")
+    self.assertEqual(result[2], {"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14})
+    self.assertEqual(result[3][0]["function"], {"name": "lookup", "arguments": '{"query":"Example"}'})
+    self.assertEqual(result[4], {"generation_duration_ms": 2000})
+    self.assertFalse(runtime.lock.locked())
+
+  def test_function_stop_preserves_and_rejects_coalesced_multiple_calls_suffixes_and_bad_envelopes(self):
+    call = '<tool_call>{"name":"lookup","arguments":{}}</tool_call>'
+    tokenizer = SimpleNamespace(apply_chat_template=lambda *args, **kwargs: [1] * 10)
+    for text in (call + call, call + " extra", '<tool_call>{"name":"lookup","arguments":[]}</tool_call>', '<tool_call>{"name":"unknown","arguments":{}}</tool_call>'):
+      observed = []
+      def generate(*args, **kwargs):
+        try:
+          yield SimpleNamespace(text=text, finish_reason=None, prompt_tokens=10, generation_tokens=4, generation_tps=2)
+          observed.append("later")
+        finally:
+          observed.append("closed")
+      runtime = launcher.KolibriRuntime(None, tokenizer, generate, lambda *args, **kwargs: None, 64)
+      with self.assertRaises(launcher.ContractError):
+        runtime.complete(launcher.validate_request(request_body(tools=[function_tool()], max_tokens=16), 32))
+      self.assertEqual(observed, ["closed"])
+      self.assertFalse(runtime.lock.locked())
+
+  def test_function_stop_rejects_partial_malformed_disabled_and_invalid_count_output(self):
+    tokenizer = SimpleNamespace(apply_chat_template=lambda *args, **kwargs: [1] * 10)
+    call = '<tool_call>{"name":"lookup","arguments":{}}</tool_call>'
+    for text, choice in ((call[:-1], "auto"), ('<tool_call>{broken}</tool_call>', "auto"), (call, "none")):
+      part = SimpleNamespace(text=text, finish_reason="stop", prompt_tokens=10, generation_tokens=4, generation_tps=2)
+      runtime = launcher.KolibriRuntime(None, tokenizer, lambda *args, **kwargs: iter([part]), lambda *args, **kwargs: None, 64)
+      with self.assertRaises(launcher.ContractError):
+        runtime.complete(launcher.validate_request(request_body(tools=[function_tool()], tool_choice=choice, max_tokens=16), 32))
+    for tokens, prompt in ((0, 10), (True, 10), (17, 10), (4, 9), (4, True)):
+      part = SimpleNamespace(text=call, finish_reason=None, prompt_tokens=prompt, generation_tokens=tokens, generation_tps=2)
+      runtime = launcher.KolibriRuntime(None, tokenizer, lambda *args, **kwargs: iter([part]), lambda *args, **kwargs: None, 64)
+      with self.assertRaises(launcher.ContractError):
+        runtime.complete(launcher.validate_request(request_body(tools=[function_tool()], max_tokens=16), 32))
+
+  def test_literal_closing_tag_in_fragmented_arguments_is_not_a_stop_boundary(self):
+    observed = []
+    def generate(*args, **kwargs):
+      try:
+        yield SimpleNamespace(text='<tool_call>{"name":"lookup","arguments":{"query":"literal </tool_call>', finish_reason=None, prompt_tokens=10, generation_tokens=3, generation_tps=2)
+        observed.append("continued")
+        yield SimpleNamespace(text=' text"}}</tool_call>', finish_reason=None, prompt_tokens=10, generation_tokens=4, generation_tps=2)
+        observed.append("later")
+      finally:
+        observed.append("closed")
+    tokenizer = SimpleNamespace(apply_chat_template=lambda *args, **kwargs: [1] * 10)
+    runtime = launcher.KolibriRuntime(None, tokenizer, generate, lambda *args, **kwargs: None, 64)
+    result = runtime.complete(launcher.validate_request(request_body(tools=[function_tool()], max_tokens=16), 32))
+    self.assertEqual(observed, ["continued", "closed"])
+    self.assertEqual(json.loads(result[3][0]["function"]["arguments"]), {"query": "literal </tool_call> text"})
+
+  def test_function_history_requires_unique_correlated_results(self):
+    call = {"id": "call_prior", "type": "function", "function": {"name": "lookup", "arguments": "{}"}}
+    assistant = {"role": "assistant", "content": "", "tool_calls": [call]}
+    output = {"role": "tool", "content": "Source found", "tool_call_id": "call_prior"}
+    body = request_body(tools=[function_tool()], messages=[{"role": "user", "content": "Find source"}, assistant, output], tool_choice="none")
+    self.assertEqual(launcher.validate_request(body, 32)["messages"], body["messages"])
+    for messages in [
+      [assistant], [output], [assistant, output, output], [assistant, output, assistant, output],
+      [assistant, {**output, "tool_call_id": "other"}],
+      [{**assistant, "tool_calls": [{**call, "function": {"name": "other", "arguments": "{}"}}]}, output],
+    ]:
+      with self.assertRaises(launcher.ContractError):
+        launcher.validate_request({**body, "messages": messages}, 32)
+    with self.assertRaises(launcher.ContractError):
+      launcher.validate_request(body, 32, allow_tools=False)
+    with self.assertRaises(launcher.ContractError):
+      launcher.validate_request(request_body(tools=[function_tool()], parallel_tool_calls=True), 32)
+
+  def test_pinned_capabilities_and_generation_metrics_are_bounded(self):
+    caps = launcher.model_capabilities()
+    self.assertEqual(set(caps), {"mlxToolProtocol", "modelFingerprint", "runtimeFingerprint"})
+    self.assertEqual(caps["mlxToolProtocol"], "pickermux-mlx-tools-v1")
+    for fingerprint in (caps["modelFingerprint"], caps["runtimeFingerprint"]):
+      self.assertRegex(fingerprint, r"^sha256:[a-f0-9]{64}$")
+    self.assertEqual(launcher.generation_metrics(SimpleNamespace(generation_tokens=4, generation_tps=2)), {"generation_duration_ms": 2000})
+    for speed in (None, 0, -1, float("nan"), float("inf"), 0.000001, 5e-324):
+      self.assertIsNone(launcher.generation_metrics(SimpleNamespace(generation_tokens=4, generation_tps=speed)))
+    self.assertIsNone(launcher.generation_metrics(SimpleNamespace(generation_tokens=4)))
+    for name in ('lookup"', "lookup<tool_call>", "lookup\n", "lookup "):
+      with self.assertRaises(launcher.ContractError):
+        launcher.validate_request(request_body(tools=[{"type": "function", "function": {"name": name, "parameters": {}}}]), 32)
 
   def test_loopback_json_and_sse_and_private_failure(self):
     class FakeRuntime:
@@ -146,7 +280,7 @@ class LauncherTests(unittest.TestCase):
         return result
       status, _, body = send("GET", "/v1/models")
       self.assertEqual(status, 200)
-      self.assertEqual(json.loads(body)["data"], [{"id": launcher.MODEL_ALIAS, "object": "model", "context_window": 8192}])
+      self.assertEqual(json.loads(body)["data"], [{"id": launcher.MODEL_ALIAS, "object": "model", "context_window": 8192, "capabilities": {"mlxMaxOutputTokens": 32}}])
       self.assertEqual(send("GET", "/v1/models/private/path")[0], 404)
       self.assertEqual(send("GET", "/v1/models", headers={"Origin": "https://example.invalid"})[0], 403)
       self.assertEqual(send("GET", "/v1/models", headers={"Host": "other.invalid"})[0], 403)
@@ -179,6 +313,7 @@ class LauncherTests(unittest.TestCase):
     captured = io.StringIO()
     server = launcher.KolibriServer(("127.0.0.1", 0), FailingHandler)
     server.runtime = SimpleNamespace(context_window=8192)
+    server.max_tokens = 32
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     with contextlib.redirect_stderr(captured):
       thread.start()
@@ -194,6 +329,51 @@ class LauncherTests(unittest.TestCase):
         server.server_close()
         thread.join(timeout=3)
     self.assertEqual(captured.getvalue(), "")
+
+  def test_http_function_contract_and_decode_duration(self):
+    class ToolRuntime:
+      context_window = 8192
+      model_alias = launcher.MODEL_ALIAS
+      tool_capable = True
+      capabilities = launcher.model_capabilities()
+      def complete(self, request):
+        self.asserted_choice = request["tool_choice"]
+        call = {"id": "call_result", "type": "function", "function": {"name": "lookup", "arguments": '{"query":"Example"}'}}
+        return "", "tool_calls", {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5}, [call], {"generation_duration_ms": 125}
+    server = launcher.KolibriServer(("127.0.0.1", 0), launcher.KolibriHandler)
+    server.runtime = ToolRuntime()
+    server.max_tokens = 32
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+      for stream in (False, True):
+        body = request_body(tools=[function_tool()], tool_choice="required", parallel_tool_calls=False, stream=stream)
+        if stream:
+          body["stream_options"] = {"include_usage": True}
+        connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=3)
+        connection.request("POST", "/v1/chat/completions", json.dumps(body), {"Content-Type": "application/json"})
+        response = connection.getresponse()
+        self.assertEqual(response.status, 200)
+        output = response.read().decode()
+        connection.close()
+        if stream:
+          packets = [json.loads(item.removeprefix("data: ")) for item in output.strip().split("\n\n")[:-1]]
+          self.assertEqual(packets[0]["choices"][0]["delta"], {"role": "assistant"})
+          self.assertEqual(packets[-2]["choices"][0]["finish_reason"], "tool_calls")
+          self.assertEqual(packets[-2]["choices"][0]["delta"]["tool_calls"][0]["index"], 0)
+          self.assertEqual(packets[-1]["choices"], [])
+          self.assertEqual(packets[-1]["pickermux_metrics"], {"generation_duration_ms": 125})
+          self.assertTrue(output.endswith("data: [DONE]\n\n"))
+        else:
+          packet = json.loads(output)
+          self.assertEqual(packet["choices"][0]["finish_reason"], "tool_calls")
+          self.assertEqual(packet["choices"][0]["message"]["tool_calls"][0]["function"]["name"], "lookup")
+          self.assertEqual(packet["pickermux_metrics"], {"generation_duration_ms": 125})
+        self.assertEqual(server.runtime.asserted_choice, "required")
+    finally:
+      server.shutdown()
+      server.server_close()
+      thread.join(timeout=3)
 
 
 if __name__ == "__main__":

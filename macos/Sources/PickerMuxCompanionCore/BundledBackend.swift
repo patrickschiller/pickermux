@@ -33,10 +33,11 @@ public struct BundledBackendValidator {
           let files = manifest["files"] as? [[String: Any]], !files.isEmpty, files.count <= 1024
     else { throw CompanionFailure.unsafeLauncher }
     var seen = Set<String>()
+    let mlxRuntimePaths = Set(["kolibri.py", "server.py", "manage.py", "model_store.py"].map { "runtime/mlx/\($0)" })
     var total = 0
     for record in files {
       guard let relative = record["path"] as? String,
-            relative.range(of: "^(bin|src)/[A-Za-z0-9._/-]+$|^(package.json|lmstudio-picker.config.json|LICENSE)$", options: .regularExpression) != nil,
+            relative.range(of: "^(bin|src)/[A-Za-z0-9._/-]+$|^(package.json|lmstudio-picker.config.json|LICENSE)$", options: .regularExpression) != nil || mlxRuntimePaths.contains(relative),
             !relative.split(separator: "/", omittingEmptySubsequences: false).contains(where: { $0 == "." || $0 == ".." || $0.isEmpty }),
             seen.insert(relative).inserted,
             let size = record["size"] as? Int, size >= 0, size <= 4 * 1024 * 1024,
@@ -51,6 +52,9 @@ public struct BundledBackendValidator {
     }
     guard ["bin/pickermux.mjs", "package.json", "lmstudio-picker.config.json", "LICENSE"].allSatisfy(seen.contains)
     else { throw CompanionFailure.unsafeLauncher }
+    let packagedRuntime = seen.filter { $0.hasPrefix("runtime/") }
+    guard packagedRuntime.isEmpty || Set(packagedRuntime) == mlxRuntimePaths
+    else { throw CompanionFailure.unsafeLauncher }
     // Relative ESM imports cannot pick up an unmanifested file added later.
     var enumerationFailed = false
     guard let enumerator = FileManager.default.enumerator(at: directory, includingPropertiesForKeys: nil, errorHandler: { _, _ in
@@ -61,10 +65,21 @@ public struct BundledBackendValidator {
       var info = stat()
       guard lstat(url.path, &info) == 0 else { throw CompanionFailure.unsafeLauncher }
       let type = info.st_mode & S_IFMT
-      if type == S_IFDIR { continue }
       let path = url.resolvingSymlinksInPath().path
       guard path.hasPrefix(directory.path + "/") else { throw CompanionFailure.unsafeLauncher }
       let relative = String(path.dropFirst(directory.path.count + 1))
+      if type == S_IFDIR {
+        if relative == "runtime" {
+          guard (try? FileManager.default.contentsOfDirectory(atPath: path))?.sorted() == ["mlx"]
+          else { throw CompanionFailure.unsafeLauncher }
+        } else if relative == "runtime/mlx" {
+          guard (try? FileManager.default.contentsOfDirectory(atPath: path))?.sorted() == ["kolibri.py", "manage.py", "model_store.py", "server.py"]
+          else { throw CompanionFailure.unsafeLauncher }
+        } else if relative.hasPrefix("runtime/") {
+          throw CompanionFailure.unsafeLauncher
+        }
+        continue
+      }
       guard type == S_IFREG, relative == "release-manifest.json" || seen.contains(relative)
       else { throw CompanionFailure.unsafeLauncher }
     }

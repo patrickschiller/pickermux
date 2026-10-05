@@ -855,9 +855,12 @@ export async function runModelCertification({
     throw new Error("Certification requires a discovered model with context metadata");
   }
   const privateCertificationToken = requireCertificationToken(certificationToken);
+  const toolProbeMaxOutputTokens = model.providerKind === "mlx-chat-completions"
+    ? Math.min(TOOL_PROBE_MAX_OUTPUT_TOKENS, model.capabilities?.mlxMaxOutputTokens ?? 1024)
+    : TOOL_PROBE_MAX_OUTPUT_TOKENS;
   const common = {
     model: model.id,
-    max_output_tokens: 256,
+    max_output_tokens: Math.min(256, toolProbeMaxOutputTokens),
     stream: false,
   };
 
@@ -915,7 +918,7 @@ export async function runModelCertification({
     label: "Direct function probe",
     body: {
       ...common,
-      max_output_tokens: TOOL_PROBE_MAX_OUTPUT_TOKENS,
+      max_output_tokens: toolProbeMaxOutputTokens,
       input:
         `Call ${DIRECT_FUNCTION_NAME} now with marker=${DIRECT_FUNCTION_MARKER}.`,
       tools: directTools,
@@ -938,10 +941,15 @@ export async function runModelCertification({
     label: "Tool-result probe",
     body: {
       ...common,
-      max_output_tokens: TOOL_PROBE_MAX_OUTPUT_TOKENS,
-      previous_response_id: directResponse.id,
+      max_output_tokens: toolProbeMaxOutputTokens,
+      ...(model.providerKind === "mlx-chat-completions"
+        ? {} : { previous_response_id: directResponse.id }),
       instructions: "After the tool result, reply with exactly P3_TOOL_RESULT_OK.",
       input: [
+        ...(model.providerKind === "mlx-chat-completions" ? [
+          { type: "message", role: "user", content: `Call ${DIRECT_FUNCTION_NAME} now with marker=${DIRECT_FUNCTION_MARKER}.` },
+          ...directResponse.output,
+        ] : []),
         {
           type: "function_call_output",
           call_id: directCall.call_id,
@@ -965,7 +973,7 @@ export async function runModelCertification({
     label: "Parameterless namespace JSON probe",
     body: {
       ...common,
-      max_output_tokens: TOOL_PROBE_MAX_OUTPUT_TOKENS,
+      max_output_tokens: toolProbeMaxOutputTokens,
       input: "Call the parameterless confirm tool now.",
       tools: namespaceToolset,
       tool_choice: forcedNamespaceChoice(),
@@ -987,7 +995,7 @@ export async function runModelCertification({
     label: "Namespace stream probe",
     body: {
       ...common,
-      max_output_tokens: TOOL_PROBE_MAX_OUTPUT_TOKENS,
+      max_output_tokens: toolProbeMaxOutputTokens,
       input: "Call the parameterless confirm tool now.",
       tools: namespaceToolset,
       tool_choice: forcedNamespaceChoice(),
@@ -1272,9 +1280,12 @@ export async function runEfficientFidelityCertification({
     efficientFidelitySearchTool(),
   ];
   const userMessage = efficientFidelityUserMessage();
+  const toolProbeMaxOutputTokens = model.providerKind === "mlx-chat-completions"
+    ? Math.min(TOOL_PROBE_MAX_OUTPUT_TOKENS, model.capabilities?.mlxMaxOutputTokens ?? 1024)
+    : TOOL_PROBE_MAX_OUTPUT_TOKENS;
   const common = {
     model: model.id,
-    max_output_tokens: TOOL_PROBE_MAX_OUTPUT_TOKENS,
+    max_output_tokens: toolProbeMaxOutputTokens,
     tools,
     tool_choice: "auto",
     parallel_tool_calls: false,

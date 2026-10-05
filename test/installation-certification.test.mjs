@@ -187,8 +187,8 @@ test("MLX-only installation skips live tool probes and explicit certification fa
   assert.equal(result.textOnly, 1);
   assert.deepEqual(result.certified, []);
   assert.equal(transactions.length, 0);
-  await assert.rejects(certify({ ...input, all: false, model: "kolibri/kolibri-1-mlx-4bit" }, dependencies), /text-only/u);
-  await assert.rejects(certify({ ...input, onlyUncertified: false }, dependencies), /No tool-capable/u);
+  await assert.rejects(certify({ ...input, all: false, model: "kolibri/kolibri-1-mlx-4bit" }, dependencies), /no reviewed tool protocol/u);
+  await assert.rejects(certify({ ...input, onlyUncertified: false }, dependencies), /No external model with a reviewed tool protocol/u);
   assert.equal(transactions.length, 0);
 });
 
@@ -200,4 +200,17 @@ test("mixed certification selects only tool-capable routes", async (t) => {
   }] });
   await certify(input, dependencies);
   assert.deepEqual(transactions[0].targetModelIds, models.slice(2).map((entry) => entry.id));
+});
+
+test("reviewed MLX protocols are eligible for the complete installation certification transaction", async (t) => {
+  const { input, dependencies, transactions } = await fixture(t);
+  input.config = { ...input.config, providers: [{ id: "kolibri", kind: "mlx-chat-completions", models: [] }] };
+  const model = { id: "kolibri/kolibri-1-mlx-4bit", providerId: "kolibri", type: "llm", contextWindow: 8192,
+    capabilities: { mlxToolProtocol: "pickermux-mlx-tools-v1",
+      modelFingerprint: `sha256:${"a".repeat(64)}`, runtimeFingerprint: `sha256:${"b".repeat(64)}`, mlxMaxOutputTokens: 1024 },
+  };
+  dependencies.discoverImpl = async () => ({ models: [model] });
+  dependencies.listPendingImpl = async () => [];
+  await certify({ ...input, onlyUncertified: false }, dependencies);
+  assert.deepEqual(transactions[0].targetModelIds, [model.id]);
 });

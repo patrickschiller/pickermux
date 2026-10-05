@@ -136,6 +136,79 @@ public struct TokenUsageSnapshot: Decodable, Equatable {
   }
 }
 
+public struct ProviderTokenPerformance: Decodable, Equatable, Identifiable {
+  public let providerId: String
+  public let status: TokenUsageAvailability
+  public let counts: TokenUsageCounts?
+  public let generationDurationMs: Int?
+  public var id: String { providerId }
+
+  private enum CodingKeys: String, CodingKey {
+    case providerId, status, inputTokens, outputTokens, totalTokens, generationDurationMs
+  }
+
+  public init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    providerId = try container.decode(String.self, forKey: .providerId)
+    status = try container.decode(TokenUsageAvailability.self, forKey: .status)
+    guard providerId.utf8.count <= 127,
+          providerId.range(of: "^[a-z0-9](?:[a-z0-9_-]{0,125}[a-z0-9])?\\z", options: .regularExpression) != nil
+    else { throw CompanionFailure.incompatibleProtocol }
+    if status == .available {
+      try requireTokenUsageKeys(decoder, ["providerId", "status", "inputTokens", "outputTokens", "totalTokens", "generationDurationMs"])
+      let input = try container.decode(Int.self, forKey: .inputTokens)
+      let output = try container.decode(Int.self, forKey: .outputTokens)
+      let total = try container.decode(Int.self, forKey: .totalTokens)
+      let duration = try container.decode(Int.self, forKey: .generationDurationMs)
+      guard [input, output, total].allSatisfy(isTokenUsageCount), total == input + output,
+            duration > 0, duration <= 3_600_000
+      else { throw CompanionFailure.incompatibleProtocol }
+      counts = TokenUsageCounts(inputTokens: input, outputTokens: output, totalTokens: total)
+      generationDurationMs = duration
+    } else {
+      try requireTokenUsageKeys(decoder, ["providerId", "status"])
+      counts = nil
+      generationDurationMs = nil
+    }
+  }
+}
+
+public struct TokenPerformanceSnapshot: Decodable, Equatable {
+  public let schemaVersion: Int
+  public let status: TokenUsageAvailability
+  public let providers: [ProviderTokenPerformance]
+
+  private enum CodingKeys: String, CodingKey { case schemaVersion, status, providers }
+
+  public init(from decoder: Decoder) throws {
+    try requireTokenUsageKeys(decoder, ["schemaVersion", "status", "providers"])
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
+    status = try container.decode(TokenUsageAvailability.self, forKey: .status)
+    var elements = try container.nestedUnkeyedContainer(forKey: .providers)
+    var decodedProviders: [ProviderTokenPerformance] = []
+    while !elements.isAtEnd {
+      guard decodedProviders.count < 128 else { throw CompanionFailure.incompatibleProtocol }
+      decodedProviders.append(try elements.decode(ProviderTokenPerformance.self))
+    }
+    providers = decodedProviders
+    guard schemaVersion == 1, Set(providers.map(\.providerId)).count == providers.count,
+          status == .available || providers.isEmpty
+    else { throw CompanionFailure.incompatibleProtocol }
+  }
+
+  // Durable counts may predate this process or become unavailable after a
+  // failed write. Never attach a volatile rate to a different latest count.
+  public func outputTokensPerSecond(for provider: ProviderTokenUsage) -> Double? {
+    guard status == .available, let latest = provider.last.counts,
+          let measurement = providers.first(where: { $0.providerId == provider.providerId }),
+          measurement.status == .available, measurement.counts == latest,
+          let duration = measurement.generationDurationMs
+    else { return nil }
+    return Double(latest.outputTokens) * 1000 / Double(duration)
+  }
+}
+
 func canonicalTokenUsageDate(_ value: String) -> Date? {
   guard value.range(of: "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$", options: .regularExpression) != nil
   else { return nil }

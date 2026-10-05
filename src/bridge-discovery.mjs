@@ -1,3 +1,5 @@
+import { normalizeMlxCapabilities } from "./mlx-capabilities.mjs";
+
 import {
   DiscoveryError,
   DiscoveryUnavailableError,
@@ -174,12 +176,14 @@ async function discoverGenericProvider({
       const configured = provider.models[0];
       if (
         payload.data.length !== 1 || !entry || typeof entry !== "object" ||
-        Array.isArray(entry) || entry.id !== "kolibri-1-mlx-4bit" ||
+        Array.isArray(entry) || entry.id !== configured?.id ||
         entry.object !== "model" ||
         !Number.isSafeInteger(entry.context_window) ||
-        entry.context_window !== configured?.contextWindow
+        entry.context_window !== configured?.contextWindow ||
+        (configured?.mlxProfileDigest !== undefined &&
+          entry.capabilities?.mlxProfileDigest !== configured.mlxProfileDigest)
       ) {
-        throw new DiscoveryError("PROVIDER_RESPONSE_INVALID", "The local MLX server model and active context do not match the configured Kolibri route");
+        throw new DiscoveryError("PROVIDER_RESPONSE_INVALID", "The local MLX server model and active context do not match the configured model profile");
       }
     }
     const ids = new Set(payload.data.map((entry) => String(entry?.id ?? "")).filter(Boolean));
@@ -201,7 +205,7 @@ async function discoverGenericProvider({
         type: "llm",
         contextWindow: model.contextWindow,
         source: mlx ? "mlx-chat-completions" : "openai-compatible-models",
-        capabilities: {},
+        capabilities: mlx ? normalizeMlxCapabilities(payload.data[0].capabilities) : {},
         ...(mlx ? { providerKind: provider.kind } : {}),
         ...configuredReasoning(model),
       };

@@ -5,14 +5,15 @@ import XCTest
 @testable import PickerMuxCompanionCore
 
 final class BundledBackendTests: XCTestCase {
-  func fixture() throws -> (directory: URL, hash: String) {
+  func fixture(runtimeFiles: [String] = []) throws -> (directory: URL, hash: String) {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent("pickermux-bundled-test-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: directory.appendingPathComponent("bin"), withIntermediateDirectories: true)
     addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
     var files: [[String: Any]] = []
-    for name in ["bin/pickermux.mjs", "package.json", "lmstudio-picker.config.json", "LICENSE"] {
+    for name in ["bin/pickermux.mjs", "package.json", "lmstudio-picker.config.json", "LICENSE"] + runtimeFiles {
       let data = Data("fixture: \(name)".utf8)
       let target = directory.appendingPathComponent(name)
+      try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
       try data.write(to: target)
       XCTAssertEqual(chmod(target.path, 0o644), 0)
       files.append(["path": name, "size": data.count, "sha256": digest(data), "mode": "0644"])
@@ -52,6 +53,36 @@ final class BundledBackendTests: XCTestCase {
     try Data(#"{"schemaVersion":2,"name":"pickermux"}"#.utf8).write(to: manifest)
     let hash = digest(try Data(contentsOf: manifest))
     XCTAssertThrowsError(try BundledBackendValidator(directory: files.directory, expectedManifestHash: hash).validatedEntryPoint())
+  }
+
+  func testOptionalMlxRuntimeIsAcceptedOnlyAsTheCompleteReviewedPathSet() throws {
+    let paths = ["kolibri.py", "manage.py", "model_store.py", "server.py"].map { "runtime/mlx/\($0)" }
+    let complete = try fixture(runtimeFiles: paths)
+    XCTAssertEqual(try BundledBackendValidator(directory: complete.directory, expectedManifestHash: complete.hash).validatedEntryPoint(),
+      complete.directory.appendingPathComponent("bin/pickermux.mjs").resolvingSymlinksInPath())
+    for incomplete in [Array(paths.prefix(1)), Array(paths.prefix(3)), paths + ["runtime/mlx/other.py"], paths + ["runtime/other/server.py"]] {
+      let files = try fixture(runtimeFiles: incomplete)
+      XCTAssertThrowsError(try BundledBackendValidator(directory: files.directory, expectedManifestHash: files.hash).validatedEntryPoint())
+    }
+    try FileManager.default.createDirectory(at: complete.directory.appendingPathComponent("runtime/mlx/unreviewed"), withIntermediateDirectories: true)
+    XCTAssertThrowsError(try BundledBackendValidator(directory: complete.directory, expectedManifestHash: complete.hash).validatedEntryPoint())
+  }
+
+  func testMlxRuntimeLinksAndPayloadChangesNeverGrantBundledExecution() throws {
+    let paths = ["kolibri.py", "manage.py", "model_store.py", "server.py"].map { "runtime/mlx/\($0)" }
+    let hardLinked = try fixture(runtimeFiles: paths)
+    XCTAssertEqual(link(hardLinked.directory.appendingPathComponent("runtime/mlx/server.py").path,
+      hardLinked.directory.appendingPathComponent("other-link").path), 0)
+    XCTAssertThrowsError(try BundledBackendValidator(directory: hardLinked.directory, expectedManifestHash: hardLinked.hash).validatedEntryPoint())
+    let linked = try fixture(runtimeFiles: paths)
+    let original = linked.directory.appendingPathComponent("runtime/mlx/server.py")
+    let displaced = linked.directory.appendingPathComponent("displaced")
+    try FileManager.default.moveItem(at: original, to: displaced)
+    try FileManager.default.createSymbolicLink(atPath: original.path, withDestinationPath: displaced.path)
+    XCTAssertThrowsError(try BundledBackendValidator(directory: linked.directory, expectedManifestHash: linked.hash).validatedEntryPoint())
+    let modified = try fixture(runtimeFiles: paths)
+    try Data("modified runtime".utf8).write(to: modified.directory.appendingPathComponent("runtime/mlx/server.py"))
+    XCTAssertThrowsError(try BundledBackendValidator(directory: modified.directory, expectedManifestHash: modified.hash).validatedEntryPoint())
   }
 
   func digest(_ data: Data) -> String {

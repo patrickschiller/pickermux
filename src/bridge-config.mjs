@@ -50,6 +50,7 @@ const MODEL_KEYS = new Set([
   "contextWindow",
   "reasoningEffort",
   "reasoningEfforts",
+  "mlxProfileDigest",
 ]);
 const NATIVE_MODEL_ID_PATTERN = /^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$/u;
 const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/u;
@@ -378,12 +379,20 @@ function normalizeModel(input, providerId, providerKind, index, seenIds, seenSlu
     normalized.reasoningEfforts = efforts;
   }
 
+  if (providerKind !== "mlx-chat-completions" && input.mlxProfileDigest !== undefined) {
+    throw new Error(`${label}.mlxProfileDigest is supported only for local MLX models`);
+  }
   if (providerKind === "mlx-chat-completions") {
     if (normalized.type !== "llm" || normalized.contextWindow === undefined) {
       throw new Error(`${label} requires type=llm and a positive contextWindow`);
     }
-    if (id !== "kolibri-1-mlx-4bit") {
-      throw new Error(`${label}.id must be exactly kolibri-1-mlx-4bit`);
+    if (input.mlxProfileDigest !== undefined) {
+      if (typeof input.mlxProfileDigest !== "string" || !/^sha256:[0-9a-f]{64}$/u.test(input.mlxProfileDigest)) {
+        throw new Error(`${label}.mlxProfileDigest must be a SHA-256 profile identity`);
+      }
+      normalized.mlxProfileDigest = input.mlxProfileDigest;
+    } else if (id !== "kolibri-1-mlx-4bit") {
+      throw new Error(`${label}.id requires a managed mlxProfileDigest`);
     }
     if (normalized.contextWindow < 1_024 || normalized.contextWindow > 8_192) {
       throw new Error(`${label}.contextWindow must be between 1024 and 8192 for the local MLX server`);

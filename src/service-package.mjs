@@ -12,6 +12,8 @@ import {
 } from "node:fs/promises";
 import path from "node:path";
 
+import { inspectOptionalMlxRuntime } from "./runtime-package.mjs";
+
 async function exists(target) {
   try {
     await lstat(target);
@@ -121,6 +123,7 @@ export async function writeServiceConfig(serviceConfigPath, config) {
  */
 export async function stageServicePackage({ sourceRoot, installDirectory, config }) {
   const source = path.resolve(sourceRoot);
+  const mlxRuntime = await inspectOptionalMlxRuntime(source);
   const destination = path.join(path.resolve(installDirectory), "runtime-app");
   const staging = path.join(
     path.resolve(installDirectory),
@@ -143,6 +146,14 @@ export async function stageServicePackage({ sourceRoot, installDirectory, config
       force: false,
       errorOnExist: true,
     });
+    if (mlxRuntime) {
+      await cp(path.join(source, "runtime"), path.join(staging, "runtime"), {
+        recursive: true,
+        force: false,
+        errorOnExist: true,
+      });
+      await inspectOptionalMlxRuntime(staging);
+    }
     for (const fileName of ["package.json", "lmstudio-picker.config.json"]) {
       await cp(path.join(source, fileName), path.join(staging, fileName), {
         force: false,

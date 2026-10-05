@@ -9,6 +9,7 @@ import { gunzipSync } from "node:zlib";
 import { compareVersions } from "./distribution-installer.mjs";
 import { sanitizeCodexDesktopLaunchEnvironment } from "./codex-desktop-state.mjs";
 import { PICKERMUX_DMG_ASSET, PICKERMUX_RELEASE_REPOSITORY, parseDmgReleaseRecord } from "./companion-release.mjs";
+import { MLX_RUNTIME_FILES } from "./runtime-package.mjs";
 
 const execFile = promisify(execFileCallback);
 const REPOSITORY = PICKERMUX_RELEASE_REPOSITORY;
@@ -19,6 +20,7 @@ const MAX_ARCHIVE_BYTES = 8 * 1024 * 1024;
 const MAX_EXPANDED_BYTES = 32 * 1024 * 1024;
 const REDIRECT_HOSTS = new Set(["github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com"]);
 const ROOT_FILES = new Set(["package.json", "LICENSE", "lmstudio-picker.config.json"]);
+const RUNTIME_FILES = new Set(MLX_RUNTIME_FILES.map((name) => `runtime/mlx/${name}`));
 
 function failure(code = "UPDATE_INVALID") {
   const error = new Error("The PickerMux update could not be safely verified or activated.");
@@ -144,7 +146,12 @@ export async function checkForCompanionUpdate({ currentVersion, fetchImpl = glob
 }
 
 function allowedFile(name) {
-  return ROOT_FILES.has(name) || /^src\/[a-z0-9-]+\.mjs$/u.test(name) || /^bin\/(?:pickermux|lmstudio-picker)\.mjs$/u.test(name);
+  return ROOT_FILES.has(name) || RUNTIME_FILES.has(name) || /^src\/[a-z0-9-]+\.mjs$/u.test(name) || /^bin\/(?:pickermux|lmstudio-picker)\.mjs$/u.test(name);
+}
+
+function assertOptionalRuntimeEntries(entries) {
+  if (![...entries.keys()].some((name) => name.startsWith("runtime/"))) return;
+  if (![...RUNTIME_FILES].every((name) => entries.has(name) && !entries.get(name).directory)) throw failure();
 }
 
 function tarString(header, start, width) {
@@ -181,6 +188,7 @@ export function inspectCompanionArchive(archive) {
     const header = bytes.subarray(offset, offset + 512);
     if (header.every((byte) => byte === 0)) {
       if (bytes.length - offset < 1024 || bytes.subarray(offset).some((byte) => byte !== 0)) throw failure();
+      assertOptionalRuntimeEntries(entries);
       return entries;
     }
     let sum = 0;
@@ -192,7 +200,8 @@ export function inspectCompanionArchive(archive) {
     const type = header[156];
     if (entries.has(name) || name.includes("\\") || name.includes("..") || size > MAX_EXPANDED_BYTES || offset + 512 + size > bytes.length) throw failure();
     const directory = type === 53;
-    if (directory ? !["src/", "bin/"].includes(name) || size !== 0 || mode !== 0o755 : ![0, 48].includes(type) || !(allowedFile(name) || name === "release-manifest.json") || ![0o644, 0o755].includes(mode)) throw failure();
+    if (directory ? !["src/", "bin/", "runtime/", "runtime/mlx/"].includes(name) || size !== 0 || mode !== 0o755 : ![0, 48].includes(type) || !(allowedFile(name) || name === "release-manifest.json") || ![0o644, 0o755].includes(mode)) throw failure();
+    if (RUNTIME_FILES.has(name) && (size > 4 * 1024 * 1024 || mode !== 0o644)) throw failure();
     if (tarString(header, 157, 100)) throw failure();
     const paddedSize = Math.ceil(size / 512) * 512;
     if (bytes.subarray(offset + 512 + size, offset + 512 + paddedSize).some((byte) => byte !== 0)) throw failure();
@@ -231,6 +240,7 @@ export function verifyCompanionPayload({ archive, manifestBytes, checksumsBytes,
     inventoried.add(file.path);
   }
   if (![...ROOT_FILES, "bin/pickermux.mjs", "bin/lmstudio-picker.mjs", "src/cli.mjs"].every((name) => inventoried.has(name))) throw failure();
+  if ([...inventoried].some((name) => RUNTIME_FILES.has(name)) && ![...RUNTIME_FILES].every((name) => inventoried.has(name))) throw failure();
   if ([...entries].some(([name, entry]) => !entry.directory && name !== "release-manifest.json" && !inventoried.has(name))) throw failure();
   const metadata = parseJson(entries.get("package.json").bytes);
   if (metadata.name !== "pickermux" || metadata.version !== version || metadata.engines?.node !== `>=${manifest.minimumNodeVersion}`) throw failure();
@@ -279,6 +289,10 @@ export async function applyCompanionUpdate({ currentVersion, fetchImpl = globalT
   const staging = await mkdtemp(path.join(tmpdir(), "pickermux-companion-update-"));
   try {
     for (const name of ["bin", "src"]) await mkdir(path.join(staging, name), { mode: 0o700 });
+    if ([...RUNTIME_FILES].some((name) => entries.has(name))) {
+      await mkdir(path.join(staging, "runtime"), { mode: 0o700 });
+      await mkdir(path.join(staging, "runtime", "mlx"), { mode: 0o700 });
+    }
     for (const [name, entry] of entries) {
       if (entry.directory) continue;
       await writeFile(path.join(staging, name), entry.bytes, { mode: name.startsWith("bin/") ? 0o700 : 0o600, flag: "wx" });

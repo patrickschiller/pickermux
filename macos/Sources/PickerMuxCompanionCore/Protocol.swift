@@ -86,15 +86,17 @@ public struct CompanionSnapshot: Decodable {
   public let actions: [CompanionAction]
   public let issues: [CompanionIssue]
   public let tokenUsage: TokenUsageSnapshot?
+  public let tokenPerformance: TokenPerformanceSnapshot?
   public var usesBundledBackend = false
 
   public var supportsNativeUninstall: Bool { capabilities.contains("native-uninstall-v1") }
   public var supportsTokenUsage: Bool { capabilities.contains("token-usage-v1") || capabilities.contains("token-usage-v2") }
   public var supportsTokenUsageReset: Bool { capabilities.contains("token-usage-reset-v1") }
+  public var supportsTokenPerformance: Bool { capabilities.contains("token-performance-v1") }
 
   enum CodingKeys: String, CodingKey {
     case schemaVersion, capabilities, version, state, desktop, installation, managedConfig,
-         service, compatibility, accountCache, recovery, integration, actions, issues, tokenUsage
+         service, compatibility, accountCache, recovery, integration, actions, issues, tokenUsage, tokenPerformance
   }
 
   public var transitionIdentity: String {
@@ -105,7 +107,7 @@ public struct CompanionSnapshot: Decodable {
     var filtered = CompanionSnapshot(schemaVersion: schemaVersion, capabilities: capabilities, version: version, state: state, desktop: desktop,
       installation: installation, managedConfig: managedConfig, service: service, compatibility: compatibility,
       accountCache: accountCache, recovery: recovery, integration: integration,
-      actions: actions.filter(allowed.contains), issues: issues, tokenUsage: tokenUsage)
+      actions: actions.filter(allowed.contains), issues: issues, tokenUsage: tokenUsage, tokenPerformance: tokenPerformance)
     filtered.usesBundledBackend = bundledBackend
     return filtered
   }
@@ -113,16 +115,20 @@ public struct CompanionSnapshot: Decodable {
   public static func decode(_ data: Data) throws -> CompanionSnapshot {
     guard data.count <= 262144,
           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-          Set(object.keys).subtracting(["tokenUsage"]) == Set(["schemaVersion", "capabilities", "version", "state", "desktop", "installation", "managedConfig", "service", "compatibility", "accountCache", "recovery", "integration", "actions", "issues"]),
+          Set(object.keys).subtracting(["tokenUsage", "tokenPerformance"]) == Set(["schemaVersion", "capabilities", "version", "state", "desktop", "installation", "managedConfig", "service", "compatibility", "accountCache", "recovery", "integration", "actions", "issues"]),
           let value = try? JSONDecoder().decode(CompanionSnapshot.self, from: data),
           value.schemaVersion == 1,
           [["integration-toggle-v1"], ["integration-toggle-v1", "native-uninstall-v1"],
            ["integration-toggle-v1", "token-usage-v1"], ["integration-toggle-v1", "native-uninstall-v1", "token-usage-v1"],
            ["integration-toggle-v1", "token-usage-v2"], ["integration-toggle-v1", "native-uninstall-v1", "token-usage-v2"],
            ["integration-toggle-v1", "token-usage-v2", "token-usage-reset-v1"],
-           ["integration-toggle-v1", "native-uninstall-v1", "token-usage-v2", "token-usage-reset-v1"]].contains(value.capabilities),
+           ["integration-toggle-v1", "native-uninstall-v1", "token-usage-v2", "token-usage-reset-v1"]].contains(value.capabilities.filter { $0 != "token-performance-v1" }),
+          (!value.supportsTokenPerformance || (value.supportsTokenUsage &&
+            value.capabilities.last == "token-performance-v1" && value.capabilities.filter { $0 == "token-performance-v1" }.count == 1)),
           value.supportsTokenUsage == (value.tokenUsage != nil),
           object["tokenUsage"] == nil || value.tokenUsage != nil,
+          value.supportsTokenPerformance == (value.tokenPerformance != nil),
+          object["tokenPerformance"] == nil || value.tokenPerformance != nil,
           (isVersion(value.version) || value.version == "unknown"),
           safeToken(value.state), value.actions.count <= CompanionAction.allCases.count,
           Set(value.actions).count == value.actions.count, value.issues.count <= 32,

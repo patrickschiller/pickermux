@@ -25,6 +25,33 @@ const SECRET = "PRIVATE_PROMPT_ACCOUNT_CAPABILITY_TOKEN";
 const consent = { quitCodexTwice: true, interruptTasks: true, invalidateCompaction: true };
 const request = (action, additional = {}) => JSON.stringify({ schemaVersion: 1, action, ...additional });
 
+test("generation performance is projected only from instance-attested healthy status", async () => {
+  const performance = { schemaVersion: 1, status: "available", providers: [{
+    providerId: "lmstudio", status: "available", inputTokens: 12, outputTokens: 3, totalTokens: 15,
+    generationDurationMs: 1500, privatePrompt: SECRET,
+  }], endpoint: SECRET };
+  const status = { status: "running", healthy: true, health: {
+    tokenUsage: { schemaVersion: 1, status: "available", providers: [] }, tokenPerformance: performance,
+  } };
+  const result = await collectCompanionStatus({ probes: probes({ service: async () => status }) });
+  assert.deepEqual(result.tokenPerformance, { schemaVersion: 1, status: "available", providers: [{
+    providerId: "lmstudio", status: "available", inputTokens: 12, outputTokens: 3, totalTokens: 15,
+    generationDurationMs: 1500,
+  }] });
+  assert.equal(result.capabilities.at(-1), "token-performance-v1");
+  assert.doesNotMatch(JSON.stringify(result), /PRIVATE_/u);
+  for (const override of [
+    { ...status, healthy: false }, { ...status, status: "unhealthy" },
+    { ...status, health: { ...status.health, tokenUsage: { schemaVersion: 99 } } },
+    { ...status, health: { ...status.health, tokenPerformance: { ...performance, schemaVersion: 99 } } },
+    { ...status, health: { ...status.health, tokenPerformance: { ...performance, providers: [{ ...performance.providers[0], generationDurationMs: 0 }] } } },
+  ]) {
+    const rejected = await collectCompanionStatus({ probes: probes({ service: async () => override }) });
+    assert.equal(rejected.tokenPerformance, undefined);
+    assert.equal(rejected.capabilities.includes("token-performance-v1"), false);
+  }
+});
+
 test("usage reset accepts only exact consent and projects a proven reset result", () => {
   const confirmation = { resetAccumulatedUsage: true };
   assert.equal(parseCompanionRequest(request("usage-reset", { confirmation })).action, "usage-reset");

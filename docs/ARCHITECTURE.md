@@ -1,6 +1,6 @@
 # PickerMux Architecture
 
-This document describes PickerMux v0.23.1 development.
+This document describes PickerMux v0.24.0 development.
 It is intended for contributors, security reviewers, and users who want to
 understand what runs on their Mac.
 
@@ -37,7 +37,7 @@ flowchart TB
         Native[Native Codex backend]
         LM[LM Studio]
         Other[Optional Responses-compatible provider]
-        Kolibri[Kolibri MLX text server]
+        Kolibri[Managed MLX server]
     end
 
     UI --> Catalog
@@ -61,59 +61,62 @@ adds LM Studio-specific metadata discovery and request adapters.
 `openai-responses` supports explicitly configured local or remote Responses
 providers with a model allowlist verified through `/models`. Both route model
 requests through the Responses API and require exact model-bound certification
-before tool access. `mlx-chat-completions` is a separate experimental,
-text-only adapter for one pinned Kolibri MLX model. General Chat Completions
-compatibility does not establish either contract. Automatic loaded-model discovery, Efficient Fidelity, and the
-local context-compaction adapter remain LM Studio-specific. The companion's
+before tool access. `mlx-chat-completions` is a separate experimental
+adapter for immutable local HF model profiles and reviewed Kolibri tools. General Chat Completions
+compatibility does not establish either contract. Automatic loaded-model discovery and the local context-compaction adapter
+remain LM Studio-specific; reviewed MLX tools can also certify Efficient Fidelity. The companion's
 first-install default is LM Studio; it also controls other providers activated
 through the CLI's custom configuration.
 
-### Kolibri MLX text boundary
+### MLX model and tool boundary
 
-The `mlx-chat-completions` route uses an explicit singleton model allowlist,
-loopback HTTP endpoint, fixed `kolibri-1-mlx-4bit` upstream identity and
-reasoning `none`. Discovery verifies that the dedicated launcher's
-`context_window` exactly equals the configured context. A missing, ambiguous or
-changed handshake fails before publishing a new catalog. The model remains
-text-only regardless of receipt data; certification is unsupported for this
-kind. LM Studio and generic Responses providers keep their own contracts.
+`mlx-chat-completions` uses one explicitly allowlisted model on IPv4 loopback,
+reasoning `none`, and an enforced 1,024–8,192-token context. Managed HF models
+must carry `mlxProfileDigest`; discovery matches the alias, context and digest.
+The digest binds resolved repository revision, file hashes, runtime pins, alias,
+context and output reservation. Legacy Kolibri aliases remain usable without a
+managed profile, conservatively unless their reviewed tool protocol is present.
 
-The Node adapter builds only the reviewed text Chat Completions request from
-Codex's Responses input. It retains user content, applicable instructions and
-text history, withholds optional tool definitions, and rejects forced tool
-choices, invocation/result history, unsupported media and compaction state.
-Provider requests continue through the external header allowlist and exact
-route registry. Successful JSON and SSE outputs are translated into Responses
-text output; tool and reasoning output cannot acquire execution authority.
-Unknown schemas, invalid completion identities and incomplete streams fail
-closed. Token usage comes from validated provider counts.
+The canonical runtime is packaged under `runtime/mlx`. `mlx-prepare` stages a
+public HF download, resolves a commit and verifies every file; `mlx-load` also
+starts an attested detached loopback process. Private state lives separately
+under `~/Library/Application Support/PickerMuxMLX`. No implicit HF token is used.
+Generic models may use only built-in MLX architectures; repository Python,
+`auto_map`, model-file overrides and `trust_remote_code` are rejected. The exact
+pinned Kolibri custom architecture is the reviewed exception. An explicit
+`--model-dir` can import that verified existing snapshot without copying weights.
+Alias reuse for a different profile fails. Download retries resume the immutable
+staging plan; a failed load preserves prior profiles and runtime state. Stop
+uses a private instance capability and never signals a recorded PID blindly.
 
-`scripts/serve-kolibri.py` is an optional source-checkout server, separate from
-the installed bridge runtime and LaunchAgent. It checks the exact Python
-dependency pins and SHA-256 digests for the architecture, tokenizer, template,
-configuration, index and nine shards at one immutable Hugging Face revision.
-Only the verified architecture module is registered; downloaded launchers and
-`trust_remote_code` are not used. The model directory and files must be private,
-owned and free of symbolic/hard links. `/v1/models` returns only the fixed alias
-and enforced context, never a cache inventory or filesystem path. Unknown
-model IDs and request-controlled model, adapter or draft paths are rejected.
+Tools require both a known `pickermux-mlx-tools-v1` declaration and all Direct
+certification gates. The declaration binds model files and the exact parser/runtime
+hashes; it cannot grant tools by itself. Efficient Fidelity adds its independent
+tool-search roundtrip gate. Legacy or unknown declarations remain text-only.
+The catalog uses bounded instructions for certified MLX tools to fit the actual
+local context. Codex owns execution, approvals and native web-search transport.
+Native credentials never enter MLX requests.
 
-The Python server accepts only direct IPv4 loopback requests, one bounded JSON
-body and system/user/assistant string content. Reasoning is fixed to `none`.
-One generation runs at a time without a persistent prompt/conversation cache.
-The tokenizer renders the full prompt before enforcing the combined prompt and
-output reservation, at most 8,192 tokens. Generation is buffered and checked
-for structural tool/reasoning markers before returning text JSON or SSE.
-These checks reduce throughput and delay first visible text, but avoid the
-pinned upstream server's silent tool-parser recovery. No model text is repaired
-or promoted into an executable call. Socket, parser and runtime failures use
-fixed errors; no raw prompt, response, local path or traceback is logged.
+The Responses adapter normalizes request-local function/namespace schemas and
+restores public tool identities in JSON/SSE. MLX receives one function call at a
+time; required/named choices must produce a validated permitted call. Full
+history replay correlates every call and result; stored response IDs, media,
+encrypted reasoning and compaction remain unsupported. The strict Python parser
+buffers generation and rejects malformed or duplicate JSON, unknown functions,
+extra calls and structural reasoning markers instead of repairing them. The
+reviewed Kolibri runtime stops generation at the first complete, strictly valid
+function envelope so the client can supply its result before another call.
+It validates the entire received buffer; a suffix or second call in the same
+chunk remains an error. The rendered prompt plus output reservation must fit
+the configured context.
 
-This initial route has no context-compaction protocol. Overflow and compaction
-requests fail without discarding history. A future tool adapter needs its own
-strict parser, request-local tool authority, namespace and result correlation,
-`tool_choice` enforcement and exact certification before any grant is possible.
-Merely passing tools to MLX-LM's chat template cannot provide those guarantees.
+Validated usage drives token totals. Optional `pickermux_metrics` carries only a
+bounded final generation duration derived from MLX's output generation rate;
+it is stripped from Responses output. The bridge publishes `token-performance-v1`
+after clean finalization. The companion computes output tokens/s, excluding
+prefill/network time, and requires timing counts to match latest usage. Timing
+is volatile; the private usage ledger format remains unchanged. Errors/logs
+contain no prompts, output, paths or control capabilities.
 
 ## Catalog construction
 

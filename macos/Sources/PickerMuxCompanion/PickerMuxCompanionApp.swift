@@ -723,6 +723,9 @@ struct TokenUsageView: View {
                 .font(MenuTypography.label)
                 .lineLimit(1).truncationMode(.middle)
               tokenSummary("Last model request", counts: provider.last.counts)
+              if snapshot.supportsTokenPerformance {
+                generationRate(snapshot.tokenPerformance?.outputTokensPerSecond(for: provider))
+              }
               tokenSummary(usage.isPersistent ? "Since reset" : "Since bridge start", counts: provider.displayTotals)
               if let note = provider.missingUsageMessage {
                 Text(note).font(MenuTypography.metadata).foregroundStyle(.secondary)
@@ -755,6 +758,18 @@ struct TokenUsageView: View {
       tokenRow("Output", counts?.outputTokens)
       tokenRow("Total", counts?.totalTokens).fontWeight(.semibold)
     }
+  }
+
+  private func generationRate(_ rate: Double?) -> some View {
+    HStack {
+      Text("Generation").foregroundStyle(.secondary)
+      Spacer(minLength: 16)
+      Text(rate.map { "\($0.formatted(.number.precision(.fractionLength(1)))) tokens/s" } ?? "Unavailable")
+        .monospacedDigit()
+        .lineLimit(1).minimumScaleFactor(0.8)
+    }
+    .font(Font.system(size: 12))
+    .help("Output tokens per second of model generation for the last completed request. Network delivery is excluded; this measurement resets with the bridge.")
   }
 
   private func tokenRow(_ label: String, _ count: Int?) -> some View {

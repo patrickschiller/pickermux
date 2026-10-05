@@ -8,6 +8,8 @@ import {
   transformMlxChatJson,
 } from "../src/mlx-chat.mjs";
 import { ResponseTransformError } from "../src/responses-transform.mjs";
+import { normalizeLmStudioToolRequest } from "../src/tool-normalization.mjs";
+import { projectClientToolSearch } from "../src/efficient-fidelity.mjs";
 
 const route = { upstreamModel: "kolibri-1-mlx-4bit" };
 const publicModel = "kolibri/kolibri-1-mlx-4bit";
@@ -408,4 +410,197 @@ test("MLX stream rejects invalid or truncated UTF-8 and enforces a total byte bo
   assert.throws(() => truncated.finish(), ResponseTransformError);
   const oversized = createMlxChatSseTransformer({ model: publicModel, maxBytes: 1024 });
   assert.throws(() => oversized.push(Buffer.alloc(1025)), ResponseTransformError);
+});
+
+function toolFixture() {
+  const body = { input: "Run the lookup", tools: [{ type: "namespace", name: "research", tools: [{
+    type: "function", name: "lookup", parameters: { type: "object", properties: { query: { type: "string" } } },
+  }] }], tool_choice: "auto", parallel_tool_calls: true };
+  const normalized = structuredClone(body);
+  const codec = normalizeLmStudioToolRequest(normalized, body);
+  return { normalized, codec, name: normalized.tools[0].name };
+}
+
+function toolReply(name, { streaming = false, ...overrides } = {}) {
+  const call = { id: "private-call-id", type: "function", function: { name, arguments: '{"query":"Example"}' } };
+  if (streaming) call.index = 0;
+  const value = streaming ? chatChunk(undefined, "tool_calls") : chatResponse({ text: "", finish: "tool_calls" });
+  value.choices[0][streaming ? "delta" : "message"].tool_calls = [call];
+  return { ...value, ...overrides };
+}
+
+test("MLX certified requests translate function definitions and a correlated full replay", () => {
+  const { normalized, name } = toolFixture();
+  normalized.input = [
+    { role: "user", content: "Find a source" },
+    { type: "function_call", id: "fc_prior", call_id: "call_prior", name, arguments: '{"query":"Example"}' },
+    { type: "function_call_output", call_id: "call_prior", output: [{ type: "input_text", text: "Found source" }] },
+  ];
+  const result = JSON.parse(createMlxChatRequest(normalized, route, { allowTools: true }));
+  assert.equal(result.parallel_tool_calls, false);
+  assert.equal(result.tools[0].function.name, name);
+  assert.deepEqual(result.messages, [
+    { role: "user", content: "Find a source" },
+    { role: "assistant", content: "", tool_calls: [{ id: "call_prior", type: "function", function: { name, arguments: '{"query":"Example"}' } }] },
+    { role: "tool", content: "Found source", tool_call_id: "call_prior" },
+  ]);
+  normalized.tool_choice = { type: "function", name };
+  assert.equal(JSON.parse(createMlxChatRequest(normalized, route, { allowTools: true })).tool_choice, "required");
+});
+
+test("MLX function history rejects missing results, reused IDs, unknown names and malformed JSON", () => {
+  const { normalized, name } = toolFixture();
+  const call = { type: "function_call", call_id: "call_prior", name, arguments: "{}" };
+  const output = { type: "function_call_output", call_id: "call_prior", output: "result" };
+  for (const history of [
+    [call], [output], [call, output, output], [call, output, call, output],
+    [{ ...call, name: "unknown" }, output], [{ ...call, arguments: "{" }, output],
+    [{ ...call, arguments: "[]" }, output], [call, { ...output, call_id: "different" }],
+    [{ ...call, arguments: '{"query":"first","query":"second"}' }, output],
+    [{ ...call, arguments: '{"a":[{"query":1,"qu\\u0065ry":2}]}' }, output],
+    [{ ...call, arguments: '{"a":1e999}' }, output],
+  ]) {
+    assert.throws(() => createMlxChatRequest({ ...normalized, input: [{ role: "user", content: "Request" }, ...history] }, route, { allowTools: true }), MlxChatRequestError);
+  }
+  assert.throws(() => createMlxChatRequest({ ...normalized, tool_choice: { type: "function", name: "unknown" } }, route, { allowTools: true }), MlxChatRequestError);
+  assert.throws(() => createMlxChatRequest({ ...normalized, previous_response_id: "old" }, route, { allowTools: true }), MlxChatRequestError);
+});
+
+test("MLX arguments preserve nested JSON and reject ambiguous provider fields", () => {
+  const { normalized, codec, name } = toolFixture();
+  const source = '{ "query": "Escaped \\\" and \\\\ string", "data": [{"a": [null, true, 1.5]}, {}] }';
+  const result = createMlxChatRequest({ ...normalized, input: [
+    { role: "user", content: "Request" },
+    { type: "function_call", call_id: "call_prior", name, arguments: source },
+    { type: "function_call_output", call_id: "call_prior", output: "Result" },
+  ] }, route, { allowTools: true });
+  assert.equal(JSON.parse(result).messages[1].tool_calls[0].function.arguments, source);
+  for (const args of ['{"a":1,"a":2}', '{"a":[{"b":1,"b":2}]}', '{"a":1e999}']) {
+    const reply = toolReply(name);
+    reply.choices[0].message.tool_calls[0].function.arguments = args;
+    assert.throws(() => transformMlxChatJson(Buffer.from(JSON.stringify(reply)), { model: publicModel, toolCodec: codec }), ResponseTransformError);
+  }
+  const response = JSON.stringify(chatResponse()).replace('"object":"chat.completion"', '"object":"private","object":"chat.completion"');
+  assert.throws(() => transformMlxChatJson(Buffer.from(response), { model: publicModel }), ResponseTransformError);
+});
+
+test("MLX JSON function calls restore exact namespaces and isolate provider IDs", () => {
+  const { codec, name } = toolFixture();
+  const value = JSON.parse(transformMlxChatJson(Buffer.from(JSON.stringify(toolReply(name))), {
+    model: publicModel, toolCodec: codec, requireToolCall: true,
+  }));
+  const call = value.output.find((item) => item.type === "function_call");
+  assert.equal(value.status, "completed");
+  assert.equal(call.namespace, "research");
+  assert.equal(call.name, "lookup");
+  assert.deepEqual(JSON.parse(call.arguments), { query: "Example" });
+  assert.match(call.id, /^fc_[a-f0-9]{32}$/u);
+  assert.match(call.call_id, /^call_[a-f0-9]{32}$/u);
+  assert.equal(JSON.stringify(value).includes("private-call-id"), false);
+});
+
+test("MLX tools fail closed without request-local authority, on extra calls, malformed arguments, or unsatisfied choice", () => {
+  const { codec, name } = toolFixture();
+  const base = toolReply(name);
+  const unknown = toolReply("unadvertised");
+  const multiple = structuredClone(base);
+  multiple.choices[0].message.tool_calls.push(multiple.choices[0].message.tool_calls[0]);
+  const malformed = structuredClone(base);
+  malformed.choices[0].message.tool_calls[0].function.arguments = "[1]";
+  const reused = { ...codec, reservedCallIds: new Set(["private-call-id"]) };
+  for (const [reply, authority] of [[base, undefined], [unknown, codec], [multiple, codec], [malformed, codec], [base, reused]]) {
+    assert.throws(() => transformMlxChatJson(Buffer.from(JSON.stringify(reply)), { model: publicModel, toolCodec: authority }), ResponseTransformError);
+  }
+  assert.throws(() => transformMlxChatJson(Buffer.from(JSON.stringify(chatResponse())), {
+    model: publicModel, toolCodec: codec, requireToolCall: true,
+  }), ResponseTransformError);
+});
+
+test("MLX streamed function calls are released only at clean EOF with matching completion", () => {
+  const { codec, name } = toolFixture();
+  const transformer = createMlxChatSseTransformer({ model: publicModel, toolCodec: codec, requireToolCall: true });
+  const beforeEof = transformer.push(Buffer.concat([
+    frame(chatChunk(undefined)), frame(toolReply(name, { streaming: true })), frame(usageChunk()), frame("[DONE]"),
+  ]));
+  assert.equal(events(beforeEof).some((value) => value.item?.type === "function_call"), false);
+  const values = events(transformer.finish());
+  const call = values.find((value) => value.type === "response.output_item.done" && value.item.type === "function_call").item;
+  assert.equal(call.namespace, "research");
+  assert.equal(call.name, "lookup");
+  assert.equal(values.at(-1).type, "response.completed");
+  assert.deepEqual(values.at(-1).response.output.find((item) => item.type === "function_call"), call);
+});
+
+test("MLX streaming tools reject partial envelopes and never release calls or metrics after late corruption", () => {
+  const { codec, name } = toolFixture();
+  const terminal = toolReply(name, { streaming: true });
+  const partial = structuredClone(terminal);
+  partial.choices[0].finish_reason = null;
+  const multiple = structuredClone(terminal);
+  multiple.choices[0].delta.tool_calls.push(structuredClone(multiple.choices[0].delta.tool_calls[0]));
+  const invalidMetric = { ...usageChunk(), pickermux_metrics: { generation_duration_ms: 0 } };
+  const usage = { ...usageChunk(), pickermux_metrics: { generation_duration_ms: 200 } };
+  for (const packets of [
+    [chatChunk(undefined), partial],
+    [chatChunk(undefined), multiple],
+    [chatChunk(undefined), terminal, invalidMetric],
+    [chatChunk(undefined), terminal, usage, "[DONE]", chatChunk("late")],
+  ]) {
+    const durations = [];
+    const transformer = createMlxChatSseTransformer({ model: publicModel, toolCodec: codec, onGenerationDuration: (value) => durations.push(value) });
+    assert.throws(() => transformer.push(Buffer.concat(packets.map(frame))), ResponseTransformError);
+    assert.equal(transformer.hasTerminalEvent(), false);
+    assert.deepEqual(durations, []);
+    assert.throws(() => transformer.finish(), ResponseTransformError);
+  }
+});
+
+test("MLX restores certified compact client tool selection in JSON and SSE", () => {
+  const projection = projectClientToolSearch([{
+    type: "tool_search", execution: "client", description: "Find useful tools.",
+    parameters: {
+      type: "object", properties: { query: { type: "string" } },
+      required: ["query"], additionalProperties: false,
+    },
+  }], { toolChoice: "auto", parallelToolCalls: false });
+  const source = { tools: projection.tools, tool_choice: "auto", input: "Find source" };
+  const normalized = structuredClone(source);
+  const namespaceCodec = normalizeLmStudioToolRequest(normalized, source);
+  const name = normalized.tools[0].name;
+  const toolCodec = { namespaceCodec, efficientFidelityCodec: projection.codec };
+  const transformed = JSON.parse(transformMlxChatJson(Buffer.from(JSON.stringify(toolReply(name))), {
+    model: publicModel, toolCodec,
+  }));
+  const call = transformed.output.find((item) => item.type === "tool_search_call");
+  assert.equal(call.execution, "client");
+  assert.deepEqual(call.arguments, { query: "Example" });
+  assert.equal(Object.hasOwn(call, "name"), false);
+  const transformer = createMlxChatSseTransformer({ model: publicModel, toolCodec });
+  const values = events([
+    ...transformer.push(Buffer.concat([frame(chatChunk(undefined)), frame(toolReply(name, { streaming: true })), frame(usageChunk()), frame("[DONE]")])),
+    ...transformer.finish(),
+  ]);
+  const streamed = values.at(-1).response.output.find((item) => item.type === "tool_search_call");
+  assert.equal(streamed.execution, "client");
+  assert.deepEqual(streamed.arguments, { query: "Example" });
+  assert.equal(values.some((value) => value.type === "response.output_item.done" && value.item.type === "tool_search_call"), true);
+});
+
+test("MLX generation metrics are bounded, excluded from output, and observed only after success", () => {
+  const durations = [];
+  const value = chatResponse({ pickermux_metrics: { generation_duration_ms: 25 } });
+  const result = transformMlxChatJson(Buffer.from(JSON.stringify(value)), { model: publicModel, onGenerationDuration: (duration) => durations.push(duration) });
+  assert.deepEqual(durations, [25]);
+  assert.equal(result.toString().includes("generation_duration"), false);
+  for (const metric of [null, {}, { generation_duration_ms: 0 }, { generation_duration_ms: 3_600_001 }, { generation_duration_ms: 2.5 }, { generation_duration_ms: 1, private: "no" }]) {
+    assert.throws(() => transformMlxChatJson(Buffer.from(JSON.stringify(chatResponse({ pickermux_metrics: metric }))), {
+      model: publicModel, onGenerationDuration: (duration) => durations.push(duration),
+    }), ResponseTransformError);
+  }
+  assert.deepEqual(durations, [25]);
+  const transformer = createMlxChatSseTransformer({ model: publicModel, onGenerationDuration: (duration) => durations.push(duration) });
+  transformer.push(Buffer.concat([frame(chatChunk("Hi", "stop")), frame({ ...usageChunk(), pickermux_metrics: { generation_duration_ms: 50 } }), frame("[DONE]")]));
+  assert.deepEqual(durations, [25]);
+  transformer.finish();
+  assert.deepEqual(durations, [25, 50]);
 });

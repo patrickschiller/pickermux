@@ -5,6 +5,7 @@ import { isValidProviderId } from "./provider-id.mjs";
 export const TOKEN_USAGE_MAX_PROVIDERS = 128;
 export const TOKEN_USAGE_MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
 export const TOKEN_USAGE_MAX_SSE_FRAME_BYTES = 1024 * 1024;
+export const TOKEN_GENERATION_MAX_DURATION_MS = 3_600_000;
 const TERMINAL_STATUSES = new Set(["completed", "incomplete", "failed"]);
 const TOKEN_FIELDS = ["inputTokens", "outputTokens", "totalTokens"];
 const CONTENT_TYPE_PATTERN =
@@ -17,6 +18,10 @@ function record(value) {
 
 function counter(value) {
   return Number.isSafeInteger(value) && value >= 0;
+}
+
+export function isTokenGenerationDuration(value) {
+  return Number.isSafeInteger(value) && value > 0 && value <= TOKEN_GENERATION_MAX_DURATION_MS;
 }
 
 function tokenCounts(inputTokens, outputTokens, totalTokens) {
@@ -177,6 +182,55 @@ export function createTokenUsageTelemetry() {
   });
 }
 
+/** Generation measurements are volatile and never alter the durable usage ledger. */
+export function projectTokenPerformanceSnapshot(value) {
+  if (!record(value) || value.schemaVersion !== 1 ||
+      !["available", "unavailable"].includes(value.status) ||
+      !Array.isArray(value.providers) || value.providers.length > TOKEN_USAGE_MAX_PROVIDERS ||
+      (value.status === "unavailable" && value.providers.length !== 0)) return null;
+  const providers = [];
+  const seen = new Set();
+  for (const provider of value.providers) {
+    if (!record(provider) || !isValidProviderId(provider.providerId) || seen.has(provider.providerId) ||
+        !["available", "unavailable"].includes(provider.status)) return null;
+    seen.add(provider.providerId);
+    if (provider.status === "unavailable") {
+      providers.push({ providerId: provider.providerId, status: "unavailable" });
+      continue;
+    }
+    const counts = tokenCounts(provider.inputTokens, provider.outputTokens, provider.totalTokens);
+    if (!counts || provider.totalTokens === undefined || !isTokenGenerationDuration(provider.generationDurationMs)) return null;
+    providers.push({ providerId: provider.providerId, status: "available", ...counts,
+      generationDurationMs: provider.generationDurationMs });
+  }
+  return { schemaVersion: 1, status: value.status, providers };
+}
+
+export function createTokenPerformanceTelemetry() {
+  const providers = new Map();
+  let unavailable = false;
+  return Object.freeze({
+    record(providerId, value) {
+      if (unavailable || !isValidProviderId(providerId)) return false;
+      if (!providers.has(providerId) && providers.size >= TOKEN_USAGE_MAX_PROVIDERS) {
+        unavailable = true;
+        providers.clear();
+        return false;
+      }
+      const counts = record(value) && value.status === "available"
+        ? tokenCounts(value.inputTokens, value.outputTokens, value.totalTokens) : null;
+      providers.set(providerId, counts && isTokenGenerationDuration(value.generationDurationMs)
+        ? { providerId, status: "available", ...counts, generationDurationMs: value.generationDurationMs }
+        : { providerId, status: "unavailable" });
+      return true;
+    },
+    snapshot() {
+      return projectTokenPerformanceSnapshot({ schemaVersion: 1,
+        status: unavailable ? "unavailable" : "available", providers: [...providers.values()] });
+    },
+  });
+}
+
 /** Bounded side observation never rewrites, decompresses, or persists relay bytes. */
 export function createTokenUsageObserver({
   onUsage,
@@ -194,6 +248,8 @@ export function createTokenUsageObserver({
   let terminalSeen = false;
   let doneSeen = false;
   let candidate = null;
+  let generationDurationMs;
+  let generationDurationSeen = false;
   const decoder = new TextDecoder("utf-8", { fatal: true });
   const maxSseFrameBytes = Math.min(maxBufferedBytes, TOKEN_USAGE_MAX_SSE_FRAME_BYTES);
   const discard = () => {
@@ -244,6 +300,13 @@ export function createTokenUsageObserver({
     }
   };
   return Object.freeze({
+    // Only a reviewed provider adapter supplies actual model time; observing
+    // transport intervals would mislabel buffered/network delivery as decoding.
+    generationDuration(value) {
+      if (finished) return;
+      generationDurationMs = !generationDurationSeen && isTokenGenerationDuration(value) ? value : undefined;
+      generationDurationSeen = true;
+    },
     headers(statusCode, headers) {
       if (finished || invalid) return;
       const encoding = headers?.["content-encoding"];
@@ -308,7 +371,8 @@ export function createTokenUsageObserver({
       } catch {
         candidate = null;
       }
-      const projected = candidate ? { status: "available", ...candidate } : { status: "unavailable" };
+      const projected = candidate ? { status: "available", ...candidate,
+        ...(generationDurationMs === undefined ? {} : { generationDurationMs }) } : { status: "unavailable" };
       buffered = "";
       chunks = [];
       candidate = null;

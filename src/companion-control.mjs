@@ -13,7 +13,7 @@ import { isCodexDesktopRunning } from "./codex-desktop-state.mjs";
 import { validateDistributionInstallation } from "./distribution-installer.mjs";
 import { FULL_REFRESH_PHASES, readFullRefreshCheckpoint } from "./full-refresh.mjs";
 import { readPickerMuxMetadata } from "./version.mjs";
-import { isTokenUsageResetTime, projectTokenUsageSnapshot } from "./token-usage.mjs";
+import { isTokenUsageResetTime, projectTokenPerformanceSnapshot, projectTokenUsageSnapshot } from "./token-usage.mjs";
 import { createUsageStore } from "./usage-store.mjs";
 
 const execFile = promisify(execFileCallback);
@@ -386,6 +386,8 @@ export async function collectCompanionStatus({ probes = {}, probeTimeoutMs = 5_0
         if (usage) {
           snapshot.tokenUsage = usage;
           attestedUsage = true;
+          const performance = projectTokenPerformanceSnapshot(raw.health?.tokenPerformance);
+          if (performance) snapshot.tokenPerformance = performance;
         }
       } catch { /* Optional telemetry cannot change lifecycle permissions. */ }
     }
@@ -443,6 +445,7 @@ export async function collectCompanionStatus({ probes = {}, probeTimeoutMs = 5_0
     snapshot.capabilities = ["integration-toggle-v1", "native-uninstall-v1", "token-usage-v2", "token-usage-reset-v1"];
     if (installed && knownRecovery && durableResetAvailable) snapshot.actions.push("usage-reset");
   }
+  if (snapshot.tokenPerformance) snapshot.capabilities.push("token-performance-v1");
   return snapshot;
 }
 

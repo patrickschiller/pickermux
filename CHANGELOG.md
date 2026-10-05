@@ -9,6 +9,27 @@ The 0.9.x entries describe local companion development builds. Their features
 are included in the first public companion release, 0.10.0; they were not
 published as GitHub Releases.
 
+## [0.24.0] - 2026-10-06
+
+Local development build; no public release has been published.
+
+### Added
+
+- Add strict, model-bound Kolibri function tools with complete Direct and additive
+  Efficient Fidelity certification, namespace restoration, full tool-result
+  replay and required-choice validation. Codex retains web, file and shell
+  execution/approval; legacy MLX servers remain conservatively text-only.
+- Add shell commands `mlx-load`, `mlx-prepare`, `mlx-start`, `mlx-status` and
+  `mlx-stop` for immutable public HF snapshots in an isolated pinned MLX runtime.
+  Managed profiles bind weights, revision, runtime, alias, context and output;
+  unknown repository code is rejected, failed staging resumes safely, and an
+  existing reviewed Kolibri snapshot can be imported without another download.
+- Package the exact optional Python runtime in managed distributions and source-
+  bound lifecycle inventories without changing older distribution digests.
+- Show final MLX output generation tokens/s alongside latest and accumulated
+  tokens. Timing is validated, volatile, excludes prefill/network time, and does
+  not change the private usage ledger format.
+
 ## [0.23.1] - 2026-10-05
 
 Local development build; no public release has been published.
@@ -914,6 +935,7 @@ confirm the release date before tagging. See the
   restores the previous distribution state when activation fails.
 
 [Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.22.2...HEAD
+[0.24.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.24.0
 [0.23.1]: https://github.com/patrickschiller/pickermux/releases/tag/v0.23.1
 [0.23.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.23.0
 [0.22.2]: https://github.com/patrickschiller/pickermux/releases/tag/v0.22.2

@@ -38,7 +38,7 @@ async function harness(t, { routeChanges = {}, reply, gate = async () => {} } = 
     const chunks = [];
     for await (const chunk of request) chunks.push(chunk);
     requests.push({ path: request.url, headers: request.headers, body: JSON.parse(Buffer.concat(chunks)) });
-    if (reply) return reply(response);
+    if (reply) return reply(response, requests.at(-1));
     response.writeHead(200, { "content-type": "application/json" });
     response.end(JSON.stringify({ id: "private-upstream-id", object: "chat.completion", model: MODEL, created: 1,
       choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: "Hallo zurück!" } }],
@@ -78,6 +78,97 @@ test("MLX JSON translation isolates credentials and builds only the reviewed Cha
   assert.doesNotMatch(JSON.stringify(h.requests), /native-canary|native-cookie|native-account|private-account|provider-metadata|"tools"/u);
   assert.equal(h.credentialReads(), 0);
   assert.equal(h.usage.length, 1);
+});
+
+const toolCapabilities = {
+  mlxToolProtocol: "pickermux-mlx-tools-v1",
+  modelFingerprint: `sha256:${"a".repeat(64)}`,
+  runtimeFingerprint: `sha256:${"b".repeat(64)}`,
+  mlxMaxOutputTokens: 1024,
+};
+
+function namespaceTool() {
+  return { type: "namespace", name: "research", tools: [{
+    type: "function", name: "lookup", parameters: { type: "object", properties: { query: { type: "string" } } },
+  }] };
+}
+
+function toolCompletion(name, { stream = false, metrics = true } = {}) {
+  const call = { id: "private-provider-call", type: "function", function: { name, arguments: '{"query":"Example"}' } };
+  if (stream) call.index = 0;
+  return { id: "private-provider-response", object: stream ? "chat.completion.chunk" : "chat.completion", model: MODEL, created: 1,
+    choices: [{ index: 0, finish_reason: "tool_calls", [stream ? "delta" : "message"]: {
+      ...(stream ? {} : { role: "assistant", content: "" }), tool_calls: [call],
+    } }],
+    ...(stream ? {} : { usage: { prompt_tokens: 10, completion_tokens: 4, total_tokens: 14 },
+      ...(metrics ? { pickermux_metrics: { generation_duration_ms: 200 } } : {}),
+    }),
+  };
+}
+
+test("MLX certified function routing preserves local authority, credentials and full replay", async (t) => {
+  const h = await harness(t, { routeChanges: { toolsEnabled: true, mlxCapabilities: toolCapabilities }, reply(response, request) {
+    response.writeHead(200, { "content-type": "application/json" });
+    if (request.body.messages.some((message) => message.role === "tool")) {
+      response.end(JSON.stringify({ id: "private-provider-response", object: "chat.completion", model: MODEL, created: 1,
+        choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: "Source verified" } }],
+        usage: { prompt_tokens: 10, completion_tokens: 4, total_tokens: 14 },
+      }));
+    } else response.end(JSON.stringify(toolCompletion(request.body.tools[0].function.name)));
+  } });
+  const initial = await post(h.port, { tools: [namespaceTool()], tool_choice: "required", parallel_tool_calls: true,
+    metadata: { account: "native-private-metadata" },
+  }, { authorization: "Bearer native-private-token", cookie: "native-private-cookie" });
+  assert.equal(initial.status, 200);
+  const output = JSON.parse(initial.body).output;
+  const call = output.find((item) => item.type === "function_call");
+  assert.equal(call.namespace, "research");
+  assert.equal(call.name, "lookup");
+  assert.equal(h.requests[0].body.parallel_tool_calls, false);
+  assert.equal(h.requests[0].body.tool_choice, "required");
+  assert.equal(h.requests[0].headers.authorization, undefined);
+  assert.doesNotMatch(JSON.stringify(h.requests), /native-private/u);
+  assert.doesNotMatch(initial.body, /private-provider|generation_duration/u);
+  assert.equal(h.usage[0].generationDurationMs, 200);
+  const continuation = await post(h.port, { tools: [namespaceTool()], tool_choice: "none", input: [
+    { role: "user", content: "Find source" }, ...output,
+    { type: "function_call_output", call_id: call.call_id, output: "Public source found" },
+  ] });
+  assert.equal(continuation.status, 200);
+  assert.equal(JSON.parse(continuation.body).output[0].content[0].text, "Source verified");
+  assert.equal(h.requests[1].body.messages.at(-1).tool_call_id, call.call_id);
+  assert.equal(h.credentialReads(), 0);
+});
+
+test("MLX certified streaming functions commit only validated calls and decode duration", async (t) => {
+  const h = await harness(t, { routeChanges: { toolsEnabled: true, mlxCapabilities: toolCapabilities }, reply(response, request) {
+    response.writeHead(200, { "content-type": "text/event-stream" });
+    const terminal = toolCompletion(request.body.tools[0].function.name, { stream: true });
+    const first = { ...terminal, choices: [{ index: 0, finish_reason: null, delta: { role: "assistant" } }] };
+    const usage = { ...terminal, object: "chat.completion", choices: [],
+      usage: { prompt_tokens: 10, completion_tokens: 4, total_tokens: 14 }, pickermux_metrics: { generation_duration_ms: 200 },
+    };
+    for (const packet of [first, terminal, usage]) response.write(`data: ${JSON.stringify(packet)}\n\n`);
+    response.end("data: [DONE]\n\n");
+  } });
+  const result = await post(h.port, { stream: true, tools: [namespaceTool()], tool_choice: "required" });
+  assert.equal(result.status, 200);
+  assert.match(result.body, /response.completed/u);
+  assert.match(result.body, /"namespace":"research"/u);
+  assert.match(result.body, /"name":"lookup"/u);
+  assert.doesNotMatch(result.body, /private-provider|generation_duration/u);
+  assert.equal(h.usage.length, 1);
+  assert.equal(h.usage[0].generationDurationMs, 200);
+});
+
+test("MLX tool authority rejects malformed capabilities and unsatisfied forced choice", async (t) => {
+  const invalid = await harness(t, { routeChanges: { toolsEnabled: true, mlxCapabilities: { ...toolCapabilities, unreviewed: true } } });
+  assert.equal((await post(invalid.port, { tools: [namespaceTool()], tool_choice: "required" })).status, 400);
+  assert.equal(invalid.requests.length, 0);
+  const h = await harness(t, { routeChanges: { toolsEnabled: true, mlxCapabilities: toolCapabilities } });
+  const result = await post(h.port, { tools: [namespaceTool()], tool_choice: "required" });
+  assert.equal(result.status, 502);
+  assert.deepEqual(h.usage, [{ providerId: "kolibri", status: "unavailable" }]);
 });
 
 test("MLX stream reconstruction retains text and usage with a Responses terminal", async (t) => {

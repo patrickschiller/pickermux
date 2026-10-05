@@ -16,6 +16,8 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { gzipSync } from "node:zlib";
 
+import { inspectOptionalMlxRuntime } from "../src/runtime-package.mjs";
+
 const RELEASE_MANIFEST_NAME = "release-manifest.json";
 const INSTALLER_NAME = "install.sh";
 const CHECKSUMS_NAME = "SHA256SUMS";
@@ -99,6 +101,11 @@ async function collectReleaseInputs(projectDirectory) {
     const entries = await walkReleaseDirectory(projectDirectory, relativeDirectory);
     directoryPaths.push(...entries.directories);
     filePaths.push(...entries.files);
+  }
+  const mlxRuntime = await inspectOptionalMlxRuntime(projectDirectory);
+  if (mlxRuntime) {
+    directoryPaths.push("runtime/", "runtime/mlx/");
+    filePaths.push(...mlxRuntime);
   }
 
   for (const relativePath of RELEASE_FILES) {

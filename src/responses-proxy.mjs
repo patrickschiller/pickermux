@@ -1,3 +1,5 @@
+import { supportsMlxTools } from "./mlx-capabilities.mjs";
+
 import dns from "node:dns";
 import http from "node:http";
 import https from "node:https";
@@ -955,7 +957,8 @@ function externalBody(body, route, maxBytes, {
     });
   }
 
-  const toolsEnabled = route.providerKind !== "mlx-chat-completions" &&
+  const mlxTools = route.providerKind === "mlx-chat-completions" && supportsMlxTools(route.mlxCapabilities);
+  const toolsEnabled = (route.providerKind !== "mlx-chat-completions" || mlxTools) &&
     (route.toolsEnabled === true || certificationRequest);
   const rewritten = { ...body, model: route.upstreamModel };
   delete rewritten.client_metadata;
@@ -989,7 +992,7 @@ function externalBody(body, route, maxBytes, {
       if (sanitized.type === "function_call") {
         delete sanitized.encrypted_function_args;
         if (
-          route.providerKind === "lmstudio-responses" &&
+          (route.providerKind === "lmstudio-responses" || mlxTools) &&
           sanitized.namespace === "functions"
         ) {
           delete sanitized.namespace;
@@ -1022,7 +1025,7 @@ function externalBody(body, route, maxBytes, {
     enforceTextOnlyRequest(rewritten, body);
     toolCodec = createTextOnlyToolResponseCodec();
   }
-  if (route.providerKind === "lmstudio-responses") {
+  if (route.providerKind === "lmstudio-responses" || mlxTools) {
     if (Object.hasOwn(body, "tools") && !Array.isArray(body.tools)) {
       throw new ResponsesProxyError(
         "LM Studio tools must be a JSON array",
@@ -1558,7 +1561,11 @@ function relayUpstream({
         sseTransformer = transformMode === "sse"
           ? createSseResponseTransformer(responseCodec)
           : transformMode === "mlx-sse"
-          ? createMlxChatSseTransformer({ model: mlxResponse.model })
+          ? createMlxChatSseTransformer({
+            model: mlxResponse.model, toolCodec: responseCodec,
+            requireToolCall: mlxResponse.requireToolCall,
+            onGenerationDuration: (duration) => tokenUsageObserver?.generationDuration(duration),
+          })
           : undefined;
         const writeChunk = (chunk) => {
           if (response.destroyed) return;
@@ -1649,7 +1656,11 @@ function relayUpstream({
               }
               writeChunk(projected);
             } else if (transformMode === "mlx-json") {
-              writeChunk(transformMlxChatJson(Buffer.concat(jsonChunks), { model: mlxResponse.model }));
+              writeChunk(transformMlxChatJson(Buffer.concat(jsonChunks), {
+                model: mlxResponse.model, toolCodec: responseCodec,
+                requireToolCall: mlxResponse.requireToolCall,
+                onGenerationDuration: (duration) => tokenUsageObserver?.generationDuration(duration),
+              }));
             } else if (transformMode === "json") {
               writeChunk(transformJsonResponse(Buffer.concat(jsonChunks), responseCodec));
             } else if (["sse", "mlx-sse"].includes(transformMode)) {
@@ -1868,16 +1879,22 @@ export function createResponsesProxy({
         outboundBody = external.encoded;
         responseCodec = external.toolCodec;
         if (route.providerKind === "mlx-chat-completions") {
-          if (path !== "/v1/responses" || certificationRequest) {
-            throw new ResponsesProxyError("Local MLX tools and compaction are unsupported", {
+          if (path !== "/v1/responses" ||
+            (certificationRequest && !supportsMlxTools(route.mlxCapabilities))) {
+            throw new ResponsesProxyError("The local MLX protocol does not support this request", {
               statusCode: 400, code: "MLX_REQUEST_UNSUPPORTED",
             });
           }
           outboundBody = createMlxChatRequest(JSON.parse(outboundBody.toString("utf8")), route, {
             maxBytes: limits.requestBodyBytes,
+            allowTools: supportsMlxTools(route.mlxCapabilities) &&
+              (route.toolsEnabled === true || certificationRequest),
           });
           target = new URL(`${base.href.replace(/\/+$/u, "")}/chat/completions`);
-          mlxResponse = { model: decoded.model, stream: decoded.stream === true };
+          mlxResponse = {
+            model: decoded.model, stream: decoded.stream === true,
+            requireToolCall: JSON.parse(outboundBody.toString("utf8")).tool_choice === "required",
+          };
         }
         if (localCompaction) {
           const normalized = JSON.parse(outboundBody.toString("utf8"));

@@ -1,3 +1,5 @@
+import { normalizeMlxCapabilities, supportsMlxTools } from "./mlx-capabilities.mjs";
+
 import { validateBridgeConfig } from "./bridge-config.mjs";
 import { MODEL_DEFAULT_REASONING_DESCRIPTION } from "./catalog.mjs";
 
@@ -176,6 +178,13 @@ function mixedExternalRoutes(config, assignments, discoveredModels) {
   return assignments.map(({ provider, configuredModel, catalogModel, upstreamModel }) => {
     const live = discovered.get(catalogModel.slug);
     const mlx = provider.kind === "mlx-chat-completions";
+    const mlxIdentityMatches = mlx && live?.upstreamId === upstreamModel &&
+      live?.contextWindow === configuredModel?.contextWindow &&
+      (configuredModel?.mlxProfileDigest === undefined ||
+        live?.capabilities?.mlxProfileDigest === configuredModel.mlxProfileDigest);
+    const mlxCapabilities = mlxIdentityMatches ? normalizeMlxCapabilities(live.capabilities) : {};
+    const mlxTools = mlxIdentityMatches && supportsMlxTools(mlxCapabilities) &&
+      isCurrentBridgeCatalogModel(catalogModel);
     const catalogProfile = catalogReasoning(catalogModel);
     const model = configuredModel
       ? { ...configuredModel }
@@ -217,14 +226,15 @@ function mixedExternalRoutes(config, assignments, discoveredModels) {
       baseUrl: provider.baseUrl,
       allowPrivateNetwork: provider.allowPrivateNetwork,
       toolsEnabled:
-        !mlx && catalogModel.tool_mode === "direct" &&
+        (!mlx || mlxTools) && catalogModel.tool_mode === "direct" &&
         catalogModel.shell_type === "unified_exec",
       clientToolSearchEnabled:
-        provider.kind === "lmstudio-responses" &&
+        (provider.kind === "lmstudio-responses" || mlxTools) &&
         catalogModel.tool_mode === "direct" &&
         catalogModel.shell_type === "unified_exec" &&
         catalogModel.supports_search_tool === true &&
         isCurrentBridgeCatalogModel(catalogModel),
+      ...(mlx ? { mlxCapabilities: Object.freeze({ ...mlxCapabilities }) } : {}),
       model,
       ...(reasoningEffort ? { reasoningEffort } : {}),
       ...(reasoningEfforts?.length ? { reasoningEfforts: [...reasoningEfforts] } : {}),

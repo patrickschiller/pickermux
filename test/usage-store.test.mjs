@@ -27,7 +27,7 @@ test("absent usage is read-only and finalized deltas survive new instances", asy
   assert.deepEqual(await f.store.readSnapshot(), empty);
   assert.equal(await f.store.canReset(), true);
   assert.deepEqual(await readdir(f.parent), []);
-  assert.equal(await f.store.record("lmstudio", { ...COUNTS, responseId: "private-response-canary" }), true);
+  assert.equal(await f.store.record("lmstudio", { ...COUNTS, generationDurationMs: 1500, responseId: "private-response-canary" }), true);
   assert.equal(await f.store.record("lmstudio", { status: "unavailable", prompt: "private-prompt-canary" }), true);
   assert.equal(await f.store.record("remote", { status: "available", inputTokens: 2, outputTokens: 1 }), true);
   await f.store.flush();
@@ -39,7 +39,7 @@ test("absent usage is read-only and finalized deltas survive new instances", asy
   assert.equal((await lstat(f.directory)).mode & 0o777, 0o700);
   assert.equal((await lstat(f.target)).mode & 0o777, 0o600);
   const bytes = await readFile(f.target, "utf8");
-  assert.doesNotMatch(bytes, /private-response-canary|private-prompt-canary/u);
+  assert.doesNotMatch(bytes, /private-response-canary|private-prompt-canary|generationDurationMs|tokenPerformance/u);
   assert.deepEqual(await readdir(f.directory), ["token-usage.json"]);
   snapshot.providers[0].totals.inputTokens = 99;
   assert.equal((await f.store.readSnapshot()).providers[0].totals.inputTokens, 12);

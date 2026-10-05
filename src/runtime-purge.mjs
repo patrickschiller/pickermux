@@ -10,6 +10,8 @@ import {
 } from "node:fs/promises";
 import path from "node:path";
 
+import { assertMlxRuntimeDirectoryEntries, inspectOptionalMlxRuntime } from "./runtime-package.mjs";
+
 const SERVICE_PACKAGE_ENTRIES = Object.freeze([
   "bin",
   "lmstudio-picker.config.json",
@@ -299,7 +301,7 @@ async function readRegularFile(target, initialStats) {
 
 async function collectTree(
   root,
-  { exactRootEntries = false, requirePrivateRoot = false } = {},
+  { exactRootEntries = false, requirePrivateRoot = false, runtimePrefix = "" } = {},
 ) {
   const rootStats = await lstat(root);
   if (!rootStats.isDirectory() || rootStats.isSymbolicLink()) {
@@ -311,13 +313,17 @@ async function collectTree(
   }
   const entries = [];
   let totalBytes = 0;
+  const mlxRuntime = exactRootEntries ? await inspectOptionalMlxRuntime(root) : null;
 
   async function visit(directory, relativeDirectory = "") {
     const names = (await readdir(directory)).sort();
+    assertMlxRuntimeDirectoryEntries(runtimePrefix
+      ? path.posix.join(runtimePrefix, relativeDirectory) : relativeDirectory, names);
     if (relativeDirectory === "" && exactRootEntries) {
+      const expected = [...SERVICE_PACKAGE_ENTRIES, ...(mlxRuntime ? ["runtime"] : [])].sort();
       if (
-        names.length !== SERVICE_PACKAGE_ENTRIES.length ||
-        names.some((name, index) => name !== SERVICE_PACKAGE_ENTRIES[index])
+        names.length !== expected.length ||
+        names.some((name, index) => name !== expected[index])
       ) {
         throw new Error("Managed service package root contains unexpected entries");
       }
@@ -375,7 +381,9 @@ async function collectTree(
 
 async function collectSourceTree(sourceRoot) {
   const entries = [];
-  for (const name of SERVICE_PACKAGE_ENTRIES) {
+  const mlxRuntime = await inspectOptionalMlxRuntime(sourceRoot);
+  const names = [...SERVICE_PACKAGE_ENTRIES, ...(mlxRuntime ? ["runtime"] : [])].sort();
+  for (const name of names) {
     const target = path.join(sourceRoot, name);
     const stats = await lstat(target);
     if (stats.isSymbolicLink()) {
@@ -388,7 +396,7 @@ async function collectSourceTree(sourceRoot) {
         type: "directory",
         snapshot: snapshot(stats),
       }));
-      const nested = await collectTree(target);
+      const nested = await collectTree(target, { runtimePrefix: name === "runtime" ? "runtime" : "" });
       for (const entry of nested.entries) {
         entries.push(Object.freeze({
           ...entry,

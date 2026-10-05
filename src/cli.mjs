@@ -1,3 +1,6 @@
+import { supportsMlxTools } from "./mlx-capabilities.mjs";
+import { MLX_COMMANDS, runMlxCli } from "./mlx-cli.mjs";
+
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { readdir, rmdir, unlink } from "node:fs/promises";
@@ -188,10 +191,15 @@ function usage() {
 Use local or remote models through LM Studio or an explicitly configured
 compatible Responses provider. LM Studio adds loaded-model discovery;
 other providers require a model allowlist. The local mlx-chat-completions provider
-supports text-only Kolibri through scripts/serve-kolibri.py, without LM Studio.
+loads pinned HF snapshots without LM Studio; reviewed Kolibri tools require certification.
 Other Chat Completions servers are not supported by this adapter.
 
 Usage:
+  pickermux mlx-load REPOSITORY --alias NAME --python PATH [--revision REF] [--model-dir PATH] [--port N]
+  pickermux mlx-prepare REPOSITORY --alias NAME --python PATH [--revision REF]
+  pickermux mlx-start --model NAME [--port N]
+  pickermux mlx-status [--json]
+  pickermux mlx-stop --model NAME
   pickermux discover [--config PATH] [--json]
   pickermux build [--config PATH] [--output PATH] [--json]
   pickermux certify (--model SLUG | --all) [--config PATH] [--json]
@@ -245,7 +253,13 @@ GPT-Live WebRTC bootstrap uses the native ChatGPT service; delegated tasks retai
 their selected model. Voice audio and startup context go to OpenAI. This requires
 account voice availability and a compatible Codex client; unknown schemas fail closed.
 Setup and install automatically certify tool-capable providers without a valid receipt.
-MLX Kolibri remains text-only and is excluded from tool certification.
+Legacy MLX servers remain text-only. Reviewed MLX tool protocols use the full certification matrix.
+mlx-load requires the isolated, pinned mlx-lm environment and prints an allowlisted
+provider stanza for your configuration; it never edits the active Codex configuration.
+--context-window N (1024–8192) and --max-output-tokens N (1–2048) bind the profile.
+Snapshots resolve to immutable HF revisions. Unreviewed repository Python is rejected.
+token-performance-v1 shows measured output generation tokens/s after a finalized
+MLX turn, excluding prefill/network time; timing is volatile and unavailable after restart.
 Live tests can take several minutes per model. Keep configured models available and Codex fully closed.
 Progress is written to stderr; --json keeps stdout machine-readable.
 LM Studio context compaction uses one bounded summary request without tool schemas.
@@ -1564,7 +1578,8 @@ export async function runCertificationTransaction({
         phase: "model",
         index: completed.length + 1,
         total: rebound.length,
-        probeCount: subject.providerKind === "lmstudio-responses" ? 9 : 7,
+        probeCount: subject.providerKind === "lmstudio-responses" ||
+          (subject.providerKind === "mlx-chat-completions" && supportsMlxTools(subject.capabilities)) ? 9 : 7,
       });
       assertMatchingCertificationSubjects(
         [entry],
@@ -1604,7 +1619,8 @@ export async function runCertificationTransaction({
       );
 
       const supportsEfficientFidelity =
-        subject.providerKind === "lmstudio-responses";
+        subject.providerKind === "lmstudio-responses" ||
+        (subject.providerKind === "mlx-chat-completions" && supportsMlxTools(subject.capabilities));
       let efficientFidelity = supportsEfficientFidelity
         ? "direct-fallback"
         : "not-applicable";
@@ -1784,11 +1800,6 @@ export async function certify({
   const textOnlyProviders = new Set((config.providers ?? [])
     .filter((provider) => provider.kind === "mlx-chat-completions")
     .map((provider) => provider.id));
-  if (!all && (config.providers ?? []).some((provider) =>
-    textOnlyProviders.has(provider.id) && provider.models.some((entry) => entry.slug === model)
-  )) {
-    throw new Error("The local MLX provider is text-only; tool certification is not supported");
-  }
   const [managedConfig, service, runtime] = await Promise.all([
     configStatusImpl({ configPath: paths.configPath, statePath: paths.statePath }),
     serviceStatusImpl({
@@ -1806,8 +1817,12 @@ export async function certify({
     discoverImpl({ config, credentialResolver }),
     listPendingImpl(paths.certificationPath),
   ]);
-  const textOnly = discovery.models.filter((entry) => textOnlyProviders.has(entry.providerId));
-  const supported = discovery.models.filter((entry) => !textOnlyProviders.has(entry.providerId));
+  const isTextOnly = (entry) => textOnlyProviders.has(entry.providerId) && !supportsMlxTools(entry.capabilities);
+  const textOnly = discovery.models.filter(isTextOnly);
+  if (!all && textOnly.some((entry) => entry.id === model)) {
+    throw new Error("The local MLX model has no reviewed tool protocol; upgrade its server before certification");
+  }
+  const supported = discovery.models.filter((entry) => !isTextOnly(entry));
   const supportedIds = new Set(discovery.models.map((entry) => entry.id));
   let candidates = all
     ? supported
@@ -1840,7 +1855,7 @@ export async function certify({
     }
     throw new Error(
       all
-        ? "No tool-capable external model is available for certification; MLX models remain text-only"
+        ? "No external model with a reviewed tool protocol is available for certification"
         : `External model ${model} was not discovered`,
     );
   }
@@ -3602,8 +3617,10 @@ export async function runCli(argv, {
   assertNoPendingFullRefreshImpl = assertNoPendingFullRefresh,
   setupImpl = setupPickerMux,
   companionImpl = runPickerMuxCompanion,
+  mlxImpl = runMlxCli,
 } = {}) {
   if (argv[0] === "companion") return companionImpl(argv.slice(1));
+  if (MLX_COMMANDS.has(argv[0])) return mlxImpl(argv);
   const options = parseArguments(argv);
   if (options.command === "help") {
     process.stdout.write(`${usage()}\n`);
