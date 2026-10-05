@@ -11,6 +11,8 @@ Codex model picker, alongside the native models available to your account.
 Its macOS app installs the integration with one switch, refreshes the picker,
 and guides recovery after a Codex update. LM Studio is the default provider;
 other local or remote Responses providers use a custom configuration.
+An experimental Kolibri MLX configuration adds one pinned local model through
+a dedicated text-only Chat Completions adapter.
 
 **[Download PickerMux for macOS](https://github.com/patrickschiller/pickermux/releases/latest/download/PickerMux-macos-universal.dmg)**
 — one universal DMG for Apple silicon and Intel.
@@ -51,6 +53,8 @@ endorsed by, or supported by OpenAI, Codex, or LM Studio.
 Chat Completions compatibility alone is insufficient. See
 [provider configuration](docs/CONFIGURATION.md#supported-provider-kinds) for
 custom endpoints, model allowlists, and provider credentials.
+The explicit `mlx-chat-completions` exception supports the reviewed Kolibri
+launcher on Apple silicon; it does not provide general Chat Completions support.
 
 ## Install
 
@@ -113,6 +117,21 @@ local tool access still requires exact model certification. Voice and local
 delegation require manual validation with the installed backend and compatible
 client. See [voice setup and acceptance](docs/TECHNICAL_GUIDE.md#gpt-live-voice-and-local-tasks).
 
+## Kolibri on Apple silicon
+
+The source checkout includes [kolibri-picker.config.json](kolibri-picker.config.json)
+and a launcher for the immutable `velaia/Kolibri-1-MLX-4bit` snapshot. Use an
+isolated Python runtime with the exact [dependency pins](scripts/kolibri-requirements.txt).
+The model download is about 41 GiB and the conversion targets Macs with at least
+64 GB of unified memory.
+
+Kolibri appears as **Kolibri 1 MLX 4-bit** alongside the native models. This
+initial integration supports text replies and streamed text with reasoning
+disabled. Tools, shell access, images, audio, certification and context
+compaction are unavailable. The launcher enforces an 8,192-token combined
+prompt/output limit; an oversized conversation is rejected without dropping
+history. See [setup and limitations](docs/CONFIGURATION.md#kolibri-mlx-text-provider).
+
 ## Switch off or remove
 
 Turning **Use PickerMux in Codex** off restores the native picker while retaining
@@ -135,6 +154,8 @@ See [removal details](docs/TECHNICAL_GUIDE.md#deactivation-and-removal).
 - Tool capabilities are certified for each model and configuration.
 - LM Studio supports loaded-model discovery, deferred tool schemas, and local
   context compaction; other Responses providers use explicit model allowlists.
+- The experimental Kolibri MLX adapter translates only reviewed text requests
+  and replies and verifies its context limit against the dedicated launcher.
 - Tool descriptions explain how LM Studio's translated web tool opens source
   URLs and how to discover missing tools; factual accuracy depends on the model.
 - Install, refresh, recovery, and removal use verified ownership and rollback.

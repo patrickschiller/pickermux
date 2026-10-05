@@ -175,6 +175,7 @@ function mixedExternalRoutes(config, assignments, discoveredModels) {
   const discovered = discoveredBySlug(discoveredModels);
   return assignments.map(({ provider, configuredModel, catalogModel, upstreamModel }) => {
     const live = discovered.get(catalogModel.slug);
+    const mlx = provider.kind === "mlx-chat-completions";
     const catalogProfile = catalogReasoning(catalogModel);
     const model = configuredModel
       ? { ...configuredModel }
@@ -185,16 +186,16 @@ function mixedExternalRoutes(config, assignments, discoveredModels) {
           type: "llm",
           contextWindow: catalogModel.context_window,
         };
-    if (live) {
+    if (live && !mlx) {
       model.displayName = live.displayName ?? model.displayName;
       model.type = live.type ?? model.type;
       model.contextWindow = live.contextWindow ?? model.contextWindow;
     }
-    const reasoningEffort =
+    const reasoningEffort = mlx ? "none" :
       live?.reasoningEffort ?? configuredModel?.reasoningEffort ?? catalogProfile.reasoningEffort;
-    const reasoningEfforts =
+    const reasoningEfforts = mlx ? ["none"] :
       live?.reasoningEfforts ?? configuredModel?.reasoningEfforts ?? catalogProfile.reasoningEfforts;
-    const reasoningEffortMap =
+    const reasoningEffortMap = mlx ? undefined :
       live?.reasoningEffortMap ??
       configuredModel?.reasoningEffortMap ??
       (provider.kind === "lmstudio-responses"
@@ -210,13 +211,13 @@ function mixedExternalRoutes(config, assignments, discoveredModels) {
       kind: "external",
       slug: catalogModel.slug,
       compactionModelHash: catalogModel.comp_hash,
-      upstreamModel: live?.upstreamId ?? upstreamModel,
+      upstreamModel: mlx ? upstreamModel : live?.upstreamId ?? upstreamModel,
       providerId: provider.id,
       providerKind: provider.kind,
       baseUrl: provider.baseUrl,
       allowPrivateNetwork: provider.allowPrivateNetwork,
       toolsEnabled:
-        catalogModel.tool_mode === "direct" &&
+        !mlx && catalogModel.tool_mode === "direct" &&
         catalogModel.shell_type === "unified_exec",
       clientToolSearchEnabled:
         provider.kind === "lmstudio-responses" &&

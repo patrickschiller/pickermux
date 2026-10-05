@@ -172,3 +172,32 @@ test("reopened Codex blocks installer inference without undoing installation", a
   assert.equal(result.status, "incomplete");
   assert.equal(called, false);
 });
+
+test("MLX-only installation skips live tool probes and explicit certification fails safely", async (t) => {
+  const { input, dependencies, transactions } = await fixture(t);
+  input.config = {
+    ...input.config,
+    providers: [{ id: "kolibri", kind: "mlx-chat-completions", models: [{ slug: "kolibri/kolibri-1-mlx-4bit" }] }],
+  };
+  dependencies.discoverImpl = async () => ({ models: [{
+    id: "kolibri/kolibri-1-mlx-4bit", providerId: "kolibri", type: "llm", contextWindow: 8192,
+  }] });
+  dependencies.listPendingImpl = async () => [];
+  const result = await certify(input, dependencies);
+  assert.equal(result.textOnly, 1);
+  assert.deepEqual(result.certified, []);
+  assert.equal(transactions.length, 0);
+  await assert.rejects(certify({ ...input, all: false, model: "kolibri/kolibri-1-mlx-4bit" }, dependencies), /text-only/u);
+  await assert.rejects(certify({ ...input, onlyUncertified: false }, dependencies), /No tool-capable/u);
+  assert.equal(transactions.length, 0);
+});
+
+test("mixed certification selects only tool-capable routes", async (t) => {
+  const { input, dependencies, models, transactions } = await fixture(t);
+  input.config = { ...input.config, providers: [...input.config.providers, { id: "kolibri", kind: "mlx-chat-completions", models: [] }] };
+  dependencies.discoverImpl = async () => ({ models: [...models, {
+    id: "kolibri/kolibri-1-mlx-4bit", providerId: "kolibri", type: "llm", contextWindow: 8192,
+  }] });
+  await certify(input, dependencies);
+  assert.deepEqual(transactions[0].targetModelIds, models.slice(2).map((entry) => entry.id));
+});

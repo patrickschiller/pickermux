@@ -36,7 +36,7 @@ test("release metadata and both CLI entry points identify PickerMux", async () =
     await readFile(path.join(projectDirectory, "package.json"), "utf8"),
   );
   assert.equal(packageMetadata.name, "pickermux");
-  assert.equal(packageMetadata.version, "0.22.2");
+  assert.equal(packageMetadata.version, "0.23.0");
   assert.equal(packageMetadata.license, "MIT");
 
   for (const entryPoint of ["pickermux.mjs", "lmstudio-picker.mjs"]) {
@@ -48,7 +48,9 @@ test("release metadata and both CLI entry points identify PickerMux", async () =
       );
       assert.match(stdout, /PickerMux/u);
       assert.match(stdout, /CODEX_BINARY overrides discovery for this command/u);
-      assert.match(stdout, /Setup and install automatically certify discovered models/u);
+      assert.match(stdout, /Setup and install automatically certify tool-capable providers/u);
+      assert.match(stdout, /MLX Kolibri remains text-only and is excluded from tool certification/u);
+      assert.match(stdout, /supports text-only Kolibri through scripts\/serve-kolibri.py, without LM Studio/u);
       assert.match(stdout, /several minutes per model/u);
       assert.match(stdout, /refresh --full \(also --FULL\)/u);
       assert.match(stdout, /pickermux companion status/u);
@@ -71,7 +73,7 @@ test("release metadata and both CLI entry points identify PickerMux", async () =
         [path.join(projectDirectory, "bin", entryPoint), versionArgument],
         { encoding: "utf8" },
       );
-      assert.equal(stdout, "pickermux 0.22.2\n");
+      assert.equal(stdout, "pickermux 0.23.0\n");
     }
   }
 });

@@ -9,7 +9,23 @@ The 0.9.x entries describe local companion development builds. Their features
 are included in the first public companion release, 0.10.0; they were not
 published as GitHub Releases.
 
-## [Unreleased]
+## [0.23.0] - 2026-10-05
+
+Local development build; no public release has been published.
+
+### Added
+
+- Add an experimental `mlx-chat-completions` provider for the exact pinned
+  Kolibri 1 MLX 4-bit model, with a safe example configuration and isolated
+  Python launcher. The provider translates reviewed text Responses requests
+  and JSON/SSE replies, verifies its context limit against the launcher's
+  metadata, and keeps native routing and credential isolation intact.
+- Pin the Kolibri model revision, architecture/tokenizer/template/configuration
+  and all nine weight digests together with the optional MLX runtime versions.
+  The dedicated server exposes one alias on IPv4 loopback, enforces rendered
+  prompt plus reserved output tokens, and buffers text before validation.
+  This first integration has reasoning disabled and cannot grant tools, shell
+  access, certification, Efficient Fidelity or context compaction.
 
 ## [0.22.2] - 2026-10-03
 
@@ -884,6 +900,7 @@ confirm the release date before tagging. See the
   restores the previous distribution state when activation fails.
 
 [Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.22.2...HEAD
+[0.23.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.23.0
 [0.22.2]: https://github.com/patrickschiller/pickermux/releases/tag/v0.22.2
 [0.22.1]: https://github.com/patrickschiller/pickermux/releases/tag/v0.22.1
 [0.22.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.22.0

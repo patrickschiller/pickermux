@@ -344,6 +344,7 @@ function validateDiscoveredModel(model, index, seen) {
     displayName,
     contextWindow: model.contextWindow,
     source: typeof model.source === "string" ? model.source : undefined,
+    providerKind: model.providerKind,
     reasoningEffort,
     reasoningEfforts,
     reasoningOmitEfforts,
@@ -358,8 +359,18 @@ function catalogEntry(
   certifiedForEfficientFidelity = false,
 ) {
   const entry = cloneJson(donor);
+  const mlx = model.providerKind === "mlx-chat-completions" ||
+    model.source === "mlx-chat-completions";
+  // This adapter has no certified tool protocol. Receipts cannot expand it.
+  if (mlx) {
+    certifiedForTools = false;
+    certifiedForEfficientFidelity = false;
+    model.reasoningEffort = "none";
+    model.reasoningEfforts = ["none"];
+    model.reasoningOmitEfforts = [];
+  }
   const compactTextOnlyPrompt =
-    !certifiedForTools && LM_STUDIO_MODEL_SOURCES.has(model.source);
+    !certifiedForTools && (mlx || LM_STUDIO_MODEL_SOURCES.has(model.source));
   const efficientFidelity =
     certifiedForTools &&
     certifiedForEfficientFidelity &&

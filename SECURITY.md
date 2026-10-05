@@ -83,6 +83,35 @@ Native Codex request bodies remain byte preserving. Treat request logs produced
 by older PickerMux releases as sensitive because they may contain installation,
 session, thread, window, or turn identifiers.
 
+The experimental `mlx-chat-completions` kind has a separate text-only
+contract for the exact pinned Kolibri MLX alias. It accepts only the reviewed
+loopback endpoint and singleton allowlist, checks the launcher's enforced
+context against configuration, and never resolves native credentials for that
+route. Function inventories are withheld; forced tool choices, tool results and
+invocation history, unsupported media, reasoning and compaction state fail
+closed. Certification receipts cannot enable tool or shell authority on this
+kind. It does not broaden general Responses-provider compatibility.
+
+The optional source launcher verifies all pinned architecture/configuration/
+tokenizer/template and weight bytes before loading. Its private model directory
+is owned by the current user; symbolic links, multiply linked model files,
+unexpected files and modified snapshot bytes are rejected. A download retry
+cannot overwrite edited model files. Only one verified architecture module is
+registered, with `trust_remote_code` disabled. The Python virtual environment
+and explicit dependency pins remain a separate optional local prerequisite;
+they are not installed by ordinary PickerMux tests or bridge installation.
+
+The model server binds only to `127.0.0.1`, exposes one stable model alias and
+context size, rejects browser Origin requests, and never enumerates cached
+models or exposes paths. It enforces prompt plus reserved output tokens at the
+tokenizer boundary and validates buffered generated output before success.
+There is no truncation, automatic compaction or tool-parser best effort. Errors
+and disconnects use fixed messages without raw tracebacks, prompts, responses
+or filenames. Ordinary inference has no network request and stores no prompt
+history. The explicit pinned public model download is the separate network
+operation. These checks do not isolate the runtime from a malicious process
+already running with the same macOS user identity.
+
 Standalone web search has a distinct native trust boundary. The exact
 capability-scoped `POST /v1/alpha/search` route resolves the selected model and,
 for an external selection, requires its current tool authority and the same

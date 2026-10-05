@@ -56,6 +56,7 @@ const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/u;
 const SUPPORTED_PROVIDER_KINDS = new Set([
   "lmstudio-responses",
   "openai-responses",
+  "mlx-chat-completions",
 ]);
 const SUPPORTED_REASONING_EFFORTS = new Set([
   "none",
@@ -340,7 +341,9 @@ function normalizeModel(input, providerId, providerKind, index, seenIds, seenSlu
   }
 
   const supportedReasoningEfforts =
-    providerKind === "lmstudio-responses"
+    providerKind === "mlx-chat-completions"
+      ? new Set(["none"])
+      : providerKind === "lmstudio-responses"
       ? LM_STUDIO_RESPONSES_REASONING_EFFORTS
       : SUPPORTED_REASONING_EFFORTS;
   if (input.reasoningEffort !== undefined) {
@@ -373,6 +376,20 @@ function normalizeModel(input, providerId, providerKind, index, seenIds, seenSlu
       normalized.reasoningEffort = efforts[0];
     }
     normalized.reasoningEfforts = efforts;
+  }
+
+  if (providerKind === "mlx-chat-completions") {
+    if (normalized.type !== "llm" || normalized.contextWindow === undefined) {
+      throw new Error(`${label} requires type=llm and a positive contextWindow`);
+    }
+    if (id !== "kolibri-1-mlx-4bit") {
+      throw new Error(`${label}.id must be exactly kolibri-1-mlx-4bit`);
+    }
+    if (normalized.contextWindow < 1_024 || normalized.contextWindow > 8_192) {
+      throw new Error(`${label}.contextWindow must be between 1024 and 8192 for the local MLX server`);
+    }
+    normalized.reasoningEffort = "none";
+    normalized.reasoningEfforts = ["none"];
   }
 
   seenIds.add(id);
@@ -422,7 +439,7 @@ function normalizeProvider(input, index, seenProviderIds, seenSlugs) {
 
   if (!SUPPORTED_PROVIDER_KINDS.has(input.kind)) {
     throw new Error(
-      `${label}.kind must be lmstudio-responses or openai-responses`,
+      `${label}.kind must be lmstudio-responses, openai-responses, or mlx-chat-completions`,
     );
   }
   const discovery = normalizeDiscovery(input.discovery, input.kind, label);
@@ -434,6 +451,18 @@ function normalizeProvider(input, index, seenProviderIds, seenSlugs) {
     input.allowPrivateNetwork,
     `${label}.baseUrl`,
   );
+  if (input.kind === "mlx-chat-completions") {
+    const url = new URL(baseUrl);
+    if (
+      url.protocol !== "http:" || url.hostname !== "127.0.0.1" ||
+      url.pathname !== "/v1"
+    ) {
+      throw new Error(`${label}.baseUrl must be a 127.0.0.1 HTTP URL with the exact /v1 path`);
+    }
+    if (input.credentialEnv !== undefined || input.credentialKeychain !== undefined) {
+      throw new Error(`${label} does not accept credentials for its local MLX server`);
+    }
+  }
 
   let credentialEnv;
   if (input.credentialEnv !== undefined) {
@@ -468,6 +497,9 @@ function normalizeProvider(input, index, seenProviderIds, seenSlugs) {
   const models = input.models.map((model, modelIndex) =>
     normalizeModel(model, id, input.kind, modelIndex, seenIds, seenSlugs),
   );
+  if (input.kind === "mlx-chat-completions" && models.length !== 1) {
+    throw new Error(`${label}.models must contain exactly one local Kolibri model`);
+  }
 
   seenProviderIds.add(id);
   const provider = {

@@ -183,11 +183,13 @@ const HISTORICAL_CHAT_RECOVERY_DOC =
   "https://github.com/patrickschiller/pickermux/blob/main/docs/TROUBLESHOOTING.md#reconnecting-in-an-old-chat-after-deactivation-or-uninstall";
 
 function usage() {
-  return `PickerMux — Codex + Responses providers, one model picker
+  return `PickerMux — Codex + external providers, one model picker
 
 Use local or remote models through LM Studio or an explicitly configured
 compatible Responses provider. LM Studio adds loaded-model discovery;
-other providers require a model allowlist. Chat Completions alone is insufficient.
+other providers require a model allowlist. The local mlx-chat-completions provider
+supports text-only Kolibri through scripts/serve-kolibri.py, without LM Studio.
+Other Chat Completions servers are not supported by this adapter.
 
 Usage:
   pickermux discover [--config PATH] [--json]
@@ -242,7 +244,8 @@ External models still require tool certification; search uses the native Codex b
 GPT-Live WebRTC bootstrap uses the native ChatGPT service; delegated tasks retain
 their selected model. Voice audio and startup context go to OpenAI. This requires
 account voice availability and a compatible Codex client; unknown schemas fail closed.
-Setup and install automatically certify discovered models without a valid tool receipt.
+Setup and install automatically certify tool-capable providers without a valid receipt.
+MLX Kolibri remains text-only and is excluded from tool certification.
 Live tests can take several minutes per model. Keep configured models available and Codex fully closed.
 Progress is written to stderr; --json keeps stdout machine-readable.
 LM Studio context compaction uses one bounded summary request without tool schemas.
@@ -1778,6 +1781,14 @@ export async function certify({
   transactionImpl = runCertificationTransaction,
   credentialResolver = createCredentialResolver(),
 } = {}) {
+  const textOnlyProviders = new Set((config.providers ?? [])
+    .filter((provider) => provider.kind === "mlx-chat-completions")
+    .map((provider) => provider.id));
+  if (!all && (config.providers ?? []).some((provider) =>
+    textOnlyProviders.has(provider.id) && provider.models.some((entry) => entry.slug === model)
+  )) {
+    throw new Error("The local MLX provider is text-only; tool certification is not supported");
+  }
   const [managedConfig, service, runtime] = await Promise.all([
     configStatusImpl({ configPath: paths.configPath, statePath: paths.statePath }),
     serviceStatusImpl({
@@ -1795,8 +1806,9 @@ export async function certify({
     discoverImpl({ config, credentialResolver }),
     listPendingImpl(paths.certificationPath),
   ]);
-  const supported = discovery.models;
-  const supportedIds = new Set(supported.map((entry) => entry.id));
+  const textOnly = discovery.models.filter((entry) => textOnlyProviders.has(entry.providerId));
+  const supported = discovery.models.filter((entry) => !textOnlyProviders.has(entry.providerId));
+  const supportedIds = new Set(discovery.models.map((entry) => entry.id));
   let candidates = all
     ? supported
     : supported.filter((entry) => entry.id === model);
@@ -1824,11 +1836,11 @@ export async function certify({
       : [];
   if (candidates.length === 0 && recoveryModelIds.length === 0) {
     if (onlyUncertified) {
-      return { certified: [], recoveredPending: [], reused, restartRequired: true };
+      return { certified: [], recoveredPending: [], reused, textOnly: textOnly.length, restartRequired: true };
     }
     throw new Error(
       all
-        ? "No external model is available for certification"
+        ? "No tool-capable external model is available for certification; MLX models remain text-only"
         : `External model ${model} was not discovered`,
     );
   }
@@ -1841,7 +1853,7 @@ export async function certify({
     credentialResolver,
     targetModelIds: candidates.map((candidate) => candidate.id),
     recoveryModelIds,
-    exactModelSet: all && !onlyUncertified,
+    exactModelSet: all && !onlyUncertified && textOnly.length === 0,
     sourceRoot,
     onProgress,
   });

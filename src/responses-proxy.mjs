@@ -29,6 +29,11 @@ import { isCertificationRequest } from "./certification-transport.mjs";
 import { isValidProviderId } from "./provider-id.mjs";
 import { createTokenUsageObserver } from "./token-usage.mjs";
 import {
+  createMlxChatRequest,
+  createMlxChatSseTransformer,
+  transformMlxChatJson,
+} from "./mlx-chat.mjs";
+import {
   createCompactionEnvelopeCodec,
   isCompactionEnvelope,
 } from "./compaction-envelope.mjs";
@@ -252,6 +257,7 @@ const PUBLIC_ERROR_CODES = new Set([
   "INVALID_JSON",
   "INVALID_JSON_OBJECT",
   "INVALID_LIVE_REQUEST",
+  "MLX_REQUEST_UNSUPPORTED",
   "INVALID_REASONING_EFFORT",
   "INVALID_REASONING_POLICY",
   "INVALID_ROUTE",
@@ -949,7 +955,8 @@ function externalBody(body, route, maxBytes, {
     });
   }
 
-  const toolsEnabled = route.toolsEnabled === true || certificationRequest;
+  const toolsEnabled = route.providerKind !== "mlx-chat-completions" &&
+    (route.toolsEnabled === true || certificationRequest);
   const rewritten = { ...body, model: route.upstreamModel };
   delete rewritten.client_metadata;
   if (
@@ -971,7 +978,7 @@ function externalBody(body, route, maxBytes, {
   }
   let textOnlyCompaction;
   if (Array.isArray(body.input)) {
-    if (route.providerKind === "lmstudio-responses" && !toolsEnabled) {
+    if (["lmstudio-responses", "mlx-chat-completions"].includes(route.providerKind) && !toolsEnabled) {
       textOnlyCompaction = compactLmStudioTextOnlyInput(body.input);
     }
     const sourceInput = textOnlyCompaction?.input ?? body.input;
@@ -1281,6 +1288,7 @@ function publicProxyError(error) {
     INVALID_JSON: "Request body must be valid JSON",
     INVALID_JSON_OBJECT: "Request body must be a JSON object",
     INVALID_LIVE_REQUEST: "The voice request does not match the supported Codex contract; update PickerMux for this Codex version",
+    MLX_REQUEST_UNSUPPORTED: "The local MLX model supports text-only requests; start a new text chat without tools, attachments, or compacted history",
     LIVE_SERVICE_ERROR: "The native voice service could not start the session",
     MISSING_MODEL: "Request body must contain a model",
     INVALID_WEB_SEARCH: "The web search request does not match the supported Codex contract",
@@ -1337,6 +1345,7 @@ function relayUpstream({
   webSearchResponse = false,
   liveResponse = false,
   compactionResponse,
+  mlxResponse,
   tokenUsageObserver,
 }) {
   return new Promise((resolve) => {
@@ -1373,7 +1382,7 @@ function relayUpstream({
       upstreamRequest.destroy();
       upstreamResponse?.destroy();
       if (
-        transformMode === "sse" &&
+        ["sse", "mlx-sse"].includes(transformMode) &&
         response.headersSent &&
         !response.destroyed &&
         !response.writableEnded &&
@@ -1427,7 +1436,7 @@ function relayUpstream({
       },
       (incoming) => {
         upstreamResponse = incoming;
-        tokenUsageObserver?.headers(incoming.statusCode, incoming.headers);
+        if (!mlxResponse) tokenUsageObserver?.headers(incoming.statusCode, incoming.headers);
         clearTimeout(headersTimer);
         idleTimer = setTimeout(
           () => timeout("UPSTREAM_IDLE_TIMEOUT"),
@@ -1439,6 +1448,23 @@ function relayUpstream({
           incoming.statusCode,
         );
         try {
+          if (mlxResponse) {
+            const status = Number(incoming.statusCode);
+            if (status < 200 || status >= 300) {
+              // Provider errors may echo prompts or model paths. Never relay them.
+              throw new ResponsesProxyError("Local MLX inference failed", {
+                statusCode: status >= 400 && status <= 599 ? status : 502,
+                code: "UPSTREAM_RESPONSE_ERROR",
+              });
+            }
+            const expectedType = mlxResponse.stream ? "text/event-stream" : "application/json";
+            const contentType = String(incoming.headers["content-type"] ?? "").split(";", 1)[0].trim().toLowerCase();
+            if (contentType !== expectedType) {
+              throw new ResponsesProxyError("Unknown local MLX response format", {
+                code: "UPSTREAM_RESPONSE_ERROR",
+              });
+            }
+          }
           if (liveResponse) {
             const status = Number(incoming.statusCode);
             if (status < 200 || status >= 300) {
@@ -1487,7 +1513,9 @@ function relayUpstream({
             }
           }
           transformMode =
-            liveResponse
+            mlxResponse
+              ? mlxResponse.stream ? "mlx-sse" : "mlx-json"
+              : liveResponse
               ? "live-sdp"
               : compactionResponse
               ? "compaction-json"
@@ -1515,6 +1543,12 @@ function relayUpstream({
             delete responseHeaders[name];
           }
         }
+        if (mlxResponse) {
+          responseHeaders["content-type"] = mlxResponse.stream
+            ? "text/event-stream" : "application/json";
+          responseHeaders["cache-control"] = "no-store";
+          tokenUsageObserver?.headers(200, responseHeaders);
+        }
         if (!transformMode && !response.destroyed && !response.headersSent) {
           response.writeHead(incoming.statusCode ?? 502, responseHeaders);
         }
@@ -1523,9 +1557,12 @@ function relayUpstream({
         let jsonBytes = 0;
         sseTransformer = transformMode === "sse"
           ? createSseResponseTransformer(responseCodec)
+          : transformMode === "mlx-sse"
+          ? createMlxChatSseTransformer({ model: mlxResponse.model })
           : undefined;
         const writeChunk = (chunk) => {
           if (response.destroyed) return;
+          if (mlxResponse) tokenUsageObserver?.push(chunk);
           // Committing transformed headers before validated output would turn
           // an initial protocol failure or timeout into an opaque socket reset.
           if (!response.headersSent) {
@@ -1536,14 +1573,14 @@ function relayUpstream({
 
         incoming.on("data", (chunk) => {
           if (settled || terminating) return;
-          tokenUsageObserver?.push(chunk);
+          if (!mlxResponse) tokenUsageObserver?.push(chunk);
           clearTimeout(idleTimer);
           idleTimer = setTimeout(
             () => timeout("UPSTREAM_IDLE_TIMEOUT"),
             limits.streamIdleTimeoutMs,
           );
           try {
-            if (["json", "search-json", "compaction-json", "live-sdp"].includes(transformMode)) {
+            if (["json", "mlx-json", "search-json", "compaction-json", "live-sdp"].includes(transformMode)) {
               jsonBytes += chunk.length;
               const maxBytes = liveResponse
                 ? MAX_LIVE_RESPONSE_BYTES
@@ -1556,7 +1593,7 @@ function relayUpstream({
                 });
               }
               jsonChunks.push(chunk);
-            } else if (transformMode === "sse") {
+            } else if (["sse", "mlx-sse"].includes(transformMode)) {
               for (const transformed of sseTransformer.push(chunk)) writeChunk(transformed);
             } else {
               writeChunk(chunk);
@@ -1611,9 +1648,11 @@ function relayUpstream({
                 });
               }
               writeChunk(projected);
+            } else if (transformMode === "mlx-json") {
+              writeChunk(transformMlxChatJson(Buffer.concat(jsonChunks), { model: mlxResponse.model }));
             } else if (transformMode === "json") {
               writeChunk(transformJsonResponse(Buffer.concat(jsonChunks), responseCodec));
-            } else if (transformMode === "sse") {
+            } else if (["sse", "mlx-sse"].includes(transformMode)) {
               for (const transformed of sseTransformer.finish()) writeChunk(transformed);
             }
             if (!response.destroyed && !response.writableEnded) response.end();
@@ -1741,6 +1780,7 @@ export function createResponsesProxy({
       let lookup;
       let responseCodec;
       let compactionResponse;
+      let mlxResponse;
 
       if (route.providerKind !== "lmstudio-responses" && hasOwnCompactionState(decoded.input)) {
         // A PickerMux envelope is scoped to its original external route. Do
@@ -1775,6 +1815,15 @@ export function createResponsesProxy({
           );
         }
         const base = assertApiBaseUrl(route.baseUrl);
+        if (route.providerKind === "mlx-chat-completions" && (
+          base.protocol !== "http:" || base.hostname !== "127.0.0.1" ||
+          base.pathname !== "/v1" || route.allowPrivateNetwork !== true ||
+          route.credentialEnv !== undefined || route.credentialKeychain === true
+        )) {
+          throw new ResponsesProxyError("Local MLX route is invalid", {
+            statusCode: 400, code: "MLX_REQUEST_UNSUPPORTED",
+          });
+        }
         if (route.allowPrivateNetwork !== true) {
           if (isIP(base.hostname) && isNonPublicAddress(base.hostname)) {
             throw new ResponsesProxyError("The upstream address is not allowed", {
@@ -1818,6 +1867,18 @@ export function createResponsesProxy({
         });
         outboundBody = external.encoded;
         responseCodec = external.toolCodec;
+        if (route.providerKind === "mlx-chat-completions") {
+          if (path !== "/v1/responses" || certificationRequest) {
+            throw new ResponsesProxyError("Local MLX tools and compaction are unsupported", {
+              statusCode: 400, code: "MLX_REQUEST_UNSUPPORTED",
+            });
+          }
+          outboundBody = createMlxChatRequest(JSON.parse(outboundBody.toString("utf8")), route, {
+            maxBytes: limits.requestBodyBytes,
+          });
+          target = new URL(`${base.href.replace(/\/+$/u, "")}/chat/completions`);
+          mlxResponse = { model: decoded.model, stream: decoded.stream === true };
+        }
         if (localCompaction) {
           const normalized = JSON.parse(outboundBody.toString("utf8"));
           if (external.compactionInput !== undefined) normalized.input = external.compactionInput;
@@ -1839,7 +1900,8 @@ export function createResponsesProxy({
         }
         let credential;
         try {
-          credential = await resolveCredential(route);
+          credential = route.providerKind === "mlx-chat-completions"
+            ? undefined : await resolveCredential(route);
         } catch {
           throw new ResponsesProxyError("The external provider credential is unavailable", {
             statusCode: 503,
@@ -1853,8 +1915,8 @@ export function createResponsesProxy({
         headers = buildExternalRequestHeaders(request.headers, outboundBody.length, {
           credential,
         });
-        if (localCompaction) {
-          headers.accept = "application/json";
+        if (localCompaction || mlxResponse) {
+          headers.accept = mlxResponse?.stream ? "text/event-stream" : "application/json";
           headers["accept-encoding"] = "identity";
         }
       }
@@ -1875,6 +1937,7 @@ export function createResponsesProxy({
           lookup,
           responseCodec,
           compactionResponse,
+          mlxResponse,
           tokenUsageObserver,
         });
       } catch (error) {

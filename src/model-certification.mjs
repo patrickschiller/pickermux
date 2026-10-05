@@ -386,7 +386,8 @@ function evaluateStoredModelCertification(store, input) {
   const normalizedStore = validateCertificationStore(store);
   const subject = createCertificationSubject(input);
   const expectedFingerprint = computeCertificationFingerprint(subject);
-  const receipt = Object.hasOwn(normalizedStore.receipts, subject.publicModelId)
+  const receipt = subject.providerKind !== "mlx-chat-completions" &&
+      Object.hasOwn(normalizedStore.receipts, subject.publicModelId)
     ? normalizedStore.receipts[subject.publicModelId]
     : undefined;
   const result = !receipt
@@ -617,6 +618,9 @@ export async function recordPassedCertification(
   { now = new Date() } = {},
 ) {
   const subject = createCertificationSubject(input);
+  if (subject.providerKind === "mlx-chat-completions") {
+    throw new Error("Local MLX models support text only and cannot receive tool certification");
+  }
   const normalizedGates = normalizeGates(gates);
   if (normalizedGates[EFFICIENT_FIDELITY_CERTIFICATION_GATE] === true) {
     throw new Error(

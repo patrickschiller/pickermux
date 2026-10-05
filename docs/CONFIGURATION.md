@@ -16,18 +16,24 @@ destinations are rejected.
 PickerMux connects Codex Desktop to local or remote external models through
 the Responses API. LM Studio is the default provider, and the core also
 supports explicitly configured compatible Responses providers.
+An experimental dedicated adapter also supports the pinned Kolibri MLX text
+server described below.
 
 | Kind | Discovery | Required model information |
 | --- | --- | --- |
 | `lmstudio-responses` | Automatic loaded-model metadata or an explicit allowlist. | Loaded LM Studio instances supply metadata; configured entries may provide overrides. |
 | `openai-responses` | Explicit allowlist verified against `<baseUrl>/models`. | Each model must specify `type: "llm"` and a positive `contextWindow`. |
+| `mlx-chat-completions` | One explicit Kolibri alias verified against the dedicated launcher's `/models`. | Exact `kolibri-1-mlx-4bit` ID, `type: "llm"`, matching enforced `contextWindow` and reasoning `none` only. |
 
 A generic provider's model list must have the OpenAI-compatible
 `{"data": [{"id": "example-model"}]}` shape, and inference must implement
 `<baseUrl>/responses`. Chat Completions compatibility alone does not satisfy
-this contract. Provider credentials remain scoped to the configured provider;
+this contract. The explicit Kolibri kind is a separate, bounded text-only
+exception and does not accept arbitrary Chat Completions providers. Provider
+credentials remain scoped to the configured provider;
 native Codex credentials are never reused for an external endpoint. Tool
 access requires the model-bound live certification matrix to pass.
+The Kolibri kind cannot be certified for tool access in this version.
 
 Automatic loaded-model discovery, Efficient Fidelity, and PickerMux's local
 context-compaction adapter are specific to LM Studio. Other providers use
@@ -62,6 +68,86 @@ one JSON result with a `certification.status` of `complete` or `incomplete`.
 An incomplete certification exits with status 1 while retaining the activated
 installation and the existing certification recovery boundary. Ordinary
 `refresh` does not submit certification prompts.
+
+The text-only Kolibri kind is excluded from automatic certification. An
+explicit `certify` for it fails before submitting inference or granting tools.
+
+## Kolibri MLX text provider
+
+This experimental provider connects the exact `velaia/Kolibri-1-MLX-4bit`
+conversion to the Codex picker through a narrow Responses-to-Chat adapter.
+It requires an Apple silicon Mac, an isolated Python 3.12 environment, and
+enough memory for the 4-bit model. The conversion's model card lists about
+41 GiB of weights and a 64 GB minimum Mac configuration; leave room for
+Codex and prompt memory. See the [conversion model card](https://huggingface.co/velaia/Kolibri-1-MLX-4bit).
+
+From a source checkout, create the optional runtime and start the server:
+
+```bash
+python3.12 -m venv .artifacts/kolibri-venv
+.artifacts/kolibri-venv/bin/python -m pip install -r scripts/kolibri-requirements.txt
+.artifacts/kolibri-venv/bin/python scripts/serve-kolibri.py \
+  --download --model-dir .artifacts/Kolibri-1-MLX-4bit \
+  --context-window 8192 --max-tokens 1024 --port 8080
+```
+
+`--download` explicitly retrieves the public model at revision
+`3f5adf3fc8149f57738cc5a99f02ae26b601e7b0`. Omit this flag for later starts.
+The launcher checks the pinned `mlx==0.32.3`, `mlx-lm==0.32.0`,
+`transformers==5.7.0` and `huggingface-hub==1.5.0` versions, and verifies SHA-256
+for its architecture, tokenizer, template, configuration and all weight shards
+before loading. It rejects edited or foreign files instead of overwriting
+them. A download retry may fill missing files after checking existing ones.
+Model files and their directory must be private and owned by the current user;
+the launcher creates downloads with a private umask. It executes only the
+verified architecture and never enables `trust_remote_code`.
+
+Keep that process running. The launcher always binds to `127.0.0.1`; its public
+model ID is exactly `kolibri-1-mlx-4bit`, irrespective of the model directory.
+It does not scan the Hugging Face cache or expose filesystem model paths.
+The source checkout's [kolibri-picker.config.json](../kolibri-picker.config.json)
+uses that ID at `http://127.0.0.1:8080/v1` and presents the public slug
+`kolibri/kolibri-1-mlx-4bit`. It contains no credential. The bridge verifies
+that `/models` reports this single alias and an enforced `context_window`
+exactly matching the configured `contextWindow`.
+
+Preview the catalog, then activate the custom configuration with Codex fully
+closed and restart Codex to load the picker:
+
+```bash
+node bin/pickermux.mjs build --config kolibri-picker.config.json
+node bin/pickermux.mjs setup --config kolibri-picker.config.json
+```
+
+`setup` installs the new version through the managed distribution and applies
+this explicit configuration to a healthy existing bridge or a fresh installation.
+It retains lifecycle ownership and rollback; keep any needed providers and
+bridge settings in your reviewed custom configuration. Do not edit the installed
+runtime directly. The optional Python server is separate
+from the bridge's LaunchAgent; this source workflow does not install it as a
+login service.
+
+This version supports only system/user/assistant text, reasoning `none`, and
+text output. Optional Codex tool inventories are withheld; forced choices,
+tool-call history, tool results, images, audio, encrypted reasoning and
+compaction controls are rejected. No certification record can enable tools,
+shell access or Efficient Fidelity for this provider. Native models keep their
+existing routing and credentials.
+
+The launcher counts the rendered tokenizer prompt and reserves the requested
+output budget before generation. Its default combined limit is 8,192 tokens,
+with at most 1,024 output tokens per request. A smaller launcher context between
+1,024 and 8,192 tokens must have the same value in the configuration. The
+model's theoretical larger context is not advertised. Oversized prompts fail
+without clipping instructions or history; start a new chat when this limit is
+reached. Codex compaction is unavailable on this route.
+
+The server buffers each generation before returning JSON or emitting Chat
+SSE chunks. This prevents unsupported tool/reasoning markers or invalid model
+output from being accepted partially, but text becomes visible only after the
+generation finishes. No prompts or responses are saved or written to logs.
+Only explicit `--download` uses the network; ordinary model inference stays
+local. A local response can still be incorrect, so review its answer normally.
 
 ## Codex executable discovery
 

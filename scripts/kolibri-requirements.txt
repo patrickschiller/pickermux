@@ -1,0 +1,5 @@
+# Isolated optional Python runtime; PickerMux's Node backend has no npm dependencies.
+mlx==0.32.3
+mlx-lm==0.32.0
+transformers==5.7.0
+huggingface-hub==1.5.0

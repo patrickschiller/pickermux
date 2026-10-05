@@ -1,6 +1,6 @@
 # PickerMux Architecture
 
-This document describes PickerMux v0.22.2.
+This document describes PickerMux v0.23.0 development.
 It is intended for contributors, security reviewers, and users who want to
 understand what runs on their Mac.
 
@@ -37,6 +37,7 @@ flowchart TB
         Native[Native Codex backend]
         LM[LM Studio]
         Other[Optional Responses-compatible provider]
+        Kolibri[Kolibri MLX text server]
     end
 
     UI --> Catalog
@@ -45,6 +46,7 @@ flowchart TB
     Registry --> Native
     Registry --> LM
     Registry --> Other
+    Registry --> Kolibri
     Sync --> Catalog
     Receipts --> Catalog
     Compat --> Bridge
@@ -54,16 +56,64 @@ The service is installed as a user LaunchAgent. Its runtime copy lives outside
 the source checkout so macOS privacy protection on folders such as Documents
 does not break login-time startup.
 
-Configured external providers have two supported kinds. `lmstudio-responses`
+Configured external providers have three supported kinds. `lmstudio-responses`
 adds LM Studio-specific metadata discovery and request adapters.
 `openai-responses` supports explicitly configured local or remote Responses
 providers with a model allowlist verified through `/models`. Both route model
 requests through the Responses API and require exact model-bound certification
-before tool access. Chat Completions compatibility alone does not establish
-this contract. Automatic loaded-model discovery, Efficient Fidelity, and the
+before tool access. `mlx-chat-completions` is a separate experimental,
+text-only adapter for one pinned Kolibri MLX model. General Chat Completions
+compatibility does not establish either contract. Automatic loaded-model discovery, Efficient Fidelity, and the
 local context-compaction adapter remain LM Studio-specific. The companion's
 first-install default is LM Studio; it also controls other providers activated
 through the CLI's custom configuration.
+
+### Kolibri MLX text boundary
+
+The `mlx-chat-completions` route uses an explicit singleton model allowlist,
+loopback HTTP endpoint, fixed `kolibri-1-mlx-4bit` upstream identity and
+reasoning `none`. Discovery verifies that the dedicated launcher's
+`context_window` exactly equals the configured context. A missing, ambiguous or
+changed handshake fails before publishing a new catalog. The model remains
+text-only regardless of receipt data; certification is unsupported for this
+kind. LM Studio and generic Responses providers keep their own contracts.
+
+The Node adapter builds only the reviewed text Chat Completions request from
+Codex's Responses input. It retains user content, applicable instructions and
+text history, withholds optional tool definitions, and rejects forced tool
+choices, invocation/result history, unsupported media and compaction state.
+Provider requests continue through the external header allowlist and exact
+route registry. Successful JSON and SSE outputs are translated into Responses
+text output; tool and reasoning output cannot acquire execution authority.
+Unknown schemas, invalid completion identities and incomplete streams fail
+closed. Token usage comes from validated provider counts.
+
+`scripts/serve-kolibri.py` is an optional source-checkout server, separate from
+the installed bridge runtime and LaunchAgent. It checks the exact Python
+dependency pins and SHA-256 digests for the architecture, tokenizer, template,
+configuration, index and nine shards at one immutable Hugging Face revision.
+Only the verified architecture module is registered; downloaded launchers and
+`trust_remote_code` are not used. The model directory and files must be private,
+owned and free of symbolic/hard links. `/v1/models` returns only the fixed alias
+and enforced context, never a cache inventory or filesystem path. Unknown
+model IDs and request-controlled model, adapter or draft paths are rejected.
+
+The Python server accepts only direct IPv4 loopback requests, one bounded JSON
+body and system/user/assistant string content. Reasoning is fixed to `none`.
+One generation runs at a time without a persistent prompt/conversation cache.
+The tokenizer renders the full prompt before enforcing the combined prompt and
+output reservation, at most 8,192 tokens. Generation is buffered and checked
+for structural tool/reasoning markers before returning text JSON or SSE.
+These checks reduce throughput and delay first visible text, but avoid the
+pinned upstream server's silent tool-parser recovery. No model text is repaired
+or promoted into an executable call. Socket, parser and runtime failures use
+fixed errors; no raw prompt, response, local path or traceback is logged.
+
+This initial route has no context-compaction protocol. Overflow and compaction
+requests fail without discarding history. A future tool adapter needs its own
+strict parser, request-local tool authority, namespace and result correlation,
+`tool_choice` enforcement and exact certification before any grant is possible.
+Merely passing tools to MLX-LM's chat template cannot provide those guarantees.
 
 ## Catalog construction
 
