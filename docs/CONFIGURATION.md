@@ -11,6 +11,20 @@ The schema is intentionally narrow. Unknown keys, inline secrets, ambiguous
 credential sources, wildcard model entries, and configurable native Codex
 destinations are rejected.
 
+## Native-only configuration
+
+An explicit empty `providers` array keeps the bridge and native model picker
+available without an external model server. Setup accepts this intentional
+configuration, and the doctor requires its discovery results to contain no
+external models or providers. It does not enable tools or certify any external
+model. A configured external provider that returns no allowlisted models still
+fails the normal availability check.
+
+Before removing the currently selected external route, select a native model
+in Codex. Then, with Codex fully closed,
+apply the native-only configuration through normal setup. Credentials, chats,
+other historical certification receipts and unrelated settings are preserved.
+
 ## Supported provider kinds
 
 PickerMux connects Codex Desktop to local or remote external models through

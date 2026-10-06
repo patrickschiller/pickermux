@@ -9,6 +9,17 @@ The 0.9.x entries describe local companion development builds. Their features
 are included in the first public companion release, 0.10.0; they were not
 published as GitHub Releases.
 
+## [0.24.4] - 2026-10-06
+
+Local development build; no public release has been published.
+
+### Fixed
+
+- Allow an explicit native-only configuration with `providers: []` through
+  normal setup and doctor validation while switching external model servers.
+  Empty configured providers and inconsistent discovery still fail; the
+  native-only transition performs no external inference or tool certification.
+
 ## [0.24.3] - 2026-10-06
 
 Local development build; no public release has been published.
@@ -972,6 +983,7 @@ confirm the release date before tagging. See the
   restores the previous distribution state when activation fails.
 
 [Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.22.2...HEAD
+[0.24.4]: https://github.com/patrickschiller/pickermux/releases/tag/v0.24.4
 [0.24.3]: https://github.com/patrickschiller/pickermux/releases/tag/v0.24.3
 [0.24.2]: https://github.com/patrickschiller/pickermux/releases/tag/v0.24.2
 [0.24.1]: https://github.com/patrickschiller/pickermux/releases/tag/v0.24.1

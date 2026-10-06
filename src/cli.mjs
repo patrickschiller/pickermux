@@ -255,6 +255,8 @@ GPT-Live WebRTC bootstrap uses the native ChatGPT service; delegated tasks retai
 their selected model. Voice audio and startup context go to OpenAI. This requires
 account voice availability and a compatible Codex client; unknown schemas fail closed.
 Setup and install automatically certify tool-capable providers without a valid receipt.
+An explicit providers:[] configuration keeps the native Codex picker through
+PickerMux; setup and refresh require no external models and grant no external tools.
 Legacy MLX servers remain text-only. Reviewed MLX tool protocols use the full certification matrix.
 Reviewed MLX HTTP 502 failures expose only fixed public error categories, never provider error text.
 mlx-load requires the isolated, pinned mlx-lm environment and prints an allowlisted
@@ -3379,7 +3381,14 @@ export async function setupPickerMux({
   } catch (error) {
     throw new CompanionControlError(classifyDiscoveryFailure(error) ?? "ACTION_FAILED");
   }
-  if (!Array.isArray(discovery?.models) || discovery.models.length === 0) {
+  const nativeOnly = Array.isArray(preflightConfig.providers) && preflightConfig.providers.length === 0;
+  if (nativeOnly && (
+    !Array.isArray(discovery?.models) || discovery.models.length !== 0 ||
+    !Array.isArray(discovery.providers) || discovery.providers.length !== 0
+  )) {
+    throw new CompanionControlError("PROVIDER_RESPONSE_INVALID");
+  }
+  if (!nativeOnly && (!Array.isArray(discovery?.models) || discovery.models.length === 0)) {
     throw new CompanionControlError(discovery?.providers?.some((provider) => provider.unavailableReason === "connection-refused")
       ? "PROVIDER_UNAVAILABLE" : "NO_LOADED_MODELS");
   }

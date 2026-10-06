@@ -36,7 +36,7 @@ test("release metadata and both CLI entry points identify PickerMux", async () =
     await readFile(path.join(projectDirectory, "package.json"), "utf8"),
   );
   assert.equal(packageMetadata.name, "pickermux");
-  assert.equal(packageMetadata.version, "0.24.3");
+  assert.equal(packageMetadata.version, "0.24.4");
   assert.equal(packageMetadata.license, "MIT");
 
   for (const entryPoint of ["pickermux.mjs", "lmstudio-picker.mjs"]) {
@@ -49,6 +49,8 @@ test("release metadata and both CLI entry points identify PickerMux", async () =
       assert.match(stdout, /PickerMux/u);
       assert.match(stdout, /CODEX_BINARY overrides discovery for this command/u);
       assert.match(stdout, /Setup and install automatically certify tool-capable providers/u);
+      assert.match(stdout, /An explicit providers:\[\] configuration keeps the native Codex picker/u);
+      assert.match(stdout, /setup and refresh require no external models and grant no external tools/u);
       assert.match(stdout, /Reviewed MLX tool protocols use the full certification matrix/u);
       assert.match(stdout, /Reviewed MLX HTTP 502 failures expose only fixed public error categories/u);
       assert.match(stdout, /loads pinned HF snapshots without LM Studio/u);
@@ -74,7 +76,7 @@ test("release metadata and both CLI entry points identify PickerMux", async () =
         [path.join(projectDirectory, "bin", entryPoint), versionArgument],
         { encoding: "utf8" },
       );
-      assert.equal(stdout, "pickermux 0.24.3\n");
+      assert.equal(stdout, "pickermux 0.24.4\n");
     }
   }
 });

@@ -150,6 +150,11 @@ the generic response. See [MLX error recovery](docs/TROUBLESHOOTING.md#kolibri-r
 
 ## Switch off or remove
 
+A custom configuration may explicitly use `"providers": []` to keep PickerMux
+active with only native models while changing external servers. Native-only
+setup and refresh perform no external inference or tool certification. Select
+a native model in Codex before removing the selected external route.
+
 Turning **Use PickerMux in Codex** off restores the native picker while retaining
 PickerMux for later use. Fully quit and reopen Codex to load that change.
 

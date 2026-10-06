@@ -22,7 +22,8 @@ import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 
-import { certifyForInstallation, setupPickerMux } from "../src/cli.mjs";
+import { validateBridgeConfig } from "../src/bridge-config.mjs";
+import { certify, certifyForInstallation, setupPickerMux } from "../src/cli.mjs";
 import {
   CONFIG_MARKERS,
   getConfigStatus,
@@ -1888,6 +1889,146 @@ test("setup orchestration preflights desktop, loaded LLM, config, and lifecycle 
       "0.5.0",
     );
   });
+});
+
+test("native-only setup upgrades through normal activation and completes without model probes", async (t) => {
+  const fixture = await temporaryFixture(t, "0.24.3", "native-only-before");
+  await setupManagedDistribution({ sourceRoot: fixture.source, paths: fixture.distributionPaths, activate: async () => ({}) });
+  const release = await temporaryFixture(t, "0.24.4", "native-only-after");
+  const config = validateBridgeConfig({ schemaVersion: 2, bridge: {}, providers: [] });
+  const candidate = path.join(fixture.root, "native-only.json");
+  const progress = [];
+  let discoveryCalls = 0;
+  let refreshCalls = 0;
+  let desktopChecks = 0;
+  const result = await setupPickerMux({
+    sourceRoot: release.source, setupConfigPath: candidate,
+    paths: fixture.installPaths, distributionPaths: fixture.distributionPaths, codexPath: "/test/codex",
+    configStatusImpl: async () => ({ installed: true, healthy: true, status: "installed" }),
+    desktopRunningImpl: async () => { desktopChecks += 1; return false; },
+    accountCacheImpl: async () => ({ ready: true }),
+    loadConfigImpl: async (target) => { assert.equal(target, candidate); return config; },
+    discoverImpl: async ({ config: received }) => {
+      discoveryCalls += 1;
+      assert.deepEqual(received.providers, []);
+      return { models: [], providers: [] };
+    },
+    refreshImpl: async (input) => {
+      refreshCalls += 1;
+      assert.equal(input.config, config);
+      assert.equal(input.sourceRoot, path.join(fixture.distributionPaths.versionsDirectory, "0.24.4"));
+      assert.equal(await pathExists(fixture.distributionPaths.lockPath), true);
+      assert.equal((await validateDistributionInstallation({ paths: fixture.distributionPaths })).receipt.activeVersion, "0.24.4");
+      return { refreshed: true, externalModels: [] };
+    },
+    installImpl: async () => assert.fail("An installed bridge must use its normal refresh transaction"),
+    onProgress: (event) => progress.push(event),
+    certifyInstallationImpl: async (input) => certifyForInstallation(input, {
+      desktopRunningImpl: async () => false,
+      certifyImpl: (input) => certify(input, {
+        credentialResolver: async () => assert.fail("Native-only certification must not resolve provider credentials"),
+        configStatusImpl: async () => ({ installed: true, healthy: true }),
+        serviceStatusImpl: async () => ({ healthy: true }),
+        runtimeImpl: async () => ({ instanceId: "test-instance" }),
+        discoverImpl: async ({ config: received }) => {
+          assert.deepEqual(received.providers, []);
+          return { models: [], providers: [] };
+        },
+        listPendingImpl: async () => [],
+        clientVersionImpl: async () => "0.159.0",
+        resolveStatusesImpl: async ({ models }) => { assert.deepEqual(models, []); return []; },
+        transactionImpl: async () => assert.fail("Native-only setup must not send live model probes"),
+      }),
+    }),
+  });
+  assert.equal(result.version, "0.24.4");
+  assert.equal(result.activation.action, "upgrade");
+  assert.equal(result.certification.status, "complete");
+  assert.deepEqual(result.certification.certified, []);
+  assert.deepEqual(result.certification.recoveredPending, []);
+  assert.equal(result.certification.reused, 0);
+  assert.equal(result.certification.textOnly, 0);
+  assert.equal(progress.at(-1).phase, "no-models");
+  assert.equal(discoveryCalls, 1);
+  assert.equal(refreshCalls, 1);
+  assert.ok(desktopChecks >= 3);
+  assert.equal(await pathExists(fixture.distributionPaths.lockPath), false);
+  assert.equal((await validateDistributionInstallation({ paths: fixture.distributionPaths })).receipt.activeVersion, "0.24.4");
+});
+
+test("native-only setup rejects malformed or contradictory discovery before distribution mutation", async (t) => {
+  for (const [label, discovery] of [
+    ["missing discovery", undefined],
+    ["null discovery", null],
+    ["missing models", { providers: [] }],
+    ["missing providers", { models: [] }],
+    ["forged zero model count", { models: { length: 0 }, providers: [] }],
+    ["forged zero provider count", { models: [], providers: { length: 0 } }],
+    ["unconfigured models", { models: [{ id: "unexpected/model" }], providers: [] }],
+    ["unconfigured providers", { models: [], providers: [{ id: "unexpected" }] }],
+  ]) {
+    await t.test(label, async (t) => {
+      const fixture = await temporaryFixture(t);
+      let setupCalls = 0;
+      await assert.rejects(setupPickerMux({
+        sourceRoot: fixture.source, paths: fixture.installPaths, distributionPaths: fixture.distributionPaths,
+        configStatusImpl: async () => ({ installed: true, healthy: true, status: "installed" }),
+        desktopRunningImpl: async () => false, accountCacheImpl: async () => ({ ready: true }),
+        loadConfigImpl: async () => validateBridgeConfig({ schemaVersion: 2, bridge: {}, providers: [] }),
+        discoverImpl: async () => discovery,
+        setupImpl: async () => { setupCalls += 1; },
+      }), { code: "PROVIDER_RESPONSE_INVALID" });
+      assert.equal(setupCalls, 0);
+      assert.equal(await pathExists(fixture.distributionPaths.receiptPath), false);
+      assert.equal(await pathExists(fixture.distributionPaths.launcherPath), false);
+      assert.equal(await pathExists(fixture.distributionPaths.currentPath), false);
+    });
+  }
+});
+
+test("configured providers with empty discovery retain the existing setup failure", async (t) => {
+  const fixture = await temporaryFixture(t);
+  const config = validateBridgeConfig({ schemaVersion: 2, bridge: {}, providers: [{
+    id: "lmstudio", kind: "lmstudio-responses", baseUrl: "http://127.0.0.1:1234/v1",
+    allowPrivateNetwork: true, discovery: { mode: "loaded" }, models: [],
+  }] });
+  for (const [code, providers] of [
+    ["NO_LOADED_MODELS", [{ id: "lmstudio" }]],
+    ["PROVIDER_UNAVAILABLE", [{ id: "lmstudio", unavailableReason: "connection-refused" }]],
+  ]) {
+    let setupCalls = 0;
+    await assert.rejects(setupPickerMux({
+      sourceRoot: fixture.source, paths: fixture.installPaths, distributionPaths: fixture.distributionPaths,
+      configStatusImpl: async () => ({ installed: true, healthy: true, status: "installed" }),
+      desktopRunningImpl: async () => false, accountCacheImpl: async () => ({ ready: true }),
+      loadConfigImpl: async () => config, discoverImpl: async () => ({ models: [], providers }),
+      setupImpl: async () => { setupCalls += 1; },
+    }), { code });
+    assert.equal(setupCalls, 0);
+    assert.equal(await pathExists(fixture.distributionPaths.receiptPath), false);
+  }
+});
+
+test("native-only setup retains the real desktop and account-cache guards", async (t) => {
+  for (const guard of ["desktop", "cache"]) {
+    await t.test(guard, async (t) => {
+      const fixture = await temporaryFixture(t);
+      let setupCalls = 0;
+      let discoveryCalls = 0;
+      await assert.rejects(setupPickerMux({
+        sourceRoot: fixture.source, paths: fixture.installPaths, distributionPaths: fixture.distributionPaths,
+        configStatusImpl: async () => ({ installed: true, healthy: true, status: "installed" }),
+        desktopRunningImpl: async () => guard === "desktop",
+        accountCacheImpl: async () => { if (guard === "cache") throw new Error("test cache unavailable"); return { ready: true }; },
+        loadConfigImpl: async () => validateBridgeConfig({ schemaVersion: 2, bridge: {}, providers: [] }),
+        discoverImpl: async () => { discoveryCalls += 1; return { models: [], providers: [] }; },
+        setupImpl: async () => { setupCalls += 1; },
+      }), guard === "desktop" ? /fully quit.*Command-Q/iu : /test cache unavailable/u);
+      assert.equal(setupCalls, 0);
+      assert.equal(discoveryCalls, 0);
+      assert.equal(await pathExists(fixture.distributionPaths.receiptPath), false);
+    });
+  }
 });
 
 test("setup certifies after activation under the lock and retains the new installation on probe failure", async (t) => {
