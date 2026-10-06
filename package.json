@@ -1,6 +1,6 @@
 {
   "name": "pickermux",
-  "version": "0.24.2",
+  "version": "0.24.3",
   "private": true,
   "description": "Use local and remote models with certified tools in Codex Desktop",
   "license": "MIT",

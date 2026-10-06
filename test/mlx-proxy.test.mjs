@@ -23,7 +23,8 @@ function post(port, body, headers = {}, endpoint = "/v1/responses") {
     } }, (response) => {
       const chunks = [];
       response.on("data", (chunk) => chunks.push(chunk));
-      response.on("end", () => resolve({ status: response.statusCode, body: Buffer.concat(chunks).toString("utf8") }));
+      response.on("end", () => resolve({ status: response.statusCode, headers: response.headers,
+        body: Buffer.concat(chunks).toString("utf8") }));
       response.on("error", reject);
     });
     request.on("error", reject);
@@ -31,7 +32,7 @@ function post(port, body, headers = {}, endpoint = "/v1/responses") {
   });
 }
 
-async function harness(t, { routeChanges = {}, reply, gate = async () => {}, limits } = {}) {
+async function harness(t, { routeChanges = {}, reply, gate = async () => {}, limits, httpTransport, onProxyFinished } = {}) {
   const requests = [];
   const usage = [];
   let credentialReads = 0;
@@ -53,12 +54,16 @@ async function harness(t, { routeChanges = {}, reply, gate = async () => {}, lim
   const proxy = createResponsesProxy({ registry: { resolve(model) {
     if (model !== SLUG) throw Object.assign(new Error("unknown"), { code: "UNKNOWN_MODEL", statusCode: 404 });
     return route;
-  } }, credentialResolver: async () => { credentialReads += 1; return "private-provider-secret"; },
+  } }, nativeBaseUrl: `http://127.0.0.1:${upstreamPort}/v1`,
+  credentialResolver: async () => { credentialReads += 1; return "private-provider-secret"; },
   certificationToken: "private-certification-marker", externalRequestGate: gate,
-  limits,
+  limits, httpTransport,
   onTokenUsage: (providerId, value) => usage.push({ providerId, ...value }),
   });
-  const port = await listen(t, (request, response) => proxy(request, response, request.url));
+  const port = await listen(t, async (request, response) => {
+    await proxy(request, response, request.url);
+    onProxyFinished?.();
+  });
   return { port, requests, usage, credentialReads: () => credentialReads };
 }
 
@@ -278,5 +283,260 @@ test("MLX upstream errors and unsolicited tool calls never escape as successful 
     const result = await post(h.port, {});
     assert.ok(result.status >= 400);
     assert.doesNotMatch(result.body, /private-prompt-canary|"tool_calls"|"exec"/u);
+  }
+});
+
+const inferenceErrors = [
+  ["The model invoked an unadvertised function.", "MLX_UNADVERTISED_FUNCTION"],
+  ["An incomplete or disabled function call cannot execute.", "MLX_INCOMPLETE_FUNCTION_CALL"],
+  ["The model returned malformed function arguments.", "MLX_INVALID_FUNCTION_ARGUMENTS"],
+  ["The model returned an unsupported function envelope.", "MLX_INVALID_FUNCTION_ENVELOPE"],
+  ["The model returned unsupported control output.", "MLX_UNSUPPORTED_CONTROL_OUTPUT"],
+  ["The model did not satisfy the selected function contract.", "MLX_UNSATISFIED_FUNCTION_CONTRACT"],
+  ["Kolibri returned invalid token counts.", "MLX_INVALID_TOKEN_COUNTS"],
+  ["The model returned an unsupported completion.", "MLX_INVALID_COMPLETION"],
+  ["Kolibri returned unsupported or incomplete output.", "MLX_INVALID_COMPLETION"],
+  ["Function arguments exceed the supported bounds.", "MLX_FUNCTION_ARGUMENT_LIMIT_EXCEEDED"],
+  ["Kolibri output exceeded the response limit.", "MLX_OUTPUT_LIMIT_EXCEEDED"],
+];
+const reviewedRoute = { toolsEnabled: true, mlxCapabilities: toolCapabilities };
+const knownInferenceMessage = inferenceErrors[0][0];
+const knownInferenceCode = inferenceErrors[0][1];
+
+function inferenceErrorBody(message = knownInferenceMessage, code = "MODEL_OUTPUT_INVALID") {
+  return JSON.stringify({ error: { code, message } });
+}
+
+function assertInferenceFailure(result, code = "UPSTREAM_RESPONSE_ERROR", status = 502) {
+  assert.equal(result.status, status);
+  const payload = JSON.parse(result.body);
+  assert.deepEqual(Object.keys(payload), ["error"]);
+  assert.deepEqual(Object.keys(payload.error).sort(), ["code", "message"]);
+  assert.equal(payload.error.code, code);
+  assert.equal(typeof payload.error.message, "string");
+  assert.equal(result.headers["cache-control"], "no-store");
+  assert.equal(result.headers["content-length"], String(Buffer.byteLength(result.body)));
+  assert.doesNotMatch(result.body, /MODEL_OUTPUT_INVALID|private-prompt-canary|private-provider-path|private-provider-response/u);
+}
+
+test("MLX certified failures expose only reviewed fixed codes for JSON and streamed requests", async (t) => {
+  for (const stream of [false, true]) {
+    for (const [message, code] of inferenceErrors) {
+      await t.test(`${code}: stream=${stream}: ${message}`, async (t) => {
+        const h = await harness(t, { routeChanges: reviewedRoute, reply(response) {
+          response.writeHead(502, { "content-type": "application/json; charset=utf-8", "content-encoding": "identity",
+            "x-provider-diagnostic": "private-provider-path", "set-cookie": "private-prompt-canary=1" });
+          response.end(inferenceErrorBody(message));
+        } });
+        const result = await post(h.port, { stream }, { authorization: "Bearer private-prompt-canary" });
+        assertInferenceFailure(result, code);
+        assert.equal(result.headers["x-provider-diagnostic"], undefined);
+        assert.equal(result.headers["set-cookie"], undefined);
+        assert.doesNotMatch(result.body, /response.completed|response.failed|function_call/u);
+        assert.equal(h.requests.length, 1);
+        assert.equal(h.credentialReads(), 0);
+        assert.deepEqual(h.usage, [{ providerId: "kolibri", status: "unavailable" }]);
+      });
+    }
+  }
+});
+
+test("MLX error classification bounds bytes and rejects ambiguous or sensitive envelopes", async (t) => {
+  const known = inferenceErrorBody();
+  const cases = [
+    ["unknown message", inferenceErrorBody("Unknown private-prompt-canary")],
+    ["known message with sensitive suffix", inferenceErrorBody(`${knownInferenceMessage} private-provider-path`)],
+    ["wrong runtime error code", inferenceErrorBody(knownInferenceMessage, "MODEL_UNAVAILABLE")],
+    ["extra outer field", JSON.stringify({ error: { code: "MODEL_OUTPUT_INVALID", message: knownInferenceMessage },
+      prompt: "private-prompt-canary" })],
+    ["extra error field", JSON.stringify({ error: { code: "MODEL_OUTPUT_INVALID", message: knownInferenceMessage,
+      path: "private-provider-path" } })],
+    ["duplicate envelope", `{"error":{"code":"MODEL_OUTPUT_INVALID","message":"private-prompt-canary"},"error":${JSON.stringify({ code: "MODEL_OUTPUT_INVALID", message: knownInferenceMessage })}}`],
+    ["duplicate code", `{"error":{"code":"private-prompt-canary","code":"MODEL_OUTPUT_INVALID","message":${JSON.stringify(knownInferenceMessage)}}}`],
+    ["duplicate escaped message", `{"error":{"code":"MODEL_OUTPUT_INVALID","message":"private-prompt-canary","messa\\u0067e":${JSON.stringify(knownInferenceMessage)}}}`],
+    ["oversized valid JSON", known + " ".repeat(4097 - Buffer.byteLength(known))],
+    ["oversized sensitive output", "private-prompt-canary".repeat(300)],
+    ["invalid UTF8", Buffer.concat([Buffer.from(known), Buffer.from([0xff])])],
+    ["malformed JSON", `${known} private-prompt-canary`],
+    ["empty body", ""],
+  ];
+  for (const [label, body] of cases) {
+    await t.test(label, async (t) => {
+      const h = await harness(t, { routeChanges: reviewedRoute, reply(response) {
+        response.writeHead(502, { "content-type": "application/json" });
+        response.end(body);
+      } });
+      const result = await post(h.port, {});
+      assertInferenceFailure(result);
+      assert.equal(h.requests.length, 1);
+      assert.deepEqual(h.usage, [{ providerId: "kolibri", status: "unavailable" }]);
+    });
+  }
+});
+
+test("MLX error classification accepts a clean chunked EOF and the exact byte bound", async (t) => {
+  for (const padding of [0, 4096 - Buffer.byteLength(inferenceErrorBody())]) {
+    await t.test(`padding=${padding}`, async (t) => {
+      const h = await harness(t, { routeChanges: reviewedRoute, reply(response) {
+        response.writeHead(502, { "content-type": "application/json" });
+        const body = inferenceErrorBody() + " ".repeat(padding);
+        response.write(body.slice(0, 13));
+        setImmediate(() => response.end(body.slice(13)));
+      } });
+      const result = await post(h.port, {});
+      assertInferenceFailure(result, knownInferenceCode);
+      assert.equal(h.requests.length, 1);
+    });
+  }
+});
+
+test("MLX error classification never commits a complete JSON body without clean EOF", async (t) => {
+  const h = await harness(t, { routeChanges: reviewedRoute, reply(response) {
+    response.writeHead(502, { "content-type": "application/json" });
+    response.write(inferenceErrorBody());
+    setTimeout(() => response.destroy(), 20);
+  } });
+  const result = await post(h.port, {});
+  assert.equal(result.status, 502);
+  assert.ok(["UPSTREAM_ABORTED", "UPSTREAM_RESPONSE_ERROR"].includes(JSON.parse(result.body).error.code));
+  assertInferenceFailure(result, JSON.parse(result.body).error.code);
+  assert.equal(h.requests.length, 1);
+  assert.deepEqual(h.usage, [{ providerId: "kolibri", status: "unavailable" }]);
+});
+
+test("MLX client abort closes an unfinished error-body read without publishing a classification", { timeout: 2000 }, async (t) => {
+  let signalBodyObserved;
+  let signalUpstreamClosed;
+  let signalProxyFinished;
+  const bodyObserved = new Promise((resolve) => { signalBodyObserved = resolve; });
+  const upstreamClosed = new Promise((resolve) => { signalUpstreamClosed = resolve; });
+  const proxyFinished = new Promise((resolve) => { signalProxyFinished = resolve; });
+  let upstreamCloseCount = 0;
+  let proxyFinishCount = 0;
+  const h = await harness(t, {
+    routeChanges: reviewedRoute,
+    httpTransport: { request(target, options, callback) {
+      return http.request(target, options, (incoming) => {
+        incoming.once("data", signalBodyObserved);
+        callback(incoming);
+      });
+    } },
+    reply(response) {
+      response.once("close", () => {
+        upstreamCloseCount += 1;
+        signalUpstreamClosed();
+      });
+      response.writeHead(502, { "content-type": "application/json" });
+      // A valid reviewed JSON body without HTTP EOF must remain uncommitted.
+      response.write(inferenceErrorBody());
+    },
+    onProxyFinished() {
+      proxyFinishCount += 1;
+      signalProxyFinished();
+    },
+  });
+  const bytes = Buffer.from(JSON.stringify({ model: SLUG, input: "Public test" }));
+  const client = http.request({ hostname: "127.0.0.1", port: h.port, path: "/v1/responses", method: "POST",
+    headers: { "content-type": "application/json", "content-length": String(bytes.length) },
+  });
+  t.after(() => client.destroy());
+  let clientResponseCount = 0;
+  client.on("response", (response) => {
+    clientResponseCount += 1;
+    response.resume();
+  });
+  client.on("error", () => {});
+  const clientClosed = new Promise((resolve) => client.once("close", resolve));
+  client.end(bytes);
+  await bodyObserved;
+  assert.equal(clientResponseCount, 0);
+  client.destroy();
+  await Promise.all([clientClosed, upstreamClosed, proxyFinished]);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(clientResponseCount, 0);
+  assert.equal(upstreamCloseCount, 1);
+  assert.equal(proxyFinishCount, 1);
+  assert.equal(h.requests.length, 1);
+  assert.equal(h.credentialReads(), 0);
+  assert.deepEqual(h.usage, [{ providerId: "kolibri", status: "unavailable" }]);
+});
+
+test("MLX error-body reads retain idle and total deadlines without classifying partial output", async (t) => {
+  for (const [code, limits] of [
+    ["UPSTREAM_IDLE_TIMEOUT", { streamIdleTimeoutMs: 40, upstreamTotalTimeoutMs: 500 }],
+    ["UPSTREAM_TOTAL_TIMEOUT", { streamIdleTimeoutMs: 500, upstreamTotalTimeoutMs: 40 }],
+  ]) {
+    await t.test(code, async (t) => {
+      const h = await harness(t, { routeChanges: reviewedRoute, limits, reply(response) {
+        response.writeHead(502, { "content-type": "application/json" });
+        response.write(inferenceErrorBody());
+      } });
+      const result = await post(h.port, {});
+      assertInferenceFailure(result, code, 504);
+      assert.equal(h.requests.length, 1);
+      assert.deepEqual(h.usage, [{ providerId: "kolibri", status: "unavailable" }]);
+    });
+  }
+});
+
+test("MLX fixed failures require exact HTTP status and reviewed JSON identity transport", async (t) => {
+  for (const [label, status, headers] of [
+    ["400", 400, { "content-type": "application/json" }],
+    ["503", 503, { "content-type": "application/json" }],
+    ["200", 200, { "content-type": "application/json" }],
+    ["unknown JSON MIME", 502, { "content-type": "application/problem+json" }],
+    ["text MIME", 502, { "content-type": "text/plain" }],
+    ["missing MIME", 502, {}],
+    ["gzip encoding", 502, { "content-type": "application/json", "content-encoding": "gzip" }],
+  ]) {
+    await t.test(label, async (t) => {
+      const h = await harness(t, { routeChanges: reviewedRoute, reply(response) {
+        response.writeHead(status, headers);
+        response.end(inferenceErrorBody());
+      } });
+      assertInferenceFailure(await post(h.port, {}), "UPSTREAM_RESPONSE_ERROR", status === 200 ? 502 : status);
+      assert.equal(h.requests.length, 1);
+    });
+  }
+});
+
+test("MLX error classification does not grant authority to text-only routes or private probes", async (t) => {
+  for (const [label, routeChanges, headers] of [
+    ["uncertified reviewed protocol", { toolsEnabled: false, mlxCapabilities: toolCapabilities }, {}],
+    ["catalog grant without reviewed protocol", { toolsEnabled: true }, {}],
+    ["private probe without ordinary receipt", { toolsEnabled: false, mlxCapabilities: toolCapabilities },
+      { "x-pickermux-certification": "private-certification-marker" }],
+  ]) {
+    await t.test(label, async (t) => {
+      const h = await harness(t, { routeChanges, reply(response) {
+        response.writeHead(502, { "content-type": "application/json" });
+        response.end(inferenceErrorBody());
+      } });
+      assertInferenceFailure(await post(h.port, {}, headers));
+      assert.equal(h.requests.length, 1);
+      assert.equal(h.credentialReads(), 0);
+    });
+  }
+});
+
+test("MLX error projection leaves native and adjacent Responses provider failures byte preserving", async (t) => {
+  for (const providerKind of ["lmstudio-responses", "openai-responses", "native-openai"]) {
+    await t.test(providerKind, async (t) => {
+      const bytes = `${inferenceErrorBody()}\n`;
+      const h = await harness(t, { routeChanges: { ...reviewedRoute, providerKind,
+        ...(providerKind === "native-openai" ? { kind: "native-openai" } : {}),
+      }, reply(response) {
+        response.writeHead(502, { "content-type": "application/json", "content-length": String(Buffer.byteLength(bytes)) });
+        response.end(bytes);
+      } });
+      const result = await post(h.port, {}, { authorization: "Bearer native-canary" });
+      assert.equal(result.status, 502);
+      assert.equal(result.body, bytes);
+      assert.equal(h.requests.length, 1);
+      assert.equal(h.requests[0].path, "/v1/responses");
+      assert.equal(h.requests[0].headers.authorization,
+        providerKind === "native-openai" ? "Bearer native-canary" : "Bearer private-provider-secret");
+      assert.equal(h.credentialReads(), providerKind === "native-openai" ? 0 : 1);
+    });
   }
 });

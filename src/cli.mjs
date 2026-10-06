@@ -256,6 +256,7 @@ their selected model. Voice audio and startup context go to OpenAI. This require
 account voice availability and a compatible Codex client; unknown schemas fail closed.
 Setup and install automatically certify tool-capable providers without a valid receipt.
 Legacy MLX servers remain text-only. Reviewed MLX tool protocols use the full certification matrix.
+Reviewed MLX HTTP 502 failures expose only fixed public error categories, never provider error text.
 mlx-load requires the isolated, pinned mlx-lm environment and prints an allowlisted
 provider stanza for your configuration; it never edits the active Codex configuration.
 --context-window N (1024–262144) and --max-output-tokens N (1–2048) bind the profile.

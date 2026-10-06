@@ -33,6 +33,7 @@ import { createTokenUsageObserver } from "./token-usage.mjs";
 import {
   createMlxChatRequest,
   createMlxChatSseTransformer,
+  projectMlxInferenceError,
   transformMlxChatJson,
 } from "./mlx-chat.mjs";
 import {
@@ -260,6 +261,16 @@ const PUBLIC_ERROR_CODES = new Set([
   "INVALID_JSON_OBJECT",
   "INVALID_LIVE_REQUEST",
   "MLX_REQUEST_UNSUPPORTED",
+  "MLX_UNADVERTISED_FUNCTION",
+  "MLX_INCOMPLETE_FUNCTION_CALL",
+  "MLX_INVALID_FUNCTION_ARGUMENTS",
+  "MLX_INVALID_FUNCTION_ENVELOPE",
+  "MLX_UNSUPPORTED_CONTROL_OUTPUT",
+  "MLX_UNSATISFIED_FUNCTION_CONTRACT",
+  "MLX_INVALID_TOKEN_COUNTS",
+  "MLX_INVALID_COMPLETION",
+  "MLX_FUNCTION_ARGUMENT_LIMIT_EXCEEDED",
+  "MLX_OUTPUT_LIMIT_EXCEEDED",
   "INVALID_REASONING_EFFORT",
   "INVALID_REASONING_POLICY",
   "INVALID_ROUTE",
@@ -1292,6 +1303,16 @@ function publicProxyError(error) {
     INVALID_JSON_OBJECT: "Request body must be a JSON object",
     INVALID_LIVE_REQUEST: "The voice request does not match the supported Codex contract; update PickerMux for this Codex version",
     MLX_REQUEST_UNSUPPORTED: "The local MLX model supports text-only requests; start a new text chat without tools, attachments, or compacted history",
+    MLX_UNADVERTISED_FUNCTION: "The local MLX model selected an unadvertised function.",
+    MLX_INCOMPLETE_FUNCTION_CALL: "The local MLX model returned an incomplete or disabled function call.",
+    MLX_INVALID_FUNCTION_ARGUMENTS: "The local MLX model returned malformed function arguments.",
+    MLX_INVALID_FUNCTION_ENVELOPE: "The local MLX model returned an unsupported function envelope.",
+    MLX_UNSUPPORTED_CONTROL_OUTPUT: "The local MLX model returned unsupported control output.",
+    MLX_UNSATISFIED_FUNCTION_CONTRACT: "The local MLX model did not satisfy the selected function contract.",
+    MLX_INVALID_TOKEN_COUNTS: "The local MLX model returned invalid token counts.",
+    MLX_INVALID_COMPLETION: "The local MLX model returned an unsupported or incomplete completion.",
+    MLX_FUNCTION_ARGUMENT_LIMIT_EXCEEDED: "The local MLX model exceeded the function argument limit.",
+    MLX_OUTPUT_LIMIT_EXCEEDED: "The local MLX model exceeded the response output limit.",
     LIVE_SERVICE_ERROR: "The native voice service could not start the session",
     MISSING_MODEL: "Request body must contain a model",
     INVALID_WEB_SEARCH: "The web search request does not match the supported Codex contract",
@@ -1454,7 +1475,35 @@ function relayUpstream({
           if (mlxResponse) {
             const status = Number(incoming.statusCode);
             if (status < 200 || status >= 300) {
-              // Provider errors may echo prompts or model paths. Never relay them.
+              const contentType = String(incoming.headers["content-type"] ?? "").split(";", 1)[0].trim().toLowerCase();
+              const encoding = incoming.headers["content-encoding"];
+              if (status === 502 && mlxResponse.reviewedTools && contentType === "application/json" &&
+                (encoding === undefined || String(encoding).toLowerCase() === "identity")) {
+                // The pinned runtime has a finite public failure vocabulary.
+                // Read a bounded complete body; never relay provider text or
+                // classify a partial response as a reviewed model failure.
+                const resetErrorIdle = () => {
+                  clearTimeout(idleTimer);
+                  idleTimer = setTimeout(() => timeout("UPSTREAM_IDLE_TIMEOUT"), limits.streamIdleTimeoutMs);
+                };
+                const readMlxFailure = async () => {
+                  incoming.on("data", resetErrorIdle);
+                  let code = "UPSTREAM_RESPONSE_ERROR";
+                  try {
+                    const errorBody = await readLimitedBody(incoming, { maxBytes: 4096 });
+                    if (incoming.complete === true) code = projectMlxInferenceError(errorBody)?.publicCode ?? code;
+                  } catch {
+                    // Malformed, oversized and interrupted error bodies remain
+                    // opaque; no body-codec or provider exception reaches Codex.
+                  } finally {
+                    incoming.off("data", resetErrorIdle);
+                  }
+                  fail(new ResponsesProxyError("Local MLX inference failed", { statusCode: 502, code }));
+                };
+                void readMlxFailure();
+                return;
+              }
+              // Other provider errors may echo prompts or model paths.
               throw new ResponsesProxyError("Local MLX inference failed", {
                 statusCode: status >= 400 && status <= 599 ? status : 502,
                 code: "UPSTREAM_RESPONSE_ERROR",
@@ -1894,6 +1943,7 @@ export function createResponsesProxy({
           mlxResponse = {
             model: decoded.model, stream: decoded.stream === true,
             requireToolCall: JSON.parse(outboundBody.toString("utf8")).tool_choice === "required",
+            reviewedTools: supportsMlxTools(route.mlxCapabilities) && route.toolsEnabled === true,
           };
         }
         if (localCompaction) {

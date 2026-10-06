@@ -790,6 +790,41 @@ Ask the model to research current statistics, cite the source dates and verify
 arithmetic. Tool availability does not guarantee that every model answer uses
 tools or that sources use comparable population definitions.
 
+## Kolibri returns HTTP 502
+
+From 0.24.3, the installed backend distinguishes recognized output failures on
+a certified, reviewed MLX tool route. It accepts only a complete, uncompressed
+JSON error body of at most 4 KiB with the pinned runtime's exact fixed schema and
+failure vocabulary. The public message is generated locally. Unknown, malformed,
+oversized or interrupted bodies retain `UPSTREAM_RESPONSE_ERROR`; no provider
+error text, private prompts, model paths or unfinished tool calls are forwarded.
+
+| Public code | Meaning |
+| --- | --- |
+| `MLX_UNADVERTISED_FUNCTION` | The model selected a function that was not offered. |
+| `MLX_INCOMPLETE_FUNCTION_CALL` | The model did not finish a permitted function call. |
+| `MLX_INVALID_FUNCTION_ARGUMENTS` | Function arguments failed strict JSON validation. |
+| `MLX_INVALID_FUNCTION_ENVELOPE` | The call did not match the reviewed function envelope. |
+| `MLX_UNSUPPORTED_CONTROL_OUTPUT` | The model emitted unsupported control output. |
+| `MLX_UNSATISFIED_FUNCTION_CONTRACT` | A required function call was not supplied. |
+| `MLX_INVALID_TOKEN_COUNTS` | The runtime returned inconsistent token accounting. |
+| `MLX_INVALID_COMPLETION` | The completion was unsupported or incomplete. |
+| `MLX_FUNCTION_ARGUMENT_LIMIT_EXCEEDED` | Function arguments exceeded the bound. |
+| `MLX_OUTPUT_LIMIT_EXCEEDED` | Generated output exceeded the response bound. |
+
+Upgrade through normal setup with the existing reviewed configuration and Codex
+fully closed. Then reproduce the request once and report the public code. The
+classification does not repair output, retry inference or enable extra tools;
+the invalid call remains rejected. Native and other provider error handling is
+unchanged. A larger context window does not resolve malformed model output.
+
+HTTP 503 can instead mean that the model is already handling a request. Stop
+overlapping requests in Codex and allow the buffered MLX generation to finish:
+closing its client does not immediately cancel inference. The managed
+`mlx-stop --model NAME` command refuses to stop a busy runtime; do not forcibly
+release its shared model lock. These failures are separate from the tokenizer's
+combined prompt/output context limit, which is rejected with HTTP 400.
+
 ## Efficient Fidelity is not active
 
 Efficient Fidelity requires both a valid Direct receipt and the additive

@@ -143,6 +143,11 @@ certification probes. Only an exact saved certification enables ordinary tools;
 an earlier test report or a larger context window does not grant them. See
 [MLX tool recovery](docs/TROUBLESHOOTING.md#kolibri-answers-without-using-tools).
 
+Recognized HTTP 502 failures from a certified MLX tool route report a fixed
+category such as `MLX_INVALID_FUNCTION_ARGUMENTS`. Invalid calls remain blocked;
+provider error text, prompts and paths are never relayed. Unknown failures keep
+the generic response. See [MLX error recovery](docs/TROUBLESHOOTING.md#kolibri-returns-http-502).
+
 ## Switch off or remove
 
 Turning **Use PickerMux in Codex** off restores the native picker while retaining

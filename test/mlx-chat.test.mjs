@@ -6,6 +6,7 @@ import {
   MLX_REQUEST_MAX_BYTES,
   createMlxChatRequest,
   createMlxChatSseTransformer,
+  projectMlxInferenceError,
   transformMlxChatJson,
 } from "../src/mlx-chat.mjs";
 import { ResponseTransformError } from "../src/responses-transform.mjs";
@@ -640,4 +641,72 @@ test("MLX generation metrics are bounded, excluded from output, and observed onl
   assert.deepEqual(durations, [25]);
   transformer.finish();
   assert.deepEqual(durations, [25, 50]);
+});
+
+test("MLX inference failures project only exact known runtime messages to fixed public classifications", () => {
+  for (const [source, publicCode, message] of [
+    ["The model invoked an unadvertised function.", "MLX_UNADVERTISED_FUNCTION", "The local MLX model selected an unadvertised function."],
+    ["An incomplete or disabled function call cannot execute.", "MLX_INCOMPLETE_FUNCTION_CALL", "The local MLX model returned an incomplete or disabled function call."],
+    ["The model returned malformed function arguments.", "MLX_INVALID_FUNCTION_ARGUMENTS", "The local MLX model returned malformed function arguments."],
+    ["The model returned an unsupported function envelope.", "MLX_INVALID_FUNCTION_ENVELOPE", "The local MLX model returned an unsupported function envelope."],
+    ["The model returned unsupported control output.", "MLX_UNSUPPORTED_CONTROL_OUTPUT", "The local MLX model returned unsupported control output."],
+    ["The model did not satisfy the selected function contract.", "MLX_UNSATISFIED_FUNCTION_CONTRACT", "The local MLX model did not satisfy the selected function contract."],
+    ["Kolibri returned invalid token counts.", "MLX_INVALID_TOKEN_COUNTS", "The local MLX model returned invalid token counts."],
+    ["The model returned an unsupported completion.", "MLX_INVALID_COMPLETION", "The local MLX model returned an unsupported or incomplete completion."],
+    ["Kolibri returned unsupported or incomplete output.", "MLX_INVALID_COMPLETION", "The local MLX model returned an unsupported or incomplete completion."],
+    ["Function arguments exceed the supported bounds.", "MLX_FUNCTION_ARGUMENT_LIMIT_EXCEEDED", "The local MLX model exceeded the function argument limit."],
+    ["Kolibri output exceeded the response limit.", "MLX_OUTPUT_LIMIT_EXCEEDED", "The local MLX model exceeded the response output limit."],
+  ]) {
+    const input = Buffer.from(JSON.stringify({ error: { code: "MODEL_OUTPUT_INVALID", message: source } }));
+    const projected = projectMlxInferenceError(input);
+    assert.deepEqual(projected, { publicCode, message });
+    assert.deepEqual(Object.keys(projected).sort(), ["message", "publicCode"]);
+    projected.message = "caller mutation";
+    assert.deepEqual(projectMlxInferenceError(input), { publicCode, message });
+  }
+});
+
+test("MLX inference error projection uses an exact 4096-byte UTF-8 JSON boundary", () => {
+  const body = JSON.stringify({ error: { code: "MODEL_OUTPUT_INVALID", message: "The model invoked an unadvertised function." } });
+  const exact = Buffer.from(body + " ".repeat(4096 - Buffer.byteLength(body)));
+  assert.equal(exact.length, 4096);
+  assert.equal(projectMlxInferenceError(exact).publicCode, "MLX_UNADVERTISED_FUNCTION");
+  for (const input of [undefined, body, new Uint8Array(Buffer.from(body)), Buffer.alloc(0), Buffer.concat([exact, Buffer.from(" ")]),
+    Buffer.from([0xff]), Buffer.concat([Buffer.from(body), Buffer.from([0xc3])]),
+  ]) {
+    assert.equal(projectMlxInferenceError(input), undefined);
+  }
+});
+
+test("MLX inference error projection discards ambiguous, unknown, malformed and sensitive provider bodies", () => {
+  const message = "The model invoked an unadvertised function.";
+  const error = { code: "MODEL_OUTPUT_INVALID", message };
+  const sensitive = "PRIVATE_PROMPT_CANARY /private/fixture Bearer synthetic-secret";
+  for (const body of [
+    {}, { error: null }, { error: [] }, { error: message }, { error: { code: "MODEL_OUTPUT_INVALID" } },
+    { error: { message } }, { error: { ...error, code: "MODEL_UNAVAILABLE" } },
+    { error: { ...error, code: "mlx_unadvertised_function" } },
+    { error: { ...error, message: `${message} ${sensitive}` } },
+    { error: { ...error, message: ` ${message}` } },
+    { error: { ...error, message: `${message}\n` } },
+    { error: { ...error, message: sensitive } },
+    { error: { ...error, message: { detail: sensitive } } },
+    { error, detail: sensitive }, { error: { ...error, detail: sensitive } },
+    { error: { ...error, __proto__: null, constructor: sensitive } },
+  ]) {
+    assert.equal(projectMlxInferenceError(Buffer.from(JSON.stringify(body))), undefined);
+  }
+  for (const source of [
+    `{"error":{"code":"MODEL_OUTPUT_INVALID","code":"MODEL_OUTPUT_INVALID","message":${JSON.stringify(message)}}}`,
+    `{"error":{"code":"MODEL_OUTPUT_INVALID","message":${JSON.stringify(message)},"mess\\u0061ge":${JSON.stringify(message)}}}`,
+    `{"error":{"code":"MODEL_OUTPUT_INVALID","message":${JSON.stringify(message)}},"error":{"code":"MODEL_OUTPUT_INVALID","message":${JSON.stringify(message)}}}`,
+    `{"error":{"code":"MODEL_OUTPUT_INVALID","message":${JSON.stringify(message)},"private":{"same":1,"same":2}}}`,
+    `{"error":{"code":"MODEL_OUTPUT_INVALID","message":${JSON.stringify(message)}}} trailing`,
+    `{"error":{"code":"MODEL_OUTPUT_INVALID","message":NaN}}`,
+    `{"error":{"code":"MODEL_OUTPUT_INVALID","message":1e999}}`,
+    `{"error":{"code":"MODEL_OUTPUT_INVALID","message":${"[".repeat(129)}0${"]".repeat(129)}}}`,
+    "not JSON " + sensitive,
+  ]) {
+    assert.equal(projectMlxInferenceError(Buffer.from(source)), undefined);
+  }
 });

@@ -25,6 +25,53 @@ const REASONING_SUMMARIES = new Set(["none", "auto", "concise", "detailed"]);
 const RESPONSE_KEYS = new Set([
   "id", "object", "created", "model", "choices", "usage", "system_fingerprint", "pickermux_metrics",
 ]);
+const MLX_INFERENCE_ERROR_KEYS = new Set(["code", "message"]);
+const MLX_INFERENCE_ERRORS = new Map([
+  ["The model invoked an unadvertised function.", {
+    publicCode: "MLX_UNADVERTISED_FUNCTION",
+    message: "The local MLX model selected an unadvertised function.",
+  }],
+  ["An incomplete or disabled function call cannot execute.", {
+    publicCode: "MLX_INCOMPLETE_FUNCTION_CALL",
+    message: "The local MLX model returned an incomplete or disabled function call.",
+  }],
+  ["The model returned malformed function arguments.", {
+    publicCode: "MLX_INVALID_FUNCTION_ARGUMENTS",
+    message: "The local MLX model returned malformed function arguments.",
+  }],
+  ["The model returned an unsupported function envelope.", {
+    publicCode: "MLX_INVALID_FUNCTION_ENVELOPE",
+    message: "The local MLX model returned an unsupported function envelope.",
+  }],
+  ["The model returned unsupported control output.", {
+    publicCode: "MLX_UNSUPPORTED_CONTROL_OUTPUT",
+    message: "The local MLX model returned unsupported control output.",
+  }],
+  ["The model did not satisfy the selected function contract.", {
+    publicCode: "MLX_UNSATISFIED_FUNCTION_CONTRACT",
+    message: "The local MLX model did not satisfy the selected function contract.",
+  }],
+  ["Kolibri returned invalid token counts.", {
+    publicCode: "MLX_INVALID_TOKEN_COUNTS",
+    message: "The local MLX model returned invalid token counts.",
+  }],
+  ["The model returned an unsupported completion.", {
+    publicCode: "MLX_INVALID_COMPLETION",
+    message: "The local MLX model returned an unsupported or incomplete completion.",
+  }],
+  ["Kolibri returned unsupported or incomplete output.", {
+    publicCode: "MLX_INVALID_COMPLETION",
+    message: "The local MLX model returned an unsupported or incomplete completion.",
+  }],
+  ["Function arguments exceed the supported bounds.", {
+    publicCode: "MLX_FUNCTION_ARGUMENT_LIMIT_EXCEEDED",
+    message: "The local MLX model exceeded the function argument limit.",
+  }],
+  ["Kolibri output exceeded the response limit.", {
+    publicCode: "MLX_OUTPUT_LIMIT_EXCEEDED",
+    message: "The local MLX model exceeded the response output limit.",
+  }],
+]);
 
 export class MlxChatRequestError extends Error {
   constructor() {
@@ -267,6 +314,23 @@ function parseJson(buffer) {
     return argumentObject(new TextDecoder("utf-8", { fatal: true }).decode(buffer), responseAssert);
   } catch {
     throw new ResponseTransformError("The MLX response is not valid UTF-8 JSON");
+  }
+}
+
+/** Classify only exact, bounded runtime failures without relaying provider text. */
+export function projectMlxInferenceError(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length === 0 || buffer.length > 4096) return undefined;
+  try {
+    const value = parseJson(buffer);
+    if (!onlyKeys(value, new Set(["error"])) || Object.keys(value).length !== 1 ||
+      !onlyKeys(value.error, MLX_INFERENCE_ERROR_KEYS) || Object.keys(value.error).length !== 2 ||
+      value.error.code !== "MODEL_OUTPUT_INVALID" || typeof value.error.message !== "string") {
+      return undefined;
+    }
+    const projected = MLX_INFERENCE_ERRORS.get(value.error.message);
+    return projected === undefined ? undefined : { ...projected };
+  } catch {
+    return undefined;
   }
 }
 

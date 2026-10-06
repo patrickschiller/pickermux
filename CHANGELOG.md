@@ -9,6 +9,18 @@ The 0.9.x entries describe local companion development builds. Their features
 are included in the first public companion release, 0.10.0; they were not
 published as GitHub Releases.
 
+## [0.24.3] - 2026-10-06
+
+Local development build; no public release has been published.
+
+### Fixed
+
+- Classify recognized HTTP 502 output failures from certified, reviewed MLX
+  tool routes using a bounded, complete JSON body and fixed public error codes.
+  Invalid function calls remain blocked. Unknown, malformed, oversized,
+  compressed and interrupted failures remain opaque; provider text is never
+  relayed and no inference retry or protocol repair is introduced.
+
 ## [0.24.2] - 2026-10-06
 
 Local development build; no public release has been published.
@@ -960,6 +972,7 @@ confirm the release date before tagging. See the
   restores the previous distribution state when activation fails.
 
 [Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.22.2...HEAD
+[0.24.3]: https://github.com/patrickschiller/pickermux/releases/tag/v0.24.3
 [0.24.2]: https://github.com/patrickschiller/pickermux/releases/tag/v0.24.2
 [0.24.1]: https://github.com/patrickschiller/pickermux/releases/tag/v0.24.1
 [0.24.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.24.0
