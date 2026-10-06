@@ -1,6 +1,6 @@
 # PickerMux Architecture
 
-This document describes PickerMux v0.24.0 development.
+This document describes PickerMux v0.24.1 development.
 It is intended for contributors, security reviewers, and users who want to
 understand what runs on their Mac.
 
@@ -71,7 +71,8 @@ through the CLI's custom configuration.
 ### MLX model and tool boundary
 
 `mlx-chat-completions` uses one explicitly allowlisted model on IPv4 loopback,
-reasoning `none`, and an enforced 1,024–8,192-token context. Managed HF models
+reasoning `none`, and an enforced 1,024–262,144-token context within the verified
+model and tokenizer limits. The default remains 8,192 tokens. Managed HF models
 must carry `mlxProfileDigest`; discovery matches the alias, context and digest.
 The digest binds resolved repository revision, file hashes, runtime pins, alias,
 context and output reservation. Legacy Kolibri aliases remain usable without a
@@ -108,7 +109,11 @@ reviewed Kolibri runtime stops generation at the first complete, strictly valid
 function envelope so the client can supply its result before another call.
 It validates the entire received buffer; a suffix or second call in the same
 chunk remains an error. The rendered prompt plus output reservation must fit
-the configured context.
+the configured context. The Python server separately bounds request bodies to
+8 MiB. Changing context creates a new profile and invalidates prior certification;
+it never mutates an existing alias. The ordinary Direct long-context gate is a
+bounded compatibility probe; acceptance near a larger configured limit requires
+separate measured inference against that exact profile.
 
 Validated usage drives token totals. Optional `pickermux_metrics` carries only a
 bounded final generation duration derived from MLX's output generation rate;

@@ -87,21 +87,22 @@ From a source checkout, install the optional Python environment and load the mod
 python3.12 -m venv .artifacts/mlx-venv
 .artifacts/mlx-venv/bin/python -m pip install -r scripts/kolibri-requirements.txt
 node bin/pickermux.mjs mlx-load velaia/Kolibri-1-MLX-4bit \
-  --alias kolibri-1-mlx-4bit --python "$PWD/.artifacts/mlx-venv/bin/python" \
-  --revision 3f5adf3fc8149f57738cc5a99f02ae26b601e7b0 --port 8081
+  --alias kolibri-1-mlx-4bit-262k --python "$PWD/.artifacts/mlx-venv/bin/python" \
+  --revision 3f5adf3fc8149f57738cc5a99f02ae26b601e7b0 \
+  --context-window 262144 --port 8081
 ```
 
 The command prints a conservative provider stanza with `mlxProfileDigest`.
 Add it to your reviewed custom configuration, retaining needed providers and
 bridge settings. Use a provider-specific namespace; the printed example uses
-`mlx/kolibri-1-mlx-4bit`. With Codex fully closed, activate that configuration:
+`mlx/kolibri-1-mlx-4bit-262k`. With Codex fully closed, activate that configuration:
 
 ```bash
 node bin/pickermux.mjs setup --config /private/path/pickermux.config.json
 ```
 
 Setup automatically certifies eligible models without a current receipt. Later,
-`pickermux certify --model mlx/kolibri-1-mlx-4bit` repeats the complete matrix.
+`pickermux certify --model mlx/kolibri-1-mlx-4bit-262k` repeats the complete matrix.
 Only passing Direct gates enable function, file and shell tools. Passing the
 additional tool-search roundtrip enables Efficient Fidelity. Web research uses
 Codex's configured native search service and requires its normal account access;
@@ -110,7 +111,8 @@ until their architecture/tool protocol has been reviewed and measured.
 
 `mlx-prepare` downloads/verifies without starting inference. `mlx-start --model
 NAME --port 8081`, `mlx-status --json`, and `mlx-stop --model NAME` manage prepared
-profiles. `--context-window` (1024–8192) and `--max-output-tokens` (1–2048) bind
+profiles. `--context-window` (1024–262144, default 8192) and
+`--max-output-tokens` (1–2048) bind
 profile identity; the tokenizer enforces the combined prompt/output reservation.
 An omitted HF revision resolves `main` to a fixed commit before downloading.
 Existing aliases cannot be reassigned to different weights/settings. New public
@@ -118,6 +120,15 @@ HF models must use built-in MLX architectures; downloaded executable Python and
 remote-code loading are rejected. Commands never use an implicit HF login token.
 Repeating preparation with `main` reuses and verifies the already pinned profile;
 use a new alias to load a newer revision or different settings.
+
+The pinned Kolibri model and tokenizer declare a 262,144-token context. To raise
+an existing 8,192-token profile, prepare a new alias as above and certify its exact
+configuration; the old profile remains available. Other models cannot exceed
+their verified declared limits. Large contexts increase prompt prefill time and
+KV-cache memory. Measure the intended workload and configure the bridge's
+upstream header and total timeouts accordingly: the local server buffers its
+answer before returning headers. A catalog edit alone cannot change a running
+server; discovery requires its exact advertised context before activation.
 
 If the reviewed Kolibri snapshot already exists, add `--model-dir
 /private/path/verified-model` to import it in place after checking all hashes,

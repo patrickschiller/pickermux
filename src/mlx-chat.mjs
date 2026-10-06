@@ -8,6 +8,7 @@ import {
 } from "./responses-transform.mjs";
 
 const DEFAULT_MAX_BYTES = 32 * 1024 * 1024;
+export const MLX_REQUEST_MAX_BYTES = 8 * 1024 * 1024;
 const REQUEST_KEYS = new Set([
   "model", "input", "instructions", "stream", "max_output_tokens", "reasoning",
   "tools", "tool_choice", "parallel_tool_calls", "store", "include", "metadata",
@@ -132,8 +133,8 @@ function textContent(content, role) {
 }
 
 /** Project reviewed Responses text and certified functions into pinned MLX. */
-export function createMlxChatRequest(body, route, { maxBytes = DEFAULT_MAX_BYTES, allowTools = false } = {}) {
-  byteLimit(maxBytes);
+export function createMlxChatRequest(body, route, { maxBytes = MLX_REQUEST_MAX_BYTES, allowTools = false } = {}) {
+  const requestMaxBytes = Math.min(byteLimit(maxBytes), MLX_REQUEST_MAX_BYTES);
   requestAssert(typeof allowTools === "boolean");
   requestAssert(onlyKeys(body, REQUEST_KEYS) && safeString(route?.upstreamModel));
   requestAssert(body.instructions === undefined || body.instructions === null ||
@@ -256,7 +257,7 @@ export function createMlxChatRequest(body, route, { maxBytes = DEFAULT_MAX_BYTES
   }
   if (projected.stream) projected.stream_options = { include_usage: true };
   const encoded = Buffer.from(JSON.stringify(projected), "utf8");
-  requestAssert(encoded.length <= maxBytes);
+  requestAssert(encoded.length <= requestMaxBytes);
   return encoded;
 }
 

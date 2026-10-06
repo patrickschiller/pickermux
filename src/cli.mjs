@@ -256,7 +256,7 @@ Setup and install automatically certify tool-capable providers without a valid r
 Legacy MLX servers remain text-only. Reviewed MLX tool protocols use the full certification matrix.
 mlx-load requires the isolated, pinned mlx-lm environment and prints an allowlisted
 provider stanza for your configuration; it never edits the active Codex configuration.
---context-window N (1024–8192) and --max-output-tokens N (1–2048) bind the profile.
+--context-window N (1024–262144) and --max-output-tokens N (1–2048) bind the profile.
 Snapshots resolve to immutable HF revisions. Unreviewed repository Python is rejected.
 token-performance-v1 shows measured output generation tokens/s after a finalized
 MLX turn, excluding prefill/network time; timing is volatile and unavailable after restart.

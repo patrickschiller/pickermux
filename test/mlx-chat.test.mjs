@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   MlxChatRequestError,
+  MLX_REQUEST_MAX_BYTES,
   createMlxChatRequest,
   createMlxChatSseTransformer,
   transformMlxChatJson,
@@ -186,6 +187,42 @@ test("MLX rejects tools, forced choice, stored continuation, compaction, media, 
 test("MLX request encoding has a byte bound", () => {
   assert.throws(() => createMlxChatRequest({ input: "ü".repeat(1024) }, route, { maxBytes: 1024 }), MlxChatRequestError);
   assert.throws(() => createMlxChatRequest({ input: "Hello" }, route, { maxBytes: 0 }), TypeError);
+});
+
+test("MLX request default accepts the exact 8 MiB UTF-8 boundary and rejects larger bodies", () => {
+  const maximum = MLX_REQUEST_MAX_BYTES;
+  assert.equal(maximum, 8 * 1024 * 1024);
+  const overhead = createMlxChatRequest({ input: "" }, route).length;
+  const available = maximum - overhead;
+  const input = "ä".repeat(Math.floor(available / 2)) + (available % 2 === 1 ? "x" : "");
+  assert.equal(createMlxChatRequest({ input }, route).length, maximum);
+  assert.equal(createMlxChatRequest({ input }, route, { maxBytes: 2 * maximum }).length, maximum);
+  assert.throws(() => createMlxChatRequest({ input: `${input}x` }, route), MlxChatRequestError);
+  assert.throws(() => createMlxChatRequest({ input: `${input}x` }, route, { maxBytes: 2 * maximum }), MlxChatRequestError);
+});
+
+test("MLX large context projection retains complete text and correlated function history", () => {
+  const source = `BEGIN SOURCE\n${"Größe 🙂\n".repeat(150_000)}END SOURCE`;
+  const body = {
+    instructions: "Keep the complete source.",
+    tools: [{ type: "function", name: "lookup", parameters: { type: "object", properties: {} } }],
+    input: [
+      { role: "user", content: "Read source" },
+      { type: "function_call", call_id: "call_prior", name: "lookup", arguments: '{"query":"source"}' },
+      { type: "function_call_output", call_id: "call_prior", output: source },
+      { role: "user", content: "Continue using the entire source" },
+    ],
+    max_output_tokens: 1024,
+  };
+  const encoded = createMlxChatRequest(body, { ...route, contextWindow: 262_144 }, { allowTools: true });
+  assert.ok(encoded.length > 1024 * 1024 && encoded.length < 8 * 1024 * 1024);
+  assert.deepEqual(JSON.parse(encoded).messages, [
+    { role: "system", content: body.instructions },
+    { role: "user", content: "Read source" },
+    { role: "assistant", content: "", tool_calls: [{ id: "call_prior", type: "function", function: { name: "lookup", arguments: '{"query":"source"}' } }] },
+    { role: "tool", content: source, tool_call_id: "call_prior" },
+    { role: "user", content: "Continue using the entire source" },
+  ]);
 });
 
 test("MLX JSON translation produces Responses text and isolated IDs with token usage", () => {

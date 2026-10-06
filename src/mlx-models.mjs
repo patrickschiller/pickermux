@@ -8,6 +8,7 @@ import * as fs from "node:fs/promises";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
+import { MLX_MIN_CONTEXT_WINDOW, MLX_MAX_CONTEXT_WINDOW } from "./mlx-capabilities.mjs";
 
 const SOURCE_ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const MAX_STATE_BYTES = 1024 * 1024;
@@ -104,7 +105,7 @@ export function computeMlxProfileDigest(profile) {
 
 function specification(options) {
   const { repository, revision = "main", alias, contextWindow = 8192, maxOutputTokens = 1024 } = options;
-  if (typeof repository !== "string" || repository.length > 255 || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(repository) || typeof revision !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/.test(revision) || revision.includes("..") || typeof alias !== "string" || !ALIAS_PATTERN.test(alias) || !Number.isSafeInteger(contextWindow) || contextWindow < 1024 || contextWindow > 8192 || !Number.isSafeInteger(maxOutputTokens) || maxOutputTokens < 1 || maxOutputTokens > Math.min(2048, contextWindow - 1)) fail();
+  if (typeof repository !== "string" || repository.length > 255 || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(repository) || typeof revision !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/.test(revision) || revision.includes("..") || typeof alias !== "string" || !ALIAS_PATTERN.test(alias) || !Number.isSafeInteger(contextWindow) || contextWindow < MLX_MIN_CONTEXT_WINDOW || contextWindow > MLX_MAX_CONTEXT_WINDOW || !Number.isSafeInteger(maxOutputTokens) || maxOutputTokens < 1 || maxOutputTokens > Math.min(2048, contextWindow - 1)) fail();
   return { repository, revision, alias, contextWindow, maxOutputTokens };
 }
 

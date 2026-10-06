@@ -3,6 +3,7 @@ import http from "node:http";
 import test from "node:test";
 
 import { createResponsesProxy } from "../src/responses-proxy.mjs";
+import { MLX_REQUEST_MAX_BYTES, createMlxChatRequest } from "../src/mlx-chat.mjs";
 
 const SLUG = "kolibri/kolibri-1-mlx-4bit";
 const MODEL = "kolibri-1-mlx-4bit";
@@ -30,7 +31,7 @@ function post(port, body, headers = {}, endpoint = "/v1/responses") {
   });
 }
 
-async function harness(t, { routeChanges = {}, reply, gate = async () => {} } = {}) {
+async function harness(t, { routeChanges = {}, reply, gate = async () => {}, limits } = {}) {
   const requests = [];
   const usage = [];
   let credentialReads = 0;
@@ -54,6 +55,7 @@ async function harness(t, { routeChanges = {}, reply, gate = async () => {} } = 
     return route;
   } }, credentialResolver: async () => { credentialReads += 1; return "private-provider-secret"; },
   certificationToken: "private-certification-marker", externalRequestGate: gate,
+  limits,
   onTokenUsage: (providerId, value) => usage.push({ providerId, ...value }),
   });
   const port = await listen(t, (request, response) => proxy(request, response, request.url));
@@ -78,6 +80,30 @@ test("MLX JSON translation isolates credentials and builds only the reviewed Cha
   assert.doesNotMatch(JSON.stringify(h.requests), /native-canary|native-cookie|native-account|private-account|provider-metadata|"tools"/u);
   assert.equal(h.credentialReads(), 0);
   assert.equal(h.usage.length, 1);
+});
+
+test("MLX proxy cannot override the exact upstream request ceiling with a larger global limit", async (t) => {
+  const h = await harness(t, { limits: { requestBodyBytes: 2 * MLX_REQUEST_MAX_BYTES } });
+  const overhead = createMlxChatRequest({ input: "" }, { upstreamModel: MODEL }).length;
+  const available = MLX_REQUEST_MAX_BYTES - overhead;
+  const input = "ä".repeat(Math.floor(available / 2)) + (available % 2 === 1 ? "x" : "");
+  assert.equal((await post(h.port, { input })).status, 200);
+  assert.equal(h.requests.length, 1);
+  assert.equal(Buffer.byteLength(JSON.stringify(h.requests[0].body)), MLX_REQUEST_MAX_BYTES);
+  assert.equal(h.requests[0].body.messages[0].content, input);
+  const rejected = await post(h.port, { input: `${input}x` });
+  assert.equal(rejected.status, 400);
+  assert.equal(JSON.parse(rejected.body).error.code, "MLX_REQUEST_UNSUPPORTED");
+  assert.equal(h.requests.length, 1);
+  assert.equal(h.credentialReads(), 0);
+});
+
+test("MLX proxy retains a smaller configured request limit before provider I/O", async (t) => {
+  const h = await harness(t, { limits: { requestBodyBytes: 2048 } });
+  const rejected = await post(h.port, { input: "ä".repeat(2048) });
+  assert.equal(rejected.status, 413);
+  assert.equal(h.requests.length, 0);
+  assert.equal(h.credentialReads(), 0);
 });
 
 const toolCapabilities = {

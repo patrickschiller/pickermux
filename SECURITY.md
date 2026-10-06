@@ -83,14 +83,15 @@ Native Codex request bodies remain byte preserving. Treat request logs produced
 by older PickerMux releases as sensitive because they may contain installation,
 session, thread, window, or turn identifiers.
 
-The experimental `mlx-chat-completions` kind has a separate text-only
-contract for the exact pinned Kolibri MLX alias. It accepts only the reviewed
-loopback endpoint and singleton allowlist, checks the launcher's enforced
-context against configuration, and never resolves native credentials for that
-route. Function inventories are withheld; forced tool choices, tool results and
-invocation history, unsupported media, reasoning and compaction state fail
-closed. Certification receipts cannot enable tool or shell authority on this
-kind. It does not broaden general Responses-provider compatibility.
+The experimental `mlx-chat-completions` kind has a separate reviewed contract.
+It accepts only an explicit loopback endpoint and singleton allowlist, checks
+the launcher's enforced context and managed profile digest against configuration,
+and never resolves native credentials for that route. Tools require the known
+model/runtime-bound protocol and complete Direct certification; Efficient
+Fidelity requires its additional exact receipt. Legacy and unreviewed profiles
+remain text-only. Codex owns tool execution and approval. Unsupported media,
+reasoning and compaction state fail closed. It does not broaden general
+Responses-provider compatibility.
 
 The optional source launcher verifies all pinned architecture/configuration/
 tokenizer/template and weight bytes before loading. Its private model directory
@@ -103,8 +104,12 @@ they are not installed by ordinary PickerMux tests or bridge installation.
 
 The model server binds only to `127.0.0.1`, exposes one stable model alias and
 context size, rejects browser Origin requests, and never enumerates cached
-models or exposes paths. It enforces prompt plus reserved output tokens at the
-tokenizer boundary and validates buffered generated output before success.
+models or exposes paths. Explicit context is bounded by the verified model and
+tokenizer declarations, with 262,144 tokens as the implementation ceiling and
+8,192 as the default. A changed context needs a new immutable profile and fresh
+certification. The server bounds request bytes separately and enforces prompt
+plus reserved output tokens at the tokenizer boundary, then validates buffered
+generated output before success.
 There is no truncation, automatic compaction or tool-parser best effort. Errors
 and disconnects use fixed messages without raw tracebacks, prompts, responses
 or filenames. Ordinary inference has no network request and stores no prompt

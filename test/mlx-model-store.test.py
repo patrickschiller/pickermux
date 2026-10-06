@@ -13,7 +13,7 @@ from unittest.mock import patch
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "runtime" / "mlx"))
 from kolibri import ContractError, KolibriServer
-from model_store import plan_model, prepare_model, verify_profile, validate_plan, supported_architecture, profile_digest, operation_lock, validate_weights, managed_runtime_fingerprint, RUNTIME_VERSIONS
+from model_store import plan_model, prepare_model, verify_profile, validate_plan, validate_spec, supported_architecture, profile_digest, operation_lock, validate_weights, managed_runtime_fingerprint, RUNTIME_VERSIONS
 from server import ProfileHandler
 from manage import execute
 
@@ -79,6 +79,35 @@ class StoreTests(unittest.TestCase):
 
   def test_context_claim_fails_closed(self):
     self.files["config.json"] = b'{"model_type":"llama","max_position_embeddings":4096}'
+    with self.assertRaises(ContractError):
+      self.plan()
+
+  def test_declared_native_context_262144_is_accepted_and_changes_profile_identity(self):
+    self.files["config.json"] = b'{"model_type":"llama","max_position_embeddings":262144}'
+    self.files["tokenizer_config.json"] = b'{"model_max_length":262144}'
+    conservative = self.prepared()
+    self.spec["contextWindow"] = 262144
+    expanded = self.prepared()
+    self.assertEqual(expanded["contextWindow"], 262144)
+    self.assertEqual(verify_profile(expanded, class_resolver=lambda config: self.classes), self.directory)
+    self.assertNotEqual(expanded["profileDigest"], conservative["profileDigest"])
+    with self.assertRaises(ContractError):
+      verify_profile({**conservative, "contextWindow": 262144}, class_resolver=lambda config: self.classes)
+
+  def test_context_above_ceiling_or_declared_bound_is_rejected(self):
+    with self.assertRaises(ContractError):
+      validate_spec({**self.spec, "contextWindow": 262145})
+    self.spec["contextWindow"] = 262144
+    self.files["config.json"] = b'{"model_type":"llama","max_position_embeddings":262144}'
+    self.files["tokenizer_config.json"] = b'{"model_max_length":65536}'
+    with self.assertRaises(ContractError):
+      self.plan()
+    self.files["config.json"] = b'{"model_type":"llama","max_position_embeddings":65536}'
+    self.files["tokenizer_config.json"] = b'{"model_max_length":262144}'
+    with self.assertRaises(ContractError):
+      self.plan()
+    self.files["config.json"] = b'{"model_type":"llama"}'
+    self.files["tokenizer_config.json"] = b'{}'
     with self.assertRaises(ContractError):
       self.plan()
 

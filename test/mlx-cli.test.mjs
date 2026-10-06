@@ -52,7 +52,7 @@ test("MLX argument boundary rejects ambiguous commands, flags and invalid limits
   for (const argv of [
     ["mlx-load"], ["mlx-start"], ["mlx-stop"], ["mlx-status", "--alias", "example"],
     [...load, "--port", "0"], [...load, "--port", "8081oops"], [...load, "--port", "65536"],
-    [...load, "--context-window", "8193"], [...load, "--max-output-tokens", "0"],
+    [...load, "--context-window", "262145"], [...load, "--max-output-tokens", "0"],
     [...load, "--alias", "second"], [...load, "--revision"], [...load, "second/repo"],
     [...load, "--config", "/private/config"], ["mlx-prepare", ...load.slice(1), "--port", "8081"],
   ]) assert.throws(() => parseMlxArguments(argv));
@@ -69,4 +69,19 @@ test("failed preparation cannot start a runtime or publish configuration", async
   }) }));
   assert.equal(writes, 0);
   assert.equal(starts, 0);
+});
+
+test("MLX shell loading passes an explicitly selected 262144 context into its immutable profile", async () => {
+  let requested;
+  const large = { ...profile, contextWindow: 262_144 };
+  const result = await runMlxCli([
+    "mlx-load", "example/model", "--alias", profile.alias, "--python", "/private/test/python",
+    "--context-window", "262144",
+  ], { write: () => {}, managerFactory: () => ({
+    prepare: async (value) => { requested = value; return large; },
+    start: async () => ({ port: 8081 }),
+  }) });
+  assert.equal(requested.contextWindow, 262_144);
+  assert.equal(result.provider.models[0].contextWindow, 262_144);
+  assert.equal(result.provider.models[0].mlxProfileDigest, large.profileDigest);
 });

@@ -127,6 +127,86 @@ class LauncherTests(unittest.TestCase):
     finally:
       runtime.lock.release()
 
+  def test_native_context_reserves_output_and_uses_exact_tokenized_prompt(self):
+    context_window = 262144
+    output_tokens = 2048
+    prompt = [1] * (context_window - output_tokens)
+    observed = []
+    def generate(model, tokenizer, tokenized_prompt, **kwargs):
+      observed.append((tokenized_prompt, kwargs))
+      return iter([SimpleNamespace(text="Fits exactly", finish_reason="stop", prompt_tokens=len(prompt), generation_tokens=3)])
+    tokenizer = SimpleNamespace(apply_chat_template=lambda *args, **kwargs: prompt)
+    runtime = launcher.KolibriRuntime(None, tokenizer, generate, lambda *args, **kwargs: None, context_window)
+    request = launcher.validate_request(request_body(max_tokens=output_tokens), output_tokens)
+    result = runtime.complete(request)
+    self.assertEqual(result[2], {"prompt_tokens": context_window - output_tokens, "completion_tokens": 3, "total_tokens": context_window - output_tokens + 3})
+    self.assertIs(observed[0][0], prompt)
+    self.assertEqual(observed[0][1]["max_tokens"], output_tokens)
+    prompt.append(1)
+    with self.assertRaisesRegex(launcher.ContractError, "configured context"):
+      runtime.complete(request)
+    self.assertEqual(len(observed), 1)
+    self.assertFalse(runtime.lock.locked())
+    prompt.pop()
+    for reported_prompt_tokens in (len(prompt) - 1, len(prompt) + 1, True):
+      runtime.stream_generate = lambda *args, **kwargs: iter([SimpleNamespace(text="Invalid count", finish_reason="stop", prompt_tokens=reported_prompt_tokens, generation_tokens=3)])
+      with self.assertRaisesRegex(launcher.ContractError, "invalid token counts"):
+        runtime.complete(request)
+
+  def test_native_context_preserves_complete_function_history(self):
+    source = "BEGIN SOURCE\n" + "Größe und Inhalt\n" * 100000 + "END SOURCE"
+    messages = [
+      {"role": "system", "content": "Keep the complete source."},
+      {"role": "user", "content": "Read source"},
+      {"role": "assistant", "content": "", "tool_calls": [{"id": "call_prior", "type": "function", "function": {"name": "lookup", "arguments": '{"query":"source"}'}}]},
+      {"role": "tool", "content": source, "tool_call_id": "call_prior"},
+      {"role": "user", "content": "Continue using the entire source"},
+    ]
+    prompt = [1] * (262144 - 1024)
+    observed = []
+    def render(rendered_messages, **kwargs):
+      observed.append((rendered_messages, kwargs))
+      return prompt
+    completion = '<tool_call>{"name":"lookup","arguments":{"query":"next source"}}</tool_call>'
+    part = SimpleNamespace(text=completion, finish_reason=None, prompt_tokens=len(prompt), generation_tokens=7, generation_tps=10)
+    runtime = launcher.KolibriRuntime(None, SimpleNamespace(apply_chat_template=render), lambda *args, **kwargs: iter([part]), lambda *args, **kwargs: None, 262144)
+    body = request_body(messages=messages, tools=[function_tool()], max_tokens=1024)
+    result = runtime.complete(launcher.validate_request(body, 1024))
+    self.assertIs(observed[0][0], messages)
+    self.assertEqual(observed[0][0][3]["content"], source)
+    self.assertEqual(observed[0][1]["tools"], body["tools"])
+    self.assertEqual(result[1], "tool_calls")
+    self.assertEqual(result[2]["prompt_tokens"], 261120)
+    self.assertEqual(result[4], {"generation_duration_ms": 700})
+
+  def test_launcher_accepts_explicit_native_ceiling_and_keeps_conservative_default(self):
+    with contextlib.ExitStack() as stack:
+      stack.enter_context(patch.dict(launcher.os.environ))
+      stack.enter_context(patch.object(launcher.os, "umask"))
+      stack.enter_context(patch.object(launcher.logging, "disable"))
+      stack.enter_context(patch.object(launcher.warnings, "filterwarnings"))
+      stack.enter_context(patch.object(launcher.sys, "dont_write_bytecode", True))
+      stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
+      stack.enter_context(contextlib.redirect_stderr(io.StringIO()))
+      check_runtime = stack.enter_context(patch.object(launcher, "check_runtime"))
+      load_runtime = stack.enter_context(patch.object(launcher, "load_runtime", return_value=object()))
+      serve = stack.enter_context(patch.object(launcher, "serve"))
+      for context_window in (None, 262144):
+        args = ["--model-dir", "/offline-model-fixture"]
+        if context_window is not None:
+          args += ["--context-window", str(context_window)]
+        self.assertEqual(launcher.main(args), 0)
+        self.assertEqual(load_runtime.call_args.args[1], context_window or 8192)
+        self.assertEqual(serve.call_args.args[2], 1024)
+      check_runtime.reset_mock()
+      load_runtime.reset_mock()
+      serve.reset_mock()
+      for context_window in (1023, 262145):
+        self.assertEqual(launcher.main(["--model-dir", "/offline-model-fixture", "--context-window", str(context_window)]), 1)
+      check_runtime.assert_not_called()
+      load_runtime.assert_not_called()
+      serve.assert_not_called()
+
   def test_strict_function_parser_and_choices(self):
     request = launcher.validate_request(request_body(tools=[function_tool()]), 32)
     text, finish, calls = launcher.parse_completion('<tool_call>\n{"name":"lookup","arguments":{"query":"Example"}}\n</tool_call>', "stop", request)
@@ -301,6 +381,42 @@ class LauncherTests(unittest.TestCase):
       self.assertEqual(status, 503)
       for private in ("PRIVATE_PROMPT", "/private/model", "SECRET"):
         self.assertNotIn(private, body)
+    finally:
+      server.shutdown()
+      server.server_close()
+      thread.join(timeout=3)
+
+  def test_large_utf8_request_reaches_runtime_intact_and_byte_ceiling_rejects_before_read(self):
+    source = "BEGIN\n" + "Größe 🙂\n" * 100000 + "END"
+    seen = []
+    class FakeRuntime:
+      context_window = 262144
+      def complete(self, request):
+        seen.append(request["messages"])
+        return "Accepted", "stop", {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5}
+    server = launcher.KolibriServer(("127.0.0.1", 0), launcher.KolibriHandler)
+    server.runtime = FakeRuntime()
+    server.max_tokens = 32
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+      body = json.dumps(request_body(messages=[{"role": "user", "content": source}]), ensure_ascii=False).encode("utf-8")
+      self.assertGreater(len(body), 1024 * 1024)
+      self.assertLess(len(body), 8 * 1024 * 1024)
+      connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=3)
+      connection.request("POST", "/v1/chat/completions", body, {"Content-Type": "application/json"})
+      response = connection.getresponse()
+      self.assertEqual(response.status, 200)
+      response.read()
+      connection.close()
+      self.assertEqual(seen, [[{"role": "user", "content": source}]])
+      connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=3)
+      connection.request("POST", "/v1/chat/completions", b"", {"Content-Type": "application/json", "Content-Length": str(8 * 1024 * 1024 + 1)})
+      response = connection.getresponse()
+      self.assertEqual(response.status, 400)
+      response.read()
+      connection.close()
+      self.assertEqual(len(seen), 1)
     finally:
       server.shutdown()
       server.server_close()

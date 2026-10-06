@@ -10,7 +10,7 @@ import re
 import stat
 from pathlib import Path
 
-from kolibri import ContractError, MODEL_ALIAS, MODEL_REPOSITORY, MODEL_REVISION, MODEL_SHA256, RUNTIME_VERSIONS, TOOL_PROTOCOL, canonical_digest, check_runtime, digest_file, json_object, reject_json_constant
+from kolibri import ContractError, MAX_CONTEXT_WINDOW, MODEL_ALIAS, MODEL_REPOSITORY, MODEL_REVISION, MODEL_SHA256, RUNTIME_VERSIONS, TOOL_PROTOCOL, canonical_digest, check_runtime, digest_file, json_object, reject_json_constant
 
 
 PROFILE_KIND = "pickermux-mlx-profile"
@@ -98,8 +98,8 @@ def validate_spec(spec):
     fail("Supply a bounded Hugging Face revision.")
   if not isinstance(spec.get("alias"), str) or not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,63}", spec["alias"]):
     fail("Supply a lowercase model alias.")
-  if type(spec.get("contextWindow")) is not int or not 1024 <= spec["contextWindow"] <= 8192:
-    fail("The configured context window must be between 1024 and 8192 tokens.")
+  if type(spec.get("contextWindow")) is not int or not 1024 <= spec["contextWindow"] <= MAX_CONTEXT_WINDOW:
+    fail("The configured context window must be between 1024 and " + str(MAX_CONTEXT_WINDOW) + " tokens.")
   if type(spec.get("maxOutputTokens")) is not int or not 1 <= spec["maxOutputTokens"] <= min(2048, spec["contextWindow"] - 1):
     fail("The output token limit is outside the supported bounds.")
   return {**spec, "revision": revision}

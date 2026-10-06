@@ -64,6 +64,19 @@ test("MLX profiles bind immutable revision and actual context; public lifecycle 
   assert.equal((await f.manager.status()).models[0].status, "prepared");
 });
 
+test("a larger context uses a new immutable profile without reassigning the existing alias", async (t) => {
+  const f = await fixture(t);
+  const original = await f.manager.prepare(spec);
+  await assert.rejects(f.manager.prepare({ ...spec, contextWindow: 262_144 }), { code: "MLX_STORE_CONFLICT" });
+  const large = await f.manager.prepare({ ...spec, alias: "test-mlx-262k", contextWindow: 262_144 });
+  assert.notEqual(large.profileDigest, original.profileDigest);
+  assert.equal(large.contextWindow, 262_144);
+  const stored = await f.manager.status();
+  assert.equal(stored.models.length, 2);
+  assert.equal(stored.models.find((entry) => entry.alias === spec.alias).profileDigest, original.profileDigest);
+  assert.equal((await f.manager.start({ profileId: large.profileId, port: 32123 })).contextWindow, 262_144);
+});
+
 test("failed preparation resumes the stored immutable plan and preserves prepared models", async (t) => {
   const f = await fixture(t);
   const original = await f.manager.prepare(spec);
@@ -94,7 +107,7 @@ test("failed startup and busy stop retain the last owned state without revealing
 
 test("model store rejects unsafe state permissions, links, unknown profiles and overclaimed limits", async (t) => {
   const f = await fixture(t);
-  await assert.rejects(f.manager.prepare({ ...spec, contextWindow: 8193 }), { code: "MLX_MODEL_INVALID" });
+  await assert.rejects(f.manager.prepare({ ...spec, contextWindow: 262145 }), { code: "MLX_MODEL_INVALID" });
   await assert.rejects(f.manager.prepare({ ...spec, repository: "http://unsafe/model" }), { code: "MLX_MODEL_INVALID" });
   await f.manager.prepare(spec);
   await assert.rejects(f.manager.start({ alias: "unknown" }), { code: "MLX_MODEL_UNKNOWN" });

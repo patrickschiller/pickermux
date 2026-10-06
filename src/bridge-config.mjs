@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { isIP } from "node:net";
 
 import { isValidProviderId } from "./provider-id.mjs";
+import { MLX_MIN_CONTEXT_WINDOW, MLX_MAX_CONTEXT_WINDOW } from "./mlx-capabilities.mjs";
 
 export const BRIDGE_SCHEMA_VERSION = 2;
 
@@ -394,8 +395,8 @@ function normalizeModel(input, providerId, providerKind, index, seenIds, seenSlu
     } else if (id !== "kolibri-1-mlx-4bit") {
       throw new Error(`${label}.id requires a managed mlxProfileDigest`);
     }
-    if (normalized.contextWindow < 1_024 || normalized.contextWindow > 8_192) {
-      throw new Error(`${label}.contextWindow must be between 1024 and 8192 for the local MLX server`);
+    if (normalized.contextWindow < MLX_MIN_CONTEXT_WINDOW || normalized.contextWindow > MLX_MAX_CONTEXT_WINDOW) {
+      throw new Error(`${label}.contextWindow must be between ${MLX_MIN_CONTEXT_WINDOW} and ${MLX_MAX_CONTEXT_WINDOW} for the local MLX server`);
     }
     normalized.reasoningEffort = "none";
     normalized.reasoningEfforts = ["none"];

@@ -9,6 +9,19 @@ The 0.9.x entries describe local companion development builds. Their features
 are included in the first public companion release, 0.10.0; they were not
 published as GitHub Releases.
 
+## [0.24.1] - 2026-10-06
+
+Local development build; no public release has been published.
+
+### Fixed
+
+- Allow explicit MLX context windows up to 262,144 tokens within the verified
+  model and tokenizer limits. The default remains 8,192; changed settings require
+  a new immutable profile and fresh model-bound certification.
+- Raise the Python server's request-body limit to 8 MiB for large histories,
+  matching the adapter's default request bound. Rendered prompt plus reserved
+  output tokens remain enforced without truncation or dropped tool results.
+
 ## [0.24.0] - 2026-10-06
 
 Local development build; no public release has been published.
@@ -935,6 +948,7 @@ confirm the release date before tagging. See the
   restores the previous distribution state when activation fails.
 
 [Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.22.2...HEAD
+[0.24.1]: https://github.com/patrickschiller/pickermux/releases/tag/v0.24.1
 [0.24.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.24.0
 [0.23.1]: https://github.com/patrickschiller/pickermux/releases/tag/v0.23.1
 [0.23.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.23.0

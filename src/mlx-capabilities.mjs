@@ -1,4 +1,6 @@
 export const MLX_TOOL_PROTOCOL = "pickermux-mlx-tools-v1";
+export const MLX_MIN_CONTEXT_WINDOW = 1_024;
+export const MLX_MAX_CONTEXT_WINDOW = 262_144;
 
 const FINGERPRINT = /^sha256:[0-9a-f]{64}$/u;
 const isFingerprint = (value) => typeof value === "string" && FINGERPRINT.test(value);

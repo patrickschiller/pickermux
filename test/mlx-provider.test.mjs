@@ -118,7 +118,7 @@ test("local MLX config requires exact llm identity, bounded context and text-onl
   for (const change of [
     { id: "other-model" }, { type: undefined }, { type: "embedding" },
     { contextWindow: undefined }, { contextWindow: 0 }, { contextWindow: 1_023 },
-    { contextWindow: 8_193 }, { contextWindow: 1.5 },
+    { contextWindow: 262_145 }, { contextWindow: 1.5 },
     { reasoningEffort: "high" }, { reasoningEfforts: ["none", "low"] },
     { toolsEnabled: true }, { slug: "kolibri/" },
   ]) {
@@ -164,6 +164,34 @@ test("MLX discovery rejects stale context, missing metadata and extra or foreign
       fetchImpl: async () => new Response(JSON.stringify({ data })),
     }), (error) => error.code === "PROVIDER_RESPONSE_INVALID");
   }
+});
+
+test("MLX publishes 262144 only from an exact discovery match and leaves tools conservative", async () => {
+  const input = config();
+  input.providers[0].models[0].contextWindow = 262_144;
+  const normalized = validateBridgeConfig(input);
+  const discover = (context) => discoverBridgeModels({
+    config: normalized,
+    credentialResolver: () => { throw new Error("Must not resolve credentials"); },
+    fetchImpl: async () => new Response(JSON.stringify({ data: [{
+      id: modelId, object: "model", context_window: context,
+    }] })),
+  });
+  for (const context of [8_192, 262_143, 262_145]) {
+    await assert.rejects(discover(context), { code: "PROVIDER_RESPONSE_INVALID" });
+  }
+  const discovery = await discover(262_144);
+  const native = nativeCatalog();
+  const mixed = buildMixedCodexCatalog({ bundledCatalog: native, discoveredModels: discovery.models, donorSlug: "gpt-5.6-sol" });
+  assert.deepEqual(mixed.models[0], native.models[0]);
+  const model = mixed.models.find((entry) => entry.slug === publicModelId);
+  assert.equal(model.context_window, 262_144);
+  assert.equal(model.max_context_window, 262_144);
+  assert.doesNotMatch(model.display_name, /⚠/u);
+  assert.equal(model.tool_mode, null);
+  const registry = buildProviderRegistry({ config: normalized, mixedCatalog: mixed, discoveredModels: discovery.models });
+  assert.equal(registry.resolve(publicModelId).model.contextWindow, 262_144);
+  assert.equal(registry.resolve(publicModelId).toolsEnabled, false);
 });
 
 test("MLX catalog ignores all certification claims and publishes only compact text instructions", () => {

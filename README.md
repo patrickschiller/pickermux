@@ -128,9 +128,12 @@ The model download is about 41 GiB and the conversion targets Macs with at least
 Kolibri appears as **Kolibri 1 MLX 4-bit** alongside the native models. This
 integration supports text replies and strict function calls after model-bound
 certification, including Codex web research, file and shell tools. Reasoning
-remains disabled. Images, audio and context compaction are unavailable. The launcher enforces an 8,192-token combined
-prompt/output limit; an oversized conversation is rejected without dropping
-history. Load models from the shell with `pickermux mlx-load`; the companion shows
+remains disabled. Images, audio and context compaction are unavailable. The launcher
+defaults to an 8,192-token combined prompt/output limit. An explicit profile can
+use up to 262,144 tokens within the verified model and tokenizer limits; changing
+context requires a new immutable profile and fresh certification. An oversized
+conversation is rejected without dropping history. Load models from the shell
+with `pickermux mlx-load`; the companion shows
 last-request and accumulated tokens plus measured MLX output tokens/s.
 See [setup and limitations](docs/CONFIGURATION.md#kolibri-mlx-provider).
 

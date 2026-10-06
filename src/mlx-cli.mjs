@@ -1,4 +1,5 @@
 import { createMlxModelManager } from "./mlx-models.mjs";
+import { MLX_MIN_CONTEXT_WINDOW, MLX_MAX_CONTEXT_WINDOW } from "./mlx-capabilities.mjs";
 
 export const MLX_COMMANDS = new Set([
   "mlx-load", "mlx-prepare", "mlx-start", "mlx-status", "mlx-stop",
@@ -44,7 +45,7 @@ export function parseMlxArguments(argv) {
   if (options.model && !["mlx-start", "mlx-stop"].includes(command)) throw new Error("--model requires mlx-start or mlx-stop");
   if (options.python && !preparing) throw new Error("--python is supported only when preparing a model");
   if (options.port !== undefined && !["mlx-load", "mlx-start"].includes(command)) throw new Error("--port requires mlx-load or mlx-start");
-  for (const [key, low, high] of [["port", 1024, 65535], ["contextWindow", 1024, 8192], ["maxOutputTokens", 1, 2048]]) {
+  for (const [key, low, high] of [["port", 1024, 65535], ["contextWindow", MLX_MIN_CONTEXT_WINDOW, MLX_MAX_CONTEXT_WINDOW], ["maxOutputTokens", 1, 2048]]) {
     if (options[key] === undefined) continue;
     if (!/^\d+$/u.test(options[key])) throw new Error(`${key} must be an integer`);
     options[key] = Number(options[key]);
