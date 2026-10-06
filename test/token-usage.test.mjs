@@ -4,9 +4,12 @@ import test from "node:test";
 import {
   TOKEN_USAGE_MAX_PROVIDERS,
   TOKEN_USAGE_MAX_SSE_FRAME_BYTES,
+  TOKEN_GENERATION_MAX_DURATION_MS,
+  createTokenPerformanceTelemetry,
   createTokenUsageObserver,
   createTokenUsageTelemetry,
   projectTokenUsageSnapshot,
+  projectTokenPerformanceSnapshot,
 } from "../src/token-usage.mjs";
 
 const counts = { inputTokens: 12, outputTokens: 3, totalTokens: 15 };
@@ -14,6 +17,95 @@ const usage = { input_tokens: 12, output_tokens: 3, total_tokens: 15 };
 const completed = (overrides = {}) => ({ status: "completed", usage, ...overrides });
 const event = (response, type = `response.${response.status}`) =>
   `event: ${type}\r\ndata: ${JSON.stringify({ type, response })}\r\n\r\n`;
+
+test("actual generation time is optional and admitted only with finalized verified counts", () => {
+  const check = ({ durations = [1500], success = true, body = JSON.stringify(completed()) } = {}) => {
+    const events = [];
+    const observer = createTokenUsageObserver({ onUsage: (value) => events.push(value) });
+    observer.headers(200, { "content-type": "application/json" });
+    for (const duration of durations) observer.generationDuration(duration);
+    observer.push(Buffer.from(body));
+    assert.equal(events.length, 0);
+    observer.finish(success);
+    observer.generationDuration(999);
+    observer.finish(success);
+    return events;
+  };
+  assert.deepEqual(check(), [{ status: "available", ...counts, generationDurationMs: 1500 }]);
+  for (const duration of [1, TOKEN_GENERATION_MAX_DURATION_MS]) {
+    assert.equal(check({ durations: [duration] })[0].generationDurationMs, duration);
+  }
+  for (const durations of [[], [0], [-1], [1.5], [true], ["1500"], [null], [Infinity],
+    [TOKEN_GENERATION_MAX_DURATION_MS + 1], [100, 100], [0, 100]]) {
+    assert.deepEqual(check({ durations }), [{ status: "available", ...counts }]);
+  }
+  assert.deepEqual(check({ success: false }), [{ status: "unavailable" }]);
+  assert.deepEqual(check({ body: JSON.stringify(completed({ usage: {} })) }), [{ status: "unavailable" }]);
+});
+
+test("generation metrics wait for clean SSE EOF and cannot salvage an invalid terminal", () => {
+  for (const trailing of ["", event(completed())]) {
+    const events = [];
+    const observer = createTokenUsageObserver({ onUsage: (value) => events.push(value) });
+    observer.headers(200, { "content-type": "text/event-stream" });
+    observer.generationDuration(500);
+    observer.push(Buffer.from(event(completed()) + trailing));
+    assert.deepEqual(events, []);
+    observer.finish(true);
+    assert.deepEqual(events, trailing === "" ?
+      [{ status: "available", ...counts, generationDurationMs: 500 }] : [{ status: "unavailable" }]);
+  }
+});
+
+test("volatile performance replaces the latest measurement and never changes saved usage shapes", () => {
+  const performance = createTokenPerformanceTelemetry();
+  const usageTelemetry = createTokenUsageTelemetry();
+  const measured = { status: "available", ...counts, generationDurationMs: 1500, prompt: "private-canary" };
+  performance.record("kolibri", measured);
+  usageTelemetry.record("kolibri", measured);
+  assert.deepEqual(performance.snapshot(), { schemaVersion: 1, status: "available", providers: [
+    { providerId: "kolibri", status: "available", ...counts, generationDurationMs: 1500 },
+  ] });
+  assert.deepEqual(usageTelemetry.snapshot().providers[0].last, { status: "available", ...counts });
+  const changed = performance.snapshot();
+  changed.providers[0].generationDurationMs = 9;
+  assert.equal(performance.snapshot().providers[0].generationDurationMs, 1500);
+  for (const value of [{ status: "available", ...counts }, { status: "unavailable" },
+    { ...measured, totalTokens: 999 }, { ...measured, generationDurationMs: 0 }]) {
+    performance.record("kolibri", value);
+    assert.deepEqual(performance.snapshot().providers, [{ providerId: "kolibri", status: "unavailable" }]);
+  }
+  assert.equal(performance.record("unsafe/provider", measured), false);
+  assert.deepEqual(createTokenPerformanceTelemetry().snapshot().providers, []);
+});
+
+test("performance projection strips private fields and rejects unsafe bounds or identity", () => {
+  const clean = { schemaVersion: 1, status: "available", providers: [
+    { providerId: "kolibri", status: "available", ...counts, generationDurationMs: 1500 },
+  ] };
+  const noisy = structuredClone(clean);
+  noisy.prompt = "private-canary";
+  noisy.providers[0].endpoint = "http://private.invalid";
+  assert.deepEqual(projectTokenPerformanceSnapshot(noisy), clean);
+  for (const mutate of [
+    (v) => { v.schemaVersion = 2; }, (v) => { v.status = "unavailable"; },
+    (v) => { v.providers.push(v.providers[0]); }, (v) => { v.providers[0].providerId = "private/model"; },
+    (v) => { v.providers[0].status = "unknown"; }, (v) => { v.providers[0].inputTokens = 1.5; },
+    (v) => { v.providers[0].totalTokens = undefined; }, (v) => { v.providers[0].totalTokens = 999; },
+    (v) => { v.providers[0].generationDurationMs = "1500"; }, (v) => { v.providers[0].generationDurationMs = 0; },
+    (v) => { v.providers[0].generationDurationMs = TOKEN_GENERATION_MAX_DURATION_MS + 1; },
+  ]) {
+    const invalid = structuredClone(clean);
+    mutate(invalid);
+    assert.equal(projectTokenPerformanceSnapshot(invalid), null);
+  }
+  const bounded = createTokenPerformanceTelemetry();
+  for (let index = 0; index < TOKEN_USAGE_MAX_PROVIDERS; index += 1) bounded.record(`provider-${index}`, { status: "unavailable" });
+  assert.equal(bounded.snapshot().providers.length, TOKEN_USAGE_MAX_PROVIDERS);
+  assert.equal(bounded.record("extra", { status: "unavailable" }), false);
+  assert.deepEqual(bounded.snapshot(), { schemaVersion: 1, status: "unavailable", providers: [] });
+  assert.equal(projectTokenPerformanceSnapshot({ ...clean, providers: Array(TOKEN_USAGE_MAX_PROVIDERS + 1).fill(clean.providers[0]) }), null);
+});
 
 function observe(body, { type = "application/json", headers = {}, success = true, limit, chunks = 1 } = {}) {
   const events = [];

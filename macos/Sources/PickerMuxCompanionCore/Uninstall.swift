@@ -44,15 +44,15 @@ public enum CompanionRemovalAvailability: Equatable {
   public var notice: String? {
     switch self {
     case .available: return nil
-    case .statusUnavailable: return "Removal status is unavailable. Check status before removal."
+    case .statusUnavailable: return "Removal status is unavailable. Check status in Config before removal."
     case .notInstalled: return "PickerMux's integration and CLI are not installed. There is nothing left to uninstall here. Quit PickerMux and move PickerMux.app from Applications to the Trash."
-    case .installationUnverified: return "The installed PickerMux state could not be verified. Check installation before removal; retained data must not be deleted without verified ownership."
-    case .backendUnsupported: return "The app could not use an installed CLI with native removal support (0.9.5 or newer). Check installation and the CLI version. The bundled setup backend cannot remove an installation."
+    case .installationUnverified: return "The installed PickerMux state could not be verified. Check installation in Config before removal; retained data must not be deleted without verified ownership."
+    case .backendUnsupported: return "The app could not use an installed CLI with native removal support (0.9.5 or newer). Check installation in Config and review the CLI version. The bundled setup backend cannot remove an installation."
     case .codexRunning: return "Fully quit Codex with Command-Q before removal."
-    case .codexUnknown: return "Codex's running status could not be verified. Fully quit Codex and check status before removal."
+    case .codexUnknown: return "Codex's running status could not be verified. Fully quit Codex and check status in Config before removal."
     case .recoveryPending: return "Finish the pending Codex repair before removal."
-    case .recoveryUnknown: return "The repair status could not be verified. Check installation before removal."
-    case .actionUnavailable: return "The installed backend does not currently allow complete removal. Check installation and its reported issues."
+    case .recoveryUnknown: return "The repair status could not be verified. Check installation in Config before removal."
+    case .actionUnavailable: return "The installed backend does not currently allow complete removal. Check installation in Config and review its reported issues."
     }
   }
 }

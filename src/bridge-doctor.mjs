@@ -330,14 +330,23 @@ export async function runBridgeDoctor({
   let discovery;
   try {
     discovery = await discoveryImpl({ config, fetchImpl, environment });
+    if (!Array.isArray(discovery?.models) || !Array.isArray(discovery.providers)) {
+      throw new Error("External discovery returned an unsupported model or provider inventory");
+    }
+    const nativeOnly = Array.isArray(config.providers) && config.providers.length === 0;
+    if (nativeOnly && (discovery.models.length !== 0 || discovery.providers.length !== 0)) {
+      throw new Error("Native-only configuration returned unexpected external discovery");
+    }
     const loadedMode = config.providers.some(
       (provider) => provider.discovery?.mode === "loaded",
     );
     checks.push(
       check(
         "external-discovery",
-        loadedMode || discovery.models.length > 0,
-        `${discovery.models.length} loaded external LLM(s)${loadedMode ? " via automatic discovery" : " via allowlist"}`,
+        nativeOnly || loadedMode || discovery.models.length > 0,
+        nativeOnly
+          ? "Native-only configuration; no external providers configured"
+          : `${discovery.models.length} loaded external LLM(s)${loadedMode ? " via automatic discovery" : " via allowlist"}`,
       ),
     );
   } catch (error) {

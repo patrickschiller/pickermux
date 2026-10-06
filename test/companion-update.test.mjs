@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { lstat, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -10,8 +10,43 @@ import { buildRelease } from "../scripts/build-release.mjs";
 import { projectRoot } from "../src/paths.mjs";
 import { activateVerifiedCompanionPayload, applyCompanionUpdate, checkForCompanionUpdate, inspectCompanionArchive, verifyCompanionPayload } from "../src/companion-update.mjs";
 import { PICKERMUX_DMG_ASSET, dmgReleaseMarker } from "../src/companion-release.mjs";
+import { MLX_RUNTIME_FILES } from "../src/runtime-package.mjs";
 
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
+
+function archiveRecords(archive) {
+  const bytes = gunzipSync(archive);
+  const records = [];
+  let offset = 0;
+  while (offset + 512 <= bytes.length && bytes[offset] !== 0) {
+    const header = Buffer.from(bytes.subarray(offset, offset + 512));
+    const size = Number.parseInt(header.subarray(124, 136).toString("ascii"), 8);
+    records.push({ name: header.subarray(0, header.indexOf(0)).toString("ascii"), header, body: Buffer.from(bytes.subarray(offset + 512, offset + 512 + size)) });
+    offset += 512 + Math.ceil(size / 512) * 512;
+  }
+  return records;
+}
+
+function encodeArchive(records) {
+  return gzipSync(Buffer.concat([...records.flatMap(({ name, header: original, body }) => {
+    const header = Buffer.from(original);
+    header.fill(0, 0, 100);
+    header.write(name, 0, "ascii");
+    header.write(`${body.length.toString(8).padStart(11, "0")}\0`, 124, "ascii");
+    header.fill(32, 148, 156);
+    const sum = header.reduce((total, byte) => total + byte, 0);
+    header.write(`${sum.toString(8).padStart(6, "0")}\0 `, 148, "ascii");
+    return [header, body, Buffer.alloc((512 - body.length % 512) % 512)];
+  }), Buffer.alloc(1024)]));
+}
+
+function payloadFromRecords(fixture, records, manifest) {
+  const manifestBytes = Buffer.from(JSON.stringify(manifest));
+  records.find((record) => record.name === "release-manifest.json").body = manifestBytes;
+  const archive = encodeArchive(records);
+  const checksumsBytes = Buffer.from(`${hash(archive)}  ${fixture.result.archiveName}\n${hash(manifestBytes)}  release-manifest.json\n${hash(fixture.files.get("install.sh"))}  install.sh\n`);
+  return { archive, manifestBytes, checksumsBytes, version: fixture.result.version };
+}
 
 function diskImageRelease(version = "1.0.0") {
   return {
@@ -151,6 +186,14 @@ test("updates are pinned to official assets, verified before activation and priv
       const metadata = JSON.parse(await readFile(path.join(sourceRoot, "package.json"), "utf8"));
       assert.equal(metadata.version, fixture.result.version);
       assert.equal(await readFile(path.join(sourceRoot, "src", "cli.mjs"), "utf8"), await readFile(path.join(projectRoot, "src", "cli.mjs"), "utf8"));
+      assert.deepEqual((await readdir(path.join(sourceRoot, "runtime", "mlx"))).sort(), MLX_RUNTIME_FILES);
+      assert.equal((await lstat(path.join(sourceRoot, "runtime"))).mode & 0o777, 0o700);
+      assert.equal((await lstat(path.join(sourceRoot, "runtime", "mlx"))).mode & 0o777, 0o700);
+      for (const name of MLX_RUNTIME_FILES) {
+        const file = path.join(sourceRoot, "runtime", "mlx", name);
+        assert.equal((await lstat(file)).mode & 0o777, 0o600);
+        assert.equal(await readFile(file, "utf8"), await readFile(path.join(projectRoot, "runtime", "mlx", name), "utf8"));
+      }
       return { updated: true, restartRequired: true };
     },
   });
@@ -187,6 +230,42 @@ test("archive checksum, file inventory and embedded manifest are authoritative",
   const manifestBytes = Buffer.from(JSON.stringify({ ...JSON.parse(fixture.payload.manifestBytes), files: [] }));
   const checksumsBytes = Buffer.from(`${hash(fixture.payload.archive)}  ${fixture.result.archiveName}\n${hash(manifestBytes)}  release-manifest.json\n${"a".repeat(64)}  install.sh\n`);
   assert.throws(() => verifyCompanionPayload({ ...fixture.payload, manifestBytes, checksumsBytes }), { code: "UPDATE_INVALID" });
+});
+
+test("MLX archive files form one optional complete group; prior distributions remain valid", async (t) => {
+  const fixture = await releaseFixture(t);
+  const entries = verifyCompanionPayload(fixture.payload);
+  assert.deepEqual([...entries.keys()].filter((name) => name.startsWith("runtime/mlx/") && !entries.get(name).directory).sort(), MLX_RUNTIME_FILES.map((name) => `runtime/mlx/${name}`));
+  const records = archiveRecords(fixture.payload.archive).filter((record) => !record.name.startsWith("runtime/"));
+  const manifest = JSON.parse(fixture.payload.manifestBytes);
+  manifest.files = manifest.files.filter((file) => !file.path.startsWith("runtime/"));
+  const previous = verifyCompanionPayload(payloadFromRecords(fixture, records, manifest));
+  assert.equal([...previous.keys()].some((name) => name.startsWith("runtime/")), false);
+});
+
+test("MLX archive groups reject missing files, foreign directories, aliases, links and executable modes", async (t) => {
+  const fixture = await releaseFixture(t);
+  for (const mutate of [
+    (records) => records.filter((record) => record.name !== "runtime/mlx/manage.py"),
+    (records) => records.filter((record) => !record.name.endsWith(".py")),
+    (records) => { records.find((record) => record.name === "runtime/mlx/manage.py").name = "runtime/mlx/unknown.py"; return records; },
+    (records) => { records.find((record) => record.name === "runtime/mlx/manage.py").name = "runtime/manage.py"; return records; },
+    (records) => { records.push({ ...records.find((record) => record.name === "runtime/mlx/"), name: "runtime/mlx/cache/" }); return records; },
+    (records) => { records.find((record) => record.name === "runtime/mlx/manage.py").header[156] = 49; return records; },
+    (records) => { records.find((record) => record.name === "runtime/mlx/manage.py").header[156] = 50; return records; },
+    (records) => { records.find((record) => record.name === "runtime/mlx/manage.py").header.write("0000755\0", 100, "ascii"); return records; },
+  ]) {
+    assert.throws(() => inspectCompanionArchive(encodeArchive(mutate(archiveRecords(fixture.payload.archive)))), { code: "UPDATE_INVALID" });
+  }
+  for (const mutate of [
+    (manifest) => { manifest.files = manifest.files.filter((file) => file.path !== "runtime/mlx/manage.py"); },
+    (manifest) => { manifest.files.find((file) => file.path === "runtime/mlx/manage.py").path = "runtime/mlx/unknown.py"; },
+    (manifest) => { manifest.files.find((file) => file.path === "runtime/mlx/manage.py").mode = "0755"; },
+  ]) {
+    const manifest = JSON.parse(fixture.payload.manifestBytes);
+    mutate(manifest);
+    assert.throws(() => verifyCompanionPayload(payloadFromRecords(fixture, archiveRecords(fixture.payload.archive), manifest)), { code: "UPDATE_INVALID" });
+  }
 });
 
 test("archive links, traversal, duplicate names and malformed checksums are rejected", async (t) => {

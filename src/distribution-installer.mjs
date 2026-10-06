@@ -19,6 +19,7 @@ import path from "node:path";
 
 import { readPickerMuxMetadata } from "./version.mjs";
 import { inventoryUsageStore, revalidateUsageStoreInventory } from "./usage-store.mjs";
+import { assertMlxRuntimeDirectoryEntries, inspectOptionalMlxRuntime } from "./runtime-package.mjs";
 
 const RECEIPT_SCHEMA_VERSION = 1;
 const RECEIPT_PRODUCT = "pickermux";
@@ -32,6 +33,7 @@ const REQUIRED_DISTRIBUTION_ENTRIES = Object.freeze([
 ]);
 const OPTIONAL_DISTRIBUTION_ENTRIES = Object.freeze([
   "release-manifest.json",
+  "runtime",
 ]);
 const ALL_DISTRIBUTION_ENTRIES = new Set([
   ...REQUIRED_DISTRIBUTION_ENTRIES,
@@ -157,6 +159,7 @@ async function collectDistributionFiles(root, { allowExtraRootEntries = false } 
     throw new Error(`Managed distribution permissions are not private: ${resolvedRoot}`);
   }
   const rootEntries = await readdir(resolvedRoot);
+  await inspectOptionalMlxRuntime(resolvedRoot);
   for (const required of REQUIRED_DISTRIBUTION_ENTRIES) {
     if (!rootEntries.includes(required)) {
       throw new Error(`Distribution is missing required entry: ${required}`);
@@ -181,6 +184,7 @@ async function collectDistributionFiles(root, { allowExtraRootEntries = false } 
     }
     if (stats.isDirectory()) {
       const names = (await readdir(absolute)).sort();
+      assertMlxRuntimeDirectoryEntries(relative, names);
       for (const name of names) {
         await visit(path.join(absolute, name), path.posix.join(relative, name));
       }
@@ -1105,6 +1109,7 @@ async function captureExactStagedDirectory(target, relative, expectedChildren) {
 
 async function captureStagedVersion(staging, receiptEntry) {
   const versionPath = path.join(staging, receiptEntry.path);
+  await inspectOptionalMlxRuntime(versionPath);
   const files = [];
   const directories = [];
 
@@ -1117,6 +1122,7 @@ async function captureStagedVersion(staging, receiptEntry) {
     }
     assertPrivateManagedNode(stats, directory, "distribution directory");
     const names = (await readdir(directory)).sort();
+    assertMlxRuntimeDirectoryEntries(distributionRelative, names);
     if (distributionRelative === "") {
       for (const required of REQUIRED_DISTRIBUTION_ENTRIES) {
         if (!names.includes(required)) {

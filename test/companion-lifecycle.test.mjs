@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { validateBridgeConfig } from "../src/bridge-config.mjs";
 import { bridgeBaseUrl, readRuntime, writeRuntime } from "../src/bridge-runtime.mjs";
 import {
   deactivatePickerMuxIntegration,
@@ -409,7 +410,7 @@ test("OFF retains service settings, runtime capability and compaction key across
     ...fixture.lifecycle(), codexPath: "/fixture/codex", distributionPaths: {},
     desktopRunningImpl: async () => false, accountCacheImpl: async () => ({ status: "ready" }),
     loadConfigImpl: async (selected) => { sourceConfig = selected; return fixture.config; },
-    discoverImpl: async () => ({ models: [{ id: "fixture/model" }] }),
+    discoverImpl: async () => ({ models: [], providers: [] }),
     setupImpl: async ({ beforeControlCommit, activate }) => { await beforeControlCommit(); await activate({ distributionRoot: fixture.sourceRoot, version: "0.9.0" }); return { version: "0.9.0" }; },
     installImpl: async ({ reactivationReceipt }) => {
       installs += 1;
@@ -503,14 +504,18 @@ test("OFF repeats stopped-Desktop and recovery checks before its configuration C
 test("fresh setup emits actionable provider, loaded-model and account-cache failures without activation", async (t) => {
   for (const [discoverImpl, code] of [
     [async () => { throw new Error("PRIVATE_ENDPOINT_CANARY"); }, "ACTION_FAILED"],
-    [async () => ({ models: [], providers: [{ unavailableReason: "connection-refused" }] }), "PROVIDER_UNAVAILABLE"],
-    [async () => ({ models: [] }), "NO_LOADED_MODELS"],
+    [async () => ({ models: [], providers: [{ id: "lmstudio", unavailableReason: "connection-refused" }] }), "PROVIDER_UNAVAILABLE"],
+    [async () => ({ models: [], providers: [{ id: "lmstudio" }] }), "NO_LOADED_MODELS"],
   ]) {
     const fixture = await makeFixture(t);
+    const config = validateBridgeConfig({ ...fixture.config, providers: [{
+      id: "lmstudio", kind: "lmstudio-responses", baseUrl: "http://127.0.0.1:1234/v1",
+      allowPrivateNetwork: true, discovery: { mode: "loaded" }, models: [],
+    }] });
     await assert.rejects(setupPickerMux({
       ...fixture.lifecycle(), codexPath: "/fixture/codex", distributionPaths: {},
       desktopRunningImpl: async () => false, accountCacheImpl: async () => ({ status: "ready" }),
-      loadConfigImpl: async () => fixture.config, discoverImpl,
+      loadConfigImpl: async () => config, discoverImpl,
       setupImpl: async () => assert.fail("Provider preflight must precede activation"),
     }), (error) => error.code === code && !error.message.includes("PRIVATE_ENDPOINT_CANARY"));
     await assert.rejects(readFile(fixture.paths.statePath), { code: "ENOENT" });
@@ -583,7 +588,7 @@ test("ON forwards stopped-Desktop/recovery guards to the final configuration CAS
       desktopRunningImpl: async () => installing && collision === "desktop",
       assertNoPendingFullRefreshImpl: async () => { if (installing && collision === "recovery") throw new CompanionControlError("RECOVERY_PENDING"); },
       accountCacheImpl: async () => ({ status: "ready" }), loadConfigImpl: async () => fixture.config,
-      discoverImpl: async () => ({ models: [{ id: "fixture/model" }] }),
+      discoverImpl: async () => ({ models: [], providers: [] }),
       setupImpl: async ({ beforeControlCommit, activate }) => { await beforeControlCommit(); return activate({ distributionRoot: fixture.sourceRoot }); },
       installImpl: async ({ reactivationReceipt, beforeConfigCommit }) => {
         installing = true;
@@ -610,7 +615,7 @@ test("ON checks Desktop after the final awaited account-cache preflight", async 
     ...fixture.lifecycle(), distributionPaths: {}, codexPath: "/fixture/codex",
     desktopRunningImpl: async () => desktopRunning,
     accountCacheImpl: async () => { if (finalCommit) desktopRunning = true; return { status: "ready" }; },
-    loadConfigImpl: async () => fixture.config, discoverImpl: async () => ({ models: [{ id: "fixture/model" }] }),
+    loadConfigImpl: async () => fixture.config, discoverImpl: async () => ({ models: [], providers: [] }),
     setupImpl: async ({ beforeControlCommit, activate }) => { await beforeControlCommit(); return activate({ distributionRoot: fixture.sourceRoot }); },
     installImpl: async ({ reactivationReceipt, beforeConfigCommit }) => {
       finalCommit = true;

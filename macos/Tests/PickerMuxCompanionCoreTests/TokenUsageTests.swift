@@ -29,6 +29,9 @@ final class TokenUsageTests: XCTestCase {
     var root = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: directory.appendingPathComponent("status.json"))) as? [String: Any])
     let advertised = capabilities ?? ["integration-toggle-v1", "native-uninstall-v1", capability]
     root["capabilities"] = advertised
+    if !advertised.contains("native-only-lmstudio-setup-v1") {
+      root.removeValue(forKey: "providerConfiguration")
+    }
     if !advertised.contains("native-uninstall-v1") {
       root["actions"] = (root["actions"] as? [String])?.filter { !["uninstall", "uninstall-preview"].contains($0) }
     }
@@ -296,6 +299,97 @@ final class TokenUsageTests: XCTestCase {
     XCTAssertEqual(value.tokenUsage, filtered.tokenUsage)
     XCTAssertEqual(value.transitionIdentity, filtered.transitionIdentity)
     root["capabilities"] = ["integration-toggle-v1", "native-uninstall-v1", "token-usage-v2"]
+    XCTAssertThrowsError(try CompanionSnapshot.decode(JSONSerialization.data(withJSONObject: root)))
+  }
+
+  private func performance(_ changes: [String: Any] = [:]) -> [String: Any] {
+    var measured = counts()
+    measured["providerId"] = "lmstudio"
+    measured["status"] = "available"
+    measured["generationDurationMs"] = 1500
+    measured.merge(changes) { _, new in new }
+    return ["schemaVersion": 1, "status": "available", "providers": [measured]]
+  }
+
+  private func decodePerformance(_ performance: [String: Any], usage: [String: Any]? = nil) throws -> CompanionSnapshot {
+    var root = try XCTUnwrap(JSONSerialization.jsonObject(with: snapshot(usage ?? self.usage([provider()]))) as? [String: Any])
+    root["capabilities"] = ["integration-toggle-v1", "native-uninstall-v1", capability, "token-performance-v1"]
+    root["tokenPerformance"] = performance
+    return try CompanionSnapshot.decode(JSONSerialization.data(withJSONObject: root))
+  }
+
+  func testGenerationRateUsesOutputCountsAndActualGenerationTimeOnly() throws {
+    let measured = try decodePerformance(performance())
+    let provider = try XCTUnwrap(measured.tokenUsage?.providers.first)
+    XCTAssertTrue(measured.supportsTokenPerformance)
+    XCTAssertEqual(measured.tokenPerformance?.outputTokensPerSecond(for: provider), 20)
+    XCTAssertEqual(provider.last.counts?.totalTokens, 150)
+    XCTAssertEqual(provider.displayTotals?.totalTokens, 150)
+    let changed = try decodePerformance(performance(["outputTokens": 31, "totalTokens": 151]))
+    XCTAssertNil(changed.tokenPerformance?.outputTokensPerSecond(for: provider))
+    let legacy = try decode(usage([self.provider()]))
+    XCTAssertFalse(legacy.supportsTokenPerformance)
+    XCTAssertNil(legacy.tokenPerformance)
+    let filtered = measured.allowingOnly([.refresh], bundledBackend: true)
+    XCTAssertEqual(filtered.tokenPerformance, measured.tokenPerformance)
+    XCTAssertEqual(measured.transitionIdentity, legacy.transitionIdentity)
+  }
+
+  func testUnavailableAndMeasuredZeroGenerationRatesStayDistinct() throws {
+    var latest = counts(120, 0)
+    latest["status"] = "available"
+    let zeroUsage = usage([provider(["last": latest, "totals": counts(120, 0)])])
+    let zero = try decodePerformance(performance(["outputTokens": 0, "totalTokens": 120]), usage: zeroUsage)
+    XCTAssertEqual(zero.tokenPerformance?.outputTokensPerSecond(for: try XCTUnwrap(zero.tokenUsage?.providers.first)), 0)
+    let unavailable: [String: Any] = ["schemaVersion": 1, "status": "available", "providers": [["providerId": "lmstudio", "status": "unavailable"]]]
+    let value = try decodePerformance(unavailable)
+    XCTAssertNil(value.tokenPerformance?.outputTokensPerSecond(for: try XCTUnwrap(value.tokenUsage?.providers.first)))
+    let empty = try decodePerformance(["schemaVersion": 1, "status": "unavailable", "providers": []])
+    XCTAssertNil(empty.tokenPerformance?.outputTokensPerSecond(for: try XCTUnwrap(empty.tokenUsage?.providers.first)))
+  }
+
+  func testGenerationPerformanceRequiresFiniteReviewedSchemaAndBounds() throws {
+    for invalid in [0, -1, 1.5, true, "1500", NSNull(), 3_600_001] as [Any] {
+      XCTAssertThrowsError(try decodePerformance(performance(["generationDurationMs": invalid])))
+    }
+    for changes in [
+      ["privatePrompt": "/private/canary"], ["providerId": "private/model"], ["status": "unknown"],
+      ["outputTokens": 1.5], ["totalTokens": 151], ["generationDurationMs": NSNull()],
+    ] as [[String: Any]] {
+      XCTAssertThrowsError(try decodePerformance(performance(changes)))
+    }
+    var malformed = performance()
+    malformed["schemaVersion"] = 2
+    XCTAssertThrowsError(try decodePerformance(malformed))
+    malformed = performance()
+    malformed["status"] = "unavailable"
+    XCTAssertThrowsError(try decodePerformance(malformed))
+    malformed = performance()
+    malformed["providers"] = Array(repeating: (malformed["providers"] as! [[String: Any]])[0], count: 2)
+    XCTAssertThrowsError(try decodePerformance(malformed))
+    let all = (0..<128).map { index -> [String: Any] in
+      ["providerId": "provider-\(index)", "status": "unavailable"]
+    }
+    XCTAssertEqual(try decodePerformance(["schemaVersion": 1, "status": "available", "providers": all]).tokenPerformance?.providers.count, 128)
+    XCTAssertThrowsError(try decodePerformance(["schemaVersion": 1, "status": "available", "providers": all + [["providerId": "extra", "status": "unavailable"]]]))
+  }
+
+  func testGenerationCapabilityIsAdditiveCanonicalAndCannotGrantActions() throws {
+    var root = try XCTUnwrap(JSONSerialization.jsonObject(with: snapshot(usage([provider()]))) as? [String: Any])
+    root["tokenPerformance"] = performance()
+    XCTAssertThrowsError(try CompanionSnapshot.decode(JSONSerialization.data(withJSONObject: root)))
+    for capabilities in [
+      ["integration-toggle-v1", "token-performance-v1"],
+      ["integration-toggle-v1", "token-performance-v1", capability],
+      ["integration-toggle-v1", capability, "token-performance-v1", "token-performance-v1"],
+    ] {
+      root["capabilities"] = capabilities
+      XCTAssertThrowsError(try CompanionSnapshot.decode(JSONSerialization.data(withJSONObject: root)))
+    }
+    root["capabilities"] = ["integration-toggle-v1", "native-uninstall-v1", capability, "token-performance-v1"]
+    root["tokenPerformance"] = NSNull()
+    XCTAssertThrowsError(try CompanionSnapshot.decode(JSONSerialization.data(withJSONObject: root)))
+    root.removeValue(forKey: "tokenPerformance")
     XCTAssertThrowsError(try CompanionSnapshot.decode(JSONSerialization.data(withJSONObject: root)))
   }
 }

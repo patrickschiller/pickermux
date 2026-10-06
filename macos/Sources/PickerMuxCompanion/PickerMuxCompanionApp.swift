@@ -70,11 +70,12 @@ final class CompanionController: ObservableObject {
   private let client: PickerMuxClient
   private let versionOverride: String?
   private let integrationConfirmation: (@MainActor (IntegrationReview) async -> Bool)?
+  private let lmStudioSetupConfirmation: (@MainActor (LMStudioSetupReview) async -> Bool)?
   private var backendUpgradePrompt = BackendUpgradePrompt()
   private var polling: Task<Void, Never>?
   private let operationQueue = CompanionOperationQueue()
   private var pendingManualChecks = 0
-  private var settingsWindow: NSWindow?
+  private var configWindow: NSWindow?
   private var helpWindow: NSWindow?
   private var confirmationWindow: ActionConfirmationWindow?
   private var lastTransition: String?
@@ -114,8 +115,13 @@ final class CompanionController: ObservableObject {
     backendUpgradeAvailable && integrationState.canReviewSetup
   }
 
+  var bundledSetupAvailability: CompanionPresentation.ActionAvailability {
+    CompanionPresentation.bundledSetupAvailability(snapshot: snapshot,
+      activityAllowed: activityAllowed, busy: busy)
+  }
+
   var canReviewBundledBootstrap: Bool {
-    snapshot?.usesBundledBackend == true && integrationState.needsSetupUpgrade && integrationState.canReviewSetup
+    bundledSetupAvailability.isEnabled
   }
 
   var diskImageDownloadURL: URL? {
@@ -127,10 +133,12 @@ final class CompanionController: ObservableObject {
   }
 
   init(pollingEnabled: Bool = true, client: PickerMuxClient = PickerMuxClient(), appVersion: String? = nil,
-       integrationConfirmation: (@MainActor (IntegrationReview) async -> Bool)? = nil) {
+       integrationConfirmation: (@MainActor (IntegrationReview) async -> Bool)? = nil,
+       lmStudioSetupConfirmation: (@MainActor (LMStudioSetupReview) async -> Bool)? = nil) {
     self.client = client
     versionOverride = appVersion
     self.integrationConfirmation = integrationConfirmation
+    self.lmStudioSetupConfirmation = lmStudioSetupConfirmation
     if pollingEnabled { startPolling() }
   }
 
@@ -188,7 +196,7 @@ final class CompanionController: ObservableObject {
       preview = nil
       statusFailure = error as? CompanionFailure
       if busy == nil { message = failureMessage(error) }
-      if manual { statusCheckNotice = "Status check failed: \(failureMessage(error))" }
+      if manual { statusCheckNotice = "Status check failed. Open Help to review the installation." }
     }
     if autoRefresh && removal.permitsActivity(generation) {
       refreshQueued = false
@@ -205,6 +213,61 @@ final class CompanionController: ObservableObject {
     if action == .updateCheck { return true }
     guard action != .update, snapshot?.actions.contains(action) == true else { return false }
     return true
+  }
+
+  func configAvailability(for action: CompanionAction) -> CompanionPresentation.ActionAvailability {
+    CompanionPresentation.configActionAvailability(for: action, snapshot: snapshot, appVersion: appVersion,
+      activityAllowed: activityAllowed, busy: busy)
+  }
+
+  func enableLMStudioModels() {
+    let availability = CompanionPresentation.providerSetupAvailability(snapshot: snapshot, appVersion: appVersion,
+      activityAllowed: activityAllowed, busy: busy)
+    guard availability.isEnabled else { return }
+    let generation = removal.generation
+    busy = .lmStudioDefaultPreview
+    operationNotice = nil
+    operationNoticeAction = .lmStudioDefaultPreview
+    operationFailed = false
+    operationStartedAt = Date()
+    message = "Reviewing LM Studio model setup…"
+    Task {
+      let lease = await operationQueue.acquire(.action)
+      guard removal.permitsActivity(generation) else { operationQueue.release(lease); return }
+      do {
+        let outcome = try await enableDefaultLMStudioModels(client: client) { review in
+          let accepted = if let confirmation = self.lmStudioSetupConfirmation {
+            await confirmation(review)
+          } else {
+            await self.confirmation(title: review.title, text: review.text, button: review.button)
+          }
+          if accepted {
+            self.busy = .lmStudioDefaultApply
+            self.operationNoticeAction = .lmStudioDefaultApply
+            self.message = "Enabling LM Studio models and running certification…"
+          }
+          return accepted
+        }
+        switch outcome {
+        case .cancelled:
+          operationNotice = "LM Studio model setup was cancelled. No provider configuration was changed."
+        case .blocked:
+          operationFailed = true
+          operationNotice = "LM Studio model setup is unavailable. Refresh status and follow the guidance in Models."
+        case .completed(let result):
+          operationFailed = !result.ok
+          operationNotice = result.ok ? resultMessage(result, action: .lmStudioDefaultApply) :
+            CompanionPresentation.providerSetupFailureMessage(result.code)
+        }
+      } catch {
+        operationFailed = true
+        operationNotice = failureMessage(error)
+      }
+      busy = nil
+      operationStartedAt = nil
+      operationQueue.release(lease)
+      await refreshStatus()
+    }
   }
 
   func setIntegrationEnabled(_ enabled: Bool, reviewInstalledSetup: Bool = false, automaticallyOffered: Bool = false) {
@@ -244,7 +307,7 @@ final class CompanionController: ObservableObject {
         case .cancelled: operationNotice = "The integration change was cancelled."
         case .blocked:
           operationFailed = true
-          operationNotice = "The integration cannot be changed yet. Check status and follow the setup guidance."
+          operationNotice = "The integration cannot be changed yet. Check status in Config and follow the setup guidance."
         case .completed(let result):
           operationFailed = !result.ok
           operationNotice = result.ok ? resultMessage(result, action: enabled ? .configurationApply : .integrationDeactivate) :
@@ -264,7 +327,7 @@ final class CompanionController: ObservableObject {
 
   func perform(_ action: CompanionAction) {
     if action == .uninstall { removeCompletely(); return }
-    guard ![.uninstallPreview, .update].contains(action) else { return }
+    guard ![.uninstallPreview, .update, .lmStudioDefaultPreview, .lmStudioDefaultApply].contains(action) else { return }
     if action == .configurationApply { setIntegrationEnabled(true); return }
     if action == .integrationDeactivate { setIntegrationEnabled(false); return }
     guard canRun(action) else { return }
@@ -281,15 +344,17 @@ final class CompanionController: ObservableObject {
     operationNoticeAction = action
     operationFailed = false
     operationStartedAt = Date()
-    message = action == .certify ? "Certification is running; keep configured provider models available." : "\(action.label)…"
+    message = action == .certify ? "Certification is running; keep configured provider models available." :
+      CompanionPresentation.progressTitle(for: action)
     Task {
       let lease = await operationQueue.acquire(.action)
       guard removal.permitsActivity(generation) else { operationQueue.release(lease); return }
       var confirmed = false
-      if action == .recover {
-        confirmed = await confirmation(title: "Repair the picker after a Codex update?",
-          text: "Codex will quit twice. Active tasks may be interrupted. PickerMux temporarily opens Codex with native models to refresh the account cache, then restores the picker and opens Codex again. The installation capability changes; earlier encrypted compaction continuations cannot be resumed. An interrupted recovery also requires this confirmation again.",
-          button: "Start repair")
+      if action == .recover || action == .fullRefresh {
+        confirmed = await confirmation(
+          title: action == .recover ? "Repair the picker after a Codex update?" : "Run a full picker refresh?",
+          text: "Codex will quit twice. Active tasks may be interrupted. PickerMux temporarily opens Codex with native models to refresh the account cache, then restores the picker and opens Codex again. The installation capability changes; earlier encrypted compaction continuations cannot be resumed. An interrupted refresh also requires this confirmation again.",
+          button: action == .recover ? "Start repair" : "Start full refresh")
       } else if action == .certify {
         confirmed = await confirmation(title: "Certify models?",
           text: "PickerMux sends live test prompts to the configured providers. Certification can take several minutes per model. Finish active model tasks and keep the configured models available until it completes.", button: "Start certification")
@@ -297,7 +362,7 @@ final class CompanionController: ObservableObject {
         confirmed = await confirmation(title: "Reset accumulated counts?",
           text: "Clear the saved totals for all providers. Last model request stays visible.", button: "Reset counts")
       }
-      if [.recover, .certify, .usageReset].contains(action) && !confirmed {
+      if [.recover, .fullRefresh, .certify, .usageReset].contains(action) && !confirmed {
         operationNotice = "The action was cancelled."
       } else {
         do {
@@ -310,7 +375,7 @@ final class CompanionController: ObservableObject {
             operationNotice = resultMessage(result, action: action)
           } else {
             operationFailed = true
-            operationNotice = companionActionFailureMessage(result.code)
+            operationNotice = CompanionPresentation.actionFailureMessage(for: action, code: result.code)
           }
         } catch {
           operationFailed = true
@@ -398,11 +463,12 @@ final class CompanionController: ObservableObject {
     }
   }
 
-  func showSettings() {
-    if settingsWindow == nil {
-      settingsWindow = makeWindow(title: "PickerMux Settings", content: CompanionSettings(controller: self))
+  func showConfig() {
+    if configWindow == nil {
+      configWindow = makeWindow(title: CompanionPresentation.configWindowTitle,
+        content: CompanionConfig(controller: self))
     }
-    presentWindow(settingsWindow!)
+    presentWindow(configWindow!)
   }
 
   func showHelp() {
@@ -491,11 +557,299 @@ private enum CompanionTypography {
   static let metadata = Font.system(size: 12)
 }
 
+enum CompanionPresentation {
+  struct ActionAvailability: Equatable {
+    let isEnabled: Bool
+    let disabledReason: String?
+  }
+
+  static let configButtonTitle = "Config…"
+  static let configWindowTitle = "PickerMux Config"
+  static let configHeading = "PickerMux Config"
+  static let outputSpeedLabel = "Output speed"
+  static let outputSpeedHelp = "Model output speed for the last completed request. It excludes prompt processing and network transfer time, and resets when the bridge restarts."
+  static let providerSetupButtonTitle = "Enable LM Studio models…"
+  static let nativeOnlyMenuNotice = "No external models configured"
+  static let nativeOnlyModelsGuidance = "The PickerMux menu shows configured providers. Models appear in the Codex model picker after setup and reopening Codex."
+  static let integrationToggleTitle = "Use PickerMux in Codex"
+  static let menuPrimaryHeadings = [integrationToggleTitle]
+
+  static func compactIntegrationGuidance(for state: IntegrationToggleState,
+                                         busy: CompanionAction? = nil) -> String? {
+    if busy == nil, state.isEnabled, state.needsSetupUpgrade, state.label == "Enabled in Codex" {
+      return nil
+    }
+    return state.guidance
+  }
+
+  static func mainActions(available: [CompanionAction]) -> [CompanionAction] {
+    [.refresh, .open, .certify, .recover].filter(available.contains)
+  }
+
+  static func configActions(available: [CompanionAction]) -> [CompanionAction] {
+    [.diagnose].filter(available.contains) + [.fullRefresh]
+  }
+
+  static func configActionAvailability(for action: CompanionAction, snapshot: CompanionSnapshot?, appVersion: String,
+                                       activityAllowed: Bool = true, busy: CompanionAction? = nil) -> ActionAvailability {
+    guard let snapshot else {
+      return ActionAvailability(isEnabled: false,
+        disabledReason: actionUnavailableWithoutStatus(action))
+    }
+    if action == .fullRefresh && snapshot.providerConfiguration?.status == .nativeOnly {
+      return ActionAvailability(isEnabled: false,
+        disabledReason: "Full refresh preserves provider configuration; enable LM Studio models first.")
+    }
+    if !snapshot.actions.contains(action) {
+      return ActionAvailability(isEnabled: false,
+        disabledReason: unattestedActionReason(action, snapshot: snapshot, appVersion: appVersion))
+    }
+    guard activityAllowed else {
+      return ActionAvailability(isEnabled: false,
+        disabledReason: "This action is unavailable while PickerMux removal is in progress.")
+    }
+    guard busy == nil else {
+      return ActionAvailability(isEnabled: false, disabledReason: busy == action ? nil :
+        "Wait for the current PickerMux operation to finish before starting this action.")
+    }
+    return ActionAvailability(isEnabled: true, disabledReason: nil)
+  }
+
+  static func bundledSetupAvailability(snapshot: CompanionSnapshot?, activityAllowed: Bool = true,
+                                       busy: CompanionAction? = nil) -> ActionAvailability {
+    guard let snapshot else {
+      return ActionAvailability(isEnabled: false,
+        disabledReason: "PickerMux setup is unavailable until the app can read a verified status.")
+    }
+    let state = IntegrationToggleState(snapshot: snapshot)
+    guard snapshot.usesBundledBackend, state.needsSetupUpgrade else {
+      return ActionAvailability(isEnabled: false,
+        disabledReason: "The installed PickerMux backend does not require this setup step.")
+    }
+    guard activityAllowed else {
+      return ActionAvailability(isEnabled: false,
+        disabledReason: "PickerMux setup is unavailable while removal is in progress.")
+    }
+    guard busy == nil else {
+      return ActionAvailability(isEnabled: false,
+        disabledReason: "Wait for the current PickerMux operation to finish before completing setup.")
+    }
+    if ["running", "open"].contains(snapshot.desktop.status) {
+      return ActionAvailability(isEnabled: false,
+        disabledReason: "Fully quit Codex with Command-Q before completing the installed PickerMux setup.")
+    }
+    if !["idle", "completed"].contains(snapshot.recovery.status) {
+      return ActionAvailability(isEnabled: false,
+        disabledReason: "Complete the pending repair before completing the installed PickerMux setup.")
+    }
+    if !["ready", "valid"].contains(snapshot.accountCache.status) {
+      return ActionAvailability(isEnabled: false,
+        disabledReason: "Open Codex while signed in and wait for its native model picker, then fully quit Codex and check status again.")
+    }
+    guard state.canReviewSetup else {
+      return ActionAvailability(isEnabled: false,
+        disabledReason: "PickerMux cannot safely complete setup in the current verified installation state. Review Installation details or open Help.")
+    }
+    return ActionAvailability(isEnabled: true, disabledReason: nil)
+  }
+
+  static func providerSetupAvailability(snapshot: CompanionSnapshot?, appVersion: String,
+                                        activityAllowed: Bool = true, busy: CompanionAction? = nil) -> ActionAvailability {
+    guard let snapshot else {
+      return ActionAvailability(isEnabled: false,
+        disabledReason: "LM Studio model setup is unavailable until PickerMux can read a verified status. Check status above or open Help.")
+    }
+    guard let provider = snapshot.providerConfiguration else {
+      return ActionAvailability(isEnabled: false,
+        disabledReason: snapshot.usesBundledBackend ?
+          "LM Studio model setup requires a verified installed backend. Complete or update the installed backend first." :
+          "Update the installed PickerMux backend before enabling LM Studio models.")
+    }
+    switch provider.status {
+    case .external:
+      return ActionAvailability(isEnabled: false,
+        disabledReason: "External provider configuration is already installed. PickerMux will not replace it.")
+    case .notInstalled:
+      return ActionAvailability(isEnabled: false,
+        disabledReason: "Install and enable PickerMux before configuring LM Studio models.")
+    case .unknown:
+      return ActionAvailability(isEnabled: false,
+        disabledReason: "PickerMux could not verify the provider configuration. Review Installation details or update the installed backend.")
+    case .nativeOnly:
+      break
+    }
+    guard !snapshot.usesBundledBackend else {
+      return ActionAvailability(isEnabled: false,
+        disabledReason: "LM Studio model setup requires a verified installed backend. Complete or update the installed backend first.")
+    }
+    guard snapshot.supportsNativeOnlyLMStudioSetup else {
+      return ActionAvailability(isEnabled: false,
+        disabledReason: "Update the installed PickerMux backend before enabling LM Studio models.")
+    }
+    guard snapshot.actions.contains(.lmStudioDefaultPreview), snapshot.actions.contains(.lmStudioDefaultApply) else {
+      if ["running", "open"].contains(snapshot.desktop.status) {
+        return ActionAvailability(isEnabled: false,
+          disabledReason: "Fully quit Codex with Command-Q before enabling LM Studio models.")
+      }
+      if companionBackendUpgradeAvailable(appVersion: appVersion, snapshot: snapshot) {
+        return ActionAvailability(isEnabled: false,
+          disabledReason: "Update the installed backend in Config before enabling LM Studio models.")
+      }
+      return ActionAvailability(isEnabled: false,
+        disabledReason: "LM Studio model setup is unavailable in the current verified state. Review Installation details and retry status.")
+    }
+    guard activityAllowed else {
+      return ActionAvailability(isEnabled: false,
+        disabledReason: "LM Studio model setup is unavailable while PickerMux removal is in progress.")
+    }
+    guard busy == nil else {
+      return ActionAvailability(isEnabled: false, disabledReason:
+        "Wait for the current PickerMux operation to finish before configuring models.")
+    }
+    return ActionAvailability(isEnabled: true, disabledReason: nil)
+  }
+
+  static func compactProviderNotice(for snapshot: CompanionSnapshot?) -> String? {
+    snapshot?.providerConfiguration?.status == .nativeOnly ? nativeOnlyMenuNotice : nil
+  }
+
+  static func outputSpeed(for provider: ProviderTokenUsage, in snapshot: CompanionSnapshot) -> Double? {
+    guard snapshot.supportsTokenPerformance else { return nil }
+    return snapshot.tokenPerformance?.outputTokensPerSecond(for: provider)
+  }
+
+  static func progressTitle(for action: CompanionAction) -> String {
+    action.label.hasSuffix("…") ? action.label : "\(action.label)…"
+  }
+
+  static func showsMainFeedback(for action: CompanionAction?) -> Bool {
+    guard let action else { return true }
+    return ![.updateCheck, .update, .diagnose, .fullRefresh, .usageReset,
+      .lmStudioDefaultPreview, .lmStudioDefaultApply].contains(action)
+  }
+
+  static func actionFailureMessage(for action: CompanionAction, code: String) -> String {
+    if action == .diagnose {
+      return "Installation checks found problems. Review Installation details below and open Help for the relevant recovery guidance."
+    }
+    return companionActionFailureMessage(code)
+  }
+
+  static func providerSetupFailureMessage(_ code: String) -> String {
+    if ["PREVIEW_STALE", "CONFIGURATION_CONFLICT"].contains(code) {
+      return "The reviewed model setup changed. Check status in Config, then choose Enable LM Studio models again."
+    }
+    return companionActionFailureMessage(code)
+  }
+
+  static func visibleTokenProviders(_ providers: [ProviderTokenUsage]) -> [ProviderTokenUsage] {
+    providers.filter { $0.providerId != "kolibri" }
+  }
+
+  private static func actionUnavailableWithoutStatus(_ action: CompanionAction) -> String {
+    switch action {
+    case .fullRefresh:
+      return "Full refresh is unavailable until PickerMux can read a verified status. Check status above or open Help."
+    case .usageReset:
+      return "Saved counts cannot be reset until PickerMux can read a verified status. Check status above or open Help."
+    default:
+      return "This action is unavailable until PickerMux can read a verified status."
+    }
+  }
+
+  private static func unattestedActionReason(_ action: CompanionAction, snapshot: CompanionSnapshot,
+                                             appVersion: String) -> String {
+    if snapshot.usesBundledBackend {
+      switch action {
+      case .fullRefresh:
+        return "Full refresh requires a verified installed backend. Complete or update the installed backend first."
+      case .usageReset:
+        return "Resetting saved counts requires a verified installed backend. Complete or update the installed backend first."
+      default:
+        return "This action requires a verified installed backend."
+      }
+    }
+    switch action {
+    case .fullRefresh:
+      if companionBackendUpgradeAvailable(appVersion: appVersion, snapshot: snapshot) {
+        return "Update the installed backend in Config before running Full refresh."
+      }
+      return "Full refresh is unavailable in the current verified installation state. Review Installation details and use any offered repair."
+    case .usageReset:
+      if !snapshot.supportsTokenUsageReset || snapshot.tokenUsage?.isPersistent != true {
+        return "Update the installed backend in Config before resetting accumulated counts."
+      }
+      return "Saved counts cannot be reset in the current verified installation state. Review Installation details or open Help."
+    default:
+      return "This action was not offered by the verified installed backend."
+    }
+  }
+
+  static func configStatusFailureGuidance(_ failure: CompanionFailure?) -> String {
+    guard let failure else {
+      return "PickerMux could not read a verified status. Open Help to review the installation before retrying."
+    }
+    switch failure {
+    case .missingLauncher:
+      return "The PickerMux CLI is not installed or could not be found. Open Help for installation guidance."
+    case .missingNode:
+      return "Node.js 22.15 or newer was not found at a supported location. Open Help for runtime setup."
+    case .unsafeNode:
+      return "The installed Node.js runtime could not be trusted. Open Help to review its installation."
+    case .unsafeLauncher:
+      return "PickerMux could not verify CLI ownership. Open Help to review the installed CLI."
+    case .timeout:
+      return "The installed command did not finish in time. Wait for any active operation, then retry or open Help."
+    case .outputLimit:
+      return "The installed command returned an unsupported amount of data. Open Help to review the CLI installation."
+    case .processFailed:
+      return "The installed command failed. Open Help to review the CLI installation and Node.js runtime."
+    case .incompatibleProtocol:
+      return "The app and installed CLI use incompatible control protocols. Install matching PickerMux versions."
+    }
+  }
+
+  static func statusIssueGuidance(for code: String) -> String {
+    let guidance = [
+      "metadata-unavailable": "PickerMux could not verify the installed backend version. Review the CLI installation in Help.",
+      "desktop-unavailable": "PickerMux could not determine whether Codex is running. Fully quit Codex with Command-Q before retrying.",
+      "installation-unavailable": "PickerMux could not verify the installed distribution. Review the CLI installation in Help.",
+      "managedConfig-unavailable": "PickerMux could not verify its managed Codex configuration. Keep Codex closed and review troubleshooting in Help.",
+      "service-unavailable": "PickerMux could not verify the bridge service. Review the CLI installation and Node.js runtime in Help.",
+      "compatibility-unavailable": "PickerMux could not verify Codex compatibility. Fully quit Codex and review recovery guidance in Help.",
+      "accountCache-unavailable": "PickerMux could not verify the Codex account cache. Open Codex while signed in, wait for its native picker, then fully quit it.",
+      "recovery-unavailable": "PickerMux could not verify recovery state. Keep Codex closed and review troubleshooting in Help before another change.",
+      "integration-unavailable": "PickerMux could not verify the active model-picker integration. Keep Codex closed and review troubleshooting in Help.",
+      "providerConfiguration-unavailable": "PickerMux could not verify the installed provider configuration. Review the CLI installation in Help before changing models.",
+      "configuration-conflict": "PickerMux detected Codex configuration changes it does not own. Keep Codex closed and review the configuration-conflict guidance in Help.",
+      "update-required": "Codex changed. Fully quit Codex, then use the offered repair. Full refresh becomes available again after the installation is ready.",
+      "account-cache-refresh-required": "Open Codex while signed in, wait for its native model picker, fully quit Codex, then use the offered repair.",
+      "recovery-pending": "An earlier full refresh or repair is incomplete. Keep Codex closed and use the offered resume or repair action.",
+    ]
+    return guidance[code] ??
+      "The installation reported an issue this app version does not recognize. Update PickerMux or review Help."
+  }
+}
+
 private enum MenuTypography {
   static let body = Font.system(size: 13)
   static let label = Font.system(size: 13)
   static let progress = Font.system(size: 11)
   static let metadata = Font.system(size: 11)
+}
+
+enum CompanionMenuDividerPlacement: CaseIterable, Equatable {
+  case footerBoundary
+}
+
+private struct CompanionMenuDivider: View {
+  let placement: CompanionMenuDividerPlacement
+
+  var body: some View {
+    switch placement {
+    case .footerBoundary: Divider()
+    }
+  }
 }
 
 private struct MenuRowButtonStyle: ButtonStyle {
@@ -534,8 +888,8 @@ struct CompanionPanel: View {
     } footer: {
       if !controller.removalState.backendRemoved {
         VStack(spacing: 0) {
-          Divider()
-          Button("Settings…") { controller.showSettings() }
+          CompanionMenuDivider(placement: .footerBoundary)
+          Button(CompanionPresentation.configButtonTitle) { controller.showConfig() }
           Button("Help…") { controller.showHelp() }
           Button("Quit") { NSApp.terminate(nil) }
         }
@@ -553,82 +907,87 @@ struct CompanionPanel: View {
       } else {
         VStack(alignment: .leading, spacing: 4) {
           HStack {
-            Text("Use PickerMux in Codex").font(MenuTypography.label)
+            ForEach(CompanionPresentation.menuPrimaryHeadings, id: \.self) { heading in
+              Text(heading).font(MenuTypography.label)
+            }
             Spacer()
-            Toggle("Use PickerMux in Codex", isOn: Binding(
+            Toggle(CompanionPresentation.integrationToggleTitle, isOn: Binding(
               get: { controller.integrationState.isEnabled },
               set: { controller.setIntegrationEnabled($0) }))
               .labelsHidden()
               .toggleStyle(.switch)
               .controlSize(.small)
               .disabled(!controller.integrationState.canChange)
-              .accessibilityHint(controller.integrationState.guidance)
+              .accessibilityHint(CompanionPresentation.compactIntegrationGuidance(
+                for: controller.integrationState, busy: controller.busy) ?? "Manage setup and updates in Config.")
           }
           Text(controller.integrationLabel)
             .font(MenuTypography.label.weight(.semibold))
-          Text(controller.integrationState.guidance)
-            .font(MenuTypography.metadata).foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
+          if let guidance = CompanionPresentation.compactIntegrationGuidance(
+            for: controller.integrationState, busy: controller.busy) {
+            Text(guidance)
+              .font(MenuTypography.metadata).foregroundStyle(.secondary)
+              .fixedSize(horizontal: false, vertical: true)
+          }
         }
         .padding(.horizontal, 14)
         .padding(.top, 10)
         .padding(.bottom, 8)
-        if controller.snapshot?.usesBundledBackend == true && controller.integrationState.needsSetupUpgrade {
-          Button("Complete PickerMux setup") { controller.setIntegrationEnabled(true, reviewInstalledSetup: true) }
-            .disabled(!controller.canReviewBundledBootstrap)
-        }
         if controller.backendUpgradeAvailable {
           VStack(alignment: .leading, spacing: 4) {
             Text("Backend update available").font(MenuTypography.body.weight(.semibold))
             Text("App \(controller.appVersion) · Backend \(controller.snapshot?.version ?? "unavailable")")
               .font(MenuTypography.metadata).foregroundStyle(.secondary)
             Text(["running", "open"].contains(controller.snapshot?.desktop.status ?? "") ?
-              "Fully quit Codex to review the update. You can also start it from Settings." :
-              "Review this app's backend update in Settings.")
+              "Fully quit Codex to review the update. You can also start it from Config." :
+              "Review this app's backend update in Config.")
               .font(MenuTypography.metadata).foregroundStyle(.secondary)
               .fixedSize(horizontal: false, vertical: true)
-            Button("Open update settings…") { controller.showSettings() }
+            Button("Open Config…") { controller.showConfig() }
+              .disabled(!controller.activityAllowed || controller.busy != nil)
+          }
+          .padding(.horizontal, 14)
+          .padding(.vertical, 6)
+        }
+        if let notice = CompanionPresentation.compactProviderNotice(for: controller.snapshot) {
+          VStack(alignment: .leading, spacing: 4) {
+            Text(notice).font(MenuTypography.body.weight(.semibold))
+            Text("Open Config to enable LM Studio models in the Codex model picker.")
+              .font(MenuTypography.metadata).foregroundStyle(.secondary)
+              .fixedSize(horizontal: false, vertical: true)
+            Button("Open Config…") { controller.showConfig() }
               .disabled(!controller.activityAllowed || controller.busy != nil)
           }
           .padding(.horizontal, 14)
           .padding(.vertical, 6)
         }
         if let snapshot = controller.snapshot {
-          Divider()
           TokenUsageView(snapshot: snapshot)
             .padding(.horizontal, 14)
-            .padding(.vertical, 8)
+            .padding(.top, 6)
+            .padding(.bottom, 10)
         }
-        Divider()
-        ForEach(availableActions([.refresh, .open]), id: \.self) { action in
+        ForEach(CompanionPresentation.mainActions(available: controller.snapshot?.actions ?? [])
+          .filter { [.refresh, .open].contains($0) }, id: \.self) { action in
           actionButton(action)
         }
-        Button(controller.isCheckingStatus ? "Checking…" : "Check status") {
-          Task { await controller.refreshStatus(manual: true) }
-        }
-        .disabled(controller.isCheckingStatus || !controller.activityAllowed)
-        if controller.snapshot?.actions.contains(.diagnose) == true { actionButton(.diagnose) }
         if feedbackVisible {
           VStack(alignment: .leading, spacing: 3) {
-            if controller.busy != nil {
+            if controller.busy != nil && CompanionPresentation.showsMainFeedback(for: controller.busy) {
               OperationProgress(controller: controller, compact: true)
             } else if let notice = controller.operationNotice,
-                      controller.operationNoticeAction != .updateCheck && controller.operationNoticeAction != .update {
+                      CompanionPresentation.showsMainFeedback(for: controller.operationNoticeAction) {
               Text(controller.lastSetupFailed ? "Last setup attempt: \(notice)" : notice)
                 .foregroundStyle(controller.operationFailed ? .red : .primary)
                 .fixedSize(horizontal: false, vertical: true)
               if controller.lastSetupFailed {
                 Text(controller.backendUpgradeAvailable ?
-                  "After fixing the cause, retry Update installed backend in Settings." :
-                  "After fixing the cause, turn the switch on again. Check status does not retry setup.")
+                  "After fixing the cause, retry Update installed backend in Config." :
+                  "After fixing the cause, turn the switch on again. Check status in Config does not retry setup.")
                   .fixedSize(horizontal: false, vertical: true)
               }
             } else if controller.snapshot == nil {
               Text(controller.message).fixedSize(horizontal: false, vertical: true)
-            }
-            if let notice = controller.statusCheckNotice {
-              Text(notice).font(MenuTypography.progress).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
             }
             if controller.refreshQueued {
               Text("Refresh queued until Codex fully quits.").foregroundStyle(.secondary)
@@ -638,35 +997,14 @@ struct CompanionPanel: View {
           .padding(.horizontal, 14)
           .padding(.bottom, 6)
         }
-        let maintenance = availableActions([.certify, .recover])
+        let maintenance = CompanionPresentation.mainActions(available: controller.snapshot?.actions ?? [])
+          .filter { [.certify, .recover].contains($0) }
         if !maintenance.isEmpty {
           DisclosureGroup("More actions") {
             VStack(alignment: .leading, spacing: 0) {
               ForEach(maintenance, id: \.self) { action in actionButton(action) }
             }
           }
-          .padding(.horizontal, 14)
-          .padding(.vertical, 4)
-        }
-        if let snapshot = controller.snapshot {
-          DisclosureGroup("Installation details") {
-            VStack(alignment: .leading, spacing: 4) {
-              statusRow("Status", snapshot.state)
-              statusRow("Codex", snapshot.desktop.status)
-              statusRow("Bridge", snapshot.service.status)
-              statusRow("Compatibility", snapshot.compatibility.status)
-              statusRow("Account cache", snapshot.accountCache.status)
-              statusRow("Integration", snapshot.integration.status)
-              if snapshot.recovery.status != "idle" {
-                statusRow("Recovery", snapshot.recovery.phase ?? snapshot.recovery.status)
-              }
-              if !snapshot.issues.isEmpty {
-                Text("The installation needs attention. Check it or review the available repair.")
-                  .font(MenuTypography.body).foregroundStyle(.secondary)
-              }
-            }
-          }
-          .font(MenuTypography.body)
           .padding(.horizontal, 14)
           .padding(.vertical, 4)
         }
@@ -679,12 +1017,9 @@ struct CompanionPanel: View {
   }
 
   private var feedbackVisible: Bool {
-    controller.busy != nil || controller.snapshot == nil || controller.statusCheckNotice != nil || controller.refreshQueued ||
-      (controller.operationNotice != nil && controller.operationNoticeAction != .updateCheck && controller.operationNoticeAction != .update)
-  }
-
-  private func availableActions(_ actions: [CompanionAction]) -> [CompanionAction] {
-    actions.filter { controller.snapshot?.actions.contains($0) == true }
+    (controller.busy != nil && CompanionPresentation.showsMainFeedback(for: controller.busy)) ||
+      controller.snapshot == nil || controller.refreshQueued ||
+      (controller.operationNotice != nil && CompanionPresentation.showsMainFeedback(for: controller.operationNoticeAction))
   }
 
   private func actionButton(_ action: CompanionAction) -> some View {
@@ -694,13 +1029,6 @@ struct CompanionPanel: View {
     .disabled(!controller.canRun(action))
   }
 
-  private func statusRow(_ label: String, _ status: String) -> some View {
-    HStack {
-      Text(label).foregroundStyle(.secondary)
-      Spacer()
-      Text(statusLabel(status))
-    }.font(MenuTypography.body)
-  }
 }
 
 struct TokenUsageView: View {
@@ -710,19 +1038,23 @@ struct TokenUsageView: View {
     VStack(alignment: .leading, spacing: 6) {
       Text("Token usage").font(MenuTypography.metadata).foregroundStyle(.secondary)
       if let usage = snapshot.tokenUsage {
+        let visibleProviders = CompanionPresentation.visibleTokenProviders(usage.providers)
         if usage.status == .unavailable {
           Text("Token usage is unavailable. Check the bridge status.")
             .font(MenuTypography.metadata).foregroundStyle(.secondary)
-        } else if usage.providers.isEmpty {
+        } else if visibleProviders.isEmpty {
           Text("No model requests yet.")
             .font(MenuTypography.metadata).foregroundStyle(.secondary)
         } else {
-          ForEach(usage.providers) { provider in
+          ForEach(visibleProviders) { provider in
             VStack(alignment: .leading, spacing: 6) {
               Text(provider.providerId == "lmstudio" ? "LM Studio" : provider.providerId)
                 .font(MenuTypography.label)
                 .lineLimit(1).truncationMode(.middle)
               tokenSummary("Last model request", counts: provider.last.counts)
+              if let rate = CompanionPresentation.outputSpeed(for: provider, in: snapshot) {
+                outputSpeed(rate)
+              }
               tokenSummary(usage.isPersistent ? "Since reset" : "Since bridge start", counts: provider.displayTotals)
               if let note = provider.missingUsageMessage {
                 Text(note).font(MenuTypography.metadata).foregroundStyle(.secondary)
@@ -734,10 +1066,10 @@ struct TokenUsageView: View {
                   .fixedSize(horizontal: false, vertical: true)
               }
             }
-            if provider.id != usage.providers.last?.id { Divider() }
+            .padding(.top, provider.id == visibleProviders.first?.id ? 0 : 6)
           }
         }
-        Text(usage.isPersistent ? "Saved across restarts. Reset in Settings." : "Counts reset when the bridge restarts.")
+        Text(usage.isPersistent ? "Saved across restarts. Reset in Config." : "Counts reset when the bridge restarts.")
           .font(MenuTypography.metadata).foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
       } else {
@@ -755,6 +1087,18 @@ struct TokenUsageView: View {
       tokenRow("Output", counts?.outputTokens)
       tokenRow("Total", counts?.totalTokens).fontWeight(.semibold)
     }
+  }
+
+  private func outputSpeed(_ rate: Double) -> some View {
+    HStack {
+      Text(CompanionPresentation.outputSpeedLabel).foregroundStyle(.secondary)
+      Spacer(minLength: 16)
+      Text("\(rate.formatted(.number.precision(.fractionLength(1)))) tokens/s")
+        .monospacedDigit()
+        .lineLimit(1).minimumScaleFactor(0.8)
+    }
+    .font(Font.system(size: 12))
+    .help(CompanionPresentation.outputSpeedHelp)
   }
 
   private func tokenRow(_ label: String, _ count: Int?) -> some View {
@@ -787,7 +1131,7 @@ private struct OperationProgress: View {
           TimelineView(.periodic(from: started, by: 1)) { context in
             let elapsed = max(0, Int(context.date.timeIntervalSince(started)))
             Text("Running \(elapsed / 60)m \(elapsed % 60)s" +
-              ([.configurationApply, .certify].contains(controller.busy) ? " · setup and certification may take several minutes." : "."))
+              ([.configurationApply, .lmStudioDefaultApply, .certify].contains(controller.busy) ? " · setup and certification may take several minutes." : "."))
               .font(compact ? MenuTypography.progress : CompanionTypography.progress).foregroundStyle(.secondary)
               .fixedSize(horizontal: false, vertical: true)
           }
@@ -797,18 +1141,120 @@ private struct OperationProgress: View {
   }
 }
 
-private struct CompanionSettings: View {
+private struct CompanionConfig: View {
   @ObservedObject var controller: CompanionController
 
   var body: some View {
-    ScrollView {
+    CompanionConfigViewport(height: controller.removalState.backendRemoved ? 360 : 640) {
       VStack(alignment: .leading, spacing: 16) {
-        Text("PickerMux Settings").font(.title2.weight(.semibold))
+        Text(CompanionPresentation.configHeading).font(.title2.weight(.semibold))
         if controller.removalState.backendRemoved {
           RemovalCompletionView(controller: controller)
         } else {
+          GroupBox("Installation") {
+            VStack(alignment: .leading, spacing: 10) {
+              let fullRefreshAvailability = controller.configAvailability(for: .fullRefresh)
+              HStack {
+                Button(controller.isCheckingStatus ? "Checking status…" : "Check status") {
+                  Task { await controller.refreshStatus(manual: true) }
+                }
+                .disabled(controller.isCheckingStatus || !controller.activityAllowed)
+                ForEach(CompanionPresentation.configActions(available: controller.snapshot?.actions ?? []), id: \.self) { action in
+                  Button(configActionTitle(action)) { controller.perform(action) }
+                    .disabled(action == .fullRefresh ? !fullRefreshAvailability.isEnabled : !controller.canRun(action))
+                }
+              }
+              if let reason = fullRefreshAvailability.disabledReason {
+                Text(reason).font(CompanionTypography.progress).foregroundStyle(.secondary)
+                  .fixedSize(horizontal: false, vertical: true)
+              }
+              if let failure = controller.statusFailure {
+                Text("Status check failed. \(CompanionPresentation.configStatusFailureGuidance(failure))")
+                  .font(CompanionTypography.progress).foregroundStyle(.secondary)
+                  .fixedSize(horizontal: false, vertical: true)
+              } else if let notice = controller.statusCheckNotice {
+                Text(notice).font(CompanionTypography.progress).foregroundStyle(.secondary)
+                  .fixedSize(horizontal: false, vertical: true)
+              } else if let checked = controller.lastStatusCheck {
+                Text("Last status check: \(checked.formatted(date: .omitted, time: .standard))")
+                  .font(CompanionTypography.metadata).foregroundStyle(.secondary)
+              }
+              if controller.busy == .diagnose || controller.busy == .fullRefresh {
+                OperationProgress(controller: controller)
+              }
+              if let notice = controller.operationNotice,
+                 controller.operationNoticeAction == .diagnose || controller.operationNoticeAction == .fullRefresh {
+                Text(notice).foregroundStyle(controller.operationFailed ? .red : .primary)
+                  .fixedSize(horizontal: false, vertical: true)
+              }
+              if let snapshot = controller.snapshot {
+                DisclosureGroup("Installation details") {
+                  VStack(alignment: .leading, spacing: 4) {
+                    statusRow("Status", snapshot.state)
+                    statusRow("Codex", snapshot.desktop.status)
+                    statusRow("Bridge", snapshot.service.status)
+                    statusRow("Compatibility", snapshot.compatibility.status)
+                    statusRow("Account cache", snapshot.accountCache.status)
+                    statusRow("Integration", snapshot.integration.status)
+                    if snapshot.recovery.status != "idle" {
+                      statusRow("Recovery", snapshot.recovery.phase ?? snapshot.recovery.status)
+                    }
+                    ForEach(Array(snapshot.issues.enumerated()), id: \.offset) { indexedIssue in
+                      Text(CompanionPresentation.statusIssueGuidance(for: indexedIssue.element.code))
+                        .font(CompanionTypography.body).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    }
+                  }
+                }
+              } else {
+                Text("Installation details are unavailable. Open Help to review the installation before retrying.")
+                  .font(CompanionTypography.body).foregroundStyle(.secondary)
+              }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+          }
+          GroupBox("Models") {
+            VStack(alignment: .leading, spacing: 8) {
+              let providerStatus = controller.snapshot?.providerConfiguration?.status
+              let setupAvailability = CompanionPresentation.providerSetupAvailability(
+                snapshot: controller.snapshot, appVersion: controller.appVersion,
+                activityAllowed: controller.activityAllowed, busy: controller.busy)
+              if providerStatus == .nativeOnly {
+                Text(CompanionPresentation.nativeOnlyModelsGuidance)
+                  .fixedSize(horizontal: false, vertical: true)
+              } else if providerStatus == .external {
+                Text("External provider configuration is already installed. PickerMux will not replace it. Models remain available in the Codex model picker.")
+                  .fixedSize(horizontal: false, vertical: true)
+              } else {
+                Text("Models appear in the Codex model picker after PickerMux verifies an installed provider configuration.")
+                  .fixedSize(horizontal: false, vertical: true)
+              }
+              if providerStatus != .external {
+                Button(controller.busy == .lmStudioDefaultPreview ? "Reviewing LM Studio setup…" :
+                  controller.busy == .lmStudioDefaultApply ? "Enabling LM Studio models…" :
+                  CompanionPresentation.providerSetupButtonTitle) {
+                    controller.enableLMStudioModels()
+                  }
+                  .disabled(!setupAvailability.isEnabled)
+              }
+              if providerStatus != .external, let reason = setupAvailability.disabledReason {
+                Text(reason).font(CompanionTypography.progress).foregroundStyle(.secondary)
+                  .fixedSize(horizontal: false, vertical: true)
+              }
+              if controller.busy.map({ [.lmStudioDefaultPreview, .lmStudioDefaultApply].contains($0) }) == true {
+                OperationProgress(controller: controller)
+              }
+              if let notice = controller.operationNotice,
+                 controller.operationNoticeAction.map({ [.lmStudioDefaultPreview, .lmStudioDefaultApply].contains($0) }) == true {
+                Text(notice).foregroundStyle(controller.operationFailed ? .red : .primary)
+                  .fixedSize(horizontal: false, vertical: true)
+              }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+          }
           GroupBox("Token usage") {
             VStack(alignment: .leading, spacing: 8) {
+              let resetAvailability = controller.configAvailability(for: .usageReset)
               Text(controller.snapshot?.tokenUsage?.isPersistent == true ?
                 "Accumulated counts are saved across app and bridge restarts." :
                 "Update the installed PickerMux backend to save totals across restarts and reset them here.")
@@ -816,7 +1262,11 @@ private struct CompanionSettings: View {
               Button(controller.busy == .usageReset ? "Resetting counts…" : "Reset accumulated counts…") {
                 controller.perform(.usageReset)
               }
-              .disabled(!controller.canRun(.usageReset))
+              .disabled(!resetAvailability.isEnabled)
+              if let reason = resetAvailability.disabledReason {
+                Text(reason).font(CompanionTypography.progress).foregroundStyle(.secondary)
+                  .fixedSize(horizontal: false, vertical: true)
+              }
               if let reset = controller.snapshot?.tokenUsage?.resetDate {
                 Text("Last reset: \(reset.formatted(date: .numeric, time: .shortened))")
                   .font(CompanionTypography.metadata).foregroundStyle(.secondary)
@@ -857,6 +1307,19 @@ private struct CompanionSettings: View {
                 Text("Use this app's bundled version to update the installed CLI and bridge. Provider settings are retained. This also enables PickerMux if it is off and may send live certification prompts. Fully quit Codex before reviewing the upgrade.")
                   .font(CompanionTypography.body).foregroundStyle(.secondary)
                   .fixedSize(horizontal: false, vertical: true)
+              } else if controller.snapshot?.usesBundledBackend == true && controller.integrationState.needsSetupUpgrade {
+                let setupAvailability = controller.bundledSetupAvailability
+                Button(controller.busy == .configurationApply ? "Completing PickerMux setup…" : "Complete PickerMux setup…") {
+                  controller.setIntegrationEnabled(true, reviewInstalledSetup: true)
+                }
+                .disabled(!setupAvailability.isEnabled)
+                Text("Finish installing this app's verified bundled CLI and bridge. Existing provider settings are retained, and setup may send live certification prompts.")
+                  .font(CompanionTypography.body).foregroundStyle(.secondary)
+                  .fixedSize(horizontal: false, vertical: true)
+                if let reason = setupAvailability.disabledReason {
+                  Text(reason).font(CompanionTypography.progress).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
               }
               if let notice = controller.operationNotice,
                  controller.operationNoticeAction == .updateCheck || controller.operationNoticeAction == .update || controller.operationNoticeAction == .configurationApply {
@@ -879,10 +1342,6 @@ private struct CompanionSettings: View {
           .disabled(!controller.activityAllowed)
           Text("Status is checked every five seconds. Automatic refresh is off by default and runs after Codex fully closes. Updates, additional certification and recovery require explicit confirmation.")
             .font(CompanionTypography.body).foregroundStyle(.secondary)
-          if let checked = controller.lastStatusCheck {
-            Text("Last status check: \(checked.formatted(date: .omitted, time: .standard))")
-              .font(CompanionTypography.metadata).foregroundStyle(.secondary)
-          }
           GroupBox("Remove PickerMux") {
             VStack(alignment: .leading, spacing: 10) {
               Text("Turning the Codex switch off is reversible. Fully quit and reopen Codex to load its native picker. Complete removal also deletes PickerMux's CLI, managed data, verified backups and registered provider credentials.")
@@ -894,7 +1353,7 @@ private struct CompanionSettings: View {
                 Text(notice).fixedSize(horizontal: false, vertical: true)
               } else if !controller.canRemove {
                 Text(controller.busy != nil ? "Wait for the current operation to finish before removal." :
-                  CompanionRemovalCoordinator.availability(controller.snapshot).notice ?? "Check status before removal.")
+                  CompanionRemovalCoordinator.availability(controller.snapshot).notice ?? "Check status in Config before removal.")
                   .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
               }
             }
@@ -909,7 +1368,22 @@ private struct CompanionSettings: View {
       .padding(20)
       .frame(maxWidth: .infinity, alignment: .leading)
     }
-    .frame(width: 500, height: controller.removalState.backendRemoved ? 360 : 640)
+  }
+
+  private func configActionTitle(_ action: CompanionAction) -> String {
+    if controller.busy == action {
+      return action == .diagnose ? "Checking installation…" : "Starting full refresh…"
+    }
+    return action.label
+  }
+
+  private func statusRow(_ label: String, _ status: String) -> some View {
+    HStack {
+      Text(label).foregroundStyle(.secondary)
+      Spacer()
+      Text(statusLabel(status))
+    }
+    .font(CompanionTypography.body)
   }
 }
 
@@ -944,7 +1418,7 @@ private struct CompanionHelp: View {
       if let failure = controller.statusFailure {
         Text(failure.message).font(CompanionTypography.body)
       }
-      Text("PickerMux adds models from configured providers using the OpenAI Responses API alongside native Codex models. Turn on Use PickerMux in Codex to install and activate automatically. Turn it off, then fully quit and reopen Codex to load its native picker without PickerMux models. Settings and certifications are retained for reactivation. Use Remove PickerMux completely in Settings for full removal.")
+      Text("PickerMux adds models from configured providers using the OpenAI Responses API alongside native Codex models. Turn on Use PickerMux in Codex to install and activate automatically. Turn it off, then fully quit and reopen Codex to load its native picker without PickerMux models. Configuration and certifications are retained for reactivation. Use Remove PickerMux completely in Config for full removal.")
       Text("Fully quit Codex with Command-Q and keep the configured provider and its models available during setup. New installations use LM Studio by default. Setup may send live certification test prompts.")
       Text("Requires Node.js 22.15 or newer at /opt/homebrew/bin/node, /usr/local/bin/node or /usr/bin/node. A runtime available only through a shell profile cannot be used.")
         .font(CompanionTypography.body).foregroundStyle(.secondary)
@@ -952,9 +1426,8 @@ private struct CompanionHelp: View {
         Link("Node.js downloads", destination: URL(string: "https://nodejs.org/en/download")!)
         Link("Troubleshooting", destination: URL(string: "https://github.com/patrickschiller/pickermux/blob/main/docs/TROUBLESHOOTING.md")!)
       }
-      Button("Check status") { Task { await controller.refreshStatus(manual: true) } }
-        .disabled(controller.isCheckingStatus || !controller.activityAllowed)
-      if let notice = controller.statusCheckNotice { Text(notice).font(CompanionTypography.body).foregroundStyle(.secondary) }
+      Button("Open Config…") { controller.showConfig() }
+        .disabled(!controller.activityAllowed)
     }
     .font(CompanionTypography.body)
     .controlSize(.regular)

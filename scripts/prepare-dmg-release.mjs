@@ -47,6 +47,25 @@ const RELEASE_HIGHLIGHTS = Object.freeze({
     "- Add a [36-second English explainer](https://github.com/patrickschiller/pickermux/blob/v0.22.2/README.md) with an inline GIF and downloadable MP4, using synthetic examples to explain model routing and certified web tools.",
     "- Offline regression tests cover the new review flow, cancellation, changing state and failed apply. The maintainer reported target-Mac acceptance for app startup, cancellation, manual retry and a confirmed backend upgrade to 0.22.2 with provider settings preserved.",
   ],
+  "0.24.5": [
+    "- Rename the companion's Settings window to **Config** and move Check status, Check installation and Installation details there, while keeping general token usage, Refresh picker and Open Codex in the compact menu.",
+    "- Add **Full refresh…** to Config. It uses the existing receipt-bound recovery with fresh consent, graceful Codex quits, resumable checkpoints and transactional reactivation; it cannot select a provider, model, executable or path or bypass ownership checks.",
+    "- Keep general provider token usage and validated performance visible, including **LM Studio**, while omitting provider ID `kolibri` from companion usage and performance rows. The backend's bounded private Kolibri telemetry remains intact and cannot affect routing or lifecycle authority.",
+  ],
+  "0.24.6": [
+    "- Fix the upgrade case where an intentionally valid `providers: []` service configuration was preserved: PickerMux remained native-only, so external models could not appear in the Codex model picker and the menu had no provider usage to show.",
+    "- For that exact native-only state, add Config → **Enable LM Studio models…** with a redacted preview, the explicit **Enable LM Studio** confirmation and the receipt-active bundled default. Setup requires Codex fully closed and a loaded LM Studio model, preserves bridge settings, user settings and historical chats, never overwrites an external-provider configuration, and uses transactional activation and rollback.",
+    "- Keep **Full refresh…** and **Reset accumulated counts…** visible in Config with a reason when disabled, use one divider above the Config/Help/Quit footer, and show **Output speed** only for a validated provider-specific measurement.",
+  ],
+  "0.30.0": [
+    "- Rename Settings to **Config** and consolidate status checks, installation details, updates and token reset there. Keep one footer divider and general LM Studio usage in the compact menu; provider ID `kolibri` remains hidden from usage rows.",
+    "- Add **Config → Full refresh…** through the confirmed recovery transaction, and **Enable LM Studio models…** for an explicitly native-only installation. Existing provider configurations are preserved and failure retains recoverable prior state.",
+    "- Include the experimental Apple-silicon MLX model manager and certified Kolibri function adapter from the local 0.23.x/0.24.x milestones. Profiles bind model files, runtime, tools and context; reasoning, media and compaction remain unsupported on MLX routes.",
+    "- Remove the redundant **Complete PickerMux setup** action and **Complete Codex setup…** guidance from the compact menu once PickerMux is running. Setup, backend update and recovery controls remain available in **Config** when verified state requires them.",
+    "- Fix **Config → Token usage → Reset accumulated counts…** so it becomes actionable again when the verified installed backend authorizes `usage-reset`. Reset remains explicitly confirmed and retains the last model request.",
+    "- Keep token-reset authority bound to the receipt-validated installed backend. A bundled fallback may present validated usage but cannot mutate another installed distribution or weaken lifecycle ownership checks.",
+    "- Shorten all READMEs and update the menu image from the current native view with synthetic usage. The maintainer tested the 0.30.0 candidate and approved publication.",
+  ],
 });
 
 function fail() {
@@ -57,6 +76,15 @@ function tagVersion(tag) {
   const version = typeof tag === "string" ? tag.slice(1) : "";
   if (tag !== `v${version}` || !VERSION.test(version)) fail();
   return version;
+}
+
+function versionAtLeast(version, minimum) {
+  const currentParts = version.split(".").map(Number);
+  const minimumParts = minimum.split(".").map(Number);
+  for (let index = 0; index < currentParts.length; index += 1) {
+    if (currentParts[index] !== minimumParts[index]) return currentParts[index] > minimumParts[index];
+  }
+  return true;
 }
 
 async function regularDirectory(directory) {
@@ -114,6 +142,8 @@ export async function prepareDmgRelease({ sourceDirectory, outputDirectory, tag 
   const highlights = RELEASE_HIGHLIGHTS[version];
   const upgradeInstructions = version === "0.22.2" ?
     "Keep Codex fully quit and your provider models available. For an active, verified installation with an older backend, the app automatically offers a review; confirm **Update backend** to apply it. You can also choose **Settings → Update installed backend…** to review or retry the upgrade. " :
+    versionAtLeast(version, "0.24.5") ?
+      "Keep Codex fully quit and your provider models available, then choose **Config → Update installed backend…** when offered to review and apply the bundled backend upgrade. " :
     "Keep Codex fully quit and your provider models available, then choose **Settings → Update installed backend…** when offered to review and apply the bundled backend upgrade. ";
   const notes = `PickerMux ${tag} is distributed as one universal macOS DMG.\n\n` +
     (highlights ? `Changes in ${tag}:\n\n${highlights.join("\n")}\n\n` : "") +

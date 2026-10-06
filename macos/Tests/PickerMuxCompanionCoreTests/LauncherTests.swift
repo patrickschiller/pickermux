@@ -5,11 +5,14 @@ import XCTest
 @testable import PickerMuxCompanionCore
 
 final class LauncherTests: XCTestCase {
-  func fixture() throws -> (home: URL, launcher: URL, distribution: URL) {
+  func fixture(withRuntime: Bool = false) throws -> (home: URL, launcher: URL, distribution: URL) {
     let home = FileManager.default.temporaryDirectory.appendingPathComponent("pickermux-launcher-test-\(UUID().uuidString)")
     let distribution = home.appendingPathComponent("Library/Application Support/PickerMux")
     let launcher = home.appendingPathComponent(".local/bin/pickermux")
-    for name in [".local/bin", "Library/Application Support/PickerMux/versions/0.8.3/bin", "Library/Application Support/PickerMux/versions/0.8.3/src"] {
+    var directories = [".local/bin", "Library/Application Support/PickerMux/versions/0.8.3/bin",
+      "Library/Application Support/PickerMux/versions/0.8.3/src"]
+    if withRuntime { directories.append("Library/Application Support/PickerMux/versions/0.8.3/runtime/mlx") }
+    for name in directories {
       try FileManager.default.createDirectory(at: home.appendingPathComponent(name), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
     }
     addTeardownBlock { try? FileManager.default.removeItem(at: home) }
@@ -24,8 +27,12 @@ final class LauncherTests: XCTestCase {
     XCTAssertEqual(chmod(entry.path, 0o600), 0)
     try FileManager.default.createSymbolicLink(atPath: distribution.appendingPathComponent("current").path, withDestinationPath: "versions/0.8.3")
     let versionRoot = distribution.appendingPathComponent("versions/0.8.3")
-    let fixtureFiles = try XCTUnwrap(golden["files"] as? [String: String])
-    let expectedDigest = try XCTUnwrap(golden["sha256"] as? String)
+    var fixtureFiles = try XCTUnwrap(golden["files"] as? [String: String])
+    var expectedDigest = try XCTUnwrap(golden["sha256"] as? String)
+    if withRuntime {
+      fixtureFiles.merge(try XCTUnwrap(golden["runtimeFiles"] as? [String: String])) { _, runtime in runtime }
+      expectedDigest = try XCTUnwrap(golden["runtimeSha256"] as? String)
+    }
     for (relative, text) in fixtureFiles {
       let url = versionRoot.appendingPathComponent(relative)
       try Data(text.utf8).write(to: url)
@@ -46,6 +53,48 @@ final class LauncherTests: XCTestCase {
   func testReceiptOwnedPrivateLauncherAccepted() throws {
     let files = try fixture()
     XCTAssertEqual(try LauncherValidator(home: files.home).validatedLauncher(), files.launcher)
+  }
+
+  func testReceiptOwnedDistributionWithReviewedMlxRuntimeAccepted() throws {
+    let files = try fixture(withRuntime: true)
+    XCTAssertEqual(try LauncherValidator(home: files.home).validatedEntryPoint(),
+      files.distribution.appendingPathComponent("versions/0.8.3/bin/pickermux.mjs"))
+  }
+
+  func testChangedIncompleteOrUnexpectedMlxRuntimeRejected() throws {
+    let changed = try fixture(withRuntime: true)
+    try Data("modified runtime".utf8).write(to:
+      changed.distribution.appendingPathComponent("versions/0.8.3/runtime/mlx/server.py"))
+    XCTAssertThrowsError(try LauncherValidator(home: changed.home).validatedEntryPoint())
+
+    let missing = try fixture(withRuntime: true)
+    try FileManager.default.removeItem(at:
+      missing.distribution.appendingPathComponent("versions/0.8.3/runtime/mlx/manage.py"))
+    XCTAssertThrowsError(try LauncherValidator(home: missing.home).validatedEntryPoint())
+
+    let unexpected = try fixture(withRuntime: true)
+    try Data("unreviewed".utf8).write(to:
+      unexpected.distribution.appendingPathComponent("versions/0.8.3/runtime/mlx/other.py"))
+    XCTAssertThrowsError(try LauncherValidator(home: unexpected.home).validatedEntryPoint())
+  }
+
+  func testLinkedOrSharedMlxRuntimeRejected() throws {
+    let linked = try fixture(withRuntime: true)
+    let server = linked.distribution.appendingPathComponent("versions/0.8.3/runtime/mlx/server.py")
+    XCTAssertEqual(link(server.path, linked.home.appendingPathComponent("server-hard-link").path), 0)
+    XCTAssertThrowsError(try LauncherValidator(home: linked.home).validatedEntryPoint())
+
+    let shared = try fixture(withRuntime: true)
+    let runtime = shared.distribution.appendingPathComponent("versions/0.8.3/runtime")
+    XCTAssertEqual(chmod(runtime.path, 0o750), 0)
+    XCTAssertThrowsError(try LauncherValidator(home: shared.home).validatedEntryPoint())
+
+    let symlinked = try fixture(withRuntime: true)
+    let mlx = symlinked.distribution.appendingPathComponent("versions/0.8.3/runtime/mlx")
+    let displaced = symlinked.home.appendingPathComponent("displaced-mlx")
+    try FileManager.default.moveItem(at: mlx, to: displaced)
+    try FileManager.default.createSymbolicLink(atPath: mlx.path, withDestinationPath: displaced.path)
+    XCTAssertThrowsError(try LauncherValidator(home: symlinked.home).validatedEntryPoint())
   }
 
   func testChangedSharedOrLinkedLauncherRejected() throws {

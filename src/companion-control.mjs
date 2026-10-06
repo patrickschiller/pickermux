@@ -12,8 +12,9 @@ import { getConfigStatus, previewConfigIntegration } from "./config-manager.mjs"
 import { isCodexDesktopRunning } from "./codex-desktop-state.mjs";
 import { validateDistributionInstallation } from "./distribution-installer.mjs";
 import { FULL_REFRESH_PHASES, readFullRefreshCheckpoint } from "./full-refresh.mjs";
+import { BUNDLED_LMSTUDIO_SETUP_CHANGES, providerConfigurationStatus } from "./native-only-setup.mjs";
 import { readPickerMuxMetadata } from "./version.mjs";
-import { isTokenUsageResetTime, projectTokenUsageSnapshot } from "./token-usage.mjs";
+import { isTokenUsageResetTime, projectTokenPerformanceSnapshot, projectTokenUsageSnapshot } from "./token-usage.mjs";
 import { createUsageStore } from "./usage-store.mjs";
 
 const execFile = promisify(execFileCallback);
@@ -23,6 +24,7 @@ export const COMPANION_SCHEMA_VERSION = 1;
 export const COMPANION_MAX_REQUEST_BYTES = 4_096;
 export const COMPANION_ACTIONS = Object.freeze([
   "refresh",
+  "full-refresh",
   "open",
   "recover",
   "certify",
@@ -31,6 +33,8 @@ export const COMPANION_ACTIONS = Object.freeze([
   "update",
   "configuration-preview",
   "configuration-apply",
+  "lmstudio-default-preview",
+  "lmstudio-default-apply",
   "integration-deactivate",
   "uninstall-preview",
   "uninstall",
@@ -87,6 +91,7 @@ const STATUS_ENUMS = Object.freeze({
   accountCache: ["ready", "refresh-required", "unavailable", "unknown"],
   recovery: ["idle", "pending", "completed", "unavailable", "unknown"],
   integration: ["pickermux", "ollama", "foreign", "none", "conflict", "unknown"],
+  providerConfiguration: ["native-only", "external", "not-installed", "unknown"],
 });
 const ISSUE_MESSAGES = Object.freeze({
   "metadata-unavailable": "The PickerMux version could not be verified.",
@@ -98,6 +103,7 @@ const ISSUE_MESSAGES = Object.freeze({
   "accountCache-unavailable": "The Codex account cache could not be verified.",
   "recovery-unavailable": "Recovery state could not be verified.",
   "integration-unavailable": "The active integration could not be verified.",
+  "providerConfiguration-unavailable": "The installed provider configuration could not be verified.",
   "configuration-conflict": "Configuration ownership requires review before changes.",
   "update-required": "Codex changed; check compatibility and account-cache recovery.",
   "account-cache-refresh-required": "The Codex account cache must be refreshed.",
@@ -119,7 +125,7 @@ const ERROR_MESSAGES = Object.freeze({
   UPDATE_INVALID: "The update failed integrity or distribution validation.",
   UPDATE_UNAVAILABLE: "The update service could not be reached. Try again later.",
   UPDATE_UNSUPPORTED: "No supported update package is available for this system.",
-  DOWNLOAD_REQUIRED: "Download the latest PickerMux DMG, replace the app, then update its installed backend from Settings.",
+  DOWNLOAD_REQUIRED: "Download the latest PickerMux DMG, replace the app, then update its installed backend from Config.",
   CERTIFICATION_INCOMPLETE: "Certification did not complete. Unverified models remain conservative.",
   PROVIDER_UNAVAILABLE: "The configured external provider could not be reached. Check its server and loaded models, then retry activation.",
   PROVIDER_TIMEOUT: "Model discovery timed out. Check the external provider and retry activation.",
@@ -229,13 +235,19 @@ export function parseCompanionRequest(input) {
   if (!exactKeys(request, ["schemaVersion", "action", "confirmation", "previewToken"], ["schemaVersion", "action"])) throw requestError();
   if (request.schemaVersion !== COMPANION_SCHEMA_VERSION) throw requestError("UNSUPPORTED_SCHEMA");
   if (!COMPANION_ACTIONS.includes(request.action)) throw requestError();
-  if (request.action === "recover") {
+  if (["full-refresh", "recover"].includes(request.action)) {
     const keys = ["quitCodexTwice", "interruptTasks", "invalidateCompaction"];
     if (!exactKeys(request.confirmation, keys, keys) || keys.some((key) => request.confirmation[key] !== true)) {
       throw requestError("CONFIRMATION_REQUIRED");
     }
   } else if (request.action === "configuration-apply") {
     if (!exactKeys(request.confirmation, ["replaceIntegration"], ["replaceIntegration"]) || request.confirmation.replaceIntegration !== true) {
+      throw requestError("CONFIRMATION_REQUIRED");
+    }
+    if (typeof request.previewToken !== "string" || !PREVIEW_TOKEN_PATTERN.test(request.previewToken)) throw requestError();
+  } else if (request.action === "lmstudio-default-apply") {
+    if (!exactKeys(request.confirmation, ["enableBundledLmStudio"], ["enableBundledLmStudio"]) ||
+        request.confirmation.enableBundledLmStudio !== true) {
       throw requestError("CONFIRMATION_REQUIRED");
     }
     if (typeof request.previewToken !== "string" || !PREVIEW_TOKEN_PATTERN.test(request.previewToken)) throw requestError();
@@ -255,7 +267,7 @@ export function parseCompanionRequest(input) {
   } else if (Object.hasOwn(request, "confirmation")) {
     throw requestError();
   }
-  if (!["configuration-apply", "uninstall"].includes(request.action) && Object.hasOwn(request, "previewToken")) throw requestError();
+  if (!["configuration-apply", "lmstudio-default-apply", "uninstall"].includes(request.action) && Object.hasOwn(request, "previewToken")) throw requestError();
   return {
     schemaVersion: COMPANION_SCHEMA_VERSION,
     action: request.action,
@@ -335,7 +347,7 @@ export async function collectCompanionStatus({ probes = {}, probeTimeoutMs = 5_0
   const observed = await Promise.allSettled(names.map((name) => boundedProbe(probes[name], probeTimeoutMs)));
   const snapshot = {
     schemaVersion: COMPANION_SCHEMA_VERSION,
-    capabilities: ["integration-toggle-v1", "native-uninstall-v1", "token-usage-v1"],
+    capabilities: ["integration-toggle-v1", "native-uninstall-v1", "native-only-lmstudio-setup-v1", "token-usage-v1"],
     version: "unknown",
     state: "degraded",
     tokenUsage: { schemaVersion: 1, status: "unavailable", providers: [] },
@@ -386,6 +398,8 @@ export async function collectCompanionStatus({ probes = {}, probeTimeoutMs = 5_0
         if (usage) {
           snapshot.tokenUsage = usage;
           attestedUsage = true;
+          const performance = projectTokenPerformanceSnapshot(raw.health?.tokenPerformance);
+          if (performance) snapshot.tokenPerformance = performance;
         }
       } catch { /* Optional telemetry cannot change lifecycle permissions. */ }
     }
@@ -422,6 +436,9 @@ export async function collectCompanionStatus({ probes = {}, probeTimeoutMs = 5_0
   snapshot.actions = ["diagnose", "update-check", "configuration-preview"];
   if (safeToMutate && !updateRequired && !refreshRequired) {
     snapshot.actions.push("refresh");
+    if (ready && snapshot.integration.status === "pickermux") {
+      snapshot.actions.push("full-refresh");
+    }
     if (snapshot.desktop.status === "stopped") snapshot.actions.push("certify");
     if (ready) snapshot.actions.push("open");
   }
@@ -434,15 +451,20 @@ export async function collectCompanionStatus({ probes = {}, probeTimeoutMs = 5_0
     ["installed", "not-installed"].includes(snapshot.installation.status) &&
     ["installed", "installed-marker-recovered", "not-installed", "deactivated"].includes(snapshot.managedConfig.status) &&
     ["pickermux", "ollama", "foreign", "none"].includes(snapshot.integration.status)) snapshot.actions.push("configuration-apply");
+  if (ready && snapshot.desktop.status === "stopped" && snapshot.integration.status === "pickermux" &&
+    snapshot.providerConfiguration.status === "native-only") {
+    snapshot.actions.push("lmstudio-default-preview", "lmstudio-default-apply");
+  }
   if (installed && snapshot.desktop.status === "stopped" && knownRecovery && !configurationConflict &&
     ((healthyConfig && snapshot.integration.status === "pickermux") || deactivated)) {
     snapshot.actions.push("uninstall-preview", "uninstall");
   }
   snapshot.issues = issues;
   if (snapshot.tokenUsage.schemaVersion === 2) {
-    snapshot.capabilities = ["integration-toggle-v1", "native-uninstall-v1", "token-usage-v2", "token-usage-reset-v1"];
+    snapshot.capabilities = ["integration-toggle-v1", "native-uninstall-v1", "native-only-lmstudio-setup-v1", "token-usage-v2", "token-usage-reset-v1"];
     if (installed && knownRecovery && durableResetAvailable) snapshot.actions.push("usage-reset");
   }
+  if (snapshot.tokenPerformance) snapshot.capabilities.push("token-performance-v1");
   return snapshot;
 }
 
@@ -465,6 +487,9 @@ export function createCompanionReadOnlyProbes({ paths, distributionPaths, fullRe
     metadata: () => readPickerMuxMetadata(),
     desktop: () => isCodexDesktopRunning({ execFileImpl: executeReadOnlyProbe }),
     installation,
+    providerConfiguration: async () => (await installation()).installed === true
+      ? providerConfigurationStatus(await loadConfig())
+      : { status: "not-installed" },
     tokenUsage: async () => {
       if ((await installation()).installed !== true) return null;
       const store = createUsageStore({ directory: path.join(distributionPaths.applicationDirectory, "usage") });
@@ -528,6 +553,17 @@ export function companionFailure(error) {
 
 export function companionSuccess(action, result = {}) {
   if (!COMPANION_ACTIONS.includes(action)) throw requestError();
+  if (action === "lmstudio-default-preview" && (
+    result?.status !== "native-only" || result.canApply !== true ||
+    result.requiresConfirmation !== true ||
+    !PREVIEW_TOKEN_PATTERN.test(result.previewToken ?? "") ||
+    !Array.isArray(result.changes) ||
+    result.changes.length !== BUNDLED_LMSTUDIO_SETUP_CHANGES.length ||
+    result.changes.some((change, index) => change !== BUNDLED_LMSTUDIO_SETUP_CHANGES[index])
+  )) throw requestError("ACTION_FAILED");
+  if (action === "lmstudio-default-apply" && (
+    result?.status !== "applied" || result.updated !== true || result.restartRequired !== true
+  )) throw requestError("ACTION_FAILED");
   const response = { schemaVersion: COMPANION_SCHEMA_VERSION, ok: true, code: "COMPLETE", action };
   for (const name of ["started", "resumed", "updated", "updateAvailable", "restartRequired", "certificationIncomplete", "deactivated"]) {
     if (typeof result?.[name] === "boolean") response[name] = result[name];
@@ -538,13 +574,19 @@ export function companionSuccess(action, result = {}) {
   }
   const operationId = safeOperationId(result?.operationId);
   if (operationId) response.operationId = operationId;
-  if (["configuration-preview", "configuration-apply"].includes(action)) {
-    if (["pickermux", "ollama", "foreign", "none", "conflict", "applied"].includes(result?.status)) response.status = result.status;
+  if (["configuration-preview", "configuration-apply", "lmstudio-default-preview", "lmstudio-default-apply"].includes(action)) {
+    if (["pickermux", "ollama", "foreign", "none", "conflict", "native-only", "external", "applied"].includes(result?.status)) response.status = result.status;
     for (const name of ["canApply", "requiresConfirmation"]) {
       if (typeof result?.[name] === "boolean") response[name] = result[name];
     }
-    if (Array.isArray(result?.changes)) response.changes = [...new Set(result.changes.filter((change) => COMPANION_CONFIGURATION_CHANGES.includes(change)))];
-    if (action === "configuration-preview" && typeof result?.previewToken === "string" && PREVIEW_TOKEN_PATTERN.test(result.previewToken)) response.previewToken = result.previewToken;
+    if (Array.isArray(result?.changes)) {
+      const allowed = action.startsWith("lmstudio-default-")
+        ? BUNDLED_LMSTUDIO_SETUP_CHANGES
+        : COMPANION_CONFIGURATION_CHANGES;
+      response.changes = [...new Set(result.changes.filter((change) => allowed.includes(change)))];
+    }
+    if (["configuration-preview", "lmstudio-default-preview"].includes(action) &&
+      typeof result?.previewToken === "string" && PREVIEW_TOKEN_PATTERN.test(result.previewToken)) response.previewToken = result.previewToken;
   }
   if (action === "integration-deactivate" && result?.status === "deactivated") response.status = "deactivated";
   if (action === "usage-reset") {

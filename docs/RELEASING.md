@@ -5,6 +5,10 @@ Releases. The app bundles the verified Node.js backend; Node.js itself remains
 an external prerequisite. Earlier CLI archive releases remain available at
 their immutable version-pinned URLs. PickerMux is not published to npm.
 
+The maintainer tested the 0.30.0 candidate and authorized PR merge, tagging,
+and publication on 6 October 2026. The commands below describe its production
+release procedure; every signing and verification gate still applies.
+
 ## Preflight
 
 1. Keep the version identical in the proposed tag, `package.json`, CLI output,
@@ -42,7 +46,7 @@ https://github.com/patrickschiller/pickermux/releases/latest/download/PickerMux-
 The release tag still makes a download immutable:
 
 ```text
-https://github.com/patrickschiller/pickermux/releases/download/v0.22.2/PickerMux-macos-universal.dmg
+https://github.com/patrickschiller/pickermux/releases/download/v0.30.0/PickerMux-macos-universal.dmg
 ```
 
 The build retains its versioned DMG, app archive, backend manifest, companion
@@ -65,9 +69,9 @@ key available to `codesign`; the profile must already be usable by `notarytool`.
 Use fresh output directories, since the tools refuse to replace existing ones:
 
 ```bash
-node scripts/build-companion.mjs --release --output /tmp/pickermux-signed-0.22.2
-node scripts/prepare-dmg-release.mjs --source /tmp/pickermux-signed-0.22.2 --output /tmp/pickermux-public-0.22.2 --tag v0.22.2
-node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.22.2 --tag v0.22.2
+node scripts/build-companion.mjs --release --output /tmp/pickermux-signed-0.30.0
+node scripts/prepare-dmg-release.mjs --source /tmp/pickermux-signed-0.30.0 --output /tmp/pickermux-public-0.30.0 --tag v0.30.0
+node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.30.0 --tag v0.30.0
 ```
 
 The release builder signs and notarizes the app and DMG separately, staples
@@ -117,8 +121,8 @@ maintainer's Mac when using the local production route.
 After the exact approved commit is on main and all gates are ready:
 
 ```bash
-git tag -a v0.22.2 -m "PickerMux v0.22.2"
-git push origin v0.22.2
+git tag -a v0.30.0 -m "PickerMux v0.30.0"
+git push origin v0.30.0
 ```
 
 Watch the workflow through publication. If a candidate is wrong, fix the
@@ -142,10 +146,10 @@ production signing requirements above remain mandatory.
    replace its assets.
 
 ```bash
-node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.22.2 --tag v0.22.2
-gh release create v0.22.2 /tmp/pickermux-public-0.22.2/PickerMux-macos-universal.dmg \
-  --verify-tag --title "PickerMux v0.22.2" \
-  --notes-file /tmp/pickermux-public-0.22.2/release-notes.md
+node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.30.0 --tag v0.30.0
+gh release create v0.30.0 /tmp/pickermux-public-0.30.0/PickerMux-macos-universal.dmg \
+  --verify-tag --title "PickerMux v0.30.0" \
+  --notes-file /tmp/pickermux-public-0.30.0/release-notes.md
 ```
 
 Complete the independent public-download verification below before announcing
@@ -169,11 +173,139 @@ use public bytes, rather than the local build directory.
 
 DMG update checks hand off to a locally constructed, version-pinned GitHub URL.
 They do not execute the image or install a downloaded CLI. After replacing the
-app, users explicitly review **Update installed backend** in Settings. The
+app, users explicitly review **Update installed backend** in Config. The
 pinned backend upgrades through the existing setup transaction, preserving
 installed provider settings. Cancellation and failed activation must retain
 usable prior state; ordinary removal and deactivation continue using the
 validated installed backend.
+
+## 0.30.0 compact-menu and installed-runtime acceptance
+
+Version 0.30.0 removes duplicate setup-completion prompts from
+the compact menu and restores token reset when the receipt-owned distribution
+contains the reviewed optional MLX runtime. It preserves the bundled backend's
+mutation boundaries and retains setup, update, reset,
+ownership, or rollback checks.
+
+On an explicitly authorized target with the reviewed 0.30.0 app and matching
+backend:
+
+1. Exercise ready, first-setup, older-installed-backend, Codex-running,
+   native-only, missing-status, and busy snapshots. Confirm the compact menu
+   never contains **Complete PickerMux setup** or **Complete Codex setup…**.
+   The integration switch, provider usage, ordinary picker actions, and one
+   divider above Config/Help/Quit must retain their existing behavior.
+2. Confirm Config remains the sole setup/update recovery surface: it must expose
+   the applicable installed-backend setup or update review, status and
+   installation details, and a bounded disabled reason when prerequisites are
+   unmet. Cancellation, stale preview, Codex-running, concurrent change, and
+   activation failure must retain the prior installed state.
+3. Use a receipt-owned candidate distribution containing exactly
+   `runtime/mlx/{kolibri.py,manage.py,model_store.py,server.py}`. Confirm status
+   selects the installed backend and **Config → Token usage → Reset
+   accumulated counts…** is enabled when `usage-reset` is otherwise authorized.
+   Confirming reset must clear accumulated counts, set a canonical reset time,
+   and retain the last model request without changing routing, credentials,
+   certification, or configuration.
+4. In isolated fixtures, independently test a missing runtime file, added file
+   or directory, changed bytes, hard link, symbolic directory, and group/world-
+   accessible runtime directory. Each case must fail before the installed
+   entry point executes. The app's manifest-verified bundled fallback must not
+   gain `usage-reset` or write another distribution's durable usage store.
+5. Build and stage fresh 0.30.0 artifacts, then inspect the generated notes and
+   canonical release record. They must describe the menu cleanup, Config-only
+   setup/update recovery, strict optional-runtime validation, restored reset,
+   and unchanged security/transaction boundaries. Complete every public
+   release gate above before tagging and publication.
+
+## 0.24.6 native-only setup and menu-state acceptance
+
+This local development build fixes the case where the prior valid
+`providers: []` configuration was preserved across an update, leaving no
+external route for the Codex model picker and no provider usage for the menu.
+It adds one receipt-active, fixed LM Studio migration; it does not add a general
+provider editor or authorize publication. Offline review must cover the redacted
+preview, exact confirmation grammar, stale/concurrent state, installed-source
+binding, no-overwrite rule, transaction/rollback, and private-data redaction.
+
+On an explicitly authorized target with the reviewed 0.24.6 app and matching
+backend:
+
+1. Start from a verified active `providers: []` installation. Confirm that the
+   Codex model picker contains only native models and that the menu shows no
+   invented LM Studio provider usage. Confirm Config offers **Enable LM Studio
+   models…** only in this exact state.
+2. Keep Codex running and confirm setup cannot start. Fully quit it, keep LM
+   Studio stopped or with no loaded LLM, and confirm the prerequisite blocks
+   setup without changing service configuration. Then start the server and load
+   one test model.
+3. Open **Enable LM Studio models…**, inspect the **Enable LM Studio models?**
+   preview, and cancel. Confirm no state changed. Review again and choose
+   **Enable LM Studio**. Require the receipt-active bundled default, exact
+   preview token, fresh preflight and transactional setup; inject stale preview,
+   concurrent edit and activation failure paths and confirm recoverable prior
+   state.
+4. Verify that bridge settings, unrelated Codex settings and historical chats
+   remain intact. Repeat with a nonempty external-provider configuration and
+   confirm the LM Studio action is not authorized and no configuration bytes are
+   replaced. Do not record endpoints, model IDs, credentials, prompts, paths, or
+   private receipts as evidence.
+5. After successful setup, reopen Codex and confirm the loaded external model
+   appears in the Codex model picker. Complete a request and confirm the compact
+   menu labels the provider and its usage rather than showing an individual
+   model list.
+6. Across ready, missing-status, older-backend, bundled-backend, and busy states,
+   confirm **Full refresh…** and **Reset accumulated counts…** remain visible in
+   Config. Each disabled control must show its bounded reason. Confirm the
+   compact menu has exactly one divider above the Config/Help/Quit footer and no
+   divider between those three rows.
+7. Supply matching and mismatched synthetic performance snapshots. Confirm the
+   label is **Output speed**, a row appears only for a finite measurement bound
+   to that provider's latest completed request, and no generic, stale, or
+   cross-provider rate is shown. The existing `kolibri` UI filter must not alter
+   backend telemetry.
+8. Generate and verify the 0.24.6 candidate notes locally. They must describe
+   the native-only root cause, fixed confirmed LM Studio setup, model-picker vs
+   provider-menu distinction, disabled-state visibility, single footer divider,
+   and conditional Output speed while retaining the historical 0.24.5 text.
+   Do not tag or publish 0.24.6 without separate authorization and every public
+   release gate above.
+
+## 0.24.5 Config, full-refresh, and token-presentation acceptance
+
+This release reorganizes native presentation and adds one finite companion
+action without widening backend authority. Source review and offline tests must
+cover the exact `full-refresh` request grammar, fresh-status enforcement,
+receipt-bound scheduling, cancellation/failure, and rejection of provider,
+model, executable, path, or force fields. UI filtering of provider ID `kolibri`
+must not remove or mutate bounded backend telemetry or durable usage data.
+
+On an explicitly authorized target with the reviewed app and matching backend:
+
+1. Open the compact menu with no operation running. Confirm that general
+   **Token usage**, **Refresh picker**, and **Open Codex** remain directly
+   visible. Confirm that **Check status**, **Check installation**,
+   **Installation details**, and **Full refresh…** occur only in **Config**.
+2. Exercise Config, Help, and Quit repeatedly. Config and Help must reuse their
+   windows. Confirm that update checks, app/backend versions, preferences,
+   token reset, and complete removal remain reachable in Config.
+3. With a verified active installation and Codex running, select **Full
+   refresh…** and cancel the confirmation. No lifecycle state may change. In an
+   authorized recovery run, require the same three consents, two graceful quits,
+   private checkpoint, native-cache refresh, and transactional reactivation as
+   `pickermux refresh --full`. Refused quits, changed ownership, pending
+   recovery, and failed reactivation must retain recoverable state.
+4. Complete provider requests with valid and missing usage. Confirm that
+   non-Kolibri provider totals remain visible, `lmstudio` is labelled **LM
+   Studio**, and unavailable/partial states are unchanged. Confirm that every
+   visible usage and performance row omits exactly provider ID `kolibri` while
+   the bounded `companion status` projection and private ledger retain its
+   telemetry. Do not capture prompts, response text, endpoints, model IDs, or
+   capability URLs as evidence.
+5. Prepare and verify the 0.24.5 release notes. They must use **Config → Update
+   installed backend…**, describe the guarded full refresh and UI-only Kolibri
+   filter, contain one canonical DMG record, and leave earlier version-specific
+   release text unchanged.
 
 ## 0.22.2 automatic backend review and explainer acceptance
 

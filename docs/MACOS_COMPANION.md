@@ -1,6 +1,6 @@
 # macOS companion
 
-PickerMux 0.22.2 includes a SwiftUI menu-bar app with native macOS controls for inspecting and
+PickerMux 0.30.0 includes a SwiftUI menu-bar app with native macOS controls for inspecting and
 operating the existing PickerMux installation. It requires macOS 13 or newer,
 Apple silicon or Intel, and Node.js 22.15.0 or newer. The supported Node
 locations are `/opt/homebrew/bin/node`, `/usr/local/bin/node`, and
@@ -49,30 +49,36 @@ bridge state, compatibility, account-cache status, integration ownership, and
 any recovery phase. Status is checked on a five-second polling cycle; slow
 checks can extend that interval. The backend isolates failed probes so one
 broken component does not disclose raw diagnostics or discard other results.
-Manual **Check status** requests wait behind a running check and show a visible
+Manual **Config → Check status** requests wait behind a running check and show a visible
 checking state followed by the completion time, even when the result is
-unchanged. **Settings…** and **Help…** open persistent, reusable windows.
+unchanged. **Config…** and **Help…** open persistent, reusable windows.
 Actions show their current progress while setup or certification
 is running; keep configured models available until the operation finishes. A setup
 failure describes the last attempt. A successful status check inspects the
 installation and Codex state; it does not prove that the model server is
 reachable. After addressing the error, turn the switch on again to retry setup.
 
-The compact 320-point menu places integration state and token usage before
-the full-width **Refresh picker**, **Open Codex**, **Check status**, and
-**Check installation** rows, with specific feedback below those actions.
-**More actions** groups certification and repair; **Installation details**
-expands below. **Settings…**, **Help…**, and **Quit** appear as separate menu rows
-at the bottom. Bridge actions are offered according to the verified state
-and are disabled while another operation is running.
+The compact 320-point menu places integration state and general token usage
+before the full-width **Refresh picker** and **Open Codex** rows. External models
+themselves appear in the Codex model picker; this menu labels providers and
+their usage rather than duplicating the model list. A single divider precedes
+the **Config…**, **Help…**, and **Quit** footer group, with no dividers between
+those three rows. It no longer shows **Complete PickerMux setup** or **Complete
+Codex setup…**. Config is the single home for **Check status**, **Check
+installation**, **Installation details**, initial/installed-backend setup and
+update recovery, and **Full refresh…**, together with preferences, updates,
+token reset, and removal. **Full refresh…** and **Reset accumulated counts…**
+remain visible when the verified backend does not authorize them and show the
+specific reason they are disabled. Other bridge actions are offered according
+to the verified state and are disabled while another operation is running.
 
-The menu also shows when the app includes a newer backend than the
-validated installed version, with an action to open Settings. That guidance
-remains visible while Codex is running; completing the upgrade still requires
-Codex to be fully closed.
+Config shows when the app includes a newer backend than the validated installed
+version and keeps the reviewed update action and its bounded disabled reason
+there. The compact menu does not add a setup-completion row. Completing the
+upgrade still requires Codex to be fully closed.
 
-**Check status**, **Help…**, **Settings…**, and **Quit** remain visible when a
-status check fails. Help explains the Node.js requirement and opens
+**Config…**, **Help…**, and **Quit** remain visible when a status check fails;
+Config retains the retry. Help explains the Node.js requirement and opens
 only the fixed official download or troubleshooting links you choose.
 Homebrew-installed Node.js is supported; an existing runtime that fails
 validation needs review rather than an automatic reinstallation. See
@@ -81,9 +87,19 @@ Bridge actions remain unavailable until a validated status permits them.
 
 ## Token usage
 
-The panel shows **Token usage** for each external provider with recorded usage.
+The panel shows **Token usage** for each visible external provider with recorded
+usage. Provider ID `lmstudio` is labelled **LM Studio**. Provider ID `kolibri`
+is intentionally omitted from every companion usage and performance row. The
+backend continues to collect, validate, and retain its bounded private Kolibri
+telemetry; filtering its presentation does not change requests, routing,
+certification, the durable ledger, or lifecycle authority.
 **Last model request** and **Since reset** are stacked vertically, each showing
 Input, Output, and Total values with right-aligned counts.
+When the backend supplies `token-performance-v1`, the menu adds **Output speed**
+only if a finite provider-specific duration and output count match that same
+provider's latest completed request. The value is output tokens per second and
+excludes prompt processing and network transfer time. Missing, stale, generic,
+or cross-provider timing produces no speed row; PickerMux does not infer a rate.
 The last request is the one that most recently finished, including when
 several chats run concurrently. A user turn can make several model requests
 for tools and context summaries; each is counted once. The values are updated
@@ -119,7 +135,7 @@ path are counted. No account-wide usage or billing total is queried.
 
 Private local usage storage preserves accumulated counts and the last model
 request across bridge restarts, refreshes, backend upgrades, and companion
-restarts. **Settings → Token usage → Reset accumulated counts…** clears the
+restarts. **Config → Token usage → Reset accumulated counts…** clears the
 accumulated counts for all recorded providers and starts a new **Since reset**
 total. It retains each provider's last model request. Usage before installing
 a persistence-capable backend cannot be reconstructed after an older bridge
@@ -134,8 +150,20 @@ makes usage unavailable; it does not stop model routing or authorize an
 overwrite. Reset is offered only when the installed backend validates the
 reset authority. An existing empty usage directory or a missing statistics
 file shows usage as unavailable until you explicitly choose **Reset accumulated
-counts…**; new requests do not silently restart the totals at zero. This narrow
-recovery does not permit overwriting malformed or foreign statistics files.
+counts…**; new requests do not silently restart the totals at zero. The reset
+control remains visible when unavailable, with a reason explaining the missing
+verified authority. This narrow recovery does not permit overwriting malformed
+or foreign statistics files.
+
+Version 0.30.0 also recognizes the optional reviewed `runtime/mlx` payload in a
+receipt-owned installed distribution. Recognition requires the exact four-file
+inventory, private real directories and files, single-link regular files, size
+bounds, and byte-for-byte inclusion in the receipt-bound distribution digest.
+A valid installation therefore remains the source of the `usage-reset` action
+instead of being mistaken for an unavailable installed launcher. Missing,
+additional, changed, linked, or shared runtime state still fails closed, and
+the app's bundled fallback never gains permission to reset another installed
+backend's durable usage store.
 
 Stored usage contains canonical configured provider IDs, availability, numeric
 counters, the reset time, and private storage bookkeeping, never model names,
@@ -167,6 +195,26 @@ system, HTTP 401/403 authentication, and malformed JSON or unsupported model
 metadata. Other failures retain a generic safe message rather than claiming
 the server is stopped. Failed preflight does not install or activate anything.
 
+An earlier explicit `providers: []` installation is different from a stopped
+LM Studio server: it has no external provider configured at all. Upgrades
+correctly preserved that native-only service configuration, so there was no
+provider model for the Codex model picker and no provider usage for the menu.
+When the current receipt-active installation is otherwise ready and Codex is
+fully closed, Config shows **Enable LM Studio models…** for only that exact
+state. The **Enable LM Studio models?** review names the fixed preservation and
+rollback changes; **Enable LM Studio** sends the exact preview token and consent.
+LM Studio must be running with at least one loaded LLM.
+
+The setup copies only the bundled release's fixed LM Studio provider into a
+target that retains the installed bridge settings. It preserves unrelated user
+settings and historical chats, accepts no GUI-selected endpoint, model,
+credential, or path, and refuses any configuration that already contains an
+external provider. The apply path rechecks the preview and installed bytes
+inside the ordinary setup transaction. A stale preview, concurrent change, or
+activation failure cannot leave a partial replacement; rollback restores the
+previous native-only state. Post-activation certification retains the existing
+explicit incomplete-certification recovery semantics.
+
 Turning the toggle off authorizes deactivation. PickerMux stops its
 bridge and removes the active integration from the Codex root, while retaining
 the CLI, service configuration, original backup, certification receipts and
@@ -182,8 +230,9 @@ generated mixed catalog retained on disk is inactive while the toggle is off;
 the inert provider alias adds no picker models. A historical chat may still
 show its former model selection until you choose a native model.
 
-Setup and status details live under **Installation details** so that the
-integration control remains prominent.
+Setup, backend-update recovery, and status details live under **Config →
+Installation details** so that the integration control remains prominent in
+the compact menu without separate setup-completion prompts.
 The app has a dedicated Finder/Dock icon compiled from the versioned
 [master artwork](../macos/Resources/AppIcon.md).
 Its separate monochrome [menu-bar mark](../macos/Resources/MenuBarIcon.md)
@@ -196,14 +245,17 @@ The menu offers actions according to the current validated state:
 | Use PickerMux in Codex | Automatically install/reactivate when turned on; deactivate while retaining installed state when turned off. |
 | Refresh picker | Run the ordinary transaction with Codex fully closed. It does not quit Codex or submit certification prompts. |
 | Open Codex | Open Codex after the ready integration and active CLI have been verified. A refreshed catalog is loaded at app startup. |
-| Repair after a Codex update… | Confirm two graceful quits, possible task interruption, and invalidation of earlier encrypted compaction continuations, then schedule the independent recovery helper. |
+| Full refresh… (Config) | Confirm two graceful quits, possible task interruption, and invalidation of earlier encrypted compaction continuations, then schedule the independent receipt-bound recovery helper. |
 | Certify models… | Confirm live provider probes for the discovered models. Keep Codex closed and configured models available; allow several minutes per model. |
-| Check installation | Run the deterministic doctor without live inference. |
-| Check for PickerMux updates (Settings) | Inspect the fixed public release endpoint without modifying the installation. |
-| Download DMG (Settings) | Open the exact version-pinned GitHub download for a validated newer app release. |
-| Update installed backend (Settings) | Review setup using the verified newer backend bundled with the app; preserve installed provider settings. |
-| Reset accumulated counts… (Settings → Token usage) | Clear all providers' accumulated usage while retaining each last model request. |
-| Remove PickerMux completely… (Settings) | Preview and confirm native Codex restoration plus complete owned removal, then stop background actions and explain app deletion in Finder. |
+| Check status (Config) | Refresh the bounded installation and Codex snapshot without provider inference. |
+| Check installation (Config) | Run the deterministic doctor without live inference. |
+| Installation details (Config) | Show the bounded setup, version, service, and compatibility details returned by status. |
+| Check for PickerMux updates (Config) | Inspect the fixed public release endpoint without modifying the installation. |
+| Download DMG (Config) | Open the exact version-pinned GitHub download for a validated newer app release. |
+| Update installed backend (Config) | Review setup using the verified newer backend bundled with the app; preserve installed provider settings. |
+| Enable LM Studio models… (Config) | For an exact native-only installation, preview and confirm the fixed receipt-active bundled LM Studio setup; preserve bridge/user/chat settings and refuse external-provider configurations. |
+| Reset accumulated counts… (Config → Token usage) | Clear all providers' accumulated usage while retaining each last model request. |
+| Remove PickerMux completely… (Config) | Preview and confirm native Codex restoration plus complete owned removal, then stop background actions and explain app deletion in Finder. |
 
 The app controls models from the installed provider configuration, including
 local or remote compatible Responses providers. New GUI installations use
@@ -218,7 +270,7 @@ must keep their configured models available. Model downloads,
 load/unload controls, and chaining an active Ollama gateway through PickerMux
 are outside this release.
 
-In **Settings**, login startup uses `SMAppService.mainApp`. Automatic refresh
+In **Config**, login startup uses `SMAppService.mainApp`. Automatic refresh
 and notifications are off by default. An enabled automatic refresh runs once
 after Codex changes from running to fully stopped, while the integration is
 ready and no operation or recovery is pending. It does not repair mismatches,
@@ -226,14 +278,14 @@ change configuration, certify models, update software, or quit Codex.
 Notifications concern meaningful actionable state changes rather than every
 poll. macOS may require approval in **System Settings > General > Login Items**
 or notification settings.
-Update checks, their results, and app/backend versions also live in Settings.
-Opening or reopening Settings does not automatically download or activate an
+Update checks, their results, and app/backend versions also live in Config.
+Opening or reopening Config does not automatically download or activate an
 update. Recovery, live certification and software updates still require their
 explicit asynchronous confirmation before starting.
 
 ## Remove PickerMux completely
 
-Fully quit Codex with **Command-Q**, then choose **Settings → Remove PickerMux
+Fully quit Codex with **Command-Q**, then choose **Config → Remove PickerMux
 completely…**. The app obtains a fresh removal preview and asks for explicit
 consent before deleting the integration, runtime, CLI, certifications, verified
 backups and registered PickerMux provider credentials. It restores native Codex
@@ -255,7 +307,7 @@ backend purge. Quit the app, move **PickerMux.app** from Applications to the
 Trash in Finder, and reopen Codex. The app does not delete its own bundle.
 
 After reopening an app whose integration and CLI are already absent, removal
-is disabled because there is nothing left to uninstall. The Settings message
+is disabled because there is nothing left to uninstall. The Config message
 directs you to quit and delete the remaining app in Finder. It does not ask you
 to reinstall or update the CLI. Partial or unknown installation state is
 reported separately and never treated as confirmed absence.
@@ -330,6 +382,13 @@ requests and on its background poll. The companion observes that verdict and
 the independently checked account cache. It offers recovery when required;
 cache age alone does not trigger it.
 
+Choose **Config → Full refresh…** for a deliberate refresh of native account
+visibility even when ordinary status is ready. The button remains visible in
+Config; it is enabled only for a verified active installation and otherwise
+shows a specific disabled reason. Codex may be running because the independent
+helper performs both graceful quits after confirmation. The request cannot
+select a provider, model, executable, configuration path, or force option.
+
 The confirmation explicitly covers two graceful quits, interrupted active
 tasks, and the capability replacement that prevents replay of earlier
 encrypted compaction continuations. The helper follows these recorded phases:
@@ -361,14 +420,29 @@ CLI. The bundled backend is limited to status, diagnosis, update checks,
 configuration preview, and explicitly confirmed setup through configuration
 apply.
 
+The installed-launcher validator hashes the complete receipt-owned
+distribution before process creation. Its optional `runtime/mlx` subtree is
+accepted only as `kolibri.py`, `manage.py`, `model_store.py`, and `server.py`
+under private real directories; each entry must be a private single-link
+regular file within the existing size budget. Those names and bytes join the
+same canonical distribution digest as `bin`, `src`, and the top-level payload.
+An incomplete or extended runtime is unsafe, not a reason to weaken validation.
+The app-bundled copy independently requires the same complete path set, sizes,
+and hashes in its compiler-pinned release manifest and rejects unmanifested
+runtime entries.
+This check restores selection of a valid installed 0.30.0 backend without
+giving the bundled backend ordinary mutation authority.
+
 Read-only status can also be inspected from the CLI:
 
 ```bash
 pickermux companion status
 ```
 
-Its direct JSON snapshot has `schemaVersion: 1`, the fixed
-`capabilities: ["integration-toggle-v1", "native-uninstall-v1", "token-usage-v2", "token-usage-reset-v1"]` markers,
+Its direct JSON snapshot has `schemaVersion: 1`, the fixed base
+`capabilities: ["integration-toggle-v1", "native-uninstall-v1",
+"native-only-lmstudio-setup-v1", "token-usage-v2",
+"token-usage-reset-v1"]` markers,
 the PickerMux version, fixed
 component status enums, a state, allowed actions, and fixed safe issues. Recovery
 contains only a known phase and an operation UUID. `tokenUsage` contains a
@@ -381,7 +455,13 @@ verified installed backend's private usage store while the bridge is stopped.
 Missing or invalid usage becomes an unavailable empty
 snapshot without changing lifecycle permissions. Older finite status payloads
 without usage or with `token-usage-v1` remain readable. The v1 and v2 usage
-capabilities are mutually exclusive. No path, capability URL, model/account
+capabilities are mutually exclusive. When the bounded optional performance
+projection is present, `token-performance-v1` is appended and carries volatile
+latest-request output-generation timing; it is not written to the durable usage
+ledger. The companion filters only provider ID `kolibri` from presentation,
+not from this validated backend protocol. `providerConfiguration` projects only
+`native-only`, `external`, `not-installed`, or `unknown`; provider identities and
+endpoints are never exposed by that status field. No path, capability URL, model/account
 identifier, prompt, credential, or raw exception is returned.
 
 `run` accepts exactly one UTF-8 JSON request from stdin, up to 4,096 bytes,
@@ -392,21 +472,29 @@ unknown schema versions, and arbitrary action parameters. For example:
 printf '%s\n' '{"schemaVersion":1,"action":"configuration-preview"}' | pickermux companion run
 ```
 
-The finite actions are `refresh`, `open`, `recover`, `certify`, `diagnose`,
+The finite actions are `refresh`, `full-refresh`, `open`, `recover`, `certify`, `diagnose`,
 `update-check`, `update`, `configuration-preview`, `configuration-apply`,
-`integration-deactivate`, `usage-reset`, `uninstall-preview`, and `uninstall`.
-Recovery requires `confirmation` containing exactly `quitCodexTwice: true`,
+`lmstudio-default-preview`, `lmstudio-default-apply`, `integration-deactivate`,
+`usage-reset`, `uninstall-preview`, and `uninstall`.
+Both deliberate `full-refresh` and mismatch-driven `recover` require
+`confirmation` containing exactly `quitCodexTwice: true`,
 `interruptTasks: true`, and `invalidateCompaction: true`. Configuration apply
 requires the exact prior `previewToken` and
 `confirmation: {"replaceIntegration": true}`. Paths, provider selections,
 executables, and `force` are not part of the request schema.
+The LM Studio preview is read-only but available only from the receipt-active
+installed source with Codex stopped and an exact native-only configuration. It
+returns only the fixed changes and a digest token. Apply requires that exact
+token and `confirmation: {"enableBundledLmStudio": true}`, repeats the preview
+before and within transactional setup, and accepts no provider, model, endpoint,
+credential, or path fields. A nonempty provider configuration fails closed.
 Deactivation requires exactly
 `confirmation: {"deactivateIntegration": true}` and a freshly verified active
 integration with Codex stopped. It is available only through the receipt-owned
 installed CLI. The app detects older backends even when both versions are
 labelled 0.9.0; the missing capability marker selects its pinned setup backend
 before any mutation. Confirm setup to upgrade that CLI before deactivating.
-The current 0.22.2 payload installs into its own version directory; the older
+The current 0.30.0 payload installs into its own version directory; the older
 0.9.0 contents are never overwritten to add this feature.
 
 `usage-reset` requires exactly
@@ -453,7 +541,7 @@ retain their existing archive/manifest/checksum verification path.
 
 Quit PickerMux, replace its app from the reviewed DMG, eject the image, and
 reopen the copied app. If its canonical version is newer than the validated
-installed backend, Settings offers **Update installed backend**. Keep Codex
+installed backend, Config offers **Update installed backend**. Keep Codex
 closed, ensure its native account cache is ready, and review the setup change.
 Updating an inactive installation also activates it; the confirmation explains
 that setup can send live model-certification prompts.
@@ -470,7 +558,7 @@ transaction.
 The automatic review appears at most once for each app/backend version pair
 within the running app process. Cancelling it or encountering an upgrade failure
 prevents repeated popups for that pair during the same session. Use
-**Settings → Update installed backend…** to retry explicitly after addressing
+**Config → Update installed backend…** to retry explicitly after addressing
 the problem. An inactive, foreign, or unsafe integration receives no automatic
 activation offer; the existing manual review remains available when its checks
 permit explicit setup. The 0.22.1 app requires the manual Settings action and
@@ -504,8 +592,8 @@ node scripts/build-companion.mjs --output /tmp/pickermux-companion-development
 
 Choose a new output directory for each build; the builder refuses to replace
 one. The output contains `PickerMux.app`,
-`PickerMux-v0.22.2-macos-universal.tar.gz`,
-`PickerMux-v0.22.2-macos-universal.dmg`, `companion-manifest.json`, and
+`PickerMux-v0.30.0-macos-universal.tar.gz`,
+`PickerMux-v0.30.0-macos-universal.dmg`, `companion-manifest.json`, and
 `SHA256SUMS`. The universal binary contains `arm64` and `x86_64` slices
 targeting macOS 13. The manifest distinguishes `unsigned-development`,
 `apple-development` and `developer-id-notarized` artifacts and binds the bundled backend manifest,
@@ -586,6 +674,11 @@ and independent public-download verification.
 
 ## Acceptance status
 
+The maintainer tested the 0.30.0 candidate and approved release on
+6 October 2026, including the compact menu and Config token reset. Public
+distribution additionally requires the production signing and download checks
+in [Releasing PickerMux](RELEASING.md).
+
 The maintainer confirmed the 0.8.3 live baseline on 1 October 2026. That is
 the working starting point for 0.9.0 and does not validate new app behavior.
 Offline Node/Swift tests and an unsigned universal build cannot establish the
@@ -601,7 +694,7 @@ following live checks:
 - A real signed/notarized app and DMG, drag-to-install/open after ejecting the
   image, and app/CLI upgrade through the release channel.
 
-These remain release acceptance checks. The release build requires a usable
+Apply the relevant release acceptance checks to each candidate. The release build requires a usable
 Developer ID Application identity with its private key and an existing
 notarytool Keychain profile. An Apple Development identity does not fulfill
 this distribution requirement. Offline tests and development artifacts do

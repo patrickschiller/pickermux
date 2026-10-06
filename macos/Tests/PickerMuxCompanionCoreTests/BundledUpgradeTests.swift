@@ -18,11 +18,11 @@ final class BundledUpgradeTests: XCTestCase {
     let status = try await value.status()
     XCTAssertEqual(status.version, "0.9.5")
     XCTAssertFalse(status.usesBundledBackend)
-    for action in [CompanionAction.refresh, .integrationDeactivate, .uninstallPreview, .uninstall] {
+    for action in [CompanionAction.refresh, .fullRefresh, .integrationDeactivate, .uninstallPreview, .uninstall] {
       _ = try await value.run(action, confirmed: true, previewToken: String(repeating: "b", count: 64))
     }
-    XCTAssertEqual(executor.requests.map(\.source), Array(repeating: "installed", count: 4))
-    XCTAssertEqual(executor.requests.map(\.action), ["refresh", "integration-deactivate", "uninstall-preview", "uninstall"])
+    XCTAssertEqual(executor.requests.map(\.source), Array(repeating: "installed", count: 5))
+    XCTAssertEqual(executor.requests.map(\.action), ["refresh", "full-refresh", "integration-deactivate", "uninstall-preview", "uninstall"])
     XCTAssertEqual(executor.bundledStatusCalls, 0)
   }
 
@@ -59,7 +59,7 @@ final class BundledUpgradeTests: XCTestCase {
   func testBundledSetupCannotControlServicesRemovalOrOnlineActivation() async throws {
     let executor = UpgradeExecutor()
     let setup = client(executor).bundledSetupClient(appVersion: "0.10.0")
-    for action in [CompanionAction.refresh, .open, .recover, .certify, .diagnose, .update, .updateCheck, .integrationDeactivate, .uninstallPreview, .uninstall] {
+    for action in [CompanionAction.refresh, .fullRefresh, .open, .recover, .certify, .diagnose, .update, .updateCheck, .integrationDeactivate, .uninstallPreview, .uninstall] {
       do {
         _ = try await setup.run(action, confirmed: true, previewToken: String(repeating: "b", count: 64))
         XCTFail("A setup-only payload cannot run \(action)")
@@ -222,7 +222,7 @@ private final class UpgradeExecutor: CompanionExecuting {
         "installation": ["status": installed ? "installed" : "not-installed"], "managedConfig": ["status": "installed"],
         "service": ["status": "running"], "compatibility": ["status": "compatible"], "accountCache": ["status": "ready"],
         "recovery": ["status": "idle"], "integration": ["status": "pickermux"],
-        "actions": ["configuration-preview", "configuration-apply", "update-check", "refresh", "integration-deactivate", "uninstall-preview", "uninstall"], "issues": [],
+        "actions": ["configuration-preview", "configuration-apply", "update-check", "refresh", "full-refresh", "integration-deactivate", "uninstall-preview", "uninstall"], "issues": [],
       ]
       return ProcessOutput(stdout: try JSONSerialization.data(withJSONObject: snapshot), exitCode: 0)
     }
@@ -242,6 +242,8 @@ private final class UpgradeExecutor: CompanionExecuting {
       fields = ["action": action, "status": "ready", "canApply": true, "previewToken": String(repeating: "b", count: 64), "changes": UninstallPreview.expectedChanges]
     case "uninstall":
       fields = ["action": action, "status": "removed", "removed": true, "nativeRestored": true, "historicalChatsPreserved": true, "restartRequired": true]
+    case "full-refresh":
+      fields = ["action": action, "started": true, "resumed": false, "operationId": "1804ad9d-4eb2-43f4-95e5-a3b5a1f4b9da"]
     default: break
     }
     var envelope: [String: Any] = ["schemaVersion": 1, "ok": true, "code": "COMPLETE"]

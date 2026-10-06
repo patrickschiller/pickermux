@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 2,
+  "bridge": {
+    "host": "127.0.0.1",
+    "port": 4210,
+    "providerId": "model_bridge",
+    "defaultModel": "gpt-5.6-sol",
+    "reasoningEffort": "ultra"
+  },
+  "providers": [
+    {
+      "id": "kolibri",
+      "kind": "mlx-chat-completions",
+      "baseUrl": "http://127.0.0.1:8080/v1",
+      "allowPrivateNetwork": true,
+      "discovery": {
+        "mode": "allowlist",
+        "maxModels": 1
+      },
+      "models": [
+        {
+          "id": "kolibri-1-mlx-4bit",
+          "slug": "kolibri/kolibri-1-mlx-4bit",
+          "displayName": "Kolibri 1 MLX 4-bit",
+          "type": "llm",
+          "contextWindow": 8192,
+          "reasoningEffort": "none",
+          "reasoningEfforts": ["none"]
+        }
+      ]
+    }
+  ]
+}

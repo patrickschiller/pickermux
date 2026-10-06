@@ -1,3 +1,5 @@
+import { supportsMlxTools } from "./mlx-capabilities.mjs";
+
 import { createHash, randomBytes } from "node:crypto";
 import {
   chmod,
@@ -386,7 +388,8 @@ function evaluateStoredModelCertification(store, input) {
   const normalizedStore = validateCertificationStore(store);
   const subject = createCertificationSubject(input);
   const expectedFingerprint = computeCertificationFingerprint(subject);
-  const receipt = Object.hasOwn(normalizedStore.receipts, subject.publicModelId)
+  const receipt = (subject.providerKind !== "mlx-chat-completions" || supportsMlxTools(subject.capabilities)) &&
+      Object.hasOwn(normalizedStore.receipts, subject.publicModelId)
     ? normalizedStore.receipts[subject.publicModelId]
     : undefined;
   const result = !receipt
@@ -425,7 +428,8 @@ export function evaluateEfficientFidelityCertification(store, input) {
   return {
     ...direct,
     status:
-      subject.providerKind === "lmstudio-responses" &&
+      (subject.providerKind === "lmstudio-responses" ||
+        (subject.providerKind === "mlx-chat-completions" && supportsMlxTools(subject.capabilities))) &&
       direct.receipt.gates[EFFICIENT_FIDELITY_CERTIFICATION_GATE] === true
         ? "valid"
         : "missing",
@@ -617,6 +621,9 @@ export async function recordPassedCertification(
   { now = new Date() } = {},
 ) {
   const subject = createCertificationSubject(input);
+  if (subject.providerKind === "mlx-chat-completions" && !supportsMlxTools(subject.capabilities)) {
+    throw new Error("The local MLX model has no reviewed tool protocol identity");
+  }
   const normalizedGates = normalizeGates(gates);
   if (normalizedGates[EFFICIENT_FIDELITY_CERTIFICATION_GATE] === true) {
     throw new Error(
@@ -643,8 +650,9 @@ export async function recordPassedEfficientFidelityCertification(
 ) {
   const subject = createCertificationSubject(input);
   const normalizedGates = normalizeEfficientFidelityGates(gates);
-  if (subject.providerKind !== "lmstudio-responses") {
-    throw new Error("Efficient Fidelity is available only for LM Studio routes");
+  if (subject.providerKind !== "lmstudio-responses" &&
+    !(subject.providerKind === "mlx-chat-completions" && supportsMlxTools(subject.capabilities))) {
+    throw new Error("Efficient Fidelity requires a reviewed provider tool protocol");
   }
   const store = await readCertificationStore(storePath);
   const { result: direct } = evaluateStoredModelCertification(store, subject);

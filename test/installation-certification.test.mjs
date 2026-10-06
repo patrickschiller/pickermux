@@ -5,7 +5,10 @@ import path from "node:path";
 import test from "node:test";
 
 import { validateBridgeConfig } from "../src/bridge-config.mjs";
-import { certificationSubjectForModel } from "../src/certification-runner.mjs";
+import {
+  certificationSubjectForModel,
+  resolveModelCapabilitySlugs,
+} from "../src/certification-runner.mjs";
 import { certify, certifyForInstallation } from "../src/cli.mjs";
 import {
   recordPassedCertification,
@@ -102,6 +105,37 @@ test("valid receipts skip inference while explicit certify still rechecks all mo
   assert.equal(transactions[0].exactModelSet, true);
 });
 
+test("a loaded-model replacement never reuses the previous model receipt", async (t) => {
+  for (const changedBinding of [false, true]) {
+    await t.test(changedBinding ? "same public slug, changed upstream binding" : "new public slug", async (subtest) => {
+      const { input, dependencies, models, transactions } = await fixture(subtest);
+      const previous = models[0];
+      const replacement = {
+        ...previous,
+        id: changedBinding ? previous.id : "lmstudio/publisher/replacement",
+        upstreamId: "publisher/replacement",
+      };
+      const capabilities = await resolveModelCapabilitySlugs({
+        storePath: input.paths.certificationPath,
+        config: input.config,
+        models: [replacement],
+        codexClientVersion: "0.158.0",
+      });
+      assert.deepEqual(capabilities, {
+        certifiedModelSlugs: [],
+        efficientFidelityModelSlugs: [],
+      });
+
+      dependencies.discoverImpl = async () => ({ models: [replacement] });
+      dependencies.listPendingImpl = async () => [];
+      const result = await certify(input, dependencies);
+      assert.equal(result.reused, 0);
+      assert.deepEqual(transactions[0].targetModelIds, [replacement.id]);
+      assert.equal(transactions[0].exactModelSet, false);
+    });
+  }
+});
+
 test("absent pending models enter the existing recovery transaction during installation", async (t) => {
   const { input, dependencies, models, transactions } = await fixture(t);
   dependencies.discoverImpl = async () => ({ models: models.slice(0, 2) });
@@ -171,4 +205,46 @@ test("reopened Codex blocks installer inference without undoing installation", a
   });
   assert.equal(result.status, "incomplete");
   assert.equal(called, false);
+});
+
+test("MLX-only installation skips live tool probes and explicit certification fails safely", async (t) => {
+  const { input, dependencies, transactions } = await fixture(t);
+  input.config = {
+    ...input.config,
+    providers: [{ id: "kolibri", kind: "mlx-chat-completions", models: [{ slug: "kolibri/kolibri-1-mlx-4bit" }] }],
+  };
+  dependencies.discoverImpl = async () => ({ models: [{
+    id: "kolibri/kolibri-1-mlx-4bit", providerId: "kolibri", type: "llm", contextWindow: 8192,
+  }] });
+  dependencies.listPendingImpl = async () => [];
+  const result = await certify(input, dependencies);
+  assert.equal(result.textOnly, 1);
+  assert.deepEqual(result.certified, []);
+  assert.equal(transactions.length, 0);
+  await assert.rejects(certify({ ...input, all: false, model: "kolibri/kolibri-1-mlx-4bit" }, dependencies), /no reviewed tool protocol/u);
+  await assert.rejects(certify({ ...input, onlyUncertified: false }, dependencies), /No external model with a reviewed tool protocol/u);
+  assert.equal(transactions.length, 0);
+});
+
+test("mixed certification selects only tool-capable routes", async (t) => {
+  const { input, dependencies, models, transactions } = await fixture(t);
+  input.config = { ...input.config, providers: [...input.config.providers, { id: "kolibri", kind: "mlx-chat-completions", models: [] }] };
+  dependencies.discoverImpl = async () => ({ models: [...models, {
+    id: "kolibri/kolibri-1-mlx-4bit", providerId: "kolibri", type: "llm", contextWindow: 8192,
+  }] });
+  await certify(input, dependencies);
+  assert.deepEqual(transactions[0].targetModelIds, models.slice(2).map((entry) => entry.id));
+});
+
+test("reviewed MLX protocols are eligible for the complete installation certification transaction", async (t) => {
+  const { input, dependencies, transactions } = await fixture(t);
+  input.config = { ...input.config, providers: [{ id: "kolibri", kind: "mlx-chat-completions", models: [] }] };
+  const model = { id: "kolibri/kolibri-1-mlx-4bit", providerId: "kolibri", type: "llm", contextWindow: 8192,
+    capabilities: { mlxToolProtocol: "pickermux-mlx-tools-v1",
+      modelFingerprint: `sha256:${"a".repeat(64)}`, runtimeFingerprint: `sha256:${"b".repeat(64)}`, mlxMaxOutputTokens: 1024 },
+  };
+  dependencies.discoverImpl = async () => ({ models: [model] });
+  dependencies.listPendingImpl = async () => [];
+  await certify({ ...input, onlyUncertified: false }, dependencies);
+  assert.deepEqual(transactions[0].targetModelIds, [model.id]);
 });

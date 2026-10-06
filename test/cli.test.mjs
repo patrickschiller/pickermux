@@ -36,7 +36,7 @@ test("release metadata and both CLI entry points identify PickerMux", async () =
     await readFile(path.join(projectDirectory, "package.json"), "utf8"),
   );
   assert.equal(packageMetadata.name, "pickermux");
-  assert.equal(packageMetadata.version, "0.22.2");
+  assert.equal(packageMetadata.version, "0.30.0");
   assert.equal(packageMetadata.license, "MIT");
 
   for (const entryPoint of ["pickermux.mjs", "lmstudio-picker.mjs"]) {
@@ -48,7 +48,12 @@ test("release metadata and both CLI entry points identify PickerMux", async () =
       );
       assert.match(stdout, /PickerMux/u);
       assert.match(stdout, /CODEX_BINARY overrides discovery for this command/u);
-      assert.match(stdout, /Setup and install automatically certify discovered models/u);
+      assert.match(stdout, /Setup and install automatically certify tool-capable providers/u);
+      assert.match(stdout, /An explicit providers:\[\] configuration keeps the native Codex picker/u);
+      assert.match(stdout, /setup and refresh require no external models and grant no external tools/u);
+      assert.match(stdout, /Reviewed MLX tool protocols use the full certification matrix/u);
+      assert.match(stdout, /Reviewed MLX HTTP 502 failures expose only fixed public error categories/u);
+      assert.match(stdout, /loads pinned HF snapshots without LM Studio/u);
       assert.match(stdout, /several minutes per model/u);
       assert.match(stdout, /refresh --full \(also --FULL\)/u);
       assert.match(stdout, /pickermux companion status/u);
@@ -71,7 +76,7 @@ test("release metadata and both CLI entry points identify PickerMux", async () =
         [path.join(projectDirectory, "bin", entryPoint), versionArgument],
         { encoding: "utf8" },
       );
-      assert.equal(stdout, "pickermux 0.22.2\n");
+      assert.equal(stdout, "pickermux 0.30.0\n");
     }
   }
 });
@@ -421,12 +426,14 @@ test("refresh rollback restores catalog and service config before restarting", a
   const rollbackConfig = { schemaVersion: 2 };
   let restartOptions;
   let restoredPackage;
+  const restoredSnapshots = [];
   let searchConfigRestored = false;
   const servicePackage = {
     serviceDirectory: path.join(directory, "runtime-app"),
     previousPath: path.join(directory, "runtime-app.previous"),
     serviceConfigPath: paths.serviceConfigPath,
     previousServiceConfig: Buffer.from("old config\n"),
+    committedServiceConfig: Buffer.from("new config\n"),
   };
 
   await restoreRefreshState({
@@ -441,6 +448,11 @@ test("refresh rollback restores catalog and service config before restarting", a
     },
     restorePackageImpl: async (options) => {
       restoredPackage = options;
+      await writeFile(options.serviceConfigPath, options.previousServiceConfig);
+    },
+    restoreImpl: async (target, contents) => {
+      restoredSnapshots.push(target);
+      await writeFile(target, contents);
     },
     restartImpl: async (options) => {
       restartOptions = options;
@@ -456,6 +468,7 @@ test("refresh rollback restores catalog and service config before restarting", a
     launchAgentLabel: paths.launchAgentLabel,
   });
   assert.deepEqual(restoredPackage, servicePackage);
+  assert.deepEqual(restoredSnapshots, [paths.catalogPath]);
 });
 
 test("search config rollback failure preserves recovery attempts and reports incomplete rollback", async () => {

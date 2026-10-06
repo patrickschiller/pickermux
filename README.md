@@ -6,14 +6,12 @@
 
 **Local and remote models in Codex Desktop, controlled from your menu bar.**
 
-PickerMux adds models from compatible Responses providers to the familiar
-Codex model picker, alongside the native models available to your account.
-Its macOS app installs the integration with one switch, refreshes the picker,
-and guides recovery after a Codex update. LM Studio is the default provider;
-other local or remote Responses providers use a custom configuration.
+PickerMux adds compatible provider models alongside your native Codex models.
+The macOS app installs the integration, refreshes the picker, and guides
+recovery after Codex updates. LM Studio is the default provider.
 
 **[Download PickerMux for macOS](https://github.com/patrickschiller/pickermux/releases/latest/download/PickerMux-macos-universal.dmg)**
-— one universal DMG for Apple silicon and Intel.
+— one signed and notarized DMG for Apple silicon and Intel.
 
 <table>
   <tr>
@@ -21,134 +19,115 @@ other local or remote Responses providers use a custom configuration.
     <td width="50%" align="center"><strong>Codex model picker</strong></td>
   </tr>
   <tr>
-    <td valign="top"><img src="assets/screenshots/pickermux-companion.png" alt="Synthetic compact PickerMux menu preview with stacked token usage and full-width action rows" width="320"></td>
+    <td valign="top"><img src="assets/screenshots/pickermux-companion.png" alt="PickerMux 0.30.0 menu preview with LM Studio token totals, Refresh picker, Open Codex and Config" width="320"></td>
     <td valign="top"><img src="assets/screenshots/pickermux-model-picker.png" alt="Codex model picker with namespaced external models alongside native models" width="440"></td>
   </tr>
 </table>
 
-*Left: synthetic compact-menu preview with example usage. Right: Codex picker screenshot.*
+*Left: current app rendered with synthetic usage. Right: Codex picker screenshot.*
 
-**See how PickerMux works — 36 seconds, English, no audio.**
+[![36-second English explainer of routing and certified tools, with synthetic examples and no audio](assets/demo/pickermux-explainer-en.gif)](assets/demo/pickermux-explainer-en.mp4)
 
-[![How PickerMux works: model selection, exact routing, responses, and certified tool calls (synthetic animation)](assets/demo/pickermux-explainer-en.gif)](assets/demo/pickermux-explainer-en.mp4)
+[Download the explainer MP4](assets/demo/pickermux-explainer-en.mp4) ·
+[Media details](assets/demo/README.md)
 
-*Synthetic examples explain the model and tool request paths.*
-[Download the MP4](assets/demo/pickermux-explainer-en.mp4) ·
-[Media details and renderer](assets/demo/README.md)
-
-PickerMux is an unofficial community project. It is not affiliated with,
-endorsed by, or supported by OpenAI, Codex, or LM Studio.
+PickerMux is an unofficial community project, unaffiliated with OpenAI, Codex,
+or LM Studio.
 
 ## Requirements
 
-- macOS 13 or newer, on Apple silicon or Intel.
-- Codex Desktop, opened once while signed in so its native model picker loads.
-- Node.js 22.15.0 or newer in `/opt/homebrew/bin`, `/usr/local/bin`, or `/usr/bin`.
-  Node.js is not bundled; [download Node.js](https://nodejs.org/en/download).
-- A compatible Responses provider with an available model. For the default
-  LM Studio setup, start its server and load at least one LLM.
+- macOS 13+ on Apple silicon or Intel.
+- Codex Desktop, opened once while signed in to load its native model picker.
+- Node.js 22.15.0+ in `/opt/homebrew/bin`, `/usr/local/bin`, or `/usr/bin`.
+  [Install Node.js](https://nodejs.org/en/download) separately.
+- A compatible Responses provider with an available model. For LM Studio,
+  start its server and load at least one LLM.
 
-Chat Completions compatibility alone is insufficient. See
-[provider configuration](docs/CONFIGURATION.md#supported-provider-kinds) for
-custom endpoints, model allowlists, and provider credentials.
+General Chat Completions compatibility is insufficient. Custom Responses
+providers and the experimental MLX adapter are described in
+[configuration](docs/CONFIGURATION.md#supported-provider-kinds).
 
 ## Install
 
-1. Download the DMG, open it, and drag **PickerMux.app** to **Applications**.
-2. Eject the disk image and open PickerMux from Applications.
+1. Open the DMG and drag **PickerMux.app** to **Applications**.
+2. Eject the image and open PickerMux from Applications.
 3. Fully quit Codex with **Command-Q** and keep your provider models available.
-4. Turn on **Use PickerMux in Codex** in the menu-bar panel.
-5. Wait for setup to finish, then reopen Codex and select a provider model.
+4. Turn on **Use PickerMux in Codex**.
+5. Wait for setup, reopen Codex, and select a provider model.
 
-Turning the switch on authorizes installation and live model-certification
-prompts. Allow several minutes per model; keep Codex closed until setup ends.
-Only models that pass their exact certification receive tool access. Copying
-the app alone does not change Codex or install the integration.
+Enabling the switch authorizes installation and live certification prompts.
+Allow several minutes per model. Tools become available only after the exact
+model configuration passes certification.
 
-For upgrades, download the new DMG, quit PickerMux, and replace its app. App
-and installed backend versions are separate. PickerMux 0.22.2 shows the
-version difference and automatically presents the backend upgrade review
-when an active, verified installation is ready and Codex is fully closed.
-Confirm once to update the backend while preserving your provider
-configuration. **Settings → Update installed backend…** remains available
-for a manual retry and is the upgrade path in 0.22.1. See
-[upgrade details](docs/TECHNICAL_GUIDE.md#installation-and-upgrades).
+For an update, quit PickerMux, replace its app from the new DMG, and reopen it.
+Then fully quit Codex and confirm the offered backend upgrade, or use
+**Config → Update installed backend…**. App and backend versions are separate;
+the backend upgrade preserves provider settings.
+
+If an earlier setup has no external providers, **Config → Enable LM Studio
+models…** offers a reviewed migration. Keep Codex closed and an LM Studio model
+loaded. Existing external-provider configurations are never replaced by this
+action. See [upgrade details](docs/TECHNICAL_GUIDE.md#installation-and-upgrades).
 
 ## Everyday use
 
-Make your provider models available, fully quit Codex, choose **Refresh picker**,
-and reopen Codex. With LM Studio, load the models you want before refreshing.
-Newly discovered models need **Certify models…** before they can use tools.
+Load the models you want, fully quit Codex, choose **Refresh picker**, and reopen
+Codex. Models appear in Codex's picker; the PickerMux menu shows provider usage.
+New models need **Certify models…** before using tools.
 
-The compact menu offers **Refresh picker**, **Open Codex**, **Check status**, and
-**Check installation** as full-width rows, with specific feedback below them.
-**Settings…**, **Help…**, and **Quit** appear as separate rows at the bottom.
-**Settings…** contains update checks,
-optional login startup, refresh after Codex closes, and notifications. After a
-Codex update, **Repair after a Codex update…** explains the recovery and asks
-before quitting and reopening Codex. Catalog changes require a full restart.
+**Config…** contains status and installation checks, installation details,
+updates, startup preferences, notifications, token reset, and **Full refresh…**.
+A full refresh asks for confirmation before its two graceful Codex quits and
+recovery sequence. Unavailable actions explain their prerequisites. After a
+Codex update, follow the offered repair guidance.
 
-If a working installation suddenly shows **Integration needs review**, review
-the [configuration-conflict checks](docs/TROUBLESHOOTING.md#integration-needs-review-after-an-unrelated-codex-setting-change).
-A Codex `service_tier` setting inside PickerMux's marked root block can trigger
-that message in 0.20.1 and earlier without a manual configuration edit; the
-0.22.0 backend recognizes and preserves that setting after receipt verification.
+**Token usage** shows provider-reported Input, Output, and Total for **Last
+model request** and **Since reset**. Counts survive restarts and backend
+upgrades. **Config → Token usage → Reset accumulated counts…** clears totals
+and retains the last request. Missing counts remain unavailable; **Output
+speed** appears only with a matching measurement. Provider ID `kolibri` is
+hidden from the app's usage rows. [Token details](docs/MACOS_COMPANION.md#token-usage).
 
-The panel's **Token usage** section shows input, output, and total tokens per
-external provider in stacked **Last model request** and **Since reset** blocks.
-It uses provider-reported counts from requests through PickerMux, including
-tool rounds and context summaries. Missing counts are marked unavailable;
-partial sums are labelled. Counts and the last request survive bridge restarts,
-refreshes, and backend upgrades. **Settings → Token usage → Reset accumulated
-counts…** clears accumulated counts while retaining the last request.
-See [token usage](docs/MACOS_COMPANION.md#token-usage).
+## Optional providers and voice
 
-## Voice with a local model
+Custom local or remote Responses providers use explicit model allowlists and
+provider credentials. The experimental Apple-silicon MLX adapter supports
+immutable model profiles and certified Kolibri function calls; it requires
+separate runtime setup. Kolibri's roughly 41 GiB model targets Macs with at
+least 64 GB unified memory. Reasoning, media, and compaction are unsupported;
+context changes require a new profile and certification.
+[Provider and MLX setup](docs/CONFIGURATION.md#kolibri-mlx-provider).
 
-PickerMux 0.22.0 adds experimental GPT-Live WebRTC support. Codex can
-use OpenAI for voice while the selected local model handles delegated tasks.
-Voice audio and conversation context go to OpenAI, including when a local model
-is selected. This requires native sign-in and account access to Codex voice;
-local tool access still requires exact model certification. Voice and local
-delegation require manual validation with the installed backend and compatible
-client. See [voice setup and acceptance](docs/TECHNICAL_GUIDE.md#gpt-live-voice-and-local-tasks).
+Experimental native voice requires Codex account access. Audio and conversation
+context go to OpenAI even when a local model handles delegated tasks.
+[Voice setup and limits](docs/TECHNICAL_GUIDE.md#gpt-live-voice-and-local-tasks).
 
 ## Switch off or remove
 
-Turning **Use PickerMux in Codex** off restores the native picker while retaining
-PickerMux for later use. Fully quit and reopen Codex to load that change.
+Turn **Use PickerMux in Codex** off, then fully quit and reopen Codex to restore
+its native picker while retaining PickerMux for later use.
 
-For complete removal, quit Codex and choose **Settings → Remove PickerMux
-completely…**. Confirm removal of the integration, CLI, managed data, verified
-backups, and registered provider credentials. Then quit PickerMux and move its
-app to the Trash. Codex sign-in, projects, chats, and unrelated settings stay
-intact. An inactive provider alias keeps historical chats readable. If an old
-chat keeps reconnecting with a native model selected, its saved provider may
-still need [native-provider recovery](docs/TROUBLESHOOTING.md#reconnecting-in-an-old-chat-after-deactivation-or-uninstall).
-See [removal details](docs/TECHNICAL_GUIDE.md#deactivation-and-removal).
-
-## Technical overview
-
-- A private loopback bridge routes each exact model to its provider.
-- External requests receive only their provider's credentials; native Codex
-  credentials and metadata remain isolated.
-- Tool capabilities are certified for each model and configuration.
-- LM Studio supports loaded-model discovery, deferred tool schemas, and local
-  context compaction; other Responses providers use explicit model allowlists.
-- Tool descriptions explain how LM Studio's translated web tool opens source
-  URLs and how to discover missing tools; factual accuracy depends on the model.
-- Install, refresh, recovery, and removal use verified ownership and rollback.
-- The SwiftUI app bundles the Node.js backend, with no third-party runtime npm
-  dependencies. Node.js remains an external prerequisite.
-
-Read the [technical guide](docs/TECHNICAL_GUIDE.md) for CLI commands, certification,
-performance, recovery, and limitations. Detailed references:
-[architecture](docs/ARCHITECTURE.md), [configuration](docs/CONFIGURATION.md),
-[companion app](docs/MACOS_COMPANION.md), and [security](SECURITY.md).
+For complete removal, quit Codex and choose **Config → Remove PickerMux
+completely…**. Review deletion of the CLI, managed data, verified backups, and
+registered provider credentials. Afterwards, quit PickerMux and move its app to
+the Trash. Codex sign-in, chats, projects, and unrelated settings are retained.
+An old chat that keeps reconnecting may need
+[native-provider recovery](docs/TROUBLESHOOTING.md#reconnecting-in-an-old-chat-after-deactivation-or-uninstall).
 
 ## Help and contribute
 
-Start with [troubleshooting](docs/TROUBLESHOOTING.md) or [support](SUPPORT.md).
-Contributors should read [CONTRIBUTING.md](CONTRIBUTING.md) and the
-[Code of Conduct](CODE_OF_CONDUCT.md). PickerMux is released under the
-[MIT License](LICENSE).
+The private loopback bridge resolves exact model routes and keeps native Codex
+credentials isolated from external providers. Tool grants require model-bound
+certification; lifecycle changes validate ownership and support rollback.
+
+[Troubleshooting](docs/TROUBLESHOOTING.md) ·
+[Technical guide and CLI](docs/TECHNICAL_GUIDE.md) ·
+[Configuration](docs/CONFIGURATION.md) ·
+[Companion app](docs/MACOS_COMPANION.md) ·
+[Architecture](docs/ARCHITECTURE.md) · [Security](SECURITY.md)
+
+[Report a bug or request a feature](https://github.com/patrickschiller/pickermux/issues/new/choose).
+Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
+Contributors need macOS and Node.js 22.15.0+; run `npm run verify` and the Swift
+tests. See [CONTRIBUTING.md](CONTRIBUTING.md), [AGENTS.md](AGENTS.md),
+and the [changelog](CHANGELOG.md). PickerMux uses the [MIT License](LICENSE).

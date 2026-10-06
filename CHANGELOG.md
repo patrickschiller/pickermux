@@ -9,7 +9,187 @@ The 0.9.x entries describe local companion development builds. Their features
 are included in the first public companion release, 0.10.0; they were not
 published as GitHub Releases.
 
-## [Unreleased]
+The 0.23.x and 0.24.x entries are local milestones included in the public
+0.30.0 release; they were not published separately.
+
+## [0.30.0] - 2026-10-06
+
+This release includes the changes developed in the 0.23.x and 0.24.x
+milestones below, following maintainer acceptance of the 0.30.0 candidate.
+
+### Added
+
+- Add experimental managed MLX model profiles and certified Kolibri tools on
+  Apple silicon, with immutable model/runtime identity and bounded context.
+- Offer confirmed LM Studio setup for exactly native-only installations and
+  a guarded **Full refresh…** action in Config.
+
+### Changed
+
+- Rename Settings to **Config** and consolidate diagnostics, updates, recovery,
+  and token reset there. Keep one footer divider and hide Kolibri usage rows.
+- Shorten all READMEs and refresh the menu image from the current SwiftUI view
+  with synthetic counters.
+- Remove **Complete PickerMux setup** and the **Complete Codex setup…**
+  guidance from the compact menu. Setup, installed-backend updates, and their
+  bounded recovery guidance remain available in Config, while the menu stays
+  focused on integration state, provider usage, ordinary picker actions, and
+  its Config/Help/Quit footer.
+
+### Fixed
+
+- Preserve native-only setup, restore live model-bound MLX certification at
+  service startup, and classify reviewed MLX failures without provider text.
+- Restore **Config → Token usage → Reset accumulated counts…** for a valid
+  receipt-owned installation that includes PickerMux's optional MLX runtime.
+  The companion now recognizes the installed copy only as the complete
+  reviewed four-file inventory, mirroring the app bundle's pinned-manifest
+  allowlist; it includes private regular-file bytes in the receipt-bound
+  distribution digest and rejects missing, added, changed, linked, or
+  group/world-accessible runtime state. A valid installed backend therefore
+  remains the reset authority; the bundled fallback still cannot reset another
+  installation's durable usage store.
+
+## [0.24.6] - 2026-10-06
+
+Local development build; no public release has been published.
+
+### Fixed
+
+- Fix the upgrade case in which PickerMux correctly preserved an explicit
+  native-only `providers: []` service configuration, so no external models
+  could appear in the Codex model picker and the menu had no provider usage to
+  show. For that exact state, Config now offers **Enable LM Studio models…**.
+- Bind that LM Studio setup to the receipt-active release, a redacted preview,
+  the exact **Enable LM Studio** confirmation, and the existing transactional
+  setup/rollback path. It requires Codex to be fully closed and LM Studio to
+  have a loaded model, preserves bridge and unrelated user/chat settings, and
+  never overwrites a configuration that already has an external provider.
+- Keep **Full refresh…** and **Reset accumulated counts…** visible in Config
+  with a specific reason when disabled, use one divider above the
+  Config/Help/Quit footer, and label only a validated provider-specific
+  measurement as **Output speed**.
+
+## [0.24.5] - 2026-10-06
+
+Local development build; no public release has been published.
+
+### Changed
+
+- Rename the companion's Settings window to **Config** and move **Check status**,
+  **Check installation**, and **Installation details** out of the compact menu.
+  General token usage, **Refresh picker**, and **Open Codex** remain directly
+  visible.
+- Add an explicit **Full refresh…** action to Config. It schedules the existing
+  receipt-bound recovery flow with fresh consent, graceful Codex quits,
+  resumable checkpoints, and transactional reactivation; it cannot choose a
+  provider, model, executable, or path or bypass ownership checks.
+- Keep general provider token analysis and validated performance presentation
+  visible, including **LM Studio**, while omitting provider ID `kolibri` from
+  companion usage and performance rows. The backend continues to collect and
+  retain its bounded private Kolibri telemetry; presentation does not affect
+  routing, certification, or lifecycle authority.
+
+## [0.24.4] - 2026-10-06
+
+Local development build; no public release has been published.
+
+### Fixed
+
+- Allow an explicit native-only configuration with `providers: []` through
+  normal setup and doctor validation while switching external model servers.
+  Empty configured providers and inconsistent discovery still fail; the
+  native-only transition performs no external inference or tool certification.
+
+## [0.24.3] - 2026-10-06
+
+Local development build; no public release has been published.
+
+### Fixed
+
+- Classify recognized HTTP 502 output failures from certified, reviewed MLX
+  tool routes using a bounded, complete JSON body and fixed public error codes.
+  Invalid function calls remain blocked. Unknown, malformed, oversized,
+  compressed and interrupted failures remain opaque; provider text is never
+  relayed and no inference retry or protocol repair is introduced.
+
+## [0.24.2] - 2026-10-06
+
+Local development build; no public release has been published.
+
+### Fixed
+
+- Discover and bind live MLX model capabilities when the installed bridge starts.
+  Allowlist profiles previously lost their protocol metadata during startup, so
+  certification requests failed with HTTP 400 before reaching the model and the
+  picker remained text-only. Current Direct/EF receipts are reevaluated against
+  the exact live identity; stale catalog flags cannot preserve tool authority.
+
+## [0.24.1] - 2026-10-06
+
+Local development build; no public release has been published.
+
+### Fixed
+
+- Allow explicit MLX context windows up to 262,144 tokens within the verified
+  model and tokenizer limits. The default remains 8,192; changed settings require
+  a new immutable profile and fresh model-bound certification.
+- Raise the Python server's request-body limit to 8 MiB for large histories,
+  matching the adapter's default request bound. Rendered prompt plus reserved
+  output tokens remain enforced without truncation or dropped tool results.
+
+## [0.24.0] - 2026-10-06
+
+Local development build; no public release has been published.
+
+### Added
+
+- Add strict, model-bound Kolibri function tools with complete Direct and additive
+  Efficient Fidelity certification, namespace restoration, full tool-result
+  replay and required-choice validation. Codex retains web, file and shell
+  execution/approval; legacy MLX servers remain conservatively text-only.
+- Add shell commands `mlx-load`, `mlx-prepare`, `mlx-start`, `mlx-status` and
+  `mlx-stop` for immutable public HF snapshots in an isolated pinned MLX runtime.
+  Managed profiles bind weights, revision, runtime, alias, context and output;
+  unknown repository code is rejected, failed staging resumes safely, and an
+  existing reviewed Kolibri snapshot can be imported without another download.
+- Package the exact optional Python runtime in managed distributions and source-
+  bound lifecycle inventories without changing older distribution digests.
+- Show final MLX output generation tokens/s alongside latest and accumulated
+  tokens. Timing is validated, volatile, excludes prefill/network time, and does
+  not change the private usage ledger format.
+
+## [0.23.1] - 2026-10-05
+
+Local development build; no public release has been published.
+
+### Fixed
+
+- Accept reviewed Codex reasoning-summary presentation preferences on Kolibri
+  text turns and omit them from the MLX request. A native `auto` summary setting
+  previously rejected even a fresh text chat. The MLX catalog now disables
+  reasoning-summary and mid-turn reasoning-effort controls explicitly.
+- Allow Kolibri's own completed text messages to be replayed in conversation
+  history, validating and removing empty probability metadata. Tools, media,
+  encrypted reasoning, stored continuation and unknown schemas remain rejected.
+
+## [0.23.0] - 2026-10-05
+
+Local development build; no public release has been published.
+
+### Added
+
+- Add an experimental `mlx-chat-completions` provider for the exact pinned
+  Kolibri 1 MLX 4-bit model, with a safe example configuration and isolated
+  Python launcher. The provider translates reviewed text Responses requests
+  and JSON/SSE replies, verifies its context limit against the launcher's
+  metadata, and keeps native routing and credential isolation intact.
+- Pin the Kolibri model revision, architecture/tokenizer/template/configuration
+  and all nine weight digests together with the optional MLX runtime versions.
+  The dedicated server exposes one alias on IPv4 loopback, enforces rendered
+  prompt plus reserved output tokens, and buffers text before validation.
+  This first integration has reasoning disabled and cannot grant tools, shell
+  access, certification, Efficient Fidelity or context compaction.
 
 ## [0.22.2] - 2026-10-03
 
@@ -883,7 +1063,17 @@ confirm the release date before tagging. See the
   paths and file types, refuses root execution and foreign launchers, and
   restores the previous distribution state when activation fails.
 
-[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.22.2...HEAD
+[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.30.0...HEAD
+[0.30.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.30.0
+[0.24.6]: #0246---2026-10-06
+[0.24.5]: #0245---2026-10-06
+[0.24.4]: #0244---2026-10-06
+[0.24.3]: #0243---2026-10-06
+[0.24.2]: #0242---2026-10-06
+[0.24.1]: #0241---2026-10-06
+[0.24.0]: #0240---2026-10-06
+[0.23.1]: #0231---2026-10-06
+[0.23.0]: #0230---2026-10-06
 [0.22.2]: https://github.com/patrickschiller/pickermux/releases/tag/v0.22.2
 [0.22.1]: https://github.com/patrickschiller/pickermux/releases/tag/v0.22.1
 [0.22.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.22.0

@@ -653,7 +653,7 @@ test("Swift protocol fixtures match the actual projected companion CLI", async (
     });
     return output;
   };
-  const probes = Object.fromEntries(Object.entries({ metadata: { version: "0.9.0" }, desktop: "stopped", installation: "installed", managedConfig: "installed", service: "running", compatibility: "compatible", accountCache: "ready", recovery: null, integration: "pickermux" }).map(([name, value]) => [name, async () => value]));
+  const probes = Object.fromEntries(Object.entries({ metadata: { version: "0.9.0" }, desktop: "stopped", installation: "installed", managedConfig: "installed", service: "running", compatibility: "compatible", accountCache: "ready", recovery: null, integration: "pickermux", providerConfiguration: "external" }).map(([name, value]) => [name, async () => value]));
   const tokenProbes = {
     ...probes,
     service: async () => ({ status: "running", healthy: true, health: { tokenUsage: {
@@ -693,5 +693,10 @@ test("Swift pre-execution distribution digest fixture matches the authoritative 
   for (const name of ["bin", "src"]) await mkdir(path.join(target, name), { mode: 0o700 });
   for (const [name, contents] of Object.entries(golden.files)) await writeFile(path.join(target, name), contents, { mode: 0o600 });
   assert.equal(await distributionDigest(target), golden.sha256);
+  await mkdir(path.join(target, "runtime", "mlx"), { recursive: true, mode: 0o700 });
+  for (const [name, contents] of Object.entries(golden.runtimeFiles)) {
+    await writeFile(path.join(target, name), contents, { mode: 0o600 });
+  }
+  assert.equal(await distributionDigest(target), golden.runtimeSha256);
   assert.equal(managedLauncherContents({ currentPath: "/FIXTURE_HOME/Library/Application Support/PickerMux/current", installedConfigPath: "/FIXTURE_HOME/.codex/model-bridge/service-config.json" }), golden.launcherTemplate);
 });

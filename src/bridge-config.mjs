@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { isIP } from "node:net";
 
 import { isValidProviderId } from "./provider-id.mjs";
+import { MLX_MIN_CONTEXT_WINDOW, MLX_MAX_CONTEXT_WINDOW } from "./mlx-capabilities.mjs";
 
 export const BRIDGE_SCHEMA_VERSION = 2;
 
@@ -50,12 +51,14 @@ const MODEL_KEYS = new Set([
   "contextWindow",
   "reasoningEffort",
   "reasoningEfforts",
+  "mlxProfileDigest",
 ]);
 const NATIVE_MODEL_ID_PATTERN = /^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$/u;
 const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/u;
 const SUPPORTED_PROVIDER_KINDS = new Set([
   "lmstudio-responses",
   "openai-responses",
+  "mlx-chat-completions",
 ]);
 const SUPPORTED_REASONING_EFFORTS = new Set([
   "none",
@@ -340,7 +343,9 @@ function normalizeModel(input, providerId, providerKind, index, seenIds, seenSlu
   }
 
   const supportedReasoningEfforts =
-    providerKind === "lmstudio-responses"
+    providerKind === "mlx-chat-completions"
+      ? new Set(["none"])
+      : providerKind === "lmstudio-responses"
       ? LM_STUDIO_RESPONSES_REASONING_EFFORTS
       : SUPPORTED_REASONING_EFFORTS;
   if (input.reasoningEffort !== undefined) {
@@ -373,6 +378,28 @@ function normalizeModel(input, providerId, providerKind, index, seenIds, seenSlu
       normalized.reasoningEffort = efforts[0];
     }
     normalized.reasoningEfforts = efforts;
+  }
+
+  if (providerKind !== "mlx-chat-completions" && input.mlxProfileDigest !== undefined) {
+    throw new Error(`${label}.mlxProfileDigest is supported only for local MLX models`);
+  }
+  if (providerKind === "mlx-chat-completions") {
+    if (normalized.type !== "llm" || normalized.contextWindow === undefined) {
+      throw new Error(`${label} requires type=llm and a positive contextWindow`);
+    }
+    if (input.mlxProfileDigest !== undefined) {
+      if (typeof input.mlxProfileDigest !== "string" || !/^sha256:[0-9a-f]{64}$/u.test(input.mlxProfileDigest)) {
+        throw new Error(`${label}.mlxProfileDigest must be a SHA-256 profile identity`);
+      }
+      normalized.mlxProfileDigest = input.mlxProfileDigest;
+    } else if (id !== "kolibri-1-mlx-4bit") {
+      throw new Error(`${label}.id requires a managed mlxProfileDigest`);
+    }
+    if (normalized.contextWindow < MLX_MIN_CONTEXT_WINDOW || normalized.contextWindow > MLX_MAX_CONTEXT_WINDOW) {
+      throw new Error(`${label}.contextWindow must be between ${MLX_MIN_CONTEXT_WINDOW} and ${MLX_MAX_CONTEXT_WINDOW} for the local MLX server`);
+    }
+    normalized.reasoningEffort = "none";
+    normalized.reasoningEfforts = ["none"];
   }
 
   seenIds.add(id);
@@ -422,7 +449,7 @@ function normalizeProvider(input, index, seenProviderIds, seenSlugs) {
 
   if (!SUPPORTED_PROVIDER_KINDS.has(input.kind)) {
     throw new Error(
-      `${label}.kind must be lmstudio-responses or openai-responses`,
+      `${label}.kind must be lmstudio-responses, openai-responses, or mlx-chat-completions`,
     );
   }
   const discovery = normalizeDiscovery(input.discovery, input.kind, label);
@@ -434,6 +461,18 @@ function normalizeProvider(input, index, seenProviderIds, seenSlugs) {
     input.allowPrivateNetwork,
     `${label}.baseUrl`,
   );
+  if (input.kind === "mlx-chat-completions") {
+    const url = new URL(baseUrl);
+    if (
+      url.protocol !== "http:" || url.hostname !== "127.0.0.1" ||
+      url.pathname !== "/v1"
+    ) {
+      throw new Error(`${label}.baseUrl must be a 127.0.0.1 HTTP URL with the exact /v1 path`);
+    }
+    if (input.credentialEnv !== undefined || input.credentialKeychain !== undefined) {
+      throw new Error(`${label} does not accept credentials for its local MLX server`);
+    }
+  }
 
   let credentialEnv;
   if (input.credentialEnv !== undefined) {
@@ -468,6 +507,9 @@ function normalizeProvider(input, index, seenProviderIds, seenSlugs) {
   const models = input.models.map((model, modelIndex) =>
     normalizeModel(model, id, input.kind, modelIndex, seenIds, seenSlugs),
   );
+  if (input.kind === "mlx-chat-completions" && models.length !== 1) {
+    throw new Error(`${label}.models must contain exactly one local Kolibri model`);
+  }
 
   seenProviderIds.add(id);
   const provider = {

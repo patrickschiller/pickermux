@@ -58,7 +58,7 @@ final class MenuViewportTests: XCTestCase {
       }
     } footer: {
       ContentProbe(measurements: footerMeasurements) {
-        HStack { Text("Settings…"); Text("Help…"); Spacer(); Text("Quit") }
+        HStack { Text("Config…"); Text("Help…"); Spacer(); Text("Quit") }
           .padding(16)
       }
     })
@@ -69,6 +69,28 @@ final class MenuViewportTests: XCTestCase {
     XCTAssertLessThan(footer.height, 80)
     XCTAssertEqual(footer.width, 320, accuracy: 0.5)
     XCTAssertEqual(host.fittingSize.height, 520 + footer.height, accuracy: 0.5)
+  }
+
+  func testConfigKeepsItsOwnScrollableViewport() throws {
+    let measurements = Measurements()
+    let host = NSHostingView(rootView: ViewportProbe(measurements: measurements) {
+      CompanionConfigViewport {
+        ContentProbe(measurements: measurements) {
+          VStack(alignment: .leading, spacing: 12) {
+            Text("PickerMux Config")
+            ForEach(0..<80) { index in
+              Text("Synthetic installation detail \(index)")
+                .frame(height: 30)
+            }
+          }
+          .padding(20)
+        }
+      }
+    })
+    assertFixedViewport(host, measurements: measurements, width: 500, height: 640)
+    let contentSize = try XCTUnwrap(measurements.contentSize)
+    XCTAssertGreaterThan(contentSize.height, host.frame.height)
+    XCTAssertLessThanOrEqual(contentSize.width, host.frame.width)
   }
 
   func testStackedTokenSummariesFitLongProviderIdsAndLargestCounts() throws {
@@ -90,9 +112,88 @@ final class MenuViewportTests: XCTestCase {
     XCTAssertLessThan(size.height, 600)
   }
 
+  func testOutputSpeedFitsTheExistingCompactTokenPanel() throws {
+    let performance: [String: Any] = ["schemaVersion": 1, "status": "available", "providers": [[
+      "providerId": "lmstudio", "status": "available", "inputTokens": 14900,
+      "outputTokens": 320, "totalTokens": 15220, "generationDurationMs": 1500,
+    ]]]
+    let snapshot = try menuSnapshot(performance: performance)
+    let measurements = Measurements()
+    let host = NSHostingView(rootView: CompanionMenuViewport {
+      ContentProbe(measurements: measurements) { TokenUsageView(snapshot: snapshot).padding(14) }
+    })
+    settle(host)
+    let size = try XCTUnwrap(measurements.contentSize)
+    XCTAssertLessThanOrEqual(size.width, 320)
+    XCTAssertGreaterThan(size.height, 100)
+    XCTAssertLessThan(size.height, 600)
+    XCTAssertEqual(snapshot.tokenPerformance?.outputTokensPerSecond(for: try XCTUnwrap(snapshot.tokenUsage?.providers.first)), 320_000.0 / 1500)
+    XCTAssertEqual(CompanionPresentation.outputSpeedLabel, "Output speed")
+    XCTAssertFalse(CompanionPresentation.outputSpeedHelp.contains("Generation"))
+  }
+
+  func testOutputSpeedRequiresConcreteProviderRateButKeepsMeasuredZeroVisible() throws {
+    func provider(_ providerId: String, input: Int, output: Int) -> [String: Any] {
+      [
+        "providerId": providerId, "requests": 1, "unavailableRequests": 0,
+        "last": ["status": "available", "inputTokens": input, "outputTokens": output,
+                 "totalTokens": input + output],
+        "totals": ["inputTokens": input, "outputTokens": output, "totalTokens": input + output],
+      ]
+    }
+    let providers = [
+      provider("lmstudio", input: 120, output: 0),
+      provider("kolibri", input: 200, output: 40),
+    ]
+    let kolibriOnly: [String: Any] = ["schemaVersion": 1, "status": "available", "providers": [[
+      "providerId": "kolibri", "status": "available", "inputTokens": 200,
+      "outputTokens": 40, "totalTokens": 240, "generationDurationMs": 1000,
+    ]]]
+    let unavailable = try menuSnapshot(providers: providers, performance: kolibriOnly)
+    let lmStudio = try XCTUnwrap(CompanionPresentation.visibleTokenProviders(
+      try XCTUnwrap(unavailable.tokenUsage).providers).first)
+    XCTAssertNil(CompanionPresentation.outputSpeed(for: lmStudio, in: unavailable))
+
+    let measuredZero: [String: Any] = ["schemaVersion": 1, "status": "available", "providers": [[
+      "providerId": "lmstudio", "status": "available", "inputTokens": 120,
+      "outputTokens": 0, "totalTokens": 120, "generationDurationMs": 1000,
+    ]]]
+    let zero = try menuSnapshot(providers: providers, performance: measuredZero)
+    let zeroProvider = try XCTUnwrap(CompanionPresentation.visibleTokenProviders(
+      try XCTUnwrap(zero.tokenUsage).providers).first)
+    XCTAssertEqual(CompanionPresentation.outputSpeed(for: zeroProvider, in: zero), 0)
+    XCTAssertGreaterThan(tokenUsageHeight(zero), tokenUsageHeight(unavailable) + 10)
+  }
+
+  func testKolibriUsageAndPerformanceRowsStayHiddenWhileLMStudioRemains() throws {
+    func provider(_ providerId: String, input: Int, output: Int) -> [String: Any] {
+      [
+        "providerId": providerId, "requests": 1, "unavailableRequests": 0,
+        "last": ["status": "available", "inputTokens": input, "outputTokens": output, "totalTokens": input + output],
+        "totals": ["inputTokens": input, "outputTokens": output, "totalTokens": input + output],
+      ]
+    }
+    let providers = [
+      provider("lmstudio", input: 100, output: 20),
+      provider("kolibri", input: 200, output: 40),
+    ]
+    let performance: [String: Any] = ["schemaVersion": 1, "status": "available", "providers": [
+      ["providerId": "lmstudio", "status": "available", "inputTokens": 100,
+       "outputTokens": 20, "totalTokens": 120, "generationDurationMs": 1000],
+      ["providerId": "kolibri", "status": "available", "inputTokens": 200,
+       "outputTokens": 40, "totalTokens": 240, "generationDurationMs": 1000],
+    ]]
+    let snapshot = try menuSnapshot(providers: providers, performance: performance)
+    let visible = CompanionPresentation.visibleTokenProviders(try XCTUnwrap(snapshot.tokenUsage).providers)
+    XCTAssertEqual(visible.map(\.providerId), ["lmstudio"])
+    XCTAssertEqual(snapshot.tokenPerformance?.outputTokensPerSecond(for: try XCTUnwrap(visible.first)), 20)
+    XCTAssertTrue(CompanionPresentation.visibleTokenProviders(
+      try menuSnapshot(providers: [providers[1]], performance: performance).tokenUsage?.providers ?? []).isEmpty)
+  }
+
   func testDirectMenuUsesVerifiedHeaderAndRendersSyntheticNativePreview() throws {
-    let controller = CompanionController(pollingEnabled: false)
-    controller.snapshot = try menuSnapshot()
+    let controller = CompanionController(pollingEnabled: false, appVersion: "0.30.0")
+    controller.snapshot = try menuSnapshot(version: "0.30.0")
     controller.operationNoticeAction = .configurationApply
     controller.operationFailed = true
     controller.operationNotice = "Synthetic earlier setup failure."
@@ -116,6 +217,62 @@ final class MenuViewportTests: XCTestCase {
     if let path = ProcessInfo.processInfo.environment["PICKERMUX_MENU_PREVIEW_PATH"] {
       try png.write(to: URL(fileURLWithPath: path), options: .atomic)
     }
+  }
+
+  func testMenuWithoutMainActionsUsesOnlyTheFooterDividerBoundary() throws {
+    let controller = CompanionController(pollingEnabled: false)
+    let kolibri: [String: Any] = [
+      "providerId": "kolibri", "requests": 1, "unavailableRequests": 0,
+      "last": ["status": "available", "inputTokens": 200, "outputTokens": 40, "totalTokens": 240],
+      "totals": ["inputTokens": 200, "outputTokens": 40, "totalTokens": 240],
+    ]
+    controller.snapshot = try menuSnapshot(providers: [kolibri], actions: ["diagnose", "full-refresh", "usage-reset"])
+    XCTAssertTrue(CompanionPresentation.mainActions(available: try XCTUnwrap(controller.snapshot).actions).isEmpty)
+    XCTAssertEqual(CompanionMenuDividerPlacement.allCases, [.footerBoundary])
+
+    let host = NSHostingView(rootView: CompanionPanel(controller: controller))
+    settle(host)
+    XCTAssertEqual(host.fittingSize.width, 320, accuracy: 0.5)
+    XCTAssertGreaterThan(host.fittingSize.height, 100)
+    XCTAssertLessThan(host.fittingSize.height, 520)
+  }
+
+  func testNativeOnlyCompactMenuAddsOneFixedConfigWarningWithoutDuplicatingHeading() throws {
+    XCTAssertEqual(CompanionPresentation.menuPrimaryHeadings, [CompanionPresentation.integrationToggleTitle])
+    let nativeController = CompanionController(pollingEnabled: false)
+    nativeController.snapshot = try menuSnapshot(actions: [], providerStatus: .nativeOnly)
+    let externalController = CompanionController(pollingEnabled: false)
+    externalController.snapshot = try menuSnapshot(actions: [], providerStatus: .external)
+    XCTAssertEqual(CompanionPresentation.compactProviderNotice(for: nativeController.snapshot),
+      "No external models configured")
+    XCTAssertNil(CompanionPresentation.compactProviderNotice(for: externalController.snapshot))
+
+    let native = NSHostingView(rootView: CompanionPanel(controller: nativeController))
+    let external = NSHostingView(rootView: CompanionPanel(controller: externalController))
+    settle(native)
+    settle(external)
+    XCTAssertGreaterThan(native.fittingSize.height, external.fittingSize.height + 20)
+    XCTAssertEqual(native.fittingSize.width, 320, accuracy: 0.5)
+  }
+
+  func testBundledSetupPromptIsRoutedOutOfTheCompactMenu() throws {
+    let controller = CompanionController(pollingEnabled: false)
+    let actions = ["configuration-preview", "configuration-apply", "integration-deactivate"]
+    let installed = try menuSnapshot(actions: actions)
+    controller.snapshot = installed.allowingOnly(
+      [.configurationPreview, .configurationApply, .integrationDeactivate], bundledBackend: true)
+
+    XCTAssertTrue(controller.integrationState.isEnabled)
+    XCTAssertTrue(controller.integrationState.needsSetupUpgrade)
+    XCTAssertNil(CompanionPresentation.compactIntegrationGuidance(for: controller.integrationState))
+    XCTAssertFalse(controller.bundledSetupAvailability.isEnabled)
+    XCTAssertTrue(try XCTUnwrap(controller.bundledSetupAvailability.disabledReason).contains("Fully quit Codex"))
+
+    let host = NSHostingView(rootView: CompanionPanel(controller: controller))
+    settle(host)
+    XCTAssertEqual(host.fittingSize.width, 320, accuracy: 0.5)
+    XCTAssertGreaterThan(host.fittingSize.height, 100)
+    XCTAssertLessThan(host.fittingSize.height, 520)
   }
 
   func testNestedStateExpansionAndCollapseUpdateDocumentHeightAndKeepFooterOutsideScrolling() throws {
@@ -185,22 +342,42 @@ final class MenuViewportTests: XCTestCase {
     }
   }
 
-  private func menuSnapshot(providers: [[String: Any]]? = nil) throws -> CompanionSnapshot {
+  private func menuSnapshot(providers: [[String: Any]]? = nil, performance: [String: Any]? = nil,
+                            actions: [String]? = nil,
+                            providerStatus: ProviderConfigurationKind? = nil,
+                            version: String = "0.22.0") throws -> CompanionSnapshot {
     let syntheticProvider: [String: Any] = [
       "providerId": "lmstudio", "requests": 8, "unavailableRequests": 0,
       "last": ["status": "available", "inputTokens": 14900, "outputTokens": 320, "totalTokens": 15220],
       "totals": ["inputTokens": 140000, "outputTokens": 3250, "totalTokens": 143250],
     ]
-    return try CompanionSnapshot.decode(JSONSerialization.data(withJSONObject: [
-      "schemaVersion": 1, "version": "0.22.0", "state": "ready",
+    var fields: [String: Any] = [
+      "schemaVersion": 1, "version": version, "state": "ready",
       "capabilities": ["integration-toggle-v1", "native-uninstall-v1", "token-usage-v2", "token-usage-reset-v1"],
       "desktop": ["status": "running"], "installation": ["status": "installed"],
       "managedConfig": ["status": "installed"], "service": ["status": "running"],
       "compatibility": ["status": "compatible"], "accountCache": ["status": "ready"],
       "integration": ["status": "pickermux"], "recovery": ["status": "idle"], "issues": [],
-      "actions": ["refresh", "open", "diagnose", "certify", "recover", "usage-reset"],
+      "actions": actions ?? ["refresh", "full-refresh", "open", "diagnose", "certify", "recover", "usage-reset"],
       "tokenUsage": ["schemaVersion": 2, "status": "available", "resetAt": NSNull(), "providers": providers ?? [syntheticProvider]],
-    ]))
+    ]
+    if let performance {
+      fields["tokenPerformance"] = performance
+      fields["capabilities"] = ["integration-toggle-v1", "native-uninstall-v1", "token-usage-v2", "token-usage-reset-v1", "token-performance-v1"]
+    }
+    if let providerStatus {
+      fields["providerConfiguration"] = ["status": providerStatus.rawValue]
+      fields["capabilities"] = ["integration-toggle-v1", "native-uninstall-v1",
+        "native-only-lmstudio-setup-v1", "token-usage-v2", "token-usage-reset-v1"] +
+        (performance == nil ? [] : ["token-performance-v1"])
+    }
+    return try CompanionSnapshot.decode(JSONSerialization.data(withJSONObject: fields))
+  }
+
+  private func tokenUsageHeight(_ snapshot: CompanionSnapshot) -> CGFloat {
+    let host = NSHostingView(rootView: TokenUsageView(snapshot: snapshot).frame(width: 292).padding(14))
+    settle(host)
+    return host.fittingSize.height
   }
 
   private func assertViewport<V: View>(_ host: NSHostingView<V>, measurements: Measurements,
@@ -214,6 +391,20 @@ final class MenuViewportTests: XCTestCase {
     for (proposal, size) in measurements.viewportSizes {
       XCTAssertEqual(size.width, 320, accuracy: 0.5, "Width under \(proposal) proposal", file: file, line: line)
       XCTAssertEqual(size.height, fitting.height, accuracy: 0.5, "Height under \(proposal) proposal", file: file, line: line)
+    }
+  }
+
+  private func assertFixedViewport<V: View>(_ host: NSHostingView<V>, measurements: Measurements,
+                                             width: CGFloat, height: CGFloat,
+                                             file: StaticString = #filePath, line: UInt = #line) {
+    settle(host)
+    let fitting = host.fittingSize
+    XCTAssertEqual(fitting.width, width, accuracy: 0.5, file: file, line: line)
+    XCTAssertEqual(fitting.height, height, accuracy: 0.5, file: file, line: line)
+    XCTAssertEqual(Set(measurements.viewportSizes.keys), Set(["minimum", "tiny", "ideal", "maximum"]), file: file, line: line)
+    for (proposal, size) in measurements.viewportSizes {
+      XCTAssertEqual(size.width, width, accuracy: 0.5, "Width under \(proposal) proposal", file: file, line: line)
+      XCTAssertEqual(size.height, height, accuracy: 0.5, "Height under \(proposal) proposal", file: file, line: line)
     }
   }
 

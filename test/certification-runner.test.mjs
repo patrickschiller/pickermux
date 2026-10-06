@@ -254,6 +254,30 @@ async function assertP3Rejects(responses, pattern, expectedRequests) {
   assert.equal(requestCount, expectedRequests);
 }
 
+test("MLX certification honors its output bound and proves stateless tool-result replay", async () => {
+  const responses = successfulP3Responses();
+  const bodies = [];
+  const gates = await runModelCertification({
+    baseUrl: "http://127.0.0.1:4210/c/test-capability/v1",
+    model: { id: "mlx/example", providerKind: "mlx-chat-completions", contextWindow: 8192,
+      capabilities: { mlxMaxOutputTokens: 128 } },
+    certificationToken: CERTIFICATION_TOKEN,
+    fetchImpl: async (_url, options) => {
+      bodies.push(JSON.parse(options.body));
+      return responses.shift();
+    },
+  });
+  assert.equal(bodies.length, 7);
+  assert.ok(bodies.every((body) => body.max_output_tokens === 128));
+  assert.equal(Object.hasOwn(bodies[3], "previous_response_id"), false);
+  assert.equal(bodies[3].input.length, 3);
+  assert.equal(bodies[3].input[0].role, "user");
+  assert.equal(bodies[3].input[1].type, "function_call");
+  assert.equal(bodies[3].input[2].type, "function_call_output");
+  assert.equal(bodies[3].input[1].call_id, bodies[3].input[2].call_id);
+  assert.deepEqual(gates, Object.fromEntries(REQUIRED_CERTIFICATION_GATES.map((gate) => [gate, true])));
+});
+
 test("runs the complete P3 matrix serially and returns only exact passed gates", async () => {
   const requests = [];
   const responses = [

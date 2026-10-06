@@ -281,7 +281,7 @@ test("Efficient Fidelity extends a valid legacy direct receipt additively", asyn
       vendor,
       additiveGates,
     ),
-    /only for LM Studio routes/u,
+    /reviewed provider tool protocol/u,
   );
   assert.equal(
     evaluateEfficientFidelityCertification(

@@ -33,7 +33,7 @@ final class BackendUpgradeControllerTests: XCTestCase {
     XCTAssertFalse(controller.operationFailed)
   }
 
-  func testCancelledAutomaticOfferDoesNotRepeatButSettingsCanRetry() async throws {
+  func testCancelledAutomaticOfferDoesNotRepeatButConfigCanRetry() async throws {
     let executor = BackendUpdateExecutor()
     var accepted = false
     var reviews = 0

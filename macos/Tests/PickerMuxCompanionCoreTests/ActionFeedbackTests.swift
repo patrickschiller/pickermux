@@ -9,10 +9,18 @@ final class ActionFeedbackTests: XCTestCase {
 
   func testCompletedActionsGiveSpecificFeedbackAndHonorRestartAndIncompleteFlags() throws {
     let completed = try result()
-    let actions: [CompanionAction] = [.refresh, .open, .diagnose, .certify, .recover, .configurationApply, .integrationDeactivate]
+    let actions: [CompanionAction] = [.refresh, .open, .diagnose, .certify, .configurationApply, .integrationDeactivate]
     let messages = actions.map { companionActionResultMessage(completed, action: $0) }
     XCTAssertEqual(Set(messages).count, actions.count)
     XCTAssertTrue(companionActionResultMessage(completed, action: .diagnose).contains("checks passed"))
+    for action in [CompanionAction.fullRefresh, .recover] {
+      let started = try result([
+        "action": action.rawValue, "started": true, "resumed": false,
+        "operationId": "1804ad9d-4eb2-43f4-95e5-a3b5a1f4b9da",
+      ])
+      XCTAssertTrue(companionActionResultMessage(started, action: action).contains("Config"))
+      XCTAssertTrue(companionActionResultMessage(completed, action: action).contains("could not complete"))
+    }
     XCTAssertFalse(companionActionResultMessage(completed, action: .refresh).contains("Reopen"))
     XCTAssertTrue(companionActionResultMessage(try result(["restartRequired": true]), action: .refresh).contains("Reopen Codex"))
     for action in [.configurationApply, .certify] as [CompanionAction] {
@@ -21,6 +29,13 @@ final class ActionFeedbackTests: XCTestCase {
       XCTAssertTrue(message.contains("retry"))
       XCTAssertFalse(message.contains("completed"))
     }
+    let lmStudio = try result([
+      "action": "lmstudio-default-apply", "status": "applied", "updated": true,
+      "restartRequired": true, "certificationIncomplete": false, "version": "0.30.0",
+    ])
+    let lmStudioMessage = companionActionResultMessage(lmStudio, action: .lmStudioDefaultApply)
+    XCTAssertTrue(lmStudioMessage.contains("enabled"))
+    XCTAssertTrue(lmStudioMessage.contains("reopen Codex"))
   }
 
   func testFailedActionNeverReportsSuccessOrDisplaysUntrustedCodes() throws {

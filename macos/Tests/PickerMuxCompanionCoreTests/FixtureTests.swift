@@ -11,15 +11,21 @@ final class FixtureTests: XCTestCase {
   func testActualCliSnapshotsIncludeSafePartialResults() throws {
     let ready = try CompanionSnapshot.decode(fixture("status"))
     XCTAssertEqual(ready.state, "ready")
+    XCTAssertTrue(ready.supportsNativeOnlyLMStudioSetup)
+    XCTAssertEqual(ready.providerConfiguration?.status, .external)
     XCTAssertTrue(ready.actions.contains(.configurationApply))
+    XCTAssertTrue(ready.actions.contains(.fullRefresh))
     let partial = try CompanionSnapshot.decode(fixture("partial-status"))
     XCTAssertEqual(partial.version, "unknown")
     XCTAssertEqual(partial.state, "degraded")
+    XCTAssertEqual(partial.providerConfiguration?.status, .unknown)
+    XCTAssertTrue(partial.issues.contains { $0.code == "providerConfiguration-unavailable" })
   }
 
   func testActualCliTokenUsagePreservesLatestPartialUnknownAndOverflowCounts() throws {
     let snapshot = try CompanionSnapshot.decode(fixture("token-status"))
     XCTAssertTrue(snapshot.supportsTokenUsage)
+    XCTAssertEqual(snapshot.providerConfiguration?.status, .external)
     let usage = try XCTUnwrap(snapshot.tokenUsage)
     XCTAssertEqual(usage.status, .available)
     XCTAssertEqual(usage.providers.count, 3)

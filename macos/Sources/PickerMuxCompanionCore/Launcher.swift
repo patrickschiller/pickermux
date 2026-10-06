@@ -81,7 +81,8 @@ public struct LauncherValidator {
 
   private func distributionDigest(_ root: URL) throws -> String {
     let required = Set(["LICENSE", "bin", "lmstudio-picker.config.json", "package.json", "src"])
-    let allowed = required.union(["release-manifest.json"])
+    let allowed = required.union(["release-manifest.json", "runtime"])
+    let mlxRuntimeFiles = Set(["kolibri.py", "manage.py", "model_store.py", "server.py"])
     let names = Set(try FileManager.default.contentsOfDirectory(atPath: root.path))
     guard required.isSubset(of: names), names.isSubset(of: allowed) else { throw CompanionFailure.unsafeLauncher }
     var files = [(String, Data)]()
@@ -100,6 +101,22 @@ public struct LauncherValidator {
           guard relative.range(of: "^src/[a-z0-9-]+\\.mjs$|^bin/(pickermux|lmstudio-picker)\\.mjs$", options: .regularExpression) != nil
           else { throw CompanionFailure.unsafeLauncher }
           files.append((relative, try privateFile(target.appendingPathComponent(member), limit: 4 * 1024 * 1024)))
+        }
+      } else if name == "runtime" {
+        let mlx = target.appendingPathComponent("mlx")
+        try ownedDirectories([target, mlx])
+        for directory in [target, mlx] {
+          var directoryInfo = stat()
+          guard lstat(directory.path, &directoryInfo) == 0, directoryInfo.st_mode & 0o077 == 0
+          else { throw CompanionFailure.unsafeLauncher }
+        }
+        let runtimeNames = Set(try FileManager.default.contentsOfDirectory(atPath: target.path))
+        let mlxNames = Set(try FileManager.default.contentsOfDirectory(atPath: mlx.path))
+        guard runtimeNames == ["mlx"], mlxNames == mlxRuntimeFiles
+        else { throw CompanionFailure.unsafeLauncher }
+        for member in mlxNames {
+          let relative = "runtime/mlx/\(member)"
+          files.append((relative, try privateFile(mlx.appendingPathComponent(member), limit: 4 * 1024 * 1024)))
         }
       } else {
         files.append((name, try privateFile(target, limit: 4 * 1024 * 1024)))

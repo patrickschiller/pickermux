@@ -1,3 +1,5 @@
+import { normalizeMlxCapabilities } from "./mlx-capabilities.mjs";
+
 import {
   DiscoveryError,
   DiscoveryUnavailableError,
@@ -147,7 +149,8 @@ async function discoverGenericProvider({
   timeout.unref?.();
   try {
     const headers = { accept: "application/json" };
-    const credential = await credentialResolver(provider);
+    const mlx = provider.kind === "mlx-chat-completions";
+    const credential = mlx ? undefined : await credentialResolver(provider);
     if (credential) headers.authorization = `Bearer ${credential}`;
     const response = await fetchImpl(
       `${provider.baseUrl.replace(/\/+$/u, "")}/models`,
@@ -168,6 +171,21 @@ async function discoverGenericProvider({
     if (!payload || typeof payload !== "object" || !Array.isArray(payload.data)) {
       throw new DiscoveryError("PROVIDER_RESPONSE_INVALID", "External provider model discovery returned an unexpected response shape");
     }
+    if (mlx) {
+      const entry = payload.data[0];
+      const configured = provider.models[0];
+      if (
+        payload.data.length !== 1 || !entry || typeof entry !== "object" ||
+        Array.isArray(entry) || entry.id !== configured?.id ||
+        entry.object !== "model" ||
+        !Number.isSafeInteger(entry.context_window) ||
+        entry.context_window !== configured?.contextWindow ||
+        (configured?.mlxProfileDigest !== undefined &&
+          entry.capabilities?.mlxProfileDigest !== configured.mlxProfileDigest)
+      ) {
+        throw new DiscoveryError("PROVIDER_RESPONSE_INVALID", "The local MLX server model and active context do not match the configured model profile");
+      }
+    }
     const ids = new Set(payload.data.map((entry) => String(entry?.id ?? "")).filter(Boolean));
     if (ids.size === 0) {
       throw new Error(`Provider ${provider.id} returned no model ids`);
@@ -186,8 +204,9 @@ async function discoverGenericProvider({
         displayName: model.displayName,
         type: "llm",
         contextWindow: model.contextWindow,
-        source: "openai-compatible-models",
-        capabilities: {},
+        source: mlx ? "mlx-chat-completions" : "openai-compatible-models",
+        capabilities: mlx ? normalizeMlxCapabilities(payload.data[0].capabilities) : {},
+        ...(mlx ? { providerKind: provider.kind } : {}),
         ...configuredReasoning(model),
       };
     });
@@ -284,7 +303,9 @@ export async function discoverBridgeModels({
     models.push(...mapped);
     providers.push({
       id: provider.id,
-      source: "openai-compatible-models",
+      source: provider.kind === "mlx-chat-completions"
+        ? "mlx-chat-completions"
+        : "openai-compatible-models",
       models: mapped,
       skipped: [],
     });

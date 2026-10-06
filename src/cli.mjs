@@ -1,3 +1,6 @@
+import { supportsMlxTools } from "./mlx-capabilities.mjs";
+import { MLX_COMMANDS, runMlxCli } from "./mlx-cli.mjs";
+
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { readdir, rmdir, unlink } from "node:fs/promises";
@@ -6,8 +9,9 @@ import { setTimeout as sleep } from "node:timers/promises";
 
 import { inspectCodexAccountCache } from "./account-cache.mjs";
 import { assertRuntimeCompressionSupport } from "./body-codec.mjs";
-import { loadBridgeConfig } from "./bridge-config.mjs";
+import { loadBridgeConfig, validateBridgeConfig } from "./bridge-config.mjs";
 import { discoverBridgeModels } from "./bridge-discovery.mjs";
+import { buildBridgeStartupRegistry } from "./bridge-startup.mjs";
 import { classifyDiscoveryFailure } from "./discovery.mjs";
 import { runBridgeDoctor } from "./bridge-doctor.mjs";
 import {
@@ -51,6 +55,7 @@ import { runCompanionCli } from "./companion-cli.mjs";
 import { loadCompanionServiceConfig } from "./companion-config.mjs";
 import { CompanionControlError, COMPANION_UNINSTALL_CHANGES, collectCompanionStatus, createCompanionReadOnlyProbes } from "./companion-control.mjs";
 import { applyCompanionUpdate, checkForCompanionUpdate } from "./companion-update.mjs";
+import { BUNDLED_LMSTUDIO_CONFIG_FILE, previewBundledLmStudioSetup } from "./native-only-setup.mjs";
 import { createUsageStore, inventoryUsageStore, revalidateUsageStoreInventory, removeUsageStoreInventory } from "./usage-store.mjs";
 import { WEB_SEARCH_CONTRACT_VERSION } from "./web-search-wire.mjs";
 import {
@@ -183,13 +188,21 @@ const HISTORICAL_CHAT_RECOVERY_DOC =
   "https://github.com/patrickschiller/pickermux/blob/main/docs/TROUBLESHOOTING.md#reconnecting-in-an-old-chat-after-deactivation-or-uninstall";
 
 function usage() {
-  return `PickerMux — Codex + Responses providers, one model picker
+  return `PickerMux — Codex + external providers, one model picker
 
 Use local or remote models through LM Studio or an explicitly configured
 compatible Responses provider. LM Studio adds loaded-model discovery;
-other providers require a model allowlist. Chat Completions alone is insufficient.
+other providers require a model allowlist. The local mlx-chat-completions provider
+loads pinned HF snapshots without LM Studio; reviewed Kolibri tools require certification.
+Keep the configured MLX server running during bridge startup and certification.
+Other Chat Completions servers are not supported by this adapter.
 
 Usage:
+  pickermux mlx-load REPOSITORY --alias NAME --python PATH [--revision REF] [--model-dir PATH] [--port N]
+  pickermux mlx-prepare REPOSITORY --alias NAME --python PATH [--revision REF]
+  pickermux mlx-start --model NAME [--port N]
+  pickermux mlx-status [--json]
+  pickermux mlx-stop --model NAME
   pickermux discover [--config PATH] [--json]
   pickermux build [--config PATH] [--output PATH] [--json]
   pickermux certify (--model SLUG | --all) [--config PATH] [--json]
@@ -218,13 +231,13 @@ deactivateIntegration:true. Deactivation retains setup, historical aliases and
 private runtime identity for confirmed reactivation without full-refresh purge.
 Companion status advertises token-usage-v2: per-provider input, output and
 total tokens for the last model request and private saved totals since reset.
-Settings resets accumulated counts through usage-reset with exact
+Config resets accumulated counts through usage-reset with exact
 resetAccumulatedUsage:true consent; the last model request is retained.
 Legacy token-usage-v1 backends still show counts since bridge start.
 Missing usage remains unavailable; native and certification requests are excluded.
 Companion update-check recognizes the DMG release channel. An update request
 for a DMG returns DOWNLOAD_REQUIRED; replace the app, then explicitly review
-Update installed backend in Settings. No downloaded DMG is executed by the CLI.
+Update installed backend in Config. No downloaded DMG is executed by the CLI.
 repair-chats restores only the inert model_bridge table used to open historical
 chats after uninstall. Saved chat providers are unchanged.
 refresh --full (also --FULL) recovers an account cache after a Codex update.
@@ -242,7 +255,17 @@ External models still require tool certification; search uses the native Codex b
 GPT-Live WebRTC bootstrap uses the native ChatGPT service; delegated tasks retain
 their selected model. Voice audio and startup context go to OpenAI. This requires
 account voice availability and a compatible Codex client; unknown schemas fail closed.
-Setup and install automatically certify discovered models without a valid tool receipt.
+Setup and install automatically certify tool-capable providers without a valid receipt.
+An explicit providers:[] configuration keeps the native Codex picker through
+PickerMux; setup and refresh require no external models and grant no external tools.
+Legacy MLX servers remain text-only. Reviewed MLX tool protocols use the full certification matrix.
+Reviewed MLX HTTP 502 failures expose only fixed public error categories, never provider error text.
+mlx-load requires the isolated, pinned mlx-lm environment and prints an allowlisted
+provider stanza for your configuration; it never edits the active Codex configuration.
+--context-window N (1024–262144) and --max-output-tokens N (1–2048) bind the profile.
+Snapshots resolve to immutable HF revisions. Unreviewed repository Python is rejected.
+token-performance-v1 shows measured output generation tokens/s after a finalized
+MLX turn, excluding prefill/network time; timing is volatile and unavailable after restart.
 Live tests can take several minutes per model. Keep configured models available and Codex fully closed.
 Progress is written to stderr; --json keeps stdout machine-readable.
 LM Studio context compaction uses one bounded summary request without tool schemas.
@@ -592,6 +615,7 @@ async function rollbackInstallation({
         previousPath: servicePackage.previousPath,
         serviceConfigPath: servicePackage.serviceConfigPath,
         previousServiceConfig: servicePackage.previousServiceConfig,
+        committedServiceConfig: servicePackage.committedServiceConfig,
       });
     } catch (error) {
       failures.push(error);
@@ -813,15 +837,14 @@ export async function restoreRefreshState({
         previousPath: servicePackage.previousPath,
         serviceConfigPath: servicePackage.serviceConfigPath,
         previousServiceConfig: servicePackage.previousServiceConfig,
+        committedServiceConfig: servicePackage.committedServiceConfig,
       });
     } catch (error) {
       failures.push(error);
     }
   }
-  const snapshots = [
-    [paths.catalogPath, previousCatalog],
-    [paths.serviceConfigPath, previousServiceConfig],
-  ];
+  const snapshots = [[paths.catalogPath, previousCatalog]];
+  if (!servicePackage) snapshots.push([paths.serviceConfigPath, previousServiceConfig]);
   if (paths.compatibilityPath) {
     snapshots.push([paths.compatibilityPath, previousCompatibility]);
   }
@@ -844,7 +867,14 @@ export async function restoreRefreshState({
   if (failures.length > 0) throw new AggregateError(failures, "PickerMux refresh rollback failed");
 }
 
-async function refresh({ config, paths, codexPath, sourceRoot = projectRoot }) {
+async function refresh({
+  config,
+  paths,
+  codexPath,
+  sourceRoot = projectRoot,
+  expectedServiceConfig,
+  beforeServiceConfigCommit,
+}) {
   assertRuntimeCompressionSupport();
   assertPersistentCredentialSupport(config);
   const status = await getConfigStatus({ configPath: paths.configPath, statePath: paths.statePath });
@@ -909,6 +939,8 @@ async function refresh({ config, paths, codexPath, sourceRoot = projectRoot }) {
         sourceRoot,
         installDirectory: paths.installDirectory,
         config,
+        expectedServiceConfig,
+        beforeServiceConfigCommit,
       });
       await writeCatalogAtomic(paths.catalogPath, built.catalog);
       await writeCompatibilityManifest(
@@ -981,23 +1013,25 @@ async function refresh({ config, paths, codexPath, sourceRoot = projectRoot }) {
       } catch (rollbackError) {
         selectionRollbackError = rollbackError;
       }
-      try {
-        await restoreRefreshState({
-          paths,
-          previousCatalog,
-          previousServiceConfig,
-          previousCompatibility,
-          rollbackConfig,
-          servicePackage,
-          managedConfigUpdate,
-        });
-      } catch (rollbackError) {
-        selectionRollbackError = selectionRollbackError
-          ? new AggregateError(
-              [selectionRollbackError, rollbackError],
-              "Refresh registry and state rollback failed",
-            )
-          : rollbackError;
+      if (servicePackage) {
+        try {
+          await restoreRefreshState({
+            paths,
+            previousCatalog,
+            previousServiceConfig,
+            previousCompatibility,
+            rollbackConfig,
+            servicePackage,
+            managedConfigUpdate,
+          });
+        } catch (rollbackError) {
+          selectionRollbackError = selectionRollbackError
+            ? new AggregateError(
+                [selectionRollbackError, rollbackError],
+                "Refresh registry and state rollback failed",
+              )
+            : rollbackError;
+        }
       }
       if (selection.changed && typeof selection.rollback === "function") {
         try {
@@ -1015,6 +1049,12 @@ async function refresh({ config, paths, codexPath, sourceRoot = projectRoot }) {
         throw new Error(
           `PickerMux refresh failed and rollback was incomplete. Original: ${error.message}; rollback: ${selectionRollbackError.errors?.map((entry) => entry.message).join("; ") ?? selectionRollbackError.message}`,
           { cause: new AggregateError([error, selectionRollbackError]) },
+        );
+      }
+      if (!servicePackage) {
+        throw new Error(
+          `PickerMux refresh stopped before the service configuration commit: ${error.message}`,
+          { cause: error },
         );
       }
       throw new Error(
@@ -1098,7 +1138,9 @@ async function serve({
   };
   const mixedCatalog = await readCodexCatalog(catalogPath);
   const registry = createReloadableProviderRegistry(
-    buildProviderRegistry({ mixedCatalog, config }),
+    await buildBridgeStartupRegistry({
+      mixedCatalog, config, certificationPath, codexClientVersion, credentialResolver,
+    }),
   );
   let lastSyncError;
   synchronizer = hasLoadedModelDiscovery(config)
@@ -1561,7 +1603,8 @@ export async function runCertificationTransaction({
         phase: "model",
         index: completed.length + 1,
         total: rebound.length,
-        probeCount: subject.providerKind === "lmstudio-responses" ? 9 : 7,
+        probeCount: subject.providerKind === "lmstudio-responses" ||
+          (subject.providerKind === "mlx-chat-completions" && supportsMlxTools(subject.capabilities)) ? 9 : 7,
       });
       assertMatchingCertificationSubjects(
         [entry],
@@ -1601,7 +1644,8 @@ export async function runCertificationTransaction({
       );
 
       const supportsEfficientFidelity =
-        subject.providerKind === "lmstudio-responses";
+        subject.providerKind === "lmstudio-responses" ||
+        (subject.providerKind === "mlx-chat-completions" && supportsMlxTools(subject.capabilities));
       let efficientFidelity = supportsEfficientFidelity
         ? "direct-fallback"
         : "not-applicable";
@@ -1778,6 +1822,9 @@ export async function certify({
   transactionImpl = runCertificationTransaction,
   credentialResolver = createCredentialResolver(),
 } = {}) {
+  const textOnlyProviders = new Set((config.providers ?? [])
+    .filter((provider) => provider.kind === "mlx-chat-completions")
+    .map((provider) => provider.id));
   const [managedConfig, service, runtime] = await Promise.all([
     configStatusImpl({ configPath: paths.configPath, statePath: paths.statePath }),
     serviceStatusImpl({
@@ -1795,8 +1842,13 @@ export async function certify({
     discoverImpl({ config, credentialResolver }),
     listPendingImpl(paths.certificationPath),
   ]);
-  const supported = discovery.models;
-  const supportedIds = new Set(supported.map((entry) => entry.id));
+  const isTextOnly = (entry) => textOnlyProviders.has(entry.providerId) && !supportsMlxTools(entry.capabilities);
+  const textOnly = discovery.models.filter(isTextOnly);
+  if (!all && textOnly.some((entry) => entry.id === model)) {
+    throw new Error("The local MLX model has no reviewed tool protocol; upgrade its server before certification");
+  }
+  const supported = discovery.models.filter((entry) => !isTextOnly(entry));
+  const supportedIds = new Set(discovery.models.map((entry) => entry.id));
   let candidates = all
     ? supported
     : supported.filter((entry) => entry.id === model);
@@ -1824,11 +1876,11 @@ export async function certify({
       : [];
   if (candidates.length === 0 && recoveryModelIds.length === 0) {
     if (onlyUncertified) {
-      return { certified: [], recoveredPending: [], reused, restartRequired: true };
+      return { certified: [], recoveredPending: [], reused, textOnly: textOnly.length, restartRequired: true };
     }
     throw new Error(
       all
-        ? "No external model is available for certification"
+        ? "No external model with a reviewed tool protocol is available for certification"
         : `External model ${model} was not discovered`,
     );
   }
@@ -1841,7 +1893,7 @@ export async function certify({
     credentialResolver,
     targetModelIds: candidates.map((candidate) => candidate.id),
     recoveryModelIds,
-    exactModelSet: all && !onlyUncertified,
+    exactModelSet: all && !onlyUncertified && textOnly.length === 0,
     sourceRoot,
     onProgress,
   });
@@ -3228,6 +3280,8 @@ export async function executeFullRefreshWorker({
 export async function setupPickerMux({
   sourceRoot = projectRoot,
   setupConfigPath,
+  setupConfig,
+  expectedServiceConfig,
   paths = resolveInstallPaths(),
   distributionPaths = resolveDistributionPaths(),
   codexPath = resolveCodexBinary(),
@@ -3249,6 +3303,18 @@ export async function setupPickerMux({
   configurationPreflightImpl = async () => {},
   assertNoPendingFullRefreshImpl = async () => null,
 } = {}) {
+  if (setupConfig !== undefined && setupConfigPath !== undefined) {
+    throw new TypeError("PickerMux setup accepts either a fixed config path or an internal config value");
+  }
+  if (expectedServiceConfig !== undefined && (setupConfig === undefined || !Buffer.isBuffer(expectedServiceConfig))) {
+    throw new TypeError("A service-config CAS is available only to an internal fixed-config migration");
+  }
+  const fixedExpectedServiceConfig = expectedServiceConfig === undefined
+    ? undefined
+    : Buffer.from(expectedServiceConfig);
+  const fixedSetupConfig = setupConfig === undefined
+    ? undefined
+    : validateBridgeConfig(setupConfig);
   const initialStatus = await configStatusImpl({
     configPath: paths.configPath,
     statePath: paths.statePath,
@@ -3260,6 +3326,9 @@ export async function setupPickerMux({
     throw new Error(
       `PickerMux setup refuses inconsistent integration state (${initialStatus.status ?? "unknown"}).${recovery}`,
     );
+  }
+  if (fixedSetupConfig !== undefined && initialStatus.installed !== true) {
+    throw new Error("An internal provider migration requires an installed PickerMux configuration");
   }
   if (await desktopRunningImpl()) {
     throw new Error(
@@ -3340,14 +3409,22 @@ export async function setupPickerMux({
     : initialStatus.installed || initialStatus.status === "deactivated"
       ? paths.serviceConfigPath
       : path.join(path.resolve(sourceRoot), "lmstudio-picker.config.json");
-  const preflightConfig = await loadConfigImpl(effectiveConfigPath);
+  const loadEffectiveConfig = () => fixedSetupConfig ?? loadConfigImpl(effectiveConfigPath);
+  const preflightConfig = await loadEffectiveConfig();
   let discovery;
   try {
     discovery = await discoverImpl({ config: preflightConfig });
   } catch (error) {
     throw new CompanionControlError(classifyDiscoveryFailure(error) ?? "ACTION_FAILED");
   }
-  if (!Array.isArray(discovery?.models) || discovery.models.length === 0) {
+  const nativeOnly = Array.isArray(preflightConfig.providers) && preflightConfig.providers.length === 0;
+  if (nativeOnly && (
+    !Array.isArray(discovery?.models) || discovery.models.length !== 0 ||
+    !Array.isArray(discovery.providers) || discovery.providers.length !== 0
+  )) {
+    throw new CompanionControlError("PROVIDER_RESPONSE_INVALID");
+  }
+  if (!nativeOnly && (!Array.isArray(discovery?.models) || discovery.models.length === 0)) {
     throw new CompanionControlError(discovery?.providers?.some((provider) => provider.unavailableReason === "connection-refused")
       ? "PROVIDER_UNAVAILABLE" : "NO_LOADED_MODELS");
   }
@@ -3403,7 +3480,7 @@ export async function setupPickerMux({
         );
       }
       await assertAccountCacheReady();
-      const config = await loadConfigImpl(effectiveConfigPath);
+      const config = await loadEffectiveConfig();
       activatedConfig = config;
       if (status.installed) {
         const result = await refreshImpl({
@@ -3411,6 +3488,10 @@ export async function setupPickerMux({
           paths,
           codexPath,
           sourceRoot: distributionRoot,
+          expectedServiceConfig: fixedExpectedServiceConfig,
+          beforeServiceConfigCommit: fixedExpectedServiceConfig === undefined
+            ? undefined
+            : assertActivationAllowed,
         });
         return {
           action: previousVersion === version ? "refresh" : "upgrade",
@@ -3465,8 +3546,11 @@ export async function runPickerMuxCompanion(argv, {
   withLockImpl = withInstallationLock,
   desktopRunningImpl = isCodexDesktopRunning,
   assertNoPendingFullRefreshImpl = () => assertNoPendingFullRefresh({ fullRefreshPaths }),
+  scheduleFullRefreshImpl = scheduleFullRefresh,
   previewUninstallImpl = previewPickerMuxUninstall,
   purgeUninstallImpl = purgePickerMux,
+  setupImpl = setupPickerMux,
+  lmStudioDefaultPreviewImpl = previewBundledLmStudioSetup,
   handlers,
 } = {}) {
   const configurationPaths = { configPath: paths.configPath, statePath: paths.statePath, backupDirectory: paths.backupDirectory };
@@ -3475,6 +3559,7 @@ export async function runPickerMuxCompanion(argv, {
     if (await desktopRunningImpl()) throw new CompanionControlError("CODEX_RUNNING");
   };
   const installedConfig = () => loadCompanionServiceConfig({ paths });
+  const lmStudioDefaultPreview = () => lmStudioDefaultPreviewImpl({ paths, sourceRoot });
   const certificationProgress = (onProgress) => (event) => onProgress({ phase: "certifying", current: event.index, total: event.total, elapsedMs: event.elapsedMs });
   const defaults = {
     async refresh() {
@@ -3487,8 +3572,11 @@ export async function runPickerMuxCompanion(argv, {
       await noRecovery();
       return openCodexDesktop();
     },
+    "full-refresh"() {
+      return scheduleFullRefreshImpl({ paths, distributionPaths, fullRefreshPaths, codexPath, sourceRoot });
+    },
     recover() {
-      return scheduleFullRefresh({ paths, distributionPaths, fullRefreshPaths, codexPath, sourceRoot });
+      return scheduleFullRefreshImpl({ paths, distributionPaths, fullRefreshPaths, codexPath, sourceRoot });
     },
     async certify(_request, { onProgress }) {
       await noRecovery();
@@ -3571,6 +3659,37 @@ export async function runPickerMuxCompanion(argv, {
       });
       return { status: "applied", version: result.version, updated: true, restartRequired: true, certificationIncomplete: result.certification?.status === "incomplete" };
     },
+    "lmstudio-default-preview"() {
+      return lmStudioDefaultPreview();
+    },
+    async "lmstudio-default-apply"(request, { onProgress }) {
+      const assertPreview = async () => {
+        const preview = await lmStudioDefaultPreview();
+        if (!preview.canApply || preview.status !== "native-only" || preview.previewToken !== request.previewToken) {
+          throw new CompanionControlError("CONFIGURATION_CONFLICT");
+        }
+        return preview;
+      };
+      const preview = await assertPreview();
+      const expectedConfigPath = path.join(sourceRoot, BUNDLED_LMSTUDIO_CONFIG_FILE);
+      if (path.resolve(preview.bundledConfigPath) !== expectedConfigPath ||
+        !Buffer.isBuffer(preview.installedConfigBytes)) {
+        throw new CompanionControlError("CONFIGURATION_CONFLICT");
+      }
+      const result = await setupImpl({
+        sourceRoot,
+        setupConfig: preview.targetConfig,
+        expectedServiceConfig: preview.installedConfigBytes,
+        paths,
+        distributionPaths,
+        codexPath,
+        configurationPreflightImpl: assertPreview,
+        assertNoPendingFullRefreshImpl: noRecovery,
+        onProgress: certificationProgress(onProgress),
+      });
+      return { status: "applied", version: result.version, updated: true, restartRequired: true,
+        certificationIncomplete: result.certification?.status === "incomplete" };
+    },
   };
   return runCompanionCli(argv, {
     input, output, progressOutput, statusImpl,
@@ -3590,8 +3709,10 @@ export async function runCli(argv, {
   assertNoPendingFullRefreshImpl = assertNoPendingFullRefresh,
   setupImpl = setupPickerMux,
   companionImpl = runPickerMuxCompanion,
+  mlxImpl = runMlxCli,
 } = {}) {
   if (argv[0] === "companion") return companionImpl(argv.slice(1));
+  if (MLX_COMMANDS.has(argv[0])) return mlxImpl(argv);
   const options = parseArguments(argv);
   if (options.command === "help") {
     process.stdout.write(`${usage()}\n`);

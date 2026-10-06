@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { link, mkdir, mkdtemp, readFile, readdir, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -113,6 +113,127 @@ test("service config replacement remains private", async (t) => {
   assert.equal((await stat(destination)).mode & 0o777, 0o600);
 });
 
+test("service config CAS is checked immediately before commit and preserves concurrent drift", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "bridge-service-config-cas-"));
+  t.after(async () => {
+    const { rm } = await import("node:fs/promises");
+    await rm(root, { recursive: true, force: true });
+  });
+  const source = path.join(root, "source");
+  const install = path.join(root, "install");
+  await mkdir(path.join(source, "bin"), { recursive: true });
+  await mkdir(path.join(source, "src"), { recursive: true });
+  await writeFile(path.join(source, "bin", "tool.mjs"), "#!/usr/bin/env node\n");
+  await writeFile(path.join(source, "src", "main.mjs"), "export const version = 1;\n");
+  await writeFile(path.join(source, "package.json"), '{"name":"pickermux","version":"0.4.0"}\n');
+  await writeFile(path.join(source, "lmstudio-picker.config.json"), '{"schemaVersion":2}\n');
+  const first = await stageServicePackage({
+    sourceRoot: source,
+    installDirectory: install,
+    config: { version: 1 },
+  });
+  const expected = await readFile(first.serviceConfigPath);
+  await writeFile(path.join(source, "src", "main.mjs"), "export const version = 2;\n");
+
+  let hookCalls = 0;
+  await assert.rejects(stageServicePackage({
+    sourceRoot: source,
+    installDirectory: install,
+    config: { version: 2 },
+    expectedServiceConfig: expected,
+    beforeServiceConfigCommit: async () => {
+      hookCalls += 1;
+      await writeFile(first.serviceConfigPath, "concurrent edit\n", { mode: 0o600 });
+    },
+  }), { code: "CONFIG_CHANGED_CONCURRENTLY" });
+  assert.equal(hookCalls, 1);
+  assert.equal(await readFile(first.serviceConfigPath, "utf8"), "concurrent edit\n");
+  assert.equal(
+    await readFile(path.join(first.serviceDirectory, "src", "main.mjs"), "utf8"),
+    "export const version = 1;\n",
+  );
+  assert.deepEqual((await readdir(install)).sort(), ["runtime-app", "service-config.json"]);
+
+  const concurrent = await readFile(first.serviceConfigPath);
+  const committed = await stageServicePackage({
+    sourceRoot: source,
+    installDirectory: install,
+    config: { version: 2 },
+    expectedServiceConfig: concurrent,
+    beforeServiceConfigCommit: async () => { hookCalls += 1; },
+  });
+  assert.equal(hookCalls, 2);
+  assert.deepEqual(JSON.parse(await readFile(first.serviceConfigPath, "utf8")), { version: 2 });
+  assert.equal(
+    await readFile(path.join(first.serviceDirectory, "src", "main.mjs"), "utf8"),
+    "export const version = 2;\n",
+  );
+  await writeFile(first.serviceConfigPath, "post-commit concurrent edit\n", { mode: 0o600 });
+  await assert.rejects(restoreServicePackage(committed), { code: "CONFIG_CHANGED_CONCURRENTLY" });
+  assert.equal(await readFile(first.serviceConfigPath, "utf8"), "post-commit concurrent edit\n");
+  assert.equal(
+    await readFile(path.join(first.serviceDirectory, "src", "main.mjs"), "utf8"),
+    "export const version = 2;\n",
+  );
+  assert.equal(
+    await readFile(path.join(committed.previousPath, "src", "main.mjs"), "utf8"),
+    "export const version = 1;\n",
+  );
+
+  await writeFile(first.serviceConfigPath, committed.committedServiceConfig, { mode: 0o600 });
+  await assert.rejects(restoreServicePackage({
+    ...committed,
+    beforeServiceConfigRestoreCommit: async () => {
+      await writeFile(first.serviceConfigPath, "during-rollback concurrent edit\n", { mode: 0o600 });
+    },
+  }), { code: "CONFIG_CHANGED_CONCURRENTLY" });
+  assert.equal(await readFile(first.serviceConfigPath, "utf8"), "during-rollback concurrent edit\n");
+  assert.equal(
+    await readFile(path.join(first.serviceDirectory, "src", "main.mjs"), "utf8"),
+    "export const version = 1;\n",
+  );
+});
+
+test("service config CAS rejects aliases before reading or mutating the runtime", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "bridge-service-config-alias-"));
+  t.after(async () => {
+    const { rm } = await import("node:fs/promises");
+    await rm(root, { recursive: true, force: true });
+  });
+  const source = path.join(root, "source");
+  const install = path.join(root, "install");
+  const serviceConfigPath = path.join(install, "service-config.json");
+  const privatePayload = "PRIVATE_AUTH_PAYLOAD\n";
+  const sensitive = path.join(root, "auth.json");
+  await mkdir(path.join(source, "bin"), { recursive: true });
+  await mkdir(path.join(source, "src"), { recursive: true });
+  await mkdir(install, { mode: 0o700 });
+  await writeFile(path.join(source, "bin", "tool.mjs"), "#!/usr/bin/env node\n");
+  await writeFile(path.join(source, "src", "main.mjs"), "export const ok = true;\n");
+  await writeFile(path.join(source, "package.json"), '{"name":"pickermux","version":"0.4.0"}\n');
+  await writeFile(path.join(source, "lmstudio-picker.config.json"), '{"schemaVersion":2}\n');
+  await writeFile(sensitive, privatePayload, { mode: 0o600 });
+
+  for (const kind of ["symbolic", "hard"]) {
+    if (kind === "symbolic") await symlink(sensitive, serviceConfigPath);
+    else await link(sensitive, serviceConfigPath);
+    let observed;
+    await assert.rejects(stageServicePackage({
+      sourceRoot: source,
+      installDirectory: install,
+      config: { version: 2 },
+      expectedServiceConfig: Buffer.from("{}\n"),
+    }), (error) => {
+      observed = error;
+      return error?.code === "CONFIG_CHANGED_CONCURRENTLY";
+    });
+    assert.equal(JSON.stringify(observed).includes("PRIVATE_AUTH_PAYLOAD"), false);
+    assert.equal(await readFile(sensitive, "utf8"), privatePayload);
+    assert.deepEqual((await readdir(install)).sort(), ["service-config.json"]);
+    await unlink(serviceConfigPath);
+  }
+});
+
 test("failed private atomic replacement closes and removes its temporary file", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "bridge-private-write-failure-"));
   t.after(async () => {
@@ -159,6 +280,7 @@ test("private snapshots and staged runtime package can be rolled back exactly", 
     previousPath: second.previousPath,
     serviceConfigPath: second.serviceConfigPath,
     previousServiceConfig: second.previousServiceConfig,
+    committedServiceConfig: second.committedServiceConfig,
   });
   assert.equal(
     await readFile(path.join(second.serviceDirectory, "src", "main.mjs"), "utf8"),

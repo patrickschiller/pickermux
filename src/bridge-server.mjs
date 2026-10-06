@@ -4,7 +4,7 @@ import { hasDisallowedOrigin, isExpectedHost } from "./header-policy.mjs";
 import { createLiveProxy, createResponsesProxy, createWebSearchProxy } from "./responses-proxy.mjs";
 import { LIVE_CONTRACT_VERSION, LIVE_PATH } from "./live-wire.mjs";
 import { WEB_SEARCH_CONTRACT_VERSION, WEB_SEARCH_PATH } from "./web-search-wire.mjs";
-import { createTokenUsageTelemetry } from "./token-usage.mjs";
+import { createTokenPerformanceTelemetry, createTokenUsageTelemetry } from "./token-usage.mjs";
 
 const LOOPBACK_HOST = "127.0.0.1";
 export const CERTIFICATION_PENDING_GATE_VERSION = 1;
@@ -285,6 +285,7 @@ export function createBridgeServer({
     throw new TypeError("tokenUsageStore must provide record(), readSnapshot(), and flush()");
   }
   const tokenUsageTelemetry = tokenUsageStore ?? createTokenUsageTelemetry();
+  const tokenPerformanceTelemetry = createTokenPerformanceTelemetry();
   const certificationPendingGateActive =
     typeof externalRequestGate === "function";
   const captureTextOnlyCompaction = (event) => {
@@ -305,7 +306,10 @@ export function createBridgeServer({
     compactionSecret: capabilityToken,
     externalRequestGate,
     onTextOnlyCompaction: captureTextOnlyCompaction,
-    onTokenUsage: (providerId, usage) => tokenUsageTelemetry.record(providerId, usage),
+    onTokenUsage: (providerId, usage) => {
+      tokenPerformanceTelemetry.record(providerId, usage);
+      return tokenUsageTelemetry.record(providerId, usage);
+    },
   });
   const handleWebSearch = createWebSearchProxy({
     registry,
@@ -371,6 +375,7 @@ export function createBridgeServer({
         liveContractVersion: LIVE_CONTRACT_VERSION,
         instanceId,
         tokenUsage,
+        tokenPerformance: tokenPerformanceTelemetry.snapshot(),
         ...(certificationPendingGateActive
           ? {
               certificationPendingGateVersion:

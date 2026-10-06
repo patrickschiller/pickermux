@@ -29,6 +29,7 @@ const EXTERNAL_MODEL = {
 async function fixture(t, {
   discovery,
   catalogModels = [NATIVE_MODEL, EXTERNAL_MODEL],
+  nativeOnly = false,
 } = {}) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "bridge-doctor-"));
   t.after(async () => {
@@ -38,7 +39,7 @@ async function fixture(t, {
   const configInput = {
     schemaVersion: 2,
     bridge: {},
-    providers: [
+    providers: nativeOnly ? [] : [
       {
         id: "lmstudio",
         kind: "lmstudio-responses",
@@ -78,6 +79,102 @@ async function fixture(t, {
   await chmod(paths.catalogPath, 0o600);
   return { config, paths, runtime, catalog };
 }
+
+function nativeDoctorOptions({ config, paths, runtime, catalog }, discovery) {
+  const baseUrl = bridgeBaseUrl(config, runtime);
+  return {
+    config,
+    paths,
+    codexPath: "/fake/codex",
+    statusImpl: async () => ({
+      installed: true, healthy: true, status: "installed", model: "gpt-5.6-sol",
+      provider: "model_bridge", providerName: "OpenAI", catalog: paths.catalogPath,
+      baseUrl, modelReasoningEffort: "ultra",
+    }),
+    serviceStatusImpl: async () => ({ loaded: true, healthy: true, status: "running" }),
+    discoveryImpl: async () => discovery,
+    debugModelsImpl: async () => catalog,
+    accountCacheImpl: async () => ({
+      ready: true, status: "ready", codexClientVersion: "0.150.0", cacheClientVersion: "0.150.0",
+      catalog: { models: [NATIVE_MODEL] }, fetchedAt: "2026-08-28T16:06:00Z",
+      ageMs: 0, warning: null, source: "codex-account-cache",
+    }),
+    runtimeSupportsZstdImpl: () => true,
+    bundledCatalogImpl: async () => ({ models: [] }),
+    clientVersionImpl: async () => "0.150.0",
+    compatibilityImpl: async () => ({ status: "compatible", compatible: true, reasons: [] }),
+    certificationStatusesImpl: async () => [],
+    pendingModelIdsImpl: async () => [],
+    fetchImpl: async (url, options) => {
+      assert.equal(url, `${baseUrl}/models`);
+      assert.equal(options.method, "GET");
+      return new Response(JSON.stringify({ object: "list", data: catalog.models.map((model) => ({ id: model.slug, object: "model" })) }),
+        { status: 200, headers: { "content-type": "application/json" } });
+    },
+  };
+}
+
+test("doctor passes an explicit native-only configuration without external models or providers", async (t) => {
+  const f = await fixture(t, { nativeOnly: true, catalogModels: [NATIVE_MODEL] });
+  const result = await runBridgeDoctor(nativeDoctorOptions(f, { models: [], providers: [] }));
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.checks.find((entry) => entry.name === "external-discovery"), {
+    name: "external-discovery",
+    status: "pass",
+    detail: "Native-only configuration; no external providers configured",
+  });
+  for (const name of ["native-account-catalog", "running-model-registry", "codex-model-catalog", "tool-certifications"]) {
+    assert.equal(result.checks.find((entry) => entry.name === name).status, "pass");
+  }
+});
+
+test("doctor retains a failed discovery check for an empty configured allowlist provider", async (t) => {
+  const f = await fixture(t, { catalogModels: [NATIVE_MODEL] });
+  const result = await runBridgeDoctor(nativeDoctorOptions(f, { models: [], providers: [{ id: "lmstudio" }] }));
+  assert.equal(result.ok, false);
+  assert.equal(result.checks.find((entry) => entry.name === "external-discovery").status, "fail");
+});
+
+test("doctor retains automatic discovery support for a deliberately unloaded local provider", async (t) => {
+  const f = await fixture(t, { discovery: { mode: "loaded" }, catalogModels: [NATIVE_MODEL] });
+  const result = await runBridgeDoctor(nativeDoctorOptions(f, { models: [], providers: [{ id: "lmstudio" }] }));
+  assert.equal(result.ok, true);
+  assert.equal(result.checks.find((entry) => entry.name === "external-discovery").status, "pass");
+});
+
+test("doctor does not infer native-only success from malformed or unexpected discovery inventories", async (t) => {
+  const cases = [
+    ["missing discovery", undefined],
+    ["null discovery", null],
+    ["missing model inventory", { providers: [] }],
+    ["missing provider inventory", { models: [] }],
+    ["null model inventory", { models: null, providers: [] }],
+    ["null provider inventory", { models: [], providers: null }],
+    ["forged zero model count", { models: { length: 0 }, providers: [] }],
+    ["forged zero provider count", { models: [], providers: { length: 0 } }],
+    ["unconfigured provider", { models: [], providers: [{ id: "unconfigured" }] }],
+    ["unconfigured model", { models: [{ id: "unknown/model" }], providers: [] }],
+  ];
+  for (const [label, discovery] of cases) {
+    await t.test(label, async (t) => {
+      const f = await fixture(t, { nativeOnly: true, catalogModels: [NATIVE_MODEL] });
+      const result = await runBridgeDoctor(nativeDoctorOptions(f, discovery));
+      assert.equal(result.ok, false);
+      const check = result.checks.find((entry) => entry.name === "external-discovery");
+      assert.equal(check.status, "fail");
+      assert.doesNotMatch(check.detail, /Native-only configuration; no external providers configured/u);
+    });
+  }
+});
+
+test("doctor rejects missing inventories even for automatic provider discovery", async (t) => {
+  const f = await fixture(t, { discovery: { mode: "loaded" }, catalogModels: [NATIVE_MODEL] });
+  for (const discovery of [{ models: [] }, { models: { length: 0 }, providers: [] }]) {
+    const result = await runBridgeDoctor(nativeDoctorOptions(f, discovery));
+    assert.equal(result.ok, false);
+    assert.equal(result.checks.find((entry) => entry.name === "external-discovery").status, "fail");
+  }
+});
 
 test("mixed doctor verifies service, config, discovery, file and Codex catalog", async (t) => {
   const { config, paths, runtime, catalog } = await fixture(t);

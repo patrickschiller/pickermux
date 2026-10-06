@@ -83,6 +83,46 @@ Native Codex request bodies remain byte preserving. Treat request logs produced
 by older PickerMux releases as sensitive because they may contain installation,
 session, thread, window, or turn identifiers.
 
+The experimental `mlx-chat-completions` kind has a separate reviewed contract.
+It accepts only an explicit loopback endpoint and singleton allowlist, checks
+the launcher's enforced context and managed profile digest against configuration,
+and never resolves native credentials for that route. Tools require the known
+model/runtime-bound protocol and complete Direct certification; Efficient
+Fidelity requires its additional exact receipt. Legacy and unreviewed profiles
+remain text-only. Codex owns tool execution and approval. Unsupported media,
+reasoning and compaction state fail closed. It does not broaden general
+Responses-provider compatibility.
+
+The installed bridge verifies live MLX identity before admitting certification
+requests and reevaluates receipts against that identity at startup. Stale catalog
+tool flags cannot replace a matching receipt or confer authority on changed
+runtime bytes. Missing/pending receipts permit only separately authorized probes;
+native routes and unrelated provider discovery remain outside this startup check.
+
+The optional source launcher verifies all pinned architecture/configuration/
+tokenizer/template and weight bytes before loading. Its private model directory
+is owned by the current user; symbolic links, multiply linked model files,
+unexpected files and modified snapshot bytes are rejected. A download retry
+cannot overwrite edited model files. Only one verified architecture module is
+registered, with `trust_remote_code` disabled. The Python virtual environment
+and explicit dependency pins remain a separate optional local prerequisite;
+they are not installed by ordinary PickerMux tests or bridge installation.
+
+The model server binds only to `127.0.0.1`, exposes one stable model alias and
+context size, rejects browser Origin requests, and never enumerates cached
+models or exposes paths. Explicit context is bounded by the verified model and
+tokenizer declarations, with 262,144 tokens as the implementation ceiling and
+8,192 as the default. A changed context needs a new immutable profile and fresh
+certification. The server bounds request bytes separately and enforces prompt
+plus reserved output tokens at the tokenizer boundary, then validates buffered
+generated output before success.
+There is no truncation, automatic compaction or tool-parser best effort. Errors
+and disconnects use fixed messages without raw tracebacks, prompts, responses
+or filenames. Ordinary inference has no network request and stores no prompt
+history. The explicit pinned public model download is the separate network
+operation. These checks do not isolate the runtime from a malicious process
+already running with the same macOS user identity.
+
 Standalone web search has a distinct native trust boundary. The exact
 capability-scoped `POST /v1/alpha/search` route resolves the selected model and,
 for an external selection, requires its current tool authority and the same
@@ -284,18 +324,38 @@ local usage storage so accumulated counts and the last model request survive
 bridge restarts. It stores no request
 history, prompts, response text, endpoints, capability paths, credentials or
 model/account/request identifiers, and does not write statistics to logs.
-The explicit Settings reset clears only accumulated counts and retains the
+The explicit Config reset clears only accumulated counts and retains the
 last model request. The usage directory is private (`0700`) and the usage file
 is private (`0600`); unsafe links, invalid state and concurrent changes cannot
 authorize overwriting foreign data. Invalid or corrupt state is retained for
 review and reported as unavailable.
 An existing empty usage directory or missing statistics file cannot silently
-restart counters; only an explicit Settings reset recovers that missing-file
+restart counters; only an explicit Config reset recovers that missing-file
 state. Malformed or foreign files still cannot authorize a reset overwrite.
 Ordinary uninstall/CLI removal retain the usage file; complete purge removes
 only verified owned usage state. Graceful
 shutdown drains queued writes; a crash can lose observations not yet committed.
 Storage and observer failures cannot affect routing or lifecycle permissions.
+The companion presentation filters exactly provider ID `kolibri` from visible
+token-usage and performance rows while leaving the validated backend projection
+and private ledger unchanged. Provider ID `lmstudio` remains visible as **LM
+Studio**. This UI filter grants no routing, certification, credential, reset,
+or lifecycle authority and does not make unavailable values appear as zero.
+
+Version 0.30.0 recognizes the installed distribution's optional `runtime/mlx`
+payload only when it is the complete reviewed four-file set under private real
+directories. Each entry must be a bounded, current-user-owned, single-link
+regular file with private mode, and its name and bytes participate in the
+receipt-bound distribution digest. The app-bundled copy is independently bound
+to the compiler-pinned release-manifest hash: the same complete path set,
+per-file sizes and hashes, and absence of unmanifested runtime entries are
+verified before execution. Missing, additional, modified, linked, or shared
+runtime state is rejected before executing either entry point.
+This lets a valid receipt-owned backend remain the authority for the explicit
+Config reset; it does not grant `usage-reset` to the app's bundled fallback or
+permit that fallback to overwrite another installation's durable usage store.
+Failure remains visible as unavailable reset authority rather than being
+converted into a best-effort mutation.
 
 Every external text-only route also rejects secondary `additional_tools`
 inventory items before credential resolution; schemas cannot bypass the
@@ -454,6 +514,26 @@ reviewed; the failure is not reported as a successful full removal.
 
 No uninstall mode reads, modifies, or deletes native Codex authentication. In
 particular, PickerMux never reads or removes `~/.codex/auth.json`.
+
+The 0.24.6 companion has one fixed migration for an installed configuration
+whose validated provider list is exactly empty. Status exposes only
+`native-only` or `external`; it does not return provider identities, endpoints,
+models, credentials, or configuration bytes. **Enable LM Studio models…** is
+available only with Codex fully closed through the receipt-active installed
+release. Its redacted preview token binds the current private service-config
+bytes, a target that retains the installed schema and bridge settings while
+adding the fixed bundled LM Studio default, and the current integration preview.
+Apply requires exactly `enableBundledLmStudio: true` and revalidates that binding
+before mutation and again inside transactional setup. It accepts no caller path,
+provider, endpoint, model, credential, executable, or force field.
+
+Any configured external provider, stale preview, concurrent edit, foreign
+source, unavailable LM Studio server, or missing loaded model blocks this
+migration rather than authorizing replacement. The existing lifecycle lock,
+private backup, compare-and-swap activation, certification, and rollback
+boundaries remain in force. The transition preserves unrelated Codex settings,
+historical-chat compatibility, and the prior native-only state on activation
+failure; it grants no broader provider-editing or credential authority.
 
 The companion's separate complete-removal action requires a fresh native
 removal preview and explicit consent to remove PickerMux, restore native Codex

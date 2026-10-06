@@ -3,12 +3,14 @@ import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import {
   chmod,
+  link,
   mkdir,
   mkdtemp,
   readFile,
   readdir,
   rm,
   symlink,
+  unlink,
   writeFile,
 } from "node:fs/promises";
 import os from "node:os";
@@ -357,6 +359,51 @@ printf '%s %s %s\\n' "$version" "$archive" "$sha256"
   );
   return projectDirectory;
 }
+
+test("release assets package exactly the optional reviewed MLX runtime", async (t) => {
+  const projectDirectory = await createReleaseFixture(t);
+  const runtime = path.join(projectDirectory, "runtime", "mlx");
+  await mkdir(runtime, { recursive: true });
+  const runtimeFiles = ["kolibri.py", "manage.py", "model_store.py", "server.py"];
+  for (const name of runtimeFiles) await writeFile(path.join(runtime, name), `# reviewed ${name}\n`);
+  const outputDirectory = path.join(projectDirectory, "release-output");
+  const built = await buildRelease({ projectDirectory, outputDirectory });
+  const archive = parseTarGzip(await readFile(path.join(outputDirectory, built.archiveName)));
+  assert.deepEqual(archive.filter((entry) => entry.path.startsWith("runtime/")).map((entry) => entry.path), [
+    "runtime/", "runtime/mlx/", ...runtimeFiles.map((name) => `runtime/mlx/${name}`),
+  ]);
+  const manifest = JSON.parse(await readFile(path.join(outputDirectory, "release-manifest.json"), "utf8"));
+  assert.deepEqual(manifest.files.filter((entry) => entry.path.startsWith("runtime/")).map((entry) => entry.path),
+    runtimeFiles.map((name) => `runtime/mlx/${name}`));
+  for (const name of runtimeFiles) {
+    const entry = archive.find((entry) => entry.path === `runtime/mlx/${name}`);
+    assert.equal(entry.mode, 0o644);
+    assert.equal(entry.content.toString("utf8"), `# reviewed ${name}\n`);
+  }
+});
+
+test("release inputs reject partial, unknown, linked and hard-linked MLX runtimes", async (t) => {
+  for (const [label, alter] of [
+    ["missing file", async (runtime) => unlink(path.join(runtime, "server.py"))],
+    ["unknown file", async (runtime) => writeFile(path.join(runtime, "model.safetensors"), "must not ship")],
+    ["linked file", async (runtime) => {
+      await unlink(path.join(runtime, "server.py"));
+      await symlink(path.join(runtime, "kolibri.py"), path.join(runtime, "server.py"));
+    }],
+    ["hard-linked file", async (runtime, root) => link(path.join(runtime, "server.py"), path.join(root, "other-link"))],
+  ]) {
+    await t.test(label, async (t) => {
+      const projectDirectory = await createReleaseFixture(t);
+      const runtime = path.join(projectDirectory, "runtime", "mlx");
+      await mkdir(runtime, { recursive: true });
+      for (const name of ["kolibri.py", "manage.py", "model_store.py", "server.py"]) await writeFile(path.join(runtime, name), "# reviewed\n");
+      await alter(runtime, projectDirectory);
+      const outputDirectory = path.join(projectDirectory, "release-output");
+      await assert.rejects(buildRelease({ projectDirectory, outputDirectory }), /MLX runtime/u);
+      await assert.rejects(readFile(path.join(outputDirectory, "release-manifest.json")), { code: "ENOENT" });
+    });
+  }
+});
 
 test("builds deterministic, allowlisted release assets with a CLI smoke", async (t) => {
   const projectDirectory = await createReleaseFixture(t);

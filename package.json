@@ -1,8 +1,8 @@
 {
   "name": "pickermux",
-  "version": "0.22.2",
+  "version": "0.30.0",
   "private": true,
-  "description": "Use local and remote models from compatible Responses providers in Codex Desktop",
+  "description": "Use local and remote models with certified tools in Codex Desktop",
   "license": "MIT",
   "author": "Patrick Schiller",
   "homepage": "https://github.com/patrickschiller/pickermux#readme",
