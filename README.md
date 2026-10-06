@@ -137,6 +137,12 @@ with `pickermux mlx-load`; the companion shows
 last-request and accumulated tokens plus measured MLX output tokens/s.
 See [setup and limitations](docs/CONFIGURATION.md#kolibri-mlx-provider).
 
+Keep the configured MLX server available when the bridge starts or refreshes.
+The installed service verifies its live profile and tool protocol before routing
+certification probes. Only an exact saved certification enables ordinary tools;
+an earlier test report or a larger context window does not grant them. See
+[MLX tool recovery](docs/TROUBLESHOOTING.md#kolibri-answers-without-using-tools).
+
 ## Switch off or remove
 
 Turning **Use PickerMux in Codex** off restores the native picker while retaining

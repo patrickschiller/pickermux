@@ -6,6 +6,11 @@ import test from "node:test";
 
 import { validateBridgeConfig } from "../src/bridge-config.mjs";
 import { discoverBridgeModels } from "../src/bridge-discovery.mjs";
+import {
+  certificationSubjectForModel,
+  resolveCertificationStatuses,
+  resolveModelCapabilitySlugs,
+} from "../src/certification-runner.mjs";
 import { MLX_TOOL_MODEL_INSTRUCTIONS, TEXT_ONLY_MODEL_INSTRUCTIONS, buildMixedCodexCatalog } from "../src/catalog.mjs";
 import { normalizeMlxCapabilities, supportsMlxTools } from "../src/mlx-capabilities.mjs";
 import { buildProviderRegistry } from "../src/provider-registry.mjs";
@@ -402,4 +407,121 @@ test("MLX receipts bind model files, runtime parser and profile; Efficient Fidel
     assert.equal(evaluateModelCertification(store, changed).status, "stale");
     assert.equal(evaluateEfficientFidelityCertification(store, changed).status, "stale");
   }
+});
+
+test("managed 262k MLX discovery grants tools only from the exact persisted Direct and Efficient receipts", async (t) => {
+  const directory = await mkdtemp(path.join(tmpdir(), "mlx-managed-pipeline-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const storePath = path.join(directory, "certifications.json");
+  const alias = "kolibri-1-mlx-4bit-262k";
+  const slug = `kolibri/${alias}`;
+  const profileDigest = `sha256:${"c".repeat(64)}`;
+  const codexClientVersion = "0.158.0";
+  const baseConfig = config();
+  Object.assign(baseConfig.providers[0].models[0], {
+    id: alias,
+    slug,
+    contextWindow: 262_144,
+    mlxProfileDigest: profileDigest,
+  });
+  const native = nativeCatalog();
+  async function project({ providerChanges = {}, modelChanges = {}, capabilityChanges = {} } = {}) {
+    const input = structuredClone(baseConfig);
+    Object.assign(input.providers[0], providerChanges);
+    Object.assign(input.providers[0].models[0], modelChanges);
+    const normalized = validateBridgeConfig(input);
+    const configuredModel = normalized.providers[0].models[0];
+    const capabilities = {
+      ...toolCapabilities,
+      mlxProfileDigest: configuredModel.mlxProfileDigest,
+      ...capabilityChanges,
+    };
+    const discovery = await discoverBridgeModels({
+      config: normalized,
+      credentialResolver: () => { throw new Error("MLX discovery must not read credentials"); },
+      fetchImpl: async (url) => {
+        assert.equal(url, `${normalized.providers[0].baseUrl}/models`);
+        return new Response(JSON.stringify({ data: [{
+          id: configuredModel.id,
+          object: "model",
+          context_window: configuredModel.contextWindow,
+          capabilities,
+        }] }));
+      },
+    });
+    const options = { storePath, config: normalized, models: discovery.models, codexClientVersion };
+    const [status] = await resolveCertificationStatuses(options);
+    const grants = await resolveModelCapabilitySlugs(options);
+    const mixedCatalog = buildMixedCodexCatalog({
+      bundledCatalog: native,
+      discoveredModels: discovery.models,
+      donorSlug: "gpt-5.6-sol",
+      ...grants,
+    });
+    assert.deepEqual(mixedCatalog.models[0], native.models[0]);
+    const entry = mixedCatalog.models.find((model) => model.slug === configuredModel.slug);
+    const route = buildProviderRegistry({
+      config: normalized,
+      mixedCatalog,
+      discoveredModels: discovery.models,
+    }).resolve(configuredModel.slug);
+    return { normalized, model: discovery.models[0], status, grants, entry, route };
+  }
+  function assertGrants(result, { direct, efficient }) {
+    assert.deepEqual(result.grants.certifiedModelSlugs, direct ? [result.model.id] : []);
+    assert.deepEqual(result.grants.efficientFidelityModelSlugs, efficient ? [result.model.id] : []);
+    assert.equal(result.entry.tool_mode, direct ? "direct" : null);
+    assert.equal(result.entry.shell_type, direct ? "unified_exec" : "disabled");
+    assert.equal(result.entry.supports_search_tool, efficient);
+    assert.equal(result.entry.base_instructions, direct ? MLX_TOOL_MODEL_INSTRUCTIONS : TEXT_ONLY_MODEL_INSTRUCTIONS);
+    assert.equal(result.route.toolsEnabled, direct);
+    assert.equal(result.route.clientToolSearchEnabled, efficient);
+    assert.equal(result.route.upstreamModel, result.model.upstreamId);
+    assert.equal(result.route.model.contextWindow, result.model.contextWindow);
+  }
+
+  const initial = await project();
+  assert.equal(initial.status.certification.status, "missing");
+  assert.equal(initial.status.efficientFidelityCertification.status, "missing");
+  assertGrants(initial, { direct: false, efficient: false });
+  assert.equal(initial.entry.context_window, 262_144);
+  const subject = certificationSubjectForModel({
+    config: initial.normalized,
+    model: initial.model,
+    codexClientVersion,
+  });
+  assert.deepEqual(subject, initial.status.subject);
+  assert.deepEqual(subject.reasoning, { effort: "none", efforts: ["none"], effortMap: {}, omitEfforts: [] });
+  assert.equal(subject.capabilities.mlxProfileDigest, profileDigest);
+  const gates = Object.fromEntries(REQUIRED_CERTIFICATION_GATES.map((gate) => [gate, true]));
+  await recordPassedCertification(storePath, subject, gates);
+  const direct = await project();
+  assert.equal(direct.status.certification.status, "valid");
+  assert.equal(direct.status.efficientFidelityCertification.status, "missing");
+  assertGrants(direct, { direct: true, efficient: false });
+  await recordPassedEfficientFidelityCertification(storePath, subject, { toolSearch: true });
+  const efficient = await project();
+  assert.equal(efficient.status.certification.status, "valid");
+  assert.equal(efficient.status.efficientFidelityCertification.status, "valid");
+  assertGrants(efficient, { direct: true, efficient: true });
+
+  for (const [label, mutation] of [
+    ["upstream alias at the same public slug", { modelChanges: { id: `${alias}-other` } }],
+    ["profile at the same context", { modelChanges: { mlxProfileDigest: `sha256:${"d".repeat(64)}` } }],
+    ["provider endpoint", { providerChanges: { baseUrl: "http://127.0.0.1:8081/v1" } }],
+    ["configured context", { modelChanges: { contextWindow: 262_143 } }],
+    ["managed runtime", { capabilityChanges: { runtimeFingerprint: `sha256:${"e".repeat(64)}` } }],
+  ]) {
+    const changed = await project(mutation);
+    assert.equal(changed.model.id, slug, label);
+    assert.equal(changed.status.certification.status, "stale", label);
+    assert.equal(changed.status.efficientFidelityCertification.status, "stale", label);
+    assertGrants(changed, { direct: false, efficient: false });
+  }
+  const renamed = await project({ modelChanges: { slug: `${slug}-renamed` } });
+  assert.equal(renamed.model.contextWindow, 262_144);
+  assert.equal(renamed.status.certification.status, "missing");
+  assert.equal(renamed.status.efficientFidelityCertification.status, "missing");
+  assertGrants(renamed, { direct: false, efficient: false });
+  assertGrants(await project(), { direct: true, efficient: true });
 });

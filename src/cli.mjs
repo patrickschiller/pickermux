@@ -11,6 +11,7 @@ import { inspectCodexAccountCache } from "./account-cache.mjs";
 import { assertRuntimeCompressionSupport } from "./body-codec.mjs";
 import { loadBridgeConfig } from "./bridge-config.mjs";
 import { discoverBridgeModels } from "./bridge-discovery.mjs";
+import { buildBridgeStartupRegistry } from "./bridge-startup.mjs";
 import { classifyDiscoveryFailure } from "./discovery.mjs";
 import { runBridgeDoctor } from "./bridge-doctor.mjs";
 import {
@@ -192,6 +193,7 @@ Use local or remote models through LM Studio or an explicitly configured
 compatible Responses provider. LM Studio adds loaded-model discovery;
 other providers require a model allowlist. The local mlx-chat-completions provider
 loads pinned HF snapshots without LM Studio; reviewed Kolibri tools require certification.
+Keep the configured MLX server running during bridge startup and certification.
 Other Chat Completions servers are not supported by this adapter.
 
 Usage:
@@ -1115,7 +1117,9 @@ async function serve({
   };
   const mixedCatalog = await readCodexCatalog(catalogPath);
   const registry = createReloadableProviderRegistry(
-    buildProviderRegistry({ mixedCatalog, config }),
+    await buildBridgeStartupRegistry({
+      mixedCatalog, config, certificationPath, codexClientVersion, credentialResolver,
+    }),
   );
   let lastSyncError;
   synchronizer = hasLoadedModelDiscovery(config)

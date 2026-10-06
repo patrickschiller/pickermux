@@ -109,6 +109,13 @@ Codex's configured native search service and requires its normal account access;
 search credentials never reach the local model. Generic HF models remain text-only
 until their architecture/tool protocol has been reviewed and measured.
 
+The installed bridge must discover the configured MLX server at startup. Keep it
+running during setup, refresh and certification; discovery binds the active
+alias, context, profile and runtime to the current saved receipt. If setup reports
+incomplete certification, tools remain disabled until the normal certification
+transaction passes. A successful isolated test does not publish an installed
+receipt. See [tool recovery](TROUBLESHOOTING.md#kolibri-answers-without-using-tools).
+
 `mlx-prepare` downloads/verifies without starting inference. `mlx-start --model
 NAME --port 8081`, `mlx-status --json`, and `mlx-stop --model NAME` manage prepared
 profiles. `--context-window` (1024–262144, default 8192) and

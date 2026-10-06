@@ -1,6 +1,6 @@
 # PickerMux Architecture
 
-This document describes PickerMux v0.24.1 development.
+This document describes PickerMux v0.24.2 development.
 It is intended for contributors, security reviewers, and users who want to
 understand what runs on their Mac.
 
@@ -97,6 +97,15 @@ tool-search roundtrip gate. Legacy or unknown declarations remain text-only.
 The catalog uses bounded instructions for certified MLX tools to fit the actual
 local context. Codex owns execution, approvals and native web-search transport.
 Native credentials never enter MLX requests.
+
+Installed-service startup discovers only configured MLX providers before building
+the initial registry, validates their exact aliases/context/profile digests, and
+resolves current receipts against the live runtime identities. Other provider
+startup routes retain their existing behavior. A missing, stale or pending receipt
+removes MLX tool/search authority from the in-memory route even if an old catalog
+still advertises it. Reviewed protocol metadata remains available for separately
+authorized certification probes. An unavailable or mismatched configured MLX
+server stops startup safely instead of using cached capability claims.
 
 The Responses adapter normalizes request-local function/namespace schemas and
 restores public tool identities in JSON/SSE. MLX receives one function call at a

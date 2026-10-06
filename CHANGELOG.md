@@ -9,6 +9,18 @@ The 0.9.x entries describe local companion development builds. Their features
 are included in the first public companion release, 0.10.0; they were not
 published as GitHub Releases.
 
+## [0.24.2] - 2026-10-06
+
+Local development build; no public release has been published.
+
+### Fixed
+
+- Discover and bind live MLX model capabilities when the installed bridge starts.
+  Allowlist profiles previously lost their protocol metadata during startup, so
+  certification requests failed with HTTP 400 before reaching the model and the
+  picker remained text-only. Current Direct/EF receipts are reevaluated against
+  the exact live identity; stale catalog flags cannot preserve tool authority.
+
 ## [0.24.1] - 2026-10-06
 
 Local development build; no public release has been published.
@@ -948,6 +960,7 @@ confirm the release date before tagging. See the
   restores the previous distribution state when activation fails.
 
 [Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.22.2...HEAD
+[0.24.2]: https://github.com/patrickschiller/pickermux/releases/tag/v0.24.2
 [0.24.1]: https://github.com/patrickschiller/pickermux/releases/tag/v0.24.1
 [0.24.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.24.0
 [0.23.1]: https://github.com/patrickschiller/pickermux/releases/tag/v0.23.1

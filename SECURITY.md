@@ -93,6 +93,12 @@ remain text-only. Codex owns tool execution and approval. Unsupported media,
 reasoning and compaction state fail closed. It does not broaden general
 Responses-provider compatibility.
 
+The installed bridge verifies live MLX identity before admitting certification
+requests and reevaluates receipts against that identity at startup. Stale catalog
+tool flags cannot replace a matching receipt or confer authority on changed
+runtime bytes. Missing/pending receipts permit only separately authorized probes;
+native routes and unrelated provider discovery remain outside this startup check.
+
 The optional source launcher verifies all pinned architecture/configuration/
 tokenizer/template and weight bytes before loading. Its private model directory
 is owned by the current user; symbolic links, multiply linked model files,

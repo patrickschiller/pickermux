@@ -762,6 +762,34 @@ remove that model's pending barrier without fabricating a receipt. The
 `tool-certifications` doctor detail reports how many recovery operations remain
 pending.
 
+## Kolibri answers without using tools
+
+A model name and a large context window do not establish tool access. A Kolibri
+catalog entry with disabled shell and text-only instructions has no current
+Direct grant. Earlier isolated test reports are not installed certification
+receipts. Do not edit catalog flags or copy receipts from another profile.
+
+The 0.24.0 and 0.24.1 installed bridge could lose MLX protocol metadata at startup,
+causing the first certification probe to fail with HTTP 400 before reaching the
+model. Upgrade the installed backend to 0.24.2 or later through normal setup,
+keeping the exact configured MLX profile running. Setup repeats missing or stale
+certification. An app-only update does not update the backend.
+
+If certification is still incomplete, fully quit Codex with Command-Q and run
+the installed CLI against the configured provider namespace, for example:
+
+```bash
+pickermux certify --model mlx/kolibri-1-mlx-4bit-262k
+```
+
+Wait for `PASS certification` and the published certified catalog. Direct grants
+function/file/shell tools; passing the separate Efficient Fidelity gate grants
+client tool search. A failed check retains conservative authority and actionable
+recovery. Reopen Codex and start a new chat so it loads the corrected catalog.
+Ask the model to research current statistics, cite the source dates and verify
+arithmetic. Tool availability does not guarantee that every model answer uses
+tools or that sources use comparable population definitions.
+
 ## Efficient Fidelity is not active
 
 Efficient Fidelity requires both a valid Direct receipt and the additive
