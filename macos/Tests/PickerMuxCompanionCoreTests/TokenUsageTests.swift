@@ -29,6 +29,9 @@ final class TokenUsageTests: XCTestCase {
     var root = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: directory.appendingPathComponent("status.json"))) as? [String: Any])
     let advertised = capabilities ?? ["integration-toggle-v1", "native-uninstall-v1", capability]
     root["capabilities"] = advertised
+    if !advertised.contains("native-only-lmstudio-setup-v1") {
+      root.removeValue(forKey: "providerConfiguration")
+    }
     if !advertised.contains("native-uninstall-v1") {
       root["actions"] = (root["actions"] as? [String])?.filter { !["uninstall", "uninstall-preview"].contains($0) }
     }

@@ -18,8 +18,9 @@ routing and credentials.
 | --- | --- | --- |
 | `lmstudio-responses` | Loaded LLMs with measured metadata, or an explicit allowlist. | Responses routing, model-bound tools, and LM Studio-specific adapters. |
 | `openai-responses` | Explicit allowlist verified against the provider's `/models` response. | Responses routing and model-bound tools for compatible local or remote providers. |
+| `mlx-chat-completions` | Explicit immutable profiles on Apple-silicon loopback. | Experimental text and reviewed model-bound function tools; no reasoning, media, or compaction. |
 
-Providers must implement the required Responses contract, including applicable
+Responses providers must implement the required Responses contract, including applicable
 streaming and tool roundtrips. Supporting `/v1/chat/completions` alone is not
 sufficient. Loaded-model discovery, Efficient Fidelity, and the local
 context-compaction adapter are specific to LM Studio.
@@ -68,6 +69,19 @@ It can replace a recognized Ollama gateway; an unknown gateway or modified
 managed state requires review. PickerMux retains an explicit provider to keep
 the qualified HTTP/SSE transport and zero-retry settings.
 
+An upgrade also preserves an explicit native-only `providers: []` service
+configuration. That behavior is intentional, but it means there is no external
+provider to discover: only native models appear in the Codex model picker and
+the menu has no provider usage to show. PickerMux 0.24.6 detects that exact
+state and offers **Config → Enable LM Studio models…**. It obtains a redacted
+preview from the receipt-active installed release and asks **Enable LM Studio
+models?** before the explicit **Enable LM Studio** confirmation. Keep Codex
+fully closed and LM Studio running with at least one loaded model. The fixed
+target preserves the installed bridge settings, unrelated user settings and
+historical chats. It is unavailable for any configuration that already has an
+external provider, accepts no caller-selected provider/model/path, and uses the
+same setup transaction and rollback as installation.
+
 Setup certifies discovered models without a valid base tool receipt after the
 installation transaction. This sends live test prompts and can take several
 minutes per model. Existing valid certifications are retained. If certification
@@ -88,7 +102,8 @@ App and installed CLI/runtime versions are distinct: copying the bundle alone
 does not activate a new installed backend. In the 0.22.1 app, choose
 **Settings → Update installed backend…** while Codex is fully closed to review
 an upgrade from the verified bundled payload. It reuses the installed provider
-configuration. Review and authorize the proposed change.
+configuration. The current app calls that window **Config**, so use **Config →
+Update installed backend…**. Review and authorize the proposed change.
 PickerMux does not update silently. Valid certifications are preserved; failed
 installation activation restores the previous state. A retained installation
 with incomplete certification is reported separately.
@@ -100,11 +115,13 @@ recovery, and no other operation or confirmation in progress. Confirming the
 review once authorizes the same pinned preview/apply transaction; the offer itself
 does not change the installation or quit Codex. It appears once per app/backend
 version pair in the current app process. Cancellation or failure leaves the
-manual Settings action available for a deliberate retry. While Codex runs,
-the menu shows the version difference and Settings action, and the automatic
-offer waits. Inactive or unsafe integrations are not automatically activated.
+manual Config action available for a deliberate retry. While Codex runs,
+Config shows the version difference and reviewed update action, and the
+automatic offer waits. The compact menu has no **Complete PickerMux setup** or
+**Complete Codex setup…** prompt. Inactive or unsafe integrations are not
+automatically activated.
 
-Update checks in Settings identify the public DMG release and open its download.
+Update checks in Config identify the public DMG release and open its download.
 App replacement happens through the DMG; no separately published CLI archive is
 required. See [the companion guide](MACOS_COMPANION.md) for the exact action
 labels and supported states.
@@ -128,7 +145,7 @@ closing a window does not suffice; use **Codex → Quit Codex** or **Command-Q**
 ~/.local/bin/pickermux discover
 ```
 
-Compare the CLI version with the app version in Settings. `status` checks
+Compare the CLI version with the app version in Config. `status` checks
 managed configuration, catalog, compatibility, bridge, and recovery phase.
 `status --json` exposes `fullRefresh.status` and `fullRefresh.phase`. `discover`
 lists models under the installed discovery policy.
@@ -142,8 +159,10 @@ and should be used intentionally. See
 ## Daily use and discovery
 
 Make your provider models available, fully quit Codex, refresh the picker,
-then reopen Codex and select a namespaced external model. The app offers
-**Refresh picker** and **Open Codex**; the equivalent refresh is:
+then reopen Codex and select a namespaced external model in the Codex model
+picker. The compact PickerMux menu reports providers and their usage; it is not
+a second list of individual models. The app offers **Refresh picker** and **Open
+Codex**; the equivalent refresh is:
 
 ```bash
 pickermux refresh
@@ -166,12 +185,32 @@ errors retain the last known good catalog. A Codex version mismatch stops
 refresh before provider discovery or credential lookup and retains existing
 catalog and account-cache files.
 
-The app polls status and shows a completion time for manual checks. Settings
-offers login startup, notifications, refresh after Codex fully closes, and
-update checks. Automatic refresh and notifications are off by default. Automatic
-refresh never repairs mismatches, certifies models, updates software, or quits
-Codex. A status check inspects installation state; it does not retry setup or
-prove the model server is reachable. [Full companion guide](MACOS_COMPANION.md).
+The compact menu keeps general token analysis, **Refresh picker**, and **Open
+Codex** visible. Provider ID `lmstudio` is labelled **LM Studio**; provider ID
+`kolibri` is omitted from all visible usage/performance rows while its bounded
+backend telemetry and durable usage data remain intact. Config contains **Check
+status**, **Check installation**, **Installation details**, and **Full
+refresh…**, as well as login startup, notifications, refresh after Codex fully
+closes, token reset, and update checks. Full refresh and token reset remain
+visible when unavailable and explain why they are disabled. One divider appears
+above the Config/Help/Quit footer group; those three rows have no dividers
+between them. Setup and installed-backend update recovery also stay in Config;
+the compact menu does not duplicate them as completion prompts. **Output
+speed** is shown only for a validated provider-specific latest-request
+measurement, never an inferred generic rate. Automatic refresh and
+notifications are off by default. Automatic refresh never repairs
+mismatches, certifies models, updates software, or quits Codex. A status check
+inspects installation state; it does not retry setup or prove the model server
+is reachable. [Full companion guide](MACOS_COMPANION.md).
+
+PickerMux 0.30.0 restores the token-reset action for a valid receipt-owned
+distribution containing the optional reviewed `runtime/mlx` payload. The
+installed launcher accepts only the complete four-file runtime, private real
+directories, single-link regular files, bounded contents, and the exact
+receipt-bound distribution digest. Missing, added, modified, linked, or shared
+runtime state remains unsafe. The app's bundled fallback does not inherit reset
+authority; only the validated installed backend can clear durable accumulated
+counts while retaining the last request.
 
 ## Tool certification
 
@@ -321,7 +360,8 @@ installation or upgrade while Codex is fully closed:
 
 ## Codex update recovery
 
-After an update, inspect **Check status**, **Check installation**, or:
+After an update, inspect **Config → Check status**, **Config → Check
+installation**, or:
 
 ```bash
 pickermux status
@@ -332,8 +372,8 @@ For modified managed configuration, review the edit through
 [configuration recovery](TROUBLESHOOTING.md#uninstall-refuses-modified-configuration)
 before retrying setup. Do not use full refresh to overwrite edited state.
 
-For an intact installation with outdated account visibility, use **Repair after
-a Codex update…** or run the receipt-active installed CLI:
+For an intact installation with outdated account visibility, use **Config →
+Full refresh…** or run the receipt-active installed CLI:
 
 ```bash
 pickermux refresh --full
@@ -341,7 +381,12 @@ pickermux refresh --full
 
 This opt-in operation explains two graceful Codex quits and possible task
 interruption, then requires the exact confirmation `FULL` in the CLI. `--FULL`
-is an alias, but `--json` and `--config` cannot accompany full refresh.
+is an alias, but `--json` and `--config` cannot accompany full refresh. The GUI
+uses the same receipt-bound scheduler after native confirmation, even if Codex
+is currently running; it cannot select a provider, model, executable,
+configuration path, or force option. Its Config button remains visible when the
+current verified state cannot authorize the operation and shows the disabled
+reason instead of disappearing.
 An independent helper suspends PickerMux, opens Codex natively, waits for a
 newly valid account cache, quits Codex again, transactionally reactivates
 PickerMux, and reopens Codex. Installed settings, receipts, backups, and provider
@@ -365,7 +410,7 @@ certifications, and backups. The mixed catalog retained on disk is inactive.
 Fully quit and reopen Codex to load the native picker. Reactivation checks the
 retained ownership and configuration before restoring the integration.
 
-For complete removal, fully quit Codex and use **Settings → Remove PickerMux
+For complete removal, fully quit Codex and use **Config → Remove PickerMux
 completely…**. Its fresh preview and explicit confirmation authorize native
 Codex restoration, owned runtime/CLI removal, verified backup deletion, and
 deletion of registered PickerMux provider credentials. Login startup must first

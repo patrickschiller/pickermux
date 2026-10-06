@@ -9,7 +9,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 
 import { inspectCodexAccountCache } from "./account-cache.mjs";
 import { assertRuntimeCompressionSupport } from "./body-codec.mjs";
-import { loadBridgeConfig } from "./bridge-config.mjs";
+import { loadBridgeConfig, validateBridgeConfig } from "./bridge-config.mjs";
 import { discoverBridgeModels } from "./bridge-discovery.mjs";
 import { buildBridgeStartupRegistry } from "./bridge-startup.mjs";
 import { classifyDiscoveryFailure } from "./discovery.mjs";
@@ -55,6 +55,7 @@ import { runCompanionCli } from "./companion-cli.mjs";
 import { loadCompanionServiceConfig } from "./companion-config.mjs";
 import { CompanionControlError, COMPANION_UNINSTALL_CHANGES, collectCompanionStatus, createCompanionReadOnlyProbes } from "./companion-control.mjs";
 import { applyCompanionUpdate, checkForCompanionUpdate } from "./companion-update.mjs";
+import { BUNDLED_LMSTUDIO_CONFIG_FILE, previewBundledLmStudioSetup } from "./native-only-setup.mjs";
 import { createUsageStore, inventoryUsageStore, revalidateUsageStoreInventory, removeUsageStoreInventory } from "./usage-store.mjs";
 import { WEB_SEARCH_CONTRACT_VERSION } from "./web-search-wire.mjs";
 import {
@@ -230,13 +231,13 @@ deactivateIntegration:true. Deactivation retains setup, historical aliases and
 private runtime identity for confirmed reactivation without full-refresh purge.
 Companion status advertises token-usage-v2: per-provider input, output and
 total tokens for the last model request and private saved totals since reset.
-Settings resets accumulated counts through usage-reset with exact
+Config resets accumulated counts through usage-reset with exact
 resetAccumulatedUsage:true consent; the last model request is retained.
 Legacy token-usage-v1 backends still show counts since bridge start.
 Missing usage remains unavailable; native and certification requests are excluded.
 Companion update-check recognizes the DMG release channel. An update request
 for a DMG returns DOWNLOAD_REQUIRED; replace the app, then explicitly review
-Update installed backend in Settings. No downloaded DMG is executed by the CLI.
+Update installed backend in Config. No downloaded DMG is executed by the CLI.
 repair-chats restores only the inert model_bridge table used to open historical
 chats after uninstall. Saved chat providers are unchanged.
 refresh --full (also --FULL) recovers an account cache after a Codex update.
@@ -614,6 +615,7 @@ async function rollbackInstallation({
         previousPath: servicePackage.previousPath,
         serviceConfigPath: servicePackage.serviceConfigPath,
         previousServiceConfig: servicePackage.previousServiceConfig,
+        committedServiceConfig: servicePackage.committedServiceConfig,
       });
     } catch (error) {
       failures.push(error);
@@ -835,15 +837,14 @@ export async function restoreRefreshState({
         previousPath: servicePackage.previousPath,
         serviceConfigPath: servicePackage.serviceConfigPath,
         previousServiceConfig: servicePackage.previousServiceConfig,
+        committedServiceConfig: servicePackage.committedServiceConfig,
       });
     } catch (error) {
       failures.push(error);
     }
   }
-  const snapshots = [
-    [paths.catalogPath, previousCatalog],
-    [paths.serviceConfigPath, previousServiceConfig],
-  ];
+  const snapshots = [[paths.catalogPath, previousCatalog]];
+  if (!servicePackage) snapshots.push([paths.serviceConfigPath, previousServiceConfig]);
   if (paths.compatibilityPath) {
     snapshots.push([paths.compatibilityPath, previousCompatibility]);
   }
@@ -866,7 +867,14 @@ export async function restoreRefreshState({
   if (failures.length > 0) throw new AggregateError(failures, "PickerMux refresh rollback failed");
 }
 
-async function refresh({ config, paths, codexPath, sourceRoot = projectRoot }) {
+async function refresh({
+  config,
+  paths,
+  codexPath,
+  sourceRoot = projectRoot,
+  expectedServiceConfig,
+  beforeServiceConfigCommit,
+}) {
   assertRuntimeCompressionSupport();
   assertPersistentCredentialSupport(config);
   const status = await getConfigStatus({ configPath: paths.configPath, statePath: paths.statePath });
@@ -931,6 +939,8 @@ async function refresh({ config, paths, codexPath, sourceRoot = projectRoot }) {
         sourceRoot,
         installDirectory: paths.installDirectory,
         config,
+        expectedServiceConfig,
+        beforeServiceConfigCommit,
       });
       await writeCatalogAtomic(paths.catalogPath, built.catalog);
       await writeCompatibilityManifest(
@@ -1003,23 +1013,25 @@ async function refresh({ config, paths, codexPath, sourceRoot = projectRoot }) {
       } catch (rollbackError) {
         selectionRollbackError = rollbackError;
       }
-      try {
-        await restoreRefreshState({
-          paths,
-          previousCatalog,
-          previousServiceConfig,
-          previousCompatibility,
-          rollbackConfig,
-          servicePackage,
-          managedConfigUpdate,
-        });
-      } catch (rollbackError) {
-        selectionRollbackError = selectionRollbackError
-          ? new AggregateError(
-              [selectionRollbackError, rollbackError],
-              "Refresh registry and state rollback failed",
-            )
-          : rollbackError;
+      if (servicePackage) {
+        try {
+          await restoreRefreshState({
+            paths,
+            previousCatalog,
+            previousServiceConfig,
+            previousCompatibility,
+            rollbackConfig,
+            servicePackage,
+            managedConfigUpdate,
+          });
+        } catch (rollbackError) {
+          selectionRollbackError = selectionRollbackError
+            ? new AggregateError(
+                [selectionRollbackError, rollbackError],
+                "Refresh registry and state rollback failed",
+              )
+            : rollbackError;
+        }
       }
       if (selection.changed && typeof selection.rollback === "function") {
         try {
@@ -1037,6 +1049,12 @@ async function refresh({ config, paths, codexPath, sourceRoot = projectRoot }) {
         throw new Error(
           `PickerMux refresh failed and rollback was incomplete. Original: ${error.message}; rollback: ${selectionRollbackError.errors?.map((entry) => entry.message).join("; ") ?? selectionRollbackError.message}`,
           { cause: new AggregateError([error, selectionRollbackError]) },
+        );
+      }
+      if (!servicePackage) {
+        throw new Error(
+          `PickerMux refresh stopped before the service configuration commit: ${error.message}`,
+          { cause: error },
         );
       }
       throw new Error(
@@ -3262,6 +3280,8 @@ export async function executeFullRefreshWorker({
 export async function setupPickerMux({
   sourceRoot = projectRoot,
   setupConfigPath,
+  setupConfig,
+  expectedServiceConfig,
   paths = resolveInstallPaths(),
   distributionPaths = resolveDistributionPaths(),
   codexPath = resolveCodexBinary(),
@@ -3283,6 +3303,18 @@ export async function setupPickerMux({
   configurationPreflightImpl = async () => {},
   assertNoPendingFullRefreshImpl = async () => null,
 } = {}) {
+  if (setupConfig !== undefined && setupConfigPath !== undefined) {
+    throw new TypeError("PickerMux setup accepts either a fixed config path or an internal config value");
+  }
+  if (expectedServiceConfig !== undefined && (setupConfig === undefined || !Buffer.isBuffer(expectedServiceConfig))) {
+    throw new TypeError("A service-config CAS is available only to an internal fixed-config migration");
+  }
+  const fixedExpectedServiceConfig = expectedServiceConfig === undefined
+    ? undefined
+    : Buffer.from(expectedServiceConfig);
+  const fixedSetupConfig = setupConfig === undefined
+    ? undefined
+    : validateBridgeConfig(setupConfig);
   const initialStatus = await configStatusImpl({
     configPath: paths.configPath,
     statePath: paths.statePath,
@@ -3294,6 +3326,9 @@ export async function setupPickerMux({
     throw new Error(
       `PickerMux setup refuses inconsistent integration state (${initialStatus.status ?? "unknown"}).${recovery}`,
     );
+  }
+  if (fixedSetupConfig !== undefined && initialStatus.installed !== true) {
+    throw new Error("An internal provider migration requires an installed PickerMux configuration");
   }
   if (await desktopRunningImpl()) {
     throw new Error(
@@ -3374,7 +3409,8 @@ export async function setupPickerMux({
     : initialStatus.installed || initialStatus.status === "deactivated"
       ? paths.serviceConfigPath
       : path.join(path.resolve(sourceRoot), "lmstudio-picker.config.json");
-  const preflightConfig = await loadConfigImpl(effectiveConfigPath);
+  const loadEffectiveConfig = () => fixedSetupConfig ?? loadConfigImpl(effectiveConfigPath);
+  const preflightConfig = await loadEffectiveConfig();
   let discovery;
   try {
     discovery = await discoverImpl({ config: preflightConfig });
@@ -3444,7 +3480,7 @@ export async function setupPickerMux({
         );
       }
       await assertAccountCacheReady();
-      const config = await loadConfigImpl(effectiveConfigPath);
+      const config = await loadEffectiveConfig();
       activatedConfig = config;
       if (status.installed) {
         const result = await refreshImpl({
@@ -3452,6 +3488,10 @@ export async function setupPickerMux({
           paths,
           codexPath,
           sourceRoot: distributionRoot,
+          expectedServiceConfig: fixedExpectedServiceConfig,
+          beforeServiceConfigCommit: fixedExpectedServiceConfig === undefined
+            ? undefined
+            : assertActivationAllowed,
         });
         return {
           action: previousVersion === version ? "refresh" : "upgrade",
@@ -3506,8 +3546,11 @@ export async function runPickerMuxCompanion(argv, {
   withLockImpl = withInstallationLock,
   desktopRunningImpl = isCodexDesktopRunning,
   assertNoPendingFullRefreshImpl = () => assertNoPendingFullRefresh({ fullRefreshPaths }),
+  scheduleFullRefreshImpl = scheduleFullRefresh,
   previewUninstallImpl = previewPickerMuxUninstall,
   purgeUninstallImpl = purgePickerMux,
+  setupImpl = setupPickerMux,
+  lmStudioDefaultPreviewImpl = previewBundledLmStudioSetup,
   handlers,
 } = {}) {
   const configurationPaths = { configPath: paths.configPath, statePath: paths.statePath, backupDirectory: paths.backupDirectory };
@@ -3516,6 +3559,7 @@ export async function runPickerMuxCompanion(argv, {
     if (await desktopRunningImpl()) throw new CompanionControlError("CODEX_RUNNING");
   };
   const installedConfig = () => loadCompanionServiceConfig({ paths });
+  const lmStudioDefaultPreview = () => lmStudioDefaultPreviewImpl({ paths, sourceRoot });
   const certificationProgress = (onProgress) => (event) => onProgress({ phase: "certifying", current: event.index, total: event.total, elapsedMs: event.elapsedMs });
   const defaults = {
     async refresh() {
@@ -3528,8 +3572,11 @@ export async function runPickerMuxCompanion(argv, {
       await noRecovery();
       return openCodexDesktop();
     },
+    "full-refresh"() {
+      return scheduleFullRefreshImpl({ paths, distributionPaths, fullRefreshPaths, codexPath, sourceRoot });
+    },
     recover() {
-      return scheduleFullRefresh({ paths, distributionPaths, fullRefreshPaths, codexPath, sourceRoot });
+      return scheduleFullRefreshImpl({ paths, distributionPaths, fullRefreshPaths, codexPath, sourceRoot });
     },
     async certify(_request, { onProgress }) {
       await noRecovery();
@@ -3611,6 +3658,37 @@ export async function runPickerMuxCompanion(argv, {
         onProgress: certificationProgress(onProgress),
       });
       return { status: "applied", version: result.version, updated: true, restartRequired: true, certificationIncomplete: result.certification?.status === "incomplete" };
+    },
+    "lmstudio-default-preview"() {
+      return lmStudioDefaultPreview();
+    },
+    async "lmstudio-default-apply"(request, { onProgress }) {
+      const assertPreview = async () => {
+        const preview = await lmStudioDefaultPreview();
+        if (!preview.canApply || preview.status !== "native-only" || preview.previewToken !== request.previewToken) {
+          throw new CompanionControlError("CONFIGURATION_CONFLICT");
+        }
+        return preview;
+      };
+      const preview = await assertPreview();
+      const expectedConfigPath = path.join(sourceRoot, BUNDLED_LMSTUDIO_CONFIG_FILE);
+      if (path.resolve(preview.bundledConfigPath) !== expectedConfigPath ||
+        !Buffer.isBuffer(preview.installedConfigBytes)) {
+        throw new CompanionControlError("CONFIGURATION_CONFLICT");
+      }
+      const result = await setupImpl({
+        sourceRoot,
+        setupConfig: preview.targetConfig,
+        expectedServiceConfig: preview.installedConfigBytes,
+        paths,
+        distributionPaths,
+        codexPath,
+        configurationPreflightImpl: assertPreview,
+        assertNoPendingFullRefreshImpl: noRecovery,
+        onProgress: certificationProgress(onProgress),
+      });
+      return { status: "applied", version: result.version, updated: true, restartRequired: true,
+        certificationIncomplete: result.certification?.status === "incomplete" };
     },
   };
   return runCompanionCli(argv, {

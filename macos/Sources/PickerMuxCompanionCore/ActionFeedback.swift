@@ -16,13 +16,21 @@ public func companionActionResultMessage(_ result: CompanionResult, action: Comp
   switch action {
   case .refresh:
     return result.restartRequired ? "Picker refreshed. Reopen Codex to load the updated picker." : "Picker refreshed."
+  case .fullRefresh:
+    guard result.recoveryStart?.action == action.rawValue else { return companionActionFailureMessage("ACTION_FAILED") }
+    return "Full refresh started. Its progress is shown in Installation details in Config."
   case .open: return "Codex opened."
   case .diagnose: return "Installation checks passed."
   case .certify: return "Model certification completed. Reopen Codex to load the certified picker."
-  case .recover: return "Repair started. Its progress is shown in Installation details."
+  case .recover:
+    guard result.recoveryStart?.action == action.rawValue else { return companionActionFailureMessage("ACTION_FAILED") }
+    return "Repair started. Its progress is shown in Installation details in Config."
   case .configurationApply: return "PickerMux setup completed. Reopen Codex to load the picker."
+  case .lmStudioDefaultPreview: return "LM Studio model setup is ready for confirmation."
+  case .lmStudioDefaultApply:
+    return "LM Studio models are enabled. Fully quit and reopen Codex to load them in the model picker."
   case .integrationDeactivate:
-    return "PickerMux was turned off. Fully quit and reopen Codex to load its native picker. The app and PickerMux settings remain installed."
+    return "PickerMux was turned off. Fully quit and reopen Codex to load its native picker. The app and PickerMux configuration remain installed."
   case .configurationPreview: return "Setup reviewed. Turn on Use PickerMux in Codex to install and activate it."
   case .usageReset: return "Accumulated token counts reset. Last model request is unchanged."
   case .uninstall: return "PickerMux was removed. Reopen Codex to load its native picker."

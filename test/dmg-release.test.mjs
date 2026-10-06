@@ -232,6 +232,10 @@ test("0.22.2 automatic review and video retain one immutable DMG update contract
       assets: { [PICKERMUX_DMG_ASSET]: expectedUrl }, diskImageSha256: result.sha256,
     });
   }
+  assert.deepEqual(await checkForCompanionUpdate({
+    currentVersion: "0.30.0",
+    fetchImpl: async () => Response.json(release),
+  }), { status: "current", currentVersion: "0.30.0", targetVersion: "0.30.0" });
   for (const mutate of [
     (candidate) => { candidate.body = dmgReleaseMarker({ version: "0.22.1", sha256: result.sha256 }); },
     (candidate) => { candidate.assets.push({ name: "explainer.mp4", browser_download_url: `${expectedUrl}/explainer.mp4` }); },
@@ -240,6 +244,119 @@ test("0.22.2 automatic review and video retain one immutable DMG update contract
     mutate(candidate);
     await assert.rejects(checkForCompanionUpdate({ currentVersion: "0.22.1", fetchImpl: async () => Response.json(candidate) }), { code: "UPDATE_INVALID" });
   }
+});
+
+test("0.24.5 publication describes Config, guarded full refresh and visible token analysis", async (t) => {
+  const value = await fixture(t, "0.24.5");
+  const result = await prepareDmgRelease({ ...value, tag: "v0.24.5" });
+  const body = await readFile(path.join(value.outputDirectory, "release-notes.md"), "utf8");
+  assert.match(body, /Changes in v0\.24\.5/u);
+  assert.match(body, /Settings window to \*\*Config\*\*/u);
+  assert.match(body, /Check status, Check installation and Installation details there/u);
+  assert.match(body, /general token usage, Refresh picker and Open Codex in the compact menu/u);
+  assert.match(body, /\*\*Full refresh…\*\* to Config/u);
+  assert.match(body, /receipt-bound recovery.*graceful Codex quits.*resumable checkpoints.*transactional reactivation/u);
+  assert.match(body, /cannot select a provider, model, executable or path or bypass ownership checks/u);
+  assert.match(body, /general provider token usage and validated performance visible, including \*\*LM Studio\*\*/u);
+  assert.match(body, /omitting provider ID `kolibri` from companion usage and performance rows/u);
+  assert.match(body, /backend's bounded private Kolibri telemetry remains intact/u);
+  assert.match(body, /\*\*Config → Update installed backend…\*\*/u);
+  assert.doesNotMatch(body, /Changes in v0\.24\.4|\*\*Settings → Update installed backend…\*\*/u);
+  assert.equal(body.split("pickermux-dmg-release-v1").length, 2);
+  assert.deepEqual(await verifyDmgPublication({ directory: value.outputDirectory, tag: "v0.24.5" }), result);
+  const expectedUrl = `https://github.com/patrickschiller/pickermux/releases/download/v0.24.5/${PICKERMUX_DMG_ASSET}`;
+  const release = {
+    tag_name: "v0.24.5", draft: false, prerelease: false, body,
+    assets: [{ name: PICKERMUX_DMG_ASSET, browser_download_url: expectedUrl }],
+  };
+  assert.deepEqual(await checkForCompanionUpdate({
+    currentVersion: "0.24.4",
+    fetchImpl: async () => Response.json(release),
+  }), {
+    status: "available", distribution: "dmg", currentVersion: "0.24.4", targetVersion: "0.24.5",
+    assets: { [PICKERMUX_DMG_ASSET]: expectedUrl }, diskImageSha256: result.sha256,
+  });
+});
+
+test("0.24.6 release notes explain native-only recovery and precise menu presentation", async (t) => {
+  const value = await fixture(t, "0.24.6");
+  const result = await prepareDmgRelease({ ...value, tag: "v0.24.6" });
+  const body = await readFile(path.join(value.outputDirectory, "release-notes.md"), "utf8");
+  assert.match(body, /Changes in v0\.24\.6/u);
+  assert.match(body, /valid `providers: \[\]` service configuration was preserved.*remained native-only/u);
+  assert.match(body, /external models could not appear in the Codex model picker.*menu had no provider usage/u);
+  assert.match(body, /Config → \*\*Enable LM Studio models…\*\*/u);
+  assert.match(body, /redacted preview.*explicit \*\*Enable LM Studio\*\* confirmation.*receipt-active bundled default/u);
+  assert.match(body, /Codex fully closed and a loaded LM Studio model/u);
+  assert.match(body, /preserves bridge settings, user settings and historical chats/u);
+  assert.match(body, /never overwrites an external-provider configuration.*transactional activation and rollback/u);
+  assert.match(body, /\*\*Full refresh…\*\* and \*\*Reset accumulated counts…\*\* visible in Config with a reason when disabled/u);
+  assert.match(body, /one divider above the Config\/Help\/Quit footer/u);
+  assert.match(body, /\*\*Output speed\*\* only for a validated provider-specific measurement/u);
+  assert.match(body, /\*\*Config → Update installed backend…\*\*/u);
+  assert.doesNotMatch(body, /Changes in v0\.24\.5|\*\*Settings → Update installed backend…\*\*/u);
+  assert.equal(body.split("pickermux-dmg-release-v1").length, 2);
+  assert.deepEqual(await verifyDmgPublication({ directory: value.outputDirectory, tag: "v0.24.6" }), result);
+  const expectedUrl = `https://github.com/patrickschiller/pickermux/releases/download/v0.24.6/${PICKERMUX_DMG_ASSET}`;
+  const release = {
+    tag_name: "v0.24.6", draft: false, prerelease: false, body,
+    assets: [{ name: PICKERMUX_DMG_ASSET, browser_download_url: expectedUrl }],
+  };
+  assert.deepEqual(await checkForCompanionUpdate({
+    currentVersion: "0.24.5",
+    fetchImpl: async () => Response.json(release),
+  }), {
+    status: "available", distribution: "dmg", currentVersion: "0.24.5", targetVersion: "0.24.6",
+    assets: { [PICKERMUX_DMG_ASSET]: expectedUrl }, diskImageSha256: result.sha256,
+  });
+});
+
+test("0.30.0 publication describes the compact-menu cleanup and authorized token reset", async (t) => {
+  const value = await fixture(t, "0.30.0");
+  const result = await prepareDmgRelease({ ...value, tag: "v0.30.0" });
+  const body = await readFile(path.join(value.outputDirectory, "release-notes.md"), "utf8");
+  assert.match(body, /Changes in v0\.30\.0/u);
+  assert.match(body, /Remove the redundant \*\*Complete PickerMux setup\*\* action/u);
+  assert.match(body, /\*\*Complete Codex setup…\*\* guidance from the compact menu/u);
+  assert.match(body, /Setup, backend update and recovery controls remain available in \*\*Config\*\*/u);
+  assert.match(body, /\*\*Config → Token usage → Reset accumulated counts…\*\*.*actionable again/u);
+  assert.match(body, /verified installed backend authorizes `usage-reset`/u);
+  assert.match(body, /explicitly confirmed and retains the last model request/u);
+  assert.match(body, /token-reset authority bound to the receipt-validated installed backend/u);
+  assert.match(body, /bundled fallback may present validated usage but cannot mutate another installed distribution/u);
+  assert.match(body, /\*\*Config → Update installed backend…\*\*/u);
+  assert.doesNotMatch(body, /Changes in v0\.24\.6|\*\*Settings → Update installed backend…\*\*/u);
+  assert.equal(body.split("pickermux-dmg-release-v1").length, 2);
+  assert.deepEqual(await verifyDmgPublication({ directory: value.outputDirectory, tag: "v0.30.0" }), result);
+  const expectedUrl = `https://github.com/patrickschiller/pickermux/releases/download/v0.30.0/${PICKERMUX_DMG_ASSET}`;
+  const release = {
+    tag_name: "v0.30.0", draft: false, prerelease: false, body,
+    assets: [{ name: PICKERMUX_DMG_ASSET, browser_download_url: expectedUrl }],
+  };
+  for (const currentVersion of ["0.22.2", "0.24.5", "0.24.6"]) {
+    assert.deepEqual(await checkForCompanionUpdate({
+      currentVersion,
+      fetchImpl: async () => Response.json(release),
+    }), {
+      status: "available", distribution: "dmg", currentVersion, targetVersion: "0.30.0",
+      assets: { [PICKERMUX_DMG_ASSET]: expectedUrl }, diskImageSha256: result.sha256,
+    });
+  }
+
+  const mismatched = structuredClone(release);
+  mismatched.body = dmgReleaseMarker({ version: "0.24.6", sha256: result.sha256 });
+  await assert.rejects(checkForCompanionUpdate({
+    currentVersion: "0.24.6",
+    fetchImpl: async () => Response.json(mismatched),
+  }), { code: "UPDATE_INVALID" });
+});
+
+test("later publication guidance keeps the Config navigation name", async (t) => {
+  const value = await fixture(t, "0.24.7");
+  await prepareDmgRelease({ ...value, tag: "v0.24.7" });
+  const body = await readFile(path.join(value.outputDirectory, "release-notes.md"), "utf8");
+  assert.match(body, /\*\*Config → Update installed backend…\*\*/u);
+  assert.doesNotMatch(body, /\*\*Settings → Update installed backend…\*\*/u);
 });
 
 test("unsigned and Apple Development builds cannot become public releases", async (t) => {

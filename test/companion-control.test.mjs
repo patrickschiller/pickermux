@@ -19,6 +19,7 @@ import {
   parseCompanionRequest,
   readCompanionRequest,
 } from "../src/companion-control.mjs";
+import { BUNDLED_LMSTUDIO_SETUP_CHANGES } from "../src/native-only-setup.mjs";
 
 const OPERATION_ID = "1804ad9d-4eb2-43f4-95e5-a3b5a1f4b9da";
 const SECRET = "PRIVATE_PROMPT_ACCOUNT_CAPABILITY_TOKEN";
@@ -107,6 +108,28 @@ test("durable status remains visible while OFF and reset does not require quitti
   assert.ok(overflow.actions.includes("usage-reset"));
 });
 
+test("attested persistent usage offers reset only with an independent durable-store proof", async () => {
+  const usage = { schemaVersion: 2, status: "available", resetAt: null, providers: [{
+    providerId: "lmstudio",
+    requests: 2,
+    unavailableRequests: 0,
+    last: { status: "available", inputTokens: 78_335, outputTokens: 128, totalTokens: 78_463 },
+    totals: { inputTokens: 363_815, outputTokens: 2_130, totalTokens: 365_945 },
+  }] };
+  for (const canReset of [true, false]) {
+    const result = await collectCompanionStatus({ probes: probes({
+      service: async () => ({ status: "running", healthy: true, health: {
+        tokenUsage: { ...usage, private: SECRET },
+      } }),
+      tokenUsage: async () => ({ snapshot: usage, canReset, private: SECRET }),
+    }) });
+    assert.deepEqual(result.tokenUsage, usage);
+    assert.equal(result.actions.includes("usage-reset"), canReset);
+    assert.equal(result.capabilities.includes("token-usage-reset-v1"), true);
+    assert.doesNotMatch(JSON.stringify(result), /PRIVATE_/u);
+  }
+});
+
 function probes(overrides = {}) {
   return {
     metadata: async () => ({ version: "0.8.3", packagePath: SECRET }),
@@ -118,14 +141,16 @@ function probes(overrides = {}) {
     accountCache: async () => ({ status: "ready", catalog: SECRET }),
     recovery: async () => null,
     integration: async () => ({ status: "pickermux", provider: SECRET }),
+    providerConfiguration: async () => ({ status: "external", provider: SECRET, endpoint: SECRET }),
     ...overrides,
   };
 }
 
 test("companion request grammar accepts only named actions with their exact consent", () => {
   for (const action of COMPANION_ACTIONS) {
-    const additional = action === "recover" ? { confirmation: consent } : action === "configuration-apply"
-      ? { confirmation: { replaceIntegration: true }, previewToken: "f".repeat(64) } : action === "integration-deactivate" ? { confirmation: { deactivateIntegration: true } } : action === "uninstall"
+    const additional = ["full-refresh", "recover"].includes(action) ? { confirmation: consent } : action === "configuration-apply"
+      ? { confirmation: { replaceIntegration: true }, previewToken: "f".repeat(64) } : action === "lmstudio-default-apply"
+        ? { confirmation: { enableBundledLmStudio: true }, previewToken: "f".repeat(64) } : action === "integration-deactivate" ? { confirmation: { deactivateIntegration: true } } : action === "uninstall"
         ? { confirmation: { removePickerMux: true, restoreNativeCodex: true, deleteProviderCredentials: true, deleteBackups: true }, previewToken: "f".repeat(64) } : action === "usage-reset"
           ? { confirmation: { resetAccumulatedUsage: true } } : {};
     assert.deepEqual(parseCompanionRequest(request(action, additional)), { schemaVersion: 1, action, ...additional });
@@ -195,6 +220,7 @@ test("companion rejects unknown versions, extra authority and duplicate JSON key
     request("refresh", { configPath: "/private/config" }),
     request("refresh", { executable: "/bin/sh" }),
     request("refresh", { provider: "native" }),
+    request("full-refresh", { confirmation: consent, model: "lmstudio/private-model" }),
     request("refresh", { confirmation: { replaceIntegration: true } }),
     request("refresh", { previewToken: "a".repeat(64) }),
     request("not-supported"),
@@ -206,9 +232,11 @@ test("companion rejects unknown versions, extra authority and duplicate JSON key
   assert.throws(() => parseCompanionRequest('{"schemaVersion":2,"action":"refresh"}'), { code: "UNSUPPORTED_SCHEMA" });
 });
 
-test("recovery refuses partial or altered confirmations without creating authority", () => {
-  for (const confirmation of [undefined, null, {}, { ...consent, interruptTasks: false }, { ...consent, forceQuit: true }, { ...consent, quitCodexTwice: "true" }]) {
-    assert.throws(() => parseCompanionRequest(request("recover", { confirmation })), { code: "CONFIRMATION_REQUIRED" });
+test("full refresh and recovery refuse partial or altered confirmations without creating authority", () => {
+  for (const action of ["full-refresh", "recover"]) {
+    for (const confirmation of [undefined, null, {}, { ...consent, interruptTasks: false }, { ...consent, forceQuit: true }, { ...consent, quitCodexTwice: "true" }]) {
+      assert.throws(() => parseCompanionRequest(request(action, { confirmation })), { code: "CONFIRMATION_REQUIRED" });
+    }
   }
   assert.throws(() => parseCompanionRequest('{"schemaVersion":1,"action":"recover","confirmation":{"quitCodexTwice":true,"interruptTasks":true,"invalidateCompaction":true,"interruptTasks":false}}'), { code: "INVALID_REQUEST" });
 });
@@ -219,6 +247,79 @@ test("configuration apply requires exact preview identity and replacement consen
     assert.throws(() => parseCompanionRequest(request("configuration-apply", { confirmation: { replaceIntegration: true }, previewToken })), { code: "INVALID_REQUEST" });
   }
   assert.throws(() => parseCompanionRequest(request("configuration-apply", { confirmation: { ...consent, replaceIntegration: true }, previewToken: "a".repeat(64) })), { code: "CONFIRMATION_REQUIRED" });
+});
+
+test("bundled LM Studio apply accepts only its exact fixed consent and CAS token", () => {
+  const valid = { confirmation: { enableBundledLmStudio: true }, previewToken: "a".repeat(64) };
+  assert.equal(parseCompanionRequest(request("lmstudio-default-apply", valid)).action, "lmstudio-default-apply");
+  for (const confirmation of [undefined, {}, { enableBundledLmStudio: false },
+    { enableBundledLmStudio: "true" }, { enableBundledLmStudio: true, provider: "lmstudio" }]) {
+    assert.throws(() => parseCompanionRequest(request("lmstudio-default-apply", {
+      confirmation, previewToken: "a".repeat(64),
+    })), { code: "CONFIRMATION_REQUIRED" });
+  }
+  for (const previewToken of [undefined, "A".repeat(64), "a".repeat(63), SECRET, "/private/config"]) {
+    assert.throws(() => parseCompanionRequest(request("lmstudio-default-apply", {
+      confirmation: { enableBundledLmStudio: true }, previewToken,
+    })), { code: "INVALID_REQUEST" });
+  }
+  for (const extra of [{ provider: "lmstudio" }, { model: "private/model" },
+    { configPath: "/private/config" }, { endpoint: "http://127.0.0.1:1234/v1" }]) {
+    assert.throws(() => parseCompanionRequest(JSON.stringify({
+      schemaVersion: 1, action: "lmstudio-default-apply", ...valid, ...extra,
+    })), { code: "INVALID_REQUEST" });
+  }
+});
+
+test("native-only status exposes no provider identity and gates the fixed LM Studio setup", async () => {
+  const nativeOnly = await collectCompanionStatus({ probes: probes({
+    providerConfiguration: async () => ({ status: "native-only", provider: SECRET, endpoint: SECRET }),
+  }) });
+  assert.deepEqual(nativeOnly.providerConfiguration, { status: "native-only" });
+  assert.ok(nativeOnly.capabilities.includes("native-only-lmstudio-setup-v1"));
+  assert.ok(nativeOnly.actions.includes("lmstudio-default-preview"));
+  assert.ok(nativeOnly.actions.includes("lmstudio-default-apply"));
+  assert.equal(JSON.stringify(nativeOnly).includes(SECRET), false);
+  for (const override of [
+    { providerConfiguration: async () => ({ status: "external" }) },
+    { desktop: async () => true, providerConfiguration: async () => ({ status: "native-only" }) },
+    { service: async () => ({ status: "stopped" }), providerConfiguration: async () => ({ status: "native-only" }) },
+    { integration: async () => ({ status: "none" }), providerConfiguration: async () => ({ status: "native-only" }) },
+    { accountCache: async () => ({ status: "refresh-required" }), providerConfiguration: async () => ({ status: "native-only" }) },
+  ]) {
+    const blocked = await collectCompanionStatus({ probes: probes(override) });
+    assert.equal(blocked.actions.includes("lmstudio-default-preview"), false);
+    assert.equal(blocked.actions.includes("lmstudio-default-apply"), false);
+  }
+});
+
+test("fixed LM Studio preview and apply envelopes redact all configuration content", () => {
+  const preview = companionSuccess("lmstudio-default-preview", {
+    status: "native-only", canApply: true, requiresConfirmation: true,
+    changes: [...BUNDLED_LMSTUDIO_SETUP_CHANGES], previewToken: "c".repeat(64),
+    targetConfig: { providers: [{ model: SECRET, endpoint: SECRET }] }, bundledConfigPath: SECRET,
+    installedConfigBytes: Buffer.from(SECRET),
+  });
+  assert.deepEqual(preview, {
+    schemaVersion: 1, ok: true, code: "COMPLETE", action: "lmstudio-default-preview",
+    status: "native-only", canApply: true, requiresConfirmation: true,
+    changes: [...BUNDLED_LMSTUDIO_SETUP_CHANGES], previewToken: "c".repeat(64),
+  });
+  const applied = companionSuccess("lmstudio-default-apply", {
+    status: "applied", updated: true, restartRequired: true, private: SECRET,
+  });
+  assert.deepEqual(applied, {
+    schemaVersion: 1, ok: true, code: "COMPLETE", action: "lmstudio-default-apply",
+    updated: true, restartRequired: true, status: "applied",
+  });
+  for (const invalid of [
+    { ...preview, canApply: false },
+    { ...preview, changes: ["enable-bundled-lmstudio"] },
+    { ...preview, previewToken: "A".repeat(64) },
+  ]) assert.throws(() => companionSuccess("lmstudio-default-preview", invalid), { code: "ACTION_FAILED" });
+  assert.throws(() => companionSuccess("lmstudio-default-apply", {
+    status: "applied", updated: false, restartRequired: true,
+  }), { code: "ACTION_FAILED" });
 });
 
 test("requests are bounded by bytes and require valid UTF-8", () => {
@@ -255,6 +356,7 @@ test("healthy status projects only bounded public values from private probes", a
   assert.deepEqual(result.issues, []);
   assert.equal(JSON.stringify(result).includes(SECRET), false);
   assert.ok(result.actions.includes("refresh"));
+  assert.ok(result.actions.includes("full-refresh"));
   assert.ok(result.actions.includes("open"));
   assert.ok(result.actions.includes("certify"));
   assert.equal(result.actions.includes("recover"), false);
@@ -378,7 +480,7 @@ test("status isolates failed probes and never serializes their raw errors", asyn
   assert.deepEqual(result.service, { status: "unknown" });
   assert.equal(result.issues.length, 3);
   assert.equal(JSON.stringify(result).includes(SECRET), false);
-  for (const action of ["refresh", "recover", "certify", "update", "configuration-apply"]) assert.equal(result.actions.includes(action), false);
+  for (const action of ["refresh", "full-refresh", "recover", "certify", "update", "configuration-apply"]) assert.equal(result.actions.includes(action), false);
 });
 
 test("status bounds stalled probes while retaining complete independent results", async () => {
@@ -394,7 +496,7 @@ test("recovery status exposes only an operation UUID and fixed workflow phase", 
   assert.equal(result.state, "recovery-pending");
   assert.deepEqual(result.recovery, { status: "pending", phase: "suspended", operationId: OPERATION_ID });
   assert.ok(result.actions.includes("recover"));
-  for (const action of ["refresh", "certify", "update", "configuration-apply"]) assert.equal(result.actions.includes(action), false);
+  for (const action of ["refresh", "full-refresh", "certify", "update", "configuration-apply"]) assert.equal(result.actions.includes(action), false);
   assert.equal(JSON.stringify(result).includes(SECRET), false);
 });
 
@@ -438,6 +540,7 @@ test("account-cache mismatch offers confirmed recovery and ordinary age never do
   assert.equal(result.state, "update-required");
   assert.ok(result.actions.includes("recover"));
   assert.equal(result.actions.includes("refresh"), false);
+  assert.equal(result.actions.includes("full-refresh"), false);
   const old = await collectCompanionStatus({ probes: probes({ accountCache: async () => ({ status: "ready", ageMs: 1e10, fetchedAt: SECRET }) }) });
   assert.equal(old.state, "ready");
   assert.equal(old.actions.includes("recover"), false);
@@ -449,6 +552,7 @@ test("a quarantined service or compatibility mismatch selects update recovery", 
     assert.equal(result.state, "update-required");
     assert.ok(result.actions.includes("recover"));
     assert.equal(result.actions.includes("refresh"), false);
+    assert.equal(result.actions.includes("full-refresh"), false);
     assert.equal(result.actions.includes("open"), false);
   }
 });
@@ -458,6 +562,7 @@ test("modified owned config and competing integrations cannot offer refresh or r
     const result = await collectCompanionStatus({ probes: probes(override) });
     assert.equal(result.state, "configuration-conflict");
     assert.equal(result.actions.includes("refresh"), false);
+    assert.equal(result.actions.includes("full-refresh"), false);
     assert.equal(result.actions.includes("recover"), false);
     assert.equal(result.actions.includes("certify"), false);
     assert.equal(result.actions.includes("update"), false);
@@ -474,10 +579,12 @@ test("status preserves an absent installation and blocks certification while Cod
   }) });
   assert.equal(missing.state, "not-installed");
   assert.equal(missing.actions.includes("refresh"), false);
+  assert.equal(missing.actions.includes("full-refresh"), false);
   assert.equal(missing.actions.includes("update"), false);
   assert.ok(missing.actions.includes("configuration-apply"));
   const running = await collectCompanionStatus({ probes: probes({ desktop: async () => true }) });
   assert.equal(running.desktop.status, "running");
+  assert.equal(running.actions.includes("full-refresh"), true);
   assert.equal(running.actions.includes("certify"), false);
   assert.equal(running.actions.includes("configuration-apply"), false);
 });
@@ -511,6 +618,7 @@ test("unverified or invalid distribution ownership prevents configuration activa
   ]) {
     const result = await collectCompanionStatus({ probes: probes({ installation }) });
     assert.equal(result.actions.includes("configuration-apply"), false);
+    assert.equal(result.actions.includes("full-refresh"), false);
     for (const action of ["diagnose", "configuration-preview", "update-check"]) assert.ok(result.actions.includes(action));
   }
 });
@@ -523,6 +631,8 @@ test("safe errors and action envelopes never reflect exception text or unknown d
   assert.equal(companionFailure(new CompanionControlError("CODEX_RUNNING")).code, "CODEX_RUNNING");
   const complete = companionSuccess("recover", { started: true, resumed: false, operationId: OPERATION_ID, model: SECRET, message: SECRET, paths: SECRET });
   assert.deepEqual(complete, { schemaVersion: 1, ok: true, code: "COMPLETE", action: "recover", started: true, resumed: false, operationId: OPERATION_ID });
+  const fullRefresh = companionSuccess("full-refresh", { started: true, resumed: false, operationId: OPERATION_ID, model: SECRET });
+  assert.deepEqual(fullRefresh, { schemaVersion: 1, ok: true, code: "COMPLETE", action: "full-refresh", started: true, resumed: false, operationId: OPERATION_ID });
   assert.equal(companionSuccess("update", { targetVersion: "1.2.3", latestVersion: SECRET, operationId: SECRET }).targetVersion, "1.2.3");
 });
 
@@ -594,7 +704,7 @@ test("toggle capability is server-owned and OFF remains possible without provide
     accountCache: async () => ({ status: "refresh-required" }),
     service: async () => ({ status: "stopped" }),
   }) });
-  assert.deepEqual(result.capabilities, ["integration-toggle-v1", "native-uninstall-v1", "token-usage-v1"]);
+  assert.deepEqual(result.capabilities, ["integration-toggle-v1", "native-uninstall-v1", "native-only-lmstudio-setup-v1", "token-usage-v1"]);
   assert.ok(result.actions.includes("integration-deactivate"));
   assert.equal(JSON.stringify(result).includes(SECRET), false);
   for (const override of [

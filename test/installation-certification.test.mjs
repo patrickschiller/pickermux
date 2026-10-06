@@ -5,7 +5,10 @@ import path from "node:path";
 import test from "node:test";
 
 import { validateBridgeConfig } from "../src/bridge-config.mjs";
-import { certificationSubjectForModel } from "../src/certification-runner.mjs";
+import {
+  certificationSubjectForModel,
+  resolveModelCapabilitySlugs,
+} from "../src/certification-runner.mjs";
 import { certify, certifyForInstallation } from "../src/cli.mjs";
 import {
   recordPassedCertification,
@@ -100,6 +103,37 @@ test("valid receipts skip inference while explicit certify still rechecks all mo
   await certify({ ...input, onlyUncertified: false }, dependencies);
   assert.deepEqual(transactions[0].targetModelIds, models.slice(0, 2).map((entry) => entry.id));
   assert.equal(transactions[0].exactModelSet, true);
+});
+
+test("a loaded-model replacement never reuses the previous model receipt", async (t) => {
+  for (const changedBinding of [false, true]) {
+    await t.test(changedBinding ? "same public slug, changed upstream binding" : "new public slug", async (subtest) => {
+      const { input, dependencies, models, transactions } = await fixture(subtest);
+      const previous = models[0];
+      const replacement = {
+        ...previous,
+        id: changedBinding ? previous.id : "lmstudio/publisher/replacement",
+        upstreamId: "publisher/replacement",
+      };
+      const capabilities = await resolveModelCapabilitySlugs({
+        storePath: input.paths.certificationPath,
+        config: input.config,
+        models: [replacement],
+        codexClientVersion: "0.158.0",
+      });
+      assert.deepEqual(capabilities, {
+        certifiedModelSlugs: [],
+        efficientFidelityModelSlugs: [],
+      });
+
+      dependencies.discoverImpl = async () => ({ models: [replacement] });
+      dependencies.listPendingImpl = async () => [];
+      const result = await certify(input, dependencies);
+      assert.equal(result.reused, 0);
+      assert.deepEqual(transactions[0].targetModelIds, [replacement.id]);
+      assert.equal(transactions[0].exactModelSet, false);
+    });
+  }
 });
 
 test("absent pending models enter the existing recovery transaction during installation", async (t) => {

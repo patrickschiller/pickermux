@@ -1,6 +1,6 @@
 # PickerMux Architecture
 
-This document describes PickerMux v0.24.2 development.
+This document describes PickerMux v0.30.0.
 It is intended for contributors, security reviewers, and users who want to
 understand what runs on their Mac.
 
@@ -127,10 +127,14 @@ separate measured inference against that exact profile.
 Validated usage drives token totals. Optional `pickermux_metrics` carries only a
 bounded final generation duration derived from MLX's output generation rate;
 it is stripped from Responses output. The bridge publishes `token-performance-v1`
-after clean finalization. The companion computes output tokens/s, excluding
-prefill/network time, and requires timing counts to match latest usage. Timing
-is volatile; the private usage ledger format remains unchanged. Errors/logs
-contain no prompts, output, paths or control capabilities.
+after clean finalization. The companion labels **Output speed** only when a
+finite provider-specific measurement matches that provider's latest output
+count. It computes output tokens/s excluding prefill/network time; missing,
+stale, generic, or cross-provider timing produces no presentation row. Timing
+is volatile; the private usage ledger format remains unchanged.
+The companion filters exactly provider ID `kolibri` from visible usage and
+performance rows while leaving these backend fields intact. Errors/logs contain
+no prompts, output, paths or control capabilities.
 
 ## Catalog construction
 
@@ -483,7 +487,7 @@ snapshot is capped at 128 providers; exceeding that capacity marks the whole
 snapshot unavailable rather than silently omitting a provider. The
 capability-scoped health endpoint publishes `tokenUsage` schema 2, with a
 canonical UTC reset time or `null` and empty
-providers before any recorded usage. The explicit Settings reset clears
+providers before any recorded usage. The explicit Config reset clears
 accumulated counts while retaining the most recently finalized observation.
 This storage records no per-request history and grants no routing authority.
 
@@ -734,6 +738,28 @@ changes stop activation and enter the existing rollback boundary. Managed
 layout migration canonicalizes only receipt-proven provider bytes, preserves
 user-owned bytes and line endings, and maintains historical provider aliases.
 Unknown or modified state is not automatically reformatted.
+
+Version 0.24.6 adds one narrower provider-configuration transition. Earlier
+setup correctly accepted and later upgrades correctly preserved an explicit
+`providers: []` service configuration. That left the installed integration
+native-only by design: there was no external route to publish in the Codex model
+picker and no provider usage for the companion to present. A bounded status
+probe now projects only `native-only` or `external`, never provider identities,
+endpoints, models, or configuration bytes.
+
+For the exact native-only state, `lmstudio-default-preview` reads the private
+installed service configuration and the fixed bundled LM Studio default from
+the receipt-active source. Its digest token binds the installed bytes, a target
+that retains the installed schema/bridge settings and adds only that default,
+and the current integration preview token. The response exposes only a fixed
+change list and the token. `lmstudio-default-apply` accepts exactly
+`enableBundledLmStudio: true`, rechecks the digest before mutation and again as
+the setup transaction's configuration preflight, and rejects caller-selected
+paths, providers, models, endpoints, or credentials. Any nonempty provider list,
+running Codex, stale preview, changed state, non-receipt-active source, or
+unavailable loaded LM Studio model fails closed. Existing setup locks, backup,
+activation, certification, and rollback semantics remain authoritative;
+unrelated user settings and historical-chat compatibility are preserved.
 
 ### Full account-cache refresh
 
@@ -990,7 +1016,25 @@ provider alias. Reactivation rejects edited suspension bytes and preserves the
 original eventual-uninstall baseline. This suspension does not authorize the
 full-refresh helper or replace its checkpoint.
 
-A separate Settings removal action uses finite `uninstall-preview` and
+When status proves an exact native-only installed configuration, the Config UI
+offers **Enable LM Studio models…**. It displays the fixed redacted preview in
+**Enable LM Studio models?** and sends the receipt-bound token only after the
+user chooses **Enable LM Studio**. The action requires Codex fully closed and a
+loaded LM Studio model. It is not a provider editor and cannot replace an
+external-provider configuration. Resulting external models appear in the Codex
+model picker; the compact PickerMux menu presents providers and usage, not model
+inventory.
+
+Config exposes an explicit `full-refresh` action for a verified active, ready
+installation, including while Codex is running. It requires the same three
+native consent booleans as mismatch-driven `recover`, then delegates directly
+to the receipt-bound scheduler that performs two graceful quits, checkpointed
+native-cache refresh, and transactional reactivation. It accepts no provider,
+model, executable, configuration path, or force parameter. A stale UI snapshot
+cannot bypass a newly pending recovery, changed ownership, compatibility/cache
+requirements, or distribution validation.
+
+A separate Config removal action uses finite `uninstall-preview` and
 `uninstall` protocol actions. The preview token binds the native restoration
 intent; removal requires four exact consent fields and the receipt-owned
 installed backend. Status can offer removal for both active and correctly
@@ -1017,32 +1061,46 @@ model/request metadata. `token-usage-reset-v1` exposes only the explicit
 `usage-reset` action with `resetAccumulatedUsage: true`; it resets cumulative
 counts and retains the last request. Swift accepts both the previous finite
 status contracts, including memory-only v1 usage, and the new capability/field
-pair, validates all counts and provider IDs, and
-preserves usage while filtering actions. Usage counters do not participate in
+pair, validates all counts and provider IDs, and preserves usage while filtering
+actions. Optional `token-performance-v1` values remain a bounded volatile
+projection and are never added to the durable ledger. The presentation layer
+removes exactly provider ID `kolibri` from every usage/performance row; `lmstudio`
+remains visible as **LM Studio**, and backend telemetry remains unchanged. A
+performance row is labelled **Output speed** and exists only for a matching
+provider-specific latest-request measurement. Usage
+counters do not participate in
 notification transition identity. Failed probes produce partial results rather than
 raw errors. The app samples on a five-second polling cycle; backend deadlines
 and execution time can lengthen that cycle. A serial operation queue orders
 polling, manual status checks and actions, so a manual request waits instead
 of disappearing and older observations cannot replace newer results.
 Manual checks expose completion time; actions expose a busy indicator and
-elapsed time. Settings and Help use persistent native windows, and destructive
+elapsed time. Config and Help use persistent native windows, and destructive
 recovery/update confirmations use asynchronous windows rather than a nested
 modal event loop in the transient menu panel. Account-cache age alone does not
 grant recovery authority.
 
 The compact 320-point menu places integration state and vertically stacked
-provider usage blocks before full-width Refresh picker, Open Codex, Check
-status, and Check installation rows, followed by specific feedback.
-Certification and recovery live under More actions; Installation details
-expand below the primary actions. Settings, Help, and Quit appear as separate
-menu rows. Offered actions obey the validated backend permissions. Native
-menu presentation does not grant lifecycle authority.
+visible-provider usage blocks before full-width Refresh picker and Open Codex
+rows. Exactly one divider separates that content from the Config, Help, and Quit
+footer group; no dividers separate those three rows. The compact surface has no
+**Complete PickerMux setup** row and no **Complete Codex setup…** guidance.
+Config owns Check status, Check installation, Installation details, first-
+setup/backend-update recovery, Full refresh, preferences, updates, token reset,
+and removal. Full refresh and usage reset remain present when unavailable,
+disabled with a bounded reason derived from verified status. Offered actions
+obey the validated backend permissions. Native menu presentation does not grant
+lifecycle authority.
 
 `companion run` accepts one UTF-8 request capped at 4,096 bytes and a bounded
 input wait. Version 1 accepts only the fixed action set. Unknown or duplicate
 keys, extra requests, arbitrary paths/providers/executables, and force flags
-are rejected. Recovery requires three explicit true consent fields; a gateway
+are rejected. Both `full-refresh` and mismatch-driven `recover` require three
+explicit true consent fields; a gateway
 switch requires explicit replacement consent and its current preview token.
+The native-only LM Studio transition requires its separate receipt-bound
+preview token and exact `enableBundledLmStudio` confirmation. It is unavailable
+for external-provider configurations and cannot accept a path/provider/model.
 The dispatcher reads fresh status and validates the active installed source
 before ordinary mutations. GUI confirmation cannot bypass ownership checks,
 locks, provider validation, certification, or rollback.
@@ -1050,11 +1108,20 @@ locks, provider validation, certification, or rollback.
 Invocation uses argument arrays with a narrow environment and drains bounded
 stdout/stderr concurrently. There is no shell interpolation or HTTP control
 listener. Installed launcher receipts, ownership, symlinks, and digests are
-checked. The bundled backend's manifest hash is pinned into the app binary;
-file size/digest, parent directory, and complete inventory checks precede Node
-execution. It can inspect and explicitly set up an absent/older installation,
-but cannot control another installed source's service or arm its recovery helper.
-The app never retries a possibly committed action via a different backend.
+checked. Version 0.30.0 recognizes the optional `runtime/mlx` subtree of a
+receipt-owned installed distribution only as the exact reviewed four-file set.
+Its private directories and regular files, ownership, modes, single-link state,
+size bounds, names, and bytes are included in the receipt-bound distribution
+digest. Missing, extra, changed, linked, or shared runtime state fails closed.
+This lets a valid installation remain the authority for `usage-reset`; it does
+not broaden reset authority. The bundled backend's manifest hash is pinned into
+the app binary; its optional runtime is likewise accepted only as the complete
+four-file `runtime/mlx` set listed by that manifest. Per-file size/digest,
+parent-directory, and complete inventory checks precede Node execution. It can
+inspect and explicitly set up an
+absent/older installation, but cannot reset another distribution's durable
+usage, control that installed source's service, or arm its recovery helper. The
+app never retries a possibly committed action via a different backend.
 
 Progress is an observational versioned stderr stream containing only fixed
 phases, safe counters, and an optional operation UUID. The app shows a busy
@@ -1084,12 +1151,13 @@ existing backend upgrade review automatically. Eligibility requires a
 validated installed source older than the app, an active integration, Codex
 fully closed, ready cache and compatibility state, no pending recovery, and an
 idle operation and confirmation queue. Version mismatch alone grants no
-mutation authority. The menu retains the mismatch and Settings guidance while
-Codex runs, and a blocked observation does not consume the future offer.
+mutation authority. Config retains the mismatch and recovery guidance while
+Codex runs; the compact menu has no setup-completion prompt. A blocked
+observation does not consume the future offer.
 
 The app records presented app/backend version pairs in memory for its current
 process. Cancellation or failure suppresses another automatic review for that
-pair, while the manual Settings review can retry explicitly. The automatic
+pair, while the manual Config review can retry explicitly. The automatic
 path never activates an inactive, foreign, or unsafe installation or quits
 Codex. User confirmation enters the same pinned preview/apply client described
 above, with fresh backend validation and the existing ownership, configuration,

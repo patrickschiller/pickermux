@@ -25,6 +25,21 @@ struct CompanionMenuViewport<Content: View>: View {
   }
 }
 
+struct CompanionConfigViewport<Content: View>: View {
+  private let height: CGFloat
+  private let content: Content
+
+  init(height: CGFloat = 640, @ViewBuilder content: () -> Content) {
+    self.height = height
+    self.content = content()
+  }
+
+  var body: some View {
+    ScrollView(.vertical) { content }
+      .frame(width: 500, height: height)
+  }
+}
+
 private struct AdaptiveMenuScrollView<Content: View>: NSViewRepresentable {
   let content: Content
 

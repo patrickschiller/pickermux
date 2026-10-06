@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { constants as fsConstants } from "node:fs";
 import {
   chmod,
   cp,
@@ -13,6 +14,9 @@ import {
 import path from "node:path";
 
 import { inspectOptionalMlxRuntime } from "./runtime-package.mjs";
+
+const MAX_SERVICE_CONFIG_BYTES = 1024 * 1024;
+const PRIVATE_READ_FLAGS = fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW;
 
 async function exists(target) {
   try {
@@ -51,7 +55,112 @@ function validatePreviousPackagePath(serviceDirectory, previousPath) {
   return { destination, previous };
 }
 
-async function writePrivateAtomic(destination, text) {
+function configChangedConcurrently(cause) {
+  const error = new Error("Refusing to replace a concurrently changed service configuration", cause ? { cause } : undefined);
+  error.code = "CONFIG_CHANGED_CONCURRENTLY";
+  return error;
+}
+
+function privateFileSnapshot(stats) {
+  return {
+    dev: stats.dev,
+    ino: stats.ino,
+    uid: stats.uid,
+    mode: stats.mode,
+    nlink: stats.nlink,
+    size: stats.size,
+    mtimeMs: stats.mtimeMs,
+    ctimeMs: stats.ctimeMs,
+  };
+}
+
+function samePrivateFile(left, right) {
+  return Object.keys(left).every((key) => left[key] === right[key]);
+}
+
+function assertPrivateServiceConfig(stats) {
+  const owned = typeof process.getuid !== "function" || stats.uid === process.getuid();
+  if (!stats.isFile() || stats.isSymbolicLink() || stats.nlink !== 1 || !owned ||
+    (stats.mode & 0o077) !== 0 || !Number.isSafeInteger(stats.size) ||
+    stats.size < 0 || stats.size > MAX_SERVICE_CONFIG_BYTES) {
+    throw new Error("Service configuration is not a private regular file");
+  }
+}
+
+async function readPrivateServiceConfig(filePath) {
+  let handle;
+  let pathObserved = false;
+  try {
+    const initialStats = await lstat(filePath);
+    pathObserved = true;
+    assertPrivateServiceConfig(initialStats);
+    const initial = privateFileSnapshot(initialStats);
+    handle = await open(filePath, PRIVATE_READ_FLAGS);
+    const openedStats = await handle.stat();
+    const openedPathStats = await lstat(filePath);
+    assertPrivateServiceConfig(openedStats);
+    assertPrivateServiceConfig(openedPathStats);
+    if (!samePrivateFile(initial, privateFileSnapshot(openedStats)) ||
+      !samePrivateFile(initial, privateFileSnapshot(openedPathStats))) {
+      throw new Error("Service configuration changed during private read");
+    }
+    const chunks = [];
+    let size = 0;
+    while (true) {
+      const chunk = Buffer.alloc(Math.min(16 * 1024, MAX_SERVICE_CONFIG_BYTES + 1 - size));
+      const { bytesRead } = await handle.read(chunk, 0, chunk.length, null);
+      if (bytesRead === 0) break;
+      size += bytesRead;
+      if (size > MAX_SERVICE_CONFIG_BYTES) {
+        throw new Error("Service configuration exceeds its private read limit");
+      }
+      chunks.push(chunk.subarray(0, bytesRead));
+    }
+    const contents = Buffer.concat(chunks, size);
+    const finalStats = await handle.stat();
+    const finalPathStats = await lstat(filePath);
+    assertPrivateServiceConfig(finalStats);
+    assertPrivateServiceConfig(finalPathStats);
+    if (!samePrivateFile(initial, privateFileSnapshot(finalStats)) ||
+      !samePrivateFile(initial, privateFileSnapshot(finalPathStats)) ||
+      contents.length !== finalStats.size) {
+      throw new Error("Service configuration changed during private read");
+    }
+    return contents;
+  } catch (error) {
+    if (error?.code === "ENOENT" && !pathObserved && !handle) return null;
+    throw error;
+  } finally {
+    await handle?.close().catch(() => {});
+  }
+}
+
+function expectedContentsSnapshot(value) {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (!Buffer.isBuffer(value)) {
+    throw new TypeError("Expected service configuration must be a Buffer, null, or undefined");
+  }
+  return Buffer.from(value);
+}
+
+function assertExpectedContents(current, expected) {
+  if (expected === undefined) return;
+  if (current === null || expected === null) {
+    if (current !== expected) throw configChangedConcurrently();
+    return;
+  }
+  if (!current.equals(expected)) throw configChangedConcurrently();
+}
+
+async function writePrivateAtomic(destination, text, {
+  expectedCurrentContents,
+  beforeCommit,
+} = {}) {
+  const expected = expectedContentsSnapshot(expectedCurrentContents);
+  if (beforeCommit !== undefined && typeof beforeCommit !== "function") {
+    throw new TypeError("Private atomic write beforeCommit must be a function");
+  }
   await mkdir(path.dirname(destination), { recursive: true, mode: 0o700 });
   const temporary = `${destination}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`;
   let handle;
@@ -64,6 +173,16 @@ async function writePrivateAtomic(destination, text) {
     await handle.close();
     handle = undefined;
     await chmod(temporary, 0o600);
+    await beforeCommit?.();
+    if (expected !== undefined) {
+      let current;
+      try {
+        current = await readPrivateServiceConfig(destination);
+      } catch (error) {
+        throw configChangedConcurrently(error);
+      }
+      assertExpectedContents(current, expected);
+    }
     await rename(temporary, destination);
   } catch (error) {
     const cleanupFailures = [];
@@ -88,6 +207,10 @@ async function writePrivateAtomic(destination, text) {
   }
 }
 
+function serviceConfigContents(config) {
+  return Buffer.from(`${JSON.stringify(config, null, 2)}\n`);
+}
+
 export async function readOptionalPrivateFile(filePath) {
   try {
     return await readFile(filePath);
@@ -97,8 +220,22 @@ export async function readOptionalPrivateFile(filePath) {
   }
 }
 
-export async function restorePrivateFile(filePath, contents) {
+export async function restorePrivateFile(filePath, contents, options = {}) {
   if (contents === null) {
+    const expected = expectedContentsSnapshot(options.expectedCurrentContents);
+    if (options.beforeCommit !== undefined && typeof options.beforeCommit !== "function") {
+      throw new TypeError("Private file restore beforeCommit must be a function");
+    }
+    await options.beforeCommit?.();
+    if (expected !== undefined) {
+      let current;
+      try {
+        current = await readPrivateServiceConfig(filePath);
+      } catch (error) {
+        throw configChangedConcurrently(error);
+      }
+      assertExpectedContents(current, expected);
+    }
     await unlink(filePath).catch((error) => {
       if (error?.code !== "ENOENT") throw error;
     });
@@ -107,12 +244,12 @@ export async function restorePrivateFile(filePath, contents) {
   if (!Buffer.isBuffer(contents) && typeof contents !== "string") {
     throw new TypeError("Private file snapshot must be a Buffer, string, or null");
   }
-  await writePrivateAtomic(filePath, contents);
+  await writePrivateAtomic(filePath, contents, options);
   return path.resolve(filePath);
 }
 
-export async function writeServiceConfig(serviceConfigPath, config) {
-  await writePrivateAtomic(serviceConfigPath, `${JSON.stringify(config, null, 2)}\n`);
+export async function writeServiceConfig(serviceConfigPath, config, options) {
+  await writePrivateAtomic(serviceConfigPath, serviceConfigContents(config), options);
   return path.resolve(serviceConfigPath);
 }
 
@@ -121,7 +258,17 @@ export async function writeServiceConfig(serviceConfigPath, config) {
  * is not blocked by macOS Files & Folders privacy controls. Existing versions
  * are retained as an exact previous directory instead of being deleted.
  */
-export async function stageServicePackage({ sourceRoot, installDirectory, config }) {
+export async function stageServicePackage({
+  sourceRoot,
+  installDirectory,
+  config,
+  expectedServiceConfig,
+  beforeServiceConfigCommit,
+}) {
+  const expectedConfig = expectedContentsSnapshot(expectedServiceConfig);
+  if (beforeServiceConfigCommit !== undefined && typeof beforeServiceConfigCommit !== "function") {
+    throw new TypeError("Service package beforeServiceConfigCommit must be a function");
+  }
   const source = path.resolve(sourceRoot);
   const mlxRuntime = await inspectOptionalMlxRuntime(source);
   const destination = path.join(path.resolve(installDirectory), "runtime-app");
@@ -130,10 +277,19 @@ export async function stageServicePackage({ sourceRoot, installDirectory, config
     `.runtime-app.${process.pid}.${randomBytes(8).toString("hex")}.staging`,
   );
   const serviceConfigPath = path.join(path.resolve(installDirectory), "service-config.json");
-  const previousServiceConfig = await readOptionalPrivateFile(serviceConfigPath);
+  const committedServiceConfig = serviceConfigContents(config);
+  let previousServiceConfig;
+  try {
+    previousServiceConfig = await readPrivateServiceConfig(serviceConfigPath);
+  } catch (error) {
+    if (expectedConfig !== undefined) throw configChangedConcurrently(error);
+    throw error;
+  }
+  assertExpectedContents(previousServiceConfig, expectedConfig);
   await mkdir(path.resolve(installDirectory), { recursive: true, mode: 0o700 });
   let previousPath;
   let destinationPromoted = false;
+  let serviceConfigPromoted = false;
   try {
     await mkdir(staging, { recursive: false, mode: 0o700 });
     await cp(path.join(source, "bin"), path.join(staging, "bin"), {
@@ -166,14 +322,39 @@ export async function stageServicePackage({ sourceRoot, installDirectory, config
     }
     await rename(staging, destination);
     destinationPromoted = true;
-    await writeServiceConfig(serviceConfigPath, config);
+    await writeServiceConfig(serviceConfigPath, config, {
+      expectedCurrentContents: expectedConfig,
+      beforeCommit: beforeServiceConfigCommit,
+    });
+    serviceConfigPromoted = true;
   } catch (error) {
-    await rm(staging, { recursive: true, force: true }).catch(() => {});
+    const rollbackFailures = [];
+    await rm(staging, { recursive: true, force: true }).catch((rollbackError) => {
+      rollbackFailures.push(rollbackError);
+    });
     if (destinationPromoted) {
-      await rm(destination, { recursive: true, force: true }).catch(() => {});
+      await rm(destination, { recursive: true, force: true }).catch((rollbackError) => {
+        rollbackFailures.push(rollbackError);
+      });
     }
-    if (previousPath) await rename(previousPath, destination).catch(() => {});
-    await restorePrivateFile(serviceConfigPath, previousServiceConfig).catch(() => {});
+    if (previousPath) {
+      await rename(previousPath, destination).catch((rollbackError) => {
+        rollbackFailures.push(rollbackError);
+      });
+    }
+    if (serviceConfigPromoted) {
+      await restorePrivateFile(serviceConfigPath, previousServiceConfig, {
+        expectedCurrentContents: committedServiceConfig,
+      }).catch((rollbackError) => {
+        rollbackFailures.push(rollbackError);
+      });
+    }
+    if (rollbackFailures.length > 0) {
+      throw new Error(
+        `Service package staging failed and rollback was incomplete: ${error.message}`,
+        { cause: new AggregateError([error, ...rollbackFailures]) },
+      );
+    }
     throw error;
   }
   return {
@@ -182,6 +363,7 @@ export async function stageServicePackage({ sourceRoot, installDirectory, config
     binPath: path.join(destination, "bin", "lmstudio-picker.mjs"),
     previousPath,
     previousServiceConfig,
+    committedServiceConfig,
   };
 }
 
@@ -191,7 +373,19 @@ export async function restoreServicePackage({
   previousPath,
   serviceConfigPath,
   previousServiceConfig,
+  committedServiceConfig,
+  beforeServiceConfigRestoreCommit,
 }) {
+  const expectedConfig = expectedContentsSnapshot(committedServiceConfig);
+  if (expectedConfig !== undefined) {
+    let currentConfig;
+    try {
+      currentConfig = await readPrivateServiceConfig(serviceConfigPath);
+    } catch (error) {
+      throw configChangedConcurrently(error);
+    }
+    assertExpectedContents(currentConfig, expectedConfig);
+  }
   const destination = path.resolve(serviceDirectory);
   await rm(destination, { recursive: true, force: true });
   if (previousPath) {
@@ -200,7 +394,10 @@ export async function restoreServicePackage({
     }
     await rename(previousPath, destination);
   }
-  await restorePrivateFile(serviceConfigPath, previousServiceConfig);
+  await restorePrivateFile(serviceConfigPath, previousServiceConfig, {
+    expectedCurrentContents: expectedConfig,
+    beforeCommit: beforeServiceConfigRestoreCommit,
+  });
   return { restoredPreviousPackage: Boolean(previousPath) };
 }
 

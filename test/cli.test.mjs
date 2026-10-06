@@ -36,7 +36,7 @@ test("release metadata and both CLI entry points identify PickerMux", async () =
     await readFile(path.join(projectDirectory, "package.json"), "utf8"),
   );
   assert.equal(packageMetadata.name, "pickermux");
-  assert.equal(packageMetadata.version, "0.24.4");
+  assert.equal(packageMetadata.version, "0.30.0");
   assert.equal(packageMetadata.license, "MIT");
 
   for (const entryPoint of ["pickermux.mjs", "lmstudio-picker.mjs"]) {
@@ -76,7 +76,7 @@ test("release metadata and both CLI entry points identify PickerMux", async () =
         [path.join(projectDirectory, "bin", entryPoint), versionArgument],
         { encoding: "utf8" },
       );
-      assert.equal(stdout, "pickermux 0.24.4\n");
+      assert.equal(stdout, "pickermux 0.30.0\n");
     }
   }
 });
@@ -426,12 +426,14 @@ test("refresh rollback restores catalog and service config before restarting", a
   const rollbackConfig = { schemaVersion: 2 };
   let restartOptions;
   let restoredPackage;
+  const restoredSnapshots = [];
   let searchConfigRestored = false;
   const servicePackage = {
     serviceDirectory: path.join(directory, "runtime-app"),
     previousPath: path.join(directory, "runtime-app.previous"),
     serviceConfigPath: paths.serviceConfigPath,
     previousServiceConfig: Buffer.from("old config\n"),
+    committedServiceConfig: Buffer.from("new config\n"),
   };
 
   await restoreRefreshState({
@@ -446,6 +448,11 @@ test("refresh rollback restores catalog and service config before restarting", a
     },
     restorePackageImpl: async (options) => {
       restoredPackage = options;
+      await writeFile(options.serviceConfigPath, options.previousServiceConfig);
+    },
+    restoreImpl: async (target, contents) => {
+      restoredSnapshots.push(target);
+      await writeFile(target, contents);
     },
     restartImpl: async (options) => {
       restartOptions = options;
@@ -461,6 +468,7 @@ test("refresh rollback restores catalog and service config before restarting", a
     launchAgentLabel: paths.launchAgentLabel,
   });
   assert.deepEqual(restoredPackage, servicePackage);
+  assert.deepEqual(restoredSnapshots, [paths.catalogPath]);
 });
 
 test("search config rollback failure preserves recovery attempts and reports incomplete rollback", async () => {

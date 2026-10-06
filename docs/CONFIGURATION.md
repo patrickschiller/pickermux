@@ -25,6 +25,27 @@ in Codex. Then, with Codex fully closed,
 apply the native-only configuration through normal setup. Credentials, chats,
 other historical certification receipts and unrelated settings are preserved.
 
+Because upgrades reuse the private installed service configuration, that empty
+provider array also remains empty after replacing the app or updating its
+backend. This is the root cause when an otherwise healthy upgraded installation
+shows only native models: there is no external provider to discover, so no
+external model can appear in the Codex model picker and the menu has no provider
+usage to show.
+
+PickerMux 0.24.6 handles only this exact state with **Config → Enable LM Studio
+models…**. The companion obtains a redacted preview from the receipt-active
+installed release, shows the fixed changes, and requires the explicit **Enable
+LM Studio** confirmation. Codex must be fully closed; the local LM Studio server
+must be running with at least one loaded LLM for setup and certification. The
+target retains the installed bridge block and adds the release's fixed bundled
+LM Studio provider. It preserves unrelated Codex settings and historical chats,
+accepts no provider, endpoint, model, credential, or configuration path from the
+GUI, and cannot run when any external provider is already configured. The normal
+setup transaction and rollback remain authoritative, so an activation failure
+restores the previous native-only state rather than leaving a partial
+configuration. Post-activation certification retains its existing explicit
+incomplete-certification recovery state.
+
 ## Supported provider kinds
 
 PickerMux connects Codex Desktop to local or remote external models through
@@ -56,9 +77,12 @@ their explicit configuration and supported Responses behavior. Configure
 private-network access explicitly when the endpoint is local or on a trusted
 private network; the bridge itself always remains loopback-only.
 
-The companion's first installation uses the bundled LM Studio default.
-Activate a custom provider configuration through the CLI first; later
-companion actions reuse that installed configuration.
+The companion's first installation uses the bundled LM Studio default. An
+existing exact native-only installation can adopt that same fixed default only
+through the explicit preview and confirmation described above. Activate a
+custom provider configuration through the CLI first; later companion actions
+reuse that installed configuration and the GUI never replaces it with the
+bundled default.
 
 For a first release installation with a custom configuration, pass the path to
 the shell that executes the installer:
@@ -168,11 +192,16 @@ Do not patch the installed bridge runtime directly.
 MLX supports text and certified functions with reasoning `none`. Native summary
 display preferences are ignored. Images, audio, stored continuation IDs and
 context compaction remain unsupported. Oversized history is rejected intact.
-The companion shows latest input/output/total and saved accumulated tokens.
-`token-performance-v1` adds the measured output generation tokens/s after a
-finalized MLX request, excluding prompt prefill and network time. Timing resets
-with the bridge and is never written into the usage ledger; missing measurements
-are shown as unavailable.
+The backend continues to validate latest input/output/total counts, saved
+accumulated tokens, and the optional `token-performance-v1` measurement after a
+finalized MLX request. The companion labels this **Output speed** only when a
+finite provider-specific measurement matches that provider's latest output
+count. It is output generation tokens/s, excluding prompt prefill and network
+time; a missing or mismatched measurement produces no speed row. Timing resets
+with the bridge and is never written into the usage ledger. The companion deliberately omits provider ID
+`kolibri` from all visible usage/performance rows, while leaving this bounded
+private telemetry and its protocol fields intact. Missing measurements remain
+unavailable rather than being inferred.
 
 ## Codex executable discovery
 
@@ -552,7 +581,7 @@ for an active or verified toggle-deactivated installation. It does not edit
 the native account cache, authentication or historical chats. The inert
 `model_bridge` provider alias remains solely to keep old chats readable.
 
-The companion exposes this mode as **Settings → Remove PickerMux completely…**,
+The companion exposes this mode as **Config → Remove PickerMux completely…**,
 with explicit consent and a fresh removal preview. It also disables its login
 startup and clears only its own preferences and notifications. After success,
 quit the companion and move its app bundle to the Trash in Finder.
@@ -686,10 +715,13 @@ Successful reactivation keeps the original verified backup and uninstall
 baseline. Full refresh still changes the capability and invalidates earlier
 encrypted compaction continuations.
 
-The companion uses the same helper after its native confirmation; it does not
-feed the CLI's `FULL` word into a simulated terminal. Resume requires renewed
-confirmation. Pending recovery prevents configuration migration and ordinary
-mutations until the validated operation is resolved.
+The companion exposes the same helper as **Config → Full refresh…** after its
+native confirmation; it does not feed the CLI's `FULL` word into a simulated
+terminal. The finite request cannot select a provider, model, executable,
+configuration path, or force option. Resume requires renewed confirmation.
+Pending recovery prevents configuration migration and ordinary mutations until
+the validated operation is resolved. The Config control remains visible when
+the backend cannot authorize it and displays the reason it is disabled.
 
 `pickermux status` reports `full-refresh=idle` when no recovery is pending and
 the current phase otherwise. Its JSON form exposes the same information under

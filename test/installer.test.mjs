@@ -2009,6 +2009,82 @@ test("configured providers with empty discovery retain the existing setup failur
   }
 });
 
+test("internal provider migration uses only a validated target and stops before mutation without loaded models", async (t) => {
+  const fixture = await temporaryFixture(t);
+  const target = {
+    schemaVersion: 2,
+    bridge: {
+      port: 5127,
+      defaultModel: "gpt-5.6-sol",
+      reasoningEffort: "high",
+    },
+    providers: [{
+      id: "lmstudio",
+      kind: "lmstudio-responses",
+      baseUrl: "http://127.0.0.1:1234/v1",
+      allowPrivateNetwork: true,
+      discovery: { mode: "loaded", maxModels: 32 },
+      models: [],
+    }],
+  };
+  const expectedServiceConfig = Buffer.from('{"schemaVersion":2,"providers":[]}\n');
+  let configurationPreflights = 0;
+  let desktopRunning = false;
+  const common = {
+    sourceRoot: fixture.source,
+    setupConfig: target,
+    expectedServiceConfig,
+    paths: fixture.installPaths,
+    distributionPaths: fixture.distributionPaths,
+    configStatusImpl: async () => ({ installed: true, healthy: true, status: "installed" }),
+    desktopRunningImpl: async () => desktopRunning,
+    accountCacheImpl: async () => ({ ready: true }),
+    configurationPreflightImpl: async () => { configurationPreflights += 1; },
+    loadConfigImpl: async () => assert.fail("an internal migration must not reload an arbitrary config path"),
+  };
+  let refreshInput;
+  const result = await setupPickerMux({
+    ...common,
+    discoverImpl: async ({ config }) => {
+      assert.equal(config.bridge.port, 5127);
+      assert.equal(config.bridge.reasoningEffort, "high");
+      assert.equal(config.providers[0].baseUrl, "http://127.0.0.1:1234/v1");
+      return { models: [{ id: "lmstudio/test" }], providers: [{ id: "lmstudio" }] };
+    },
+    setupImpl: async ({ activate }) => activate({
+      distributionRoot: "/verified/versions/0.24.6",
+      previousVersion: "0.24.5",
+      version: "0.24.6",
+    }),
+    refreshImpl: async (input) => { refreshInput = input; return { refreshed: true }; },
+    certifyInstallationImpl: async () => ({ status: "complete" }),
+  });
+  assert.equal(result.action, "upgrade");
+  assert.equal(refreshInput.config.bridge.port, 5127);
+  assert.equal(refreshInput.config.providers.length, 1);
+  assert.deepEqual(refreshInput.expectedServiceConfig, expectedServiceConfig);
+  const beforeCommitPreflights = configurationPreflights;
+  await refreshInput.beforeServiceConfigCommit();
+  assert.equal(configurationPreflights, beforeCommitPreflights + 1);
+  desktopRunning = true;
+  await assert.rejects(refreshInput.beforeServiceConfigCommit(), { code: "CODEX_RUNNING" });
+  desktopRunning = false;
+
+  let setupCalls = 0;
+  await assert.rejects(setupPickerMux({
+    ...common,
+    discoverImpl: async () => ({ models: [], providers: [{ id: "lmstudio" }] }),
+    setupImpl: async () => { setupCalls += 1; },
+  }), { code: "NO_LOADED_MODELS" });
+  assert.equal(setupCalls, 0);
+  assert.equal(await pathExists(fixture.distributionPaths.receiptPath), false);
+
+  await assert.rejects(setupPickerMux({
+    ...common,
+    configStatusImpl: async () => ({ installed: false, healthy: true, status: "not-installed" }),
+  }), /requires an installed PickerMux configuration/u);
+});
+
 test("native-only setup retains the real desktop and account-cache guards", async (t) => {
   for (const guard of ["desktop", "cache"]) {
     await t.test(guard, async (t) => {

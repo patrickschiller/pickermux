@@ -41,14 +41,166 @@ final class ProtocolTests: XCTestCase {
     }
   }
 
+  func testNativeOnlyProviderConfigurationIsCapabilityBoundAndRedacted() throws {
+    let capabilities = ["integration-toggle-v1", "native-uninstall-v1",
+      "native-only-lmstudio-setup-v1", "token-usage-v1"]
+    let tokenUsage: [String: Any] = ["schemaVersion": 1, "status": "unavailable", "providers": []]
+    let actions = ["lmstudio-default-preview", "lmstudio-default-apply"]
+    let value = try CompanionSnapshot.decode(snapshot([
+      "capabilities": capabilities, "providerConfiguration": ["status": "native-only"],
+      "tokenUsage": tokenUsage, "actions": actions,
+    ]))
+    XCTAssertTrue(value.supportsNativeOnlyLMStudioSetup)
+    XCTAssertEqual(value.providerConfiguration?.status, .nativeOnly)
+    XCTAssertEqual(value.actions, [.lmStudioDefaultPreview, .lmStudioDefaultApply])
+
+    for changes in [
+      ["capabilities": capabilities, "tokenUsage": tokenUsage],
+      ["providerConfiguration": ["status": "native-only"]],
+      ["capabilities": capabilities, "providerConfiguration": ["status": "native-only", "model": "secret-model"], "tokenUsage": tokenUsage],
+      ["capabilities": capabilities, "providerConfiguration": ["status": "future"], "tokenUsage": tokenUsage],
+      ["capabilities": capabilities, "providerConfiguration": ["status": "native-only"], "tokenUsage": tokenUsage, "actions": ["lmstudio-default-preview"]],
+      ["capabilities": capabilities, "providerConfiguration": ["status": "external"], "tokenUsage": tokenUsage, "actions": actions],
+    ] as [[String: Any]] {
+      XCTAssertThrowsError(try CompanionSnapshot.decode(snapshot(changes)))
+    }
+  }
+
+  func testLMStudioSetupRequiresExactPreviewReceiptAndConsent() throws {
+    let token = String(repeating: "c", count: 64)
+    let preview: [String: Any] = [
+      "action": "lmstudio-default-preview", "status": "native-only", "canApply": true,
+      "requiresConfirmation": true, "changes": LMStudioDefaultPreview.expectedChanges,
+      "previewToken": token,
+    ]
+    let envelope: [String: Any] = ["schemaVersion": 1, "ok": true, "code": "COMPLETE", "data": preview]
+    let decoded = try CompanionResult.decode(JSONSerialization.data(withJSONObject: envelope))
+    XCTAssertNil(decoded.preview)
+    XCTAssertEqual(decoded.lmStudioDefaultPreview?.changes, LMStudioDefaultPreview.expectedChanges)
+    XCTAssertEqual(decoded.lmStudioDefaultPreview?.previewToken, token)
+
+    for changes in [
+      ["status": "external"], ["canApply": false], ["requiresConfirmation": false],
+      ["changes": Array(LMStudioDefaultPreview.expectedChanges.reversed())],
+      ["changes": ["enable-bundled-lmstudio"]], ["previewToken": String(repeating: "C", count: 64)],
+      ["previewToken": String(repeating: "c", count: 63)], ["endpoint": "http://127.0.0.1/private"],
+      ["action": "future-provider-preview"],
+    ] as [[String: Any]] {
+      var invalid = preview
+      invalid.merge(changes) { _, new in new }
+      XCTAssertThrowsError(try CompanionResult.decode(JSONSerialization.data(withJSONObject: [
+        "schemaVersion": 1, "ok": true, "code": "COMPLETE", "data": invalid,
+      ])))
+    }
+    var missingToken = preview
+    missingToken.removeValue(forKey: "previewToken")
+    XCTAssertThrowsError(try CompanionResult.decode(JSONSerialization.data(withJSONObject: [
+      "schemaVersion": 1, "ok": true, "code": "COMPLETE", "data": missingToken,
+    ])))
+
+    XCTAssertThrowsError(try actionRequest(.lmStudioDefaultPreview, confirmed: true))
+    XCTAssertThrowsError(try actionRequest(.lmStudioDefaultPreview, previewToken: token))
+    let previewRequest = try XCTUnwrap(JSONSerialization.jsonObject(with:
+      actionRequest(.lmStudioDefaultPreview)) as? [String: Any])
+    XCTAssertEqual(previewRequest as NSDictionary,
+      ["schemaVersion": 1, "action": "lmstudio-default-preview"] as NSDictionary)
+    XCTAssertThrowsError(try actionRequest(.lmStudioDefaultApply, confirmed: true))
+    XCTAssertThrowsError(try actionRequest(.lmStudioDefaultApply, confirmed: false, previewToken: token))
+    XCTAssertThrowsError(try actionRequest(.lmStudioDefaultApply, confirmed: true,
+      previewToken: String(repeating: "C", count: 64)))
+    let request = try XCTUnwrap(JSONSerialization.jsonObject(with:
+      actionRequest(.lmStudioDefaultApply, confirmed: true, previewToken: token)) as? [String: Any])
+    XCTAssertEqual(Set(request.keys), Set(["schemaVersion", "action", "confirmation", "previewToken"]))
+    XCTAssertEqual(request["confirmation"] as? [String: Bool], ["enableBundledLmStudio": true])
+    XCTAssertEqual(request["previewToken"] as? String, token)
+  }
+
+  func testLMStudioApplyRequiresExactCompletionReceiptAndRejectsUnknownActions() throws {
+    let completion: [String: Any] = [
+      "action": "lmstudio-default-apply", "status": "applied", "updated": true,
+      "restartRequired": true, "certificationIncomplete": false, "version": "0.30.0",
+    ]
+    let result = try CompanionResult.decode(JSONSerialization.data(withJSONObject: [
+      "schemaVersion": 1, "ok": true, "code": "COMPLETE", "data": completion,
+    ]))
+    XCTAssertEqual(result.lmStudioDefaultApply?.status, "applied")
+    XCTAssertTrue(try XCTUnwrap(result.lmStudioDefaultApply?.restartRequired))
+    XCTAssertEqual(result.lmStudioDefaultApply?.version, "0.30.0")
+
+    for changes in [
+      ["status": "ready"], ["updated": false], ["restartRequired": false],
+      ["version": "0.30.0/private"], ["model": "secret-model"],
+      ["version": NSNull()], ["certificationIncomplete": NSNull()],
+      ["action": "future-provider-apply"],
+    ] as [[String: Any]] {
+      var invalid = completion
+      invalid.merge(changes) { _, new in new }
+      XCTAssertThrowsError(try CompanionResult.decode(JSONSerialization.data(withJSONObject: [
+        "schemaVersion": 1, "ok": true, "code": "COMPLETE", "data": invalid,
+      ])))
+    }
+    for field in ["action", "status", "updated", "restartRequired"] {
+      var invalid = completion
+      invalid.removeValue(forKey: field)
+      XCTAssertThrowsError(try CompanionResult.decode(JSONSerialization.data(withJSONObject: [
+        "schemaVersion": 1, "ok": true, "code": "COMPLETE", "data": invalid,
+      ])), "Missing \(field)")
+    }
+    XCTAssertThrowsError(try CompanionResult.decode(Data(
+      #"{"schemaVersion":1,"ok":true,"code":"COMPLETE","data":{"action":"future-action"}}"#.utf8)))
+  }
+
   func testRecoveryConfirmationCannotBeImplicitOrReused() throws {
-    XCTAssertThrowsError(try actionRequest(.recover))
-    let data = try actionRequest(.recover, confirmed: true)
-    let request = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
-    XCTAssertEqual(request["action"] as? String, "recover")
-    XCTAssertEqual(request["confirmation"] as? [String: Bool], ["quitCodexTwice": true, "interruptTasks": true, "invalidateCompaction": true])
-    XCTAssertFalse(String(decoding: data, as: UTF8.self).contains("FULL"))
-    XCTAssertThrowsError(try actionRequest(.recover))
+    for action in [CompanionAction.recover, .fullRefresh] {
+      XCTAssertThrowsError(try actionRequest(action))
+      let data = try actionRequest(action, confirmed: true)
+      let request = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+      XCTAssertEqual(request["action"] as? String, action.rawValue)
+      XCTAssertEqual(request["confirmation"] as? [String: Bool], ["quitCodexTwice": true, "interruptTasks": true, "invalidateCompaction": true])
+      XCTAssertFalse(String(decoding: data, as: UTF8.self).contains("FULL"))
+      XCTAssertThrowsError(try actionRequest(action))
+    }
+    XCTAssertEqual(CompanionAction.fullRefresh.label, "Full refresh…")
+    XCTAssertEqual(CompanionAction.fullRefresh.timeout, 600)
+  }
+
+  func testCurrentSchemaAcceptsExplicitFullRefreshAction() throws {
+    let value = try CompanionSnapshot.decode(snapshot(["actions": ["refresh", "full-refresh"]]))
+    XCTAssertEqual(value.actions, [.refresh, .fullRefresh])
+  }
+
+  func testRecoveryStartReceiptRequiresExactSafeFields() throws {
+    let operationId = "1804ad9d-4eb2-43f4-95e5-a3b5a1f4b9da"
+    for action in ["full-refresh", "recover"] {
+      let fields: [String: Any] = [
+        "action": action, "started": true, "resumed": false, "operationId": operationId,
+      ]
+      let encoded = try JSONSerialization.data(withJSONObject: [
+        "schemaVersion": 1, "ok": true, "code": "COMPLETE", "data": fields,
+      ])
+      let result = try CompanionResult.decode(encoded)
+      XCTAssertEqual(result.recoveryStart?.action, action)
+      XCTAssertEqual(result.recoveryStart?.operationId, operationId)
+      for changes in [
+        ["started": false], ["started": "true"], ["resumed": "false"],
+        ["operationId": "private-path"], ["action": "refresh"], ["unexpected": "/private/canary"],
+      ] as [[String: Any]] {
+        var invalid = fields
+        invalid.merge(changes) { _, value in value }
+        let data = try JSONSerialization.data(withJSONObject: [
+          "schemaVersion": 1, "ok": true, "code": "COMPLETE", "data": invalid,
+        ])
+        XCTAssertThrowsError(try CompanionResult.decode(data), "\(action): \(changes)")
+      }
+      for field in fields.keys {
+        var missing = fields
+        missing.removeValue(forKey: field)
+        let data = try JSONSerialization.data(withJSONObject: [
+          "schemaVersion": 1, "ok": true, "code": "COMPLETE", "data": missing,
+        ])
+        XCTAssertThrowsError(try CompanionResult.decode(data), "\(action) missing \(field)")
+      }
+    }
   }
 
   func testNativeUninstallRequiresItsCapabilityBoundPreviewAndExactConsent() throws {

@@ -10,6 +10,7 @@ import { runCompanionCli } from "../src/companion-cli.mjs";
 import { COMPANION_ACTIONS } from "../src/companion-control.mjs";
 import { runPickerMuxCompanion } from "../src/cli.mjs";
 import { ConfigManagerError } from "../src/config-manager.mjs";
+import { BUNDLED_LMSTUDIO_SETUP_CHANGES } from "../src/native-only-setup.mjs";
 import { createUsageStore } from "../src/usage-store.mjs";
 
 const request = (action, additional = {}) => ({ schemaVersion: 1, action, ...additional });
@@ -178,29 +179,204 @@ test("native uninstall maps bounded causes without exposing errors or flattening
 });
 
 test("read-only, setup and independent recovery use their own transactional entry points", async () => {
-  for (const action of ["diagnose", "update-check", "configuration-preview", "update", "configuration-apply", "recover"]) {
+  for (const action of ["diagnose", "update-check", "configuration-preview", "lmstudio-default-preview", "update", "configuration-apply", "lmstudio-default-apply", "full-refresh", "recover"]) {
     const { calls, options } = fixture();
-    const additional = action === "recover" ? { confirmation: consent } : action === "configuration-apply"
-      ? { confirmation: { replaceIntegration: true }, previewToken: "a".repeat(64) } : {};
+    const additional = ["full-refresh", "recover"].includes(action) ? { confirmation: consent } : action === "configuration-apply"
+      ? { confirmation: { replaceIntegration: true }, previewToken: "a".repeat(64) } : action === "lmstudio-default-apply"
+        ? { confirmation: { enableBundledLmStudio: true }, previewToken: "a".repeat(64) } : {};
     await executeCompanionAction(request(action, additional), options);
     assert.equal(calls.includes("lock"), false);
-    assert.equal(calls.includes("distribution"), ["update", "recover"].includes(action));
+    assert.equal(calls.includes("distribution"), ["lmstudio-default-preview", "lmstudio-default-apply", "update", "full-refresh", "recover"].includes(action));
     assert.equal(calls.at(-1), action);
+  }
+});
+
+test("full refresh may schedule its graceful worker while Codex is running", async () => {
+  const { calls, options } = fixture({ snapshot: { desktop: { status: "running" } } });
+  await executeCompanionAction(request("full-refresh", { confirmation: consent }), options);
+  assert.deepEqual(calls, ["status", "distribution", "full-refresh"]);
+});
+
+test("stale full-refresh UI state cannot bypass current ownership or recovery guards", async () => {
+  for (const [snapshot, code] of [
+    [{ recovery: { status: "pending" } }, "RECOVERY_PENDING"],
+    [{ managedConfig: { status: "modified" }, desktop: { status: "running" } }, "CONFIGURATION_CONFLICT"],
+    [{ accountCache: { status: "refresh-required" } }, "ACCOUNT_CACHE_REFRESH_REQUIRED"],
+    [{ compatibility: { status: "update-required" } }, "UPDATE_REQUIRED"],
+  ]) {
+    const { calls, options } = fixture({ snapshot: { ...snapshot, actions: ["diagnose"] } });
+    await assert.rejects(
+      executeCompanionAction(request("full-refresh", { confirmation: consent }), options),
+      { code },
+    );
+    assert.equal(calls.includes("distribution"), false);
+    assert.equal(calls.includes("full-refresh"), false);
+  }
+});
+
+test("companion full refresh delegates to the receipt-bound scheduler without an outer lock", async () => {
+  const paths = { installDirectory: "/private/codex/model-bridge" };
+  const distributionPaths = { applicationDirectory: "/private/pickermux" };
+  const fullRefreshPaths = { checkpointPath: "/private/pickermux/full-refresh/state.json" };
+  const codexPath = "/Applications/Codex.app/Contents/MacOS/Codex";
+  const sourceRoot = "/verified/versions/0.9.0";
+  const operationId = "1804ad9d-4eb2-43f4-95e5-a3b5a1f4b9da";
+  let scheduled;
+  let output = "";
+  const result = await runPickerMuxCompanion(["run"], {
+    paths,
+    distributionPaths,
+    fullRefreshPaths,
+    codexPath,
+    sourceRoot,
+    input: Readable.from([JSON.stringify(request("full-refresh", { confirmation: consent }))]),
+    output: { write: (value) => { output += value; } },
+    progressOutput: { write: () => {} },
+    statusImpl: async () => fixture({ snapshot: { desktop: { status: "running" } } }).snapshot,
+    validateDistributionImpl: async ({ paths: actualPaths }) => {
+      assert.equal(actualPaths, distributionPaths);
+      return { installed: true, activeDirectory: sourceRoot };
+    },
+    withLockImpl: async () => assert.fail("the scheduler owns the complete lifecycle lock"),
+    scheduleFullRefreshImpl: async (options) => {
+      scheduled = options;
+      return { started: true, resumed: false, operationId };
+    },
+  });
+  assert.deepEqual(scheduled, { paths, distributionPaths, fullRefreshPaths, codexPath, sourceRoot });
+  assert.deepEqual(JSON.parse(output), result);
+  assert.deepEqual(result.data, { action: "full-refresh", started: true, resumed: false, operationId });
+});
+
+test("bundled LM Studio apply passes only the preview-bound target into transactional setup", async () => {
+  const paths = { configPath: "/private/codex/config.toml", serviceConfigPath: "/private/codex/model-bridge/config.json" };
+  const distributionPaths = { applicationDirectory: "/private/pickermux" };
+  const sourceRoot = "/verified/versions/0.24.6";
+  const previewToken = "a".repeat(64);
+  const targetConfig = {
+    schemaVersion: 2,
+    bridge: { port: 5127, defaultModel: "gpt-5.6-sol", reasoningEffort: "high" },
+    providers: [{ id: "lmstudio", kind: "lmstudio-responses" }],
+  };
+  let previewCalls = 0;
+  let setupCalls = 0;
+  let output = "";
+  const result = await runPickerMuxCompanion(["run"], {
+    paths,
+    distributionPaths,
+    sourceRoot,
+    input: Readable.from([JSON.stringify(request("lmstudio-default-apply", {
+      confirmation: { enableBundledLmStudio: true }, previewToken,
+    }))]),
+    output: { write: (value) => { output += value; } },
+    progressOutput: { write: () => {} },
+    statusImpl: async () => fixture().snapshot,
+    validateDistributionImpl: async ({ paths: actualPaths }) => {
+      assert.equal(actualPaths, distributionPaths);
+      return { installed: true, activeDirectory: sourceRoot };
+    },
+    withLockImpl: async () => assert.fail("transactional setup owns the lifecycle lock"),
+    lmStudioDefaultPreviewImpl: async (options) => {
+      previewCalls += 1;
+      assert.deepEqual(options, { paths, sourceRoot });
+      return {
+        status: "native-only", canApply: true, requiresConfirmation: true,
+        changes: [...BUNDLED_LMSTUDIO_SETUP_CHANGES], previewToken,
+        bundledConfigPath: path.join(sourceRoot, "lmstudio-picker.config.json"),
+        installedConfigBytes: Buffer.from("native-only-config\n"),
+        targetConfig,
+      };
+    },
+    setupImpl: async (options) => {
+      setupCalls += 1;
+      assert.equal(options.sourceRoot, sourceRoot);
+      assert.equal(options.paths, paths);
+      assert.equal(options.distributionPaths, distributionPaths);
+      assert.equal(Object.hasOwn(options, "setupConfigPath"), false);
+      assert.equal(options.setupConfig, targetConfig);
+      assert.deepEqual(options.expectedServiceConfig, Buffer.from("native-only-config\n"));
+      assert.equal(options.setupConfig.bridge.port, 5127);
+      await options.configurationPreflightImpl();
+      return { version: "0.24.6", certification: { status: "complete" } };
+    },
+  });
+  assert.equal(previewCalls, 2);
+  assert.equal(setupCalls, 1);
+  assert.deepEqual(JSON.parse(output), result);
+  assert.deepEqual(result.data, {
+    action: "lmstudio-default-apply", updated: true, restartRequired: true,
+    certificationIncomplete: false, version: "0.24.6", status: "applied",
+  });
+  assert.equal(output.includes("lmstudio"), true);
+  assert.equal(output.includes("providers"), false);
+  assert.equal(output.includes("5127"), false);
+});
+
+test("bundled LM Studio apply rejects stale previews and concurrent installed-config drift", async () => {
+  const sourceRoot = "/verified/versions/0.24.6";
+  const requestedToken = "a".repeat(64);
+  const changedToken = "b".repeat(64);
+  const base = {
+    sourceRoot,
+    statusImpl: async () => fixture().snapshot,
+    validateDistributionImpl: async () => ({ installed: true, activeDirectory: sourceRoot }),
+    input: Readable.from([JSON.stringify(request("lmstudio-default-apply", {
+      confirmation: { enableBundledLmStudio: true }, previewToken: requestedToken,
+    }))]),
+    output: { write: () => {} },
+    progressOutput: { write: () => {} },
+  };
+  for (const concurrent of [false, true]) {
+    let previewCalls = 0;
+    let setupCalls = 0;
+    const result = await runPickerMuxCompanion(["run"], {
+      ...base,
+      input: Readable.from([JSON.stringify(request("lmstudio-default-apply", {
+        confirmation: { enableBundledLmStudio: true }, previewToken: requestedToken,
+      }))]),
+      lmStudioDefaultPreviewImpl: async () => {
+        previewCalls += 1;
+        return {
+          status: "native-only", canApply: true, requiresConfirmation: true,
+          changes: [...BUNDLED_LMSTUDIO_SETUP_CHANGES],
+          previewToken: concurrent && previewCalls === 1 ? requestedToken : changedToken,
+          bundledConfigPath: path.join(sourceRoot, "lmstudio-picker.config.json"),
+          installedConfigBytes: Buffer.from("native-only-config\n"),
+          targetConfig: { schemaVersion: 2, bridge: {}, providers: [] },
+        };
+      },
+      setupImpl: async ({ configurationPreflightImpl }) => {
+        setupCalls += 1;
+        await configurationPreflightImpl();
+        assert.fail("configuration drift must stop setup before mutation");
+      },
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.code, "CONFIGURATION_CONFLICT");
+    assert.equal(setupCalls, concurrent ? 1 : 0);
+    assert.equal(previewCalls, concurrent ? 2 : 1);
   }
 });
 
 test("no mutation may use a bundled or different receipt-active distribution", async () => {
   for (const distribution of [{ installed: false }, { installed: true, activeDirectory: "/foreign/runtime" }, { installed: true, activeDirectory: secret }]) {
-    const { calls, options } = fixture({ options: { validateDistributionImpl: async () => distribution } });
-    await assert.rejects(executeCompanionAction(request("refresh"), options), { code: "DISTRIBUTION_INVALID" });
-    assert.equal(calls.includes("refresh"), false);
+    for (const [action, additional] of [
+      ["refresh", {}],
+      ["lmstudio-default-preview", {}],
+      ["lmstudio-default-apply", { confirmation: { enableBundledLmStudio: true }, previewToken: "a".repeat(64) }],
+    ]) {
+      const { calls, options } = fixture({ options: { validateDistributionImpl: async () => distribution } });
+      await assert.rejects(executeCompanionAction(request(action, additional), options), { code: "DISTRIBUTION_INVALID" });
+      assert.equal(calls.includes(action), false);
+    }
   }
 });
 
-test("stale GUI state cannot authorize refresh or certification while Codex is running", async () => {
-  for (const action of ["refresh", "certify", "update", "configuration-apply"]) {
+test("stale GUI state cannot authorize refresh, provider setup or certification while Codex is running", async () => {
+  for (const action of ["refresh", "certify", "update", "configuration-apply", "lmstudio-default-preview", "lmstudio-default-apply"]) {
     const { calls, options } = fixture({ snapshot: { desktop: { status: "running" } } });
-    const additional = action === "configuration-apply" ? { confirmation: { replaceIntegration: true }, previewToken: "a".repeat(64) } : {};
+    const additional = action === "configuration-apply" ? { confirmation: { replaceIntegration: true }, previewToken: "a".repeat(64) } :
+      action === "lmstudio-default-apply" ? { confirmation: { enableBundledLmStudio: true }, previewToken: "a".repeat(64) } : {};
     await assert.rejects(executeCompanionAction(request(action, additional), options), { code: "CODEX_RUNNING" });
     assert.equal(calls.includes(action), false);
   }
@@ -220,10 +396,13 @@ test("pending recovery, configuration edits and unknown state block unavailable 
   }
 });
 
-test("recovery never acquires authority without all native confirmation fields", async () => {
+test("full refresh and recovery never acquire authority without all native confirmation fields", async () => {
+  for (const action of ["full-refresh", "recover"]) {
+    const { calls, options } = fixture();
+    await assert.rejects(executeCompanionAction(request(action, { confirmation: { ...consent, interruptTasks: false } }), options), { code: "CONFIRMATION_REQUIRED" });
+    assert.deepEqual(calls, []);
+  }
   const { calls, options } = fixture();
-  await assert.rejects(executeCompanionAction(request("recover", { confirmation: { ...consent, interruptTasks: false } }), options), { code: "CONFIRMATION_REQUIRED" });
-  assert.deepEqual(calls, []);
   await assert.rejects(executeCompanionAction('{"schemaVersion":1,"action":"recover","action":"refresh"}', options), { code: "INVALID_REQUEST" });
   assert.deepEqual(calls, []);
 });

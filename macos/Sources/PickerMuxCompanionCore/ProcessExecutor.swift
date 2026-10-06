@@ -216,6 +216,11 @@ public struct PickerMuxClient {
     if [.uninstallPreview, .uninstall].contains(action) {
       guard !selected.bundled, selected.snapshot.supportsNativeUninstall else { throw CompanionFailure.incompatibleProtocol }
     }
+    if [.lmStudioDefaultPreview, .lmStudioDefaultApply].contains(action) {
+      guard !selected.bundled, selected.snapshot.supportsNativeOnlyLMStudioSetup,
+            selected.snapshot.providerConfiguration?.status == .nativeOnly
+      else { throw CompanionFailure.incompatibleProtocol }
+    }
     let input = try actionRequest(action, confirmed: confirmed, previewToken: previewToken)
     let result = try await execute(selected.invocation, arguments: ["companion", "run"], input: input, timeout: action.timeout, runtime: selected.runtime)
     let envelope = try CompanionResult.decode(result.stdout)
@@ -223,6 +228,15 @@ public struct PickerMuxClient {
     if envelope.ok && action == .uninstallPreview && envelope.uninstallPreview == nil { throw CompanionFailure.incompatibleProtocol }
     if envelope.ok && action == .uninstall && envelope.uninstallCompletion == nil { throw CompanionFailure.incompatibleProtocol }
     if envelope.ok && action == .updateCheck && envelope.update == nil { throw CompanionFailure.incompatibleProtocol }
+    if envelope.ok && action == .lmStudioDefaultPreview && envelope.lmStudioDefaultPreview == nil {
+      throw CompanionFailure.incompatibleProtocol
+    }
+    if envelope.ok && action == .lmStudioDefaultApply && envelope.lmStudioDefaultApply == nil {
+      throw CompanionFailure.incompatibleProtocol
+    }
+    if envelope.ok && [.fullRefresh, .recover].contains(action) && envelope.recoveryStart?.action != action.rawValue {
+      throw CompanionFailure.incompatibleProtocol
+    }
     return envelope
   }
 

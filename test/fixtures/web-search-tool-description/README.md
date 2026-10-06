@@ -6,21 +6,16 @@ commit `36f0dbe796d9bb1a18a0fc0640ed08b3e1d54564`.
 
 - Git blob SHA-1: `77be9a0a03e6e2e2760651e903ead2dce9996a57`.
 - File SHA-256: `1f3879b44690eb7aad9ba97351acda16c4d0c26847bcb4af2964d5989404407e`.
-- UTF-8 text, LF line endings, with the original final newline.
-- Copyright 2025 OpenAI; licensed under Apache License 2.0, included in
-  [LICENSE](LICENSE). The applicable upstream NOTICE attribution is
-  "OpenAI Codex, Copyright 2025 OpenAI". The upstream Ratatui notice concerns
-  unrelated code, not this tool-description document.
+- UTF-8/LF, original final newline; Apache-2.0 [LICENSE](LICENSE).
+- NOTICE: "OpenAI Codex, Copyright 2025 OpenAI". The upstream Ratatui notice
+  covers unrelated code.
 
-The compact description in `src/web-search-tool-description.mjs` is a
-PickerMux adaptation of this document. The module includes its attribution,
-modification notice, and the full upstream license so distributions that omit
-test fixtures still carry the required notice and license.
+`src/web-search-tool-description.mjs` adapts this document and carries its
+attribution, modification notice, and full license in runtime distributions.
 
-Only the exact `web.run` identity and the SHA-256-pinned source text are
-eligible. A changed policy, whitespace variant, different tool identity, or
-unknown description variant is retained unchanged. The function neither edits tool
-schemas nor grants tools or changes their loading policy.
+Only the exact `web.run` identity and pinned bytes qualify. Changed text,
+whitespace, identities, or unknown variants stay intact. Compaction does not
+change schemas, tool grants, or loading policy.
 
 ## Policy review
 
@@ -35,5 +30,4 @@ schemas nor grants tools or changes their loading policy.
 | Copyright | No full articles/long passages/extensive quotes; short excerpts then paraphrases for verbatim requests; 25-word non-lyrical and 10-word lyric limits; exact linked/identified Reddit blockquote exception. |
 | Source word limits | Per-source maximum of N attributed words, default 200; count non-contiguous derived text; relevant source limits add; Reddit exception with attribution and link. |
 
-This fixture is public documentation only. It contains no account data,
-configuration snapshots, credentials, or captured user conversation.
+This public fixture contains no private data or captured conversation.

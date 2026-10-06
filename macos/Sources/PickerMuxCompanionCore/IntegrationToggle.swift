@@ -15,7 +15,7 @@ public struct IntegrationToggleState {
       needsSetupUpgrade = false
       canReviewSetup = false
       label = "Checking installation"
-      guidance = "Check status or open Help before enabling PickerMux."
+      guidance = "Check status in Config or open Help before enabling PickerMux."
       return
     }
     let active = snapshot.integration.status == "pickermux" &&
@@ -42,7 +42,7 @@ public struct IntegrationToggleState {
       guidance = "Review and complete the pending repair before changing the integration."
     } else if !knownInstallation || (!active && !inactive) {
       label = "Integration needs review"
-      guidance = "The current integration could not be verified. Check status and open Help before changing it."
+      guidance = "The current integration could not be verified. Check status in Config and open Help before changing it."
     } else if active {
       label = "Enabled in Codex"
       if needsSetupUpgrade {
@@ -50,17 +50,17 @@ public struct IntegrationToggleState {
           "Complete Codex setup and fully quit it before updating the installed bridge for this app."
       } else {
         guidance = canChange ? "Turn off, then reopen Codex to load its native picker without PickerMux models. The app and PickerMux settings stay installed." :
-          "Fully quit Codex and check status before turning PickerMux off."
+          "Fully quit Codex and check status in Config before turning PickerMux off."
       }
     } else if snapshot.desktop.status == "unknown" {
       label = "Codex state unavailable"
-      guidance = "Check status and open Help before changing the integration."
+      guidance = "Check status in Config and open Help before changing the integration."
     } else if !closed {
       label = "Not enabled in Codex"
       guidance = "Fully quit Codex with Command-Q before installing or activating PickerMux."
     } else if !canChange && !["ready", "valid"].contains(snapshot.accountCache.status) {
       label = "Codex setup required"
-      guidance = "Open Codex while signed in and wait for its native model picker to load. Fully quit Codex, then check status again."
+      guidance = "Open Codex while signed in and wait for its native model picker to load. Fully quit Codex, then check status in Config again."
     } else if snapshot.integration.status == "ollama" || snapshot.integration.status == "foreign" {
       label = "Another integration is active"
       guidance = "Turning on installs PickerMux and replaces the current picker integration after a verified backup. Setup may send certification test prompts to configured provider models."
@@ -118,7 +118,7 @@ public func changePickerMuxIntegration(_ enabled: Bool, reviewInstalledSetup: Bo
   guard upgrading ? state.canReviewSetup : state.canChange else { return .blocked }
   if !enabled {
     let review = IntegrationReview(title: "Turn off PickerMux in Codex?",
-      text: "PickerMux will stop its bridge and restore the native Codex picker. The app, settings, certifications and verified backups stay installed so you can turn it on again. Use complete uninstall in Settings to remove the retained PickerMux data. Reopen Codex afterwards. Historical chats remain readable.",
+      text: "PickerMux will stop its bridge and restore the native Codex picker. The app, configuration, certifications and verified backups stay installed so you can turn it on again. Use complete uninstall in Config to remove the retained PickerMux data. Reopen Codex afterwards. Historical chats remain readable.",
       button: "Turn off PickerMux", preview: nil)
     if consent == .review {
       guard await confirm(review) else { return .cancelled }

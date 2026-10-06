@@ -1,24 +1,19 @@
 # Public Codex fixtures
 
-The [web-search-tool-description](web-search-tool-description/README.md)
-subdirectory contains an exact public `web.run` description, source and hash
-provenance, the Apache-2.0 license, and the compact description's policy review.
-Unlike the semantic-kind fixtures below, only its exact SHA-256-pinned text is
-eligible for description compaction.
+[web-search-tool-description](web-search-tool-description/README.md) contains
+the exact public `web.run` description, hashes, Apache-2.0 license, and policy
+review. Only that pinned text authorizes description compaction.
 
 ## Representative Codex 0.151 context fixtures
 
-These files contain only generated bootstrap payloads used to exercise
-PickerMux's prompt-compaction trust boundary across wording changes. They
-contain no user messages, account identifiers, capability URLs, or local
-workspace paths. Their version identifies the observed source; the bytes are
-regression inputs, not omission-authorizing hashes.
+Generated bootstrap payloads test prompt compaction across wording changes.
+They contain no user messages, account identifiers, capability URLs, or local
+paths. Version labels identify their source; their hashes do not authorize
+omission.
 
-`codex-memory-read-path-0.151.md` comes from the Apache-2.0-licensed
-`openai/codex` tag `rust-v0.151.0-alpha.7.2`, commit
-`f70e26c29ccb731e22d1104de550b1b9594d7070`. The desktop-app,
-thread-coordination, and root/subagent multi-agent policy fixtures are isolated
-generated payloads observed with that Codex 0.151 Desktop contract. Tests use
-them to prove that broad `generic.developer_instructions` remain intact while
-private semantic kinds and exact wrapper envelopes can be compacted without
-depending on version-specific prose.
+`codex-memory-read-path-0.151.md` comes from Apache-2.0-licensed `openai/codex`,
+tag `rust-v0.151.0-alpha.7.2`, commit
+`f70e26c29ccb731e22d1104de550b1b9594d7070`. Desktop-app, thread-coordination,
+and root/subagent policy fixtures reflect that Desktop contract. Tests preserve
+generic developer instructions while compacting only verified semantic kinds
+and exact wrapper envelopes.

@@ -15,14 +15,15 @@ is needed.
 The optional menu-bar app requires macOS 13+ and Node.js 22.15.0+ installed in
 `/opt/homebrew/bin`, `/usr/local/bin`, or `/usr/bin`. A Node runtime added only
 by a shell profile is unavailable to the app's narrow process environment.
-The panel keeps **Retry status**, **Help…**, **Settings…**, and **Quit** visible
-even before a backend status is available. **Help…** explains the supported
-locations and links to the official Node.js downloads and this guide.
+The panel keeps **Config…**, **Help…**, and **Quit** visible even before a
+backend status is available. Use **Config → Check status** to retry. **Help…**
+explains the supported locations and links to the official Node.js downloads
+and this guide.
 
 If Node.js is missing or too old, install a supported runtime from
 [Node.js downloads](https://nodejs.org/en/download) or through the existing
-Homebrew installation, then choose **Retry status**. The app does not start a
-terminal or install Node.js automatically. An installed runtime that cannot
+Homebrew installation, then choose **Config → Check status**. The app does not
+start a terminal or install Node.js automatically. An installed runtime that cannot
 be verified needs review of its installation rather than repeated setup.
 Keep credentials out of shell workarounds and app launch arguments.
 
@@ -85,8 +86,8 @@ invalid response, check that the configured endpoint serves a supported model
 API; setup stops rather than guessing a schema. For denied access, review the
 app's access before retrying; do not disable system protections.
 
-The displayed error records the last setup attempt. **Check status** checks
-the installation and Codex state without testing provider connectivity. After
+The displayed error records the last setup attempt. **Config → Check status**
+checks the installation and Codex state without testing provider connectivity. After
 starting the server or fixing the reported prerequisite, turn the switch on
 again to retry setup. The 0.9.3 panel uses larger primary text and controls.
 
@@ -123,7 +124,7 @@ allowance for model and reasoning selection changes. It preserves the original
 ordinary or native-restoring uninstall. Malformed, duplicate, or dotted
 assignments and other managed routing edits still block changes. Updating the
 source checkout or replacing only the app does not update the installed backend;
-review **Settings → Update installed backend…** in the matching released app.
+review **Config → Update installed backend…** in the matching current app.
 
 For an installed release affected only by this extra line, the narrow manual
 workaround is:
@@ -136,7 +137,7 @@ workaround is:
    value and any inline comment, immediately before the root begin marker.
    Keep it in the global TOML root, before the first table. Do not copy the line
    or place it below a provider table, which would change its scope.
-4. Save and choose **Check status** in PickerMux before reopening Codex.
+4. Save and choose **Config → Check status** in PickerMux before reopening Codex.
 
 This workaround requires no reinstall, purge, receipt edit, or change to
 provider settings when the extra `service_tier` line is the sole ownership
@@ -147,18 +148,17 @@ issue instead of moving further settings or bypassing the ownership check.
 ## Companion buttons appear unresponsive
 
 Use the 0.9.2 companion or newer. Earlier builds could drop a manual status
-request during polling and open settings or modal alerts from the transient
+request during polling and open configuration or modal alerts from the transient
 menu panel. The corrected app queues manual checks, always shows their result
-time, and opens Settings and Help in their own reusable windows. Enabling the
+time, and opens Config and Help in their own reusable windows. Enabling the
 top switch installs automatically without the old second popup. Recovery and
 software updates use a separate asynchronous confirmation window.
 
 A busy indicator and elapsed time mean the requested operation is still
 running. Installation can take several minutes while loaded models are
 certified. If a fixed model-server error appears, start the configured provider
-and load a model, then retry; reopening Settings or clicking status cannot
-satisfy that setup prerequisite. Update checks and their results are in
-Settings.
+and load a model, then retry; reopening Config or checking status cannot
+satisfy that setup prerequisite. Update checks and their results are in Config.
 
 Modified managed blocks, ambiguous root assignments, unknown ownership state,
 or an interrupted recovery prevent automatic switching. Keep the original
@@ -180,7 +180,7 @@ state. The optional automatic refresh runs only once after an observed full
 close while the installation is ready; it does not resolve a cache/version or
 configuration conflict.
 
-Use **Check status** or the safe structured CLI snapshot:
+Use **Config → Check status** or the safe structured CLI snapshot:
 
 ```bash
 pickermux companion status
@@ -199,7 +199,7 @@ execute the refused payload or bypass checksums. `UPDATE_UNSUPPORTED` requires
 review of the runtime or available release package. Software updates do not
 automatically replace the running app bundle.
 `DOWNLOAD_REQUIRED` means the new release is distributed as a DMG. Download
-and replace the app, then review **Update installed backend** in Settings.
+and replace the app, then review **Update installed backend** in Config.
 An older installed CLI can remain the source for safe deactivation and removal.
 
 ### The app is newer but the installed backend still uses the old version
@@ -214,13 +214,13 @@ Since 0.22.2, the companion presents that review automatically once a successful
 status check confirms an active, validated integration with an older backend,
 Codex fully closed, ready cache and compatibility checks, no pending recovery,
 and no operation or confirmation in progress. The menu's version guidance and
-Settings action remain available while Codex runs. Quit Codex normally when
+Config action remain available while Codex runs. Quit Codex normally when
 you are ready; closing a window is insufficient. Waiting for Codex to close
 does not consume the automatic offer.
 
 After cancellation or a failed upgrade, the automatic popup does not repeat for
 the same app/backend version pair in that app process. Address the reported
-problem and retry manually through Settings. The app does not automatically
+problem and retry manually through Config. The app does not automatically
 activate an inactive, foreign, or unsafe integration, and it does not quit
 Codex to make an upgrade possible. Confirming the review once uses the same
 pinned setup transaction; no second confirmation is required. The 0.22.1 app
@@ -246,7 +246,7 @@ verified, the backend purge has not run: the integration and CLI are retained.
 Companion 0.9.6 fixes the earlier false failure for an already-absent login
 registration. It waits for macOS unregister completion and still stops on
 permission, signature or registration errors. Install the corrected app and
-retry **Settings → Remove PickerMux completely…** with Codex fully closed.
+retry **Config → Remove PickerMux completely…** with Codex fully closed.
 The installed CLI must support native removal (0.9.5 or newer).
 
 Enable login startup and notifications only through the app's settings.
@@ -654,8 +654,13 @@ the verified client checkpoints for subsequent sessions.
 
 ## Full account-cache refresh stops before completion
 
-`refresh --full` has bounded waits and fails closed. If a valid exact-version
-cache existed at the start, Codex must produce another valid snapshot with a
+**Config → Full refresh…** and `refresh --full` use the same receipt-bound
+helper with bounded waits and fail closed. The Config control remains visible;
+it is enabled for a verified active installation and otherwise explains why it
+is disabled. It can be enabled while Codex is running because the helper
+performs both graceful quits after fresh confirmation; it cannot choose a
+provider, model, executable, configuration path, or force option. If a valid
+exact-version cache existed at the start, Codex must produce another valid snapshot with a
 later `fetched_at`. If the original cache was missing or belonged to another
 client version, Codex must produce a newly valid snapshot for the exact current
 client. A slow network, expired sign-in, unchanged account response, refused
@@ -685,9 +690,81 @@ checkpoint is pending. The original ownership receipt and uninstall baseline
 remain present. A `suspension-conflict` means the temporary native config or
 receipt changed; preserve those files and review the conflict before retrying.
 Configuration migration is unavailable during recovery. The companion's
-**Repair after a Codex update…** resumes through the same helper after renewed
+**Config → Full refresh…** resumes through the same helper after renewed
 confirmation; the capability replacement still invalidates earlier encrypted
 compaction continuations.
+
+## Only native models appear after the update
+
+An upgrade intentionally reuses PickerMux's installed private service
+configuration. If that configuration contains the valid explicit
+`"providers": []` state, preserving it leaves PickerMux native-only. This is the
+root cause of an otherwise healthy installation showing no external model: the
+Codex model picker has no external route to list, and the PickerMux menu has no
+provider usage to show. **Check status**, **Check installation**, Full refresh,
+and token reset do not add a provider.
+
+PickerMux 0.24.6 offers a bounded recovery for exactly this state:
+
+1. Fully quit Codex with **Command-Q**.
+2. Start the LM Studio server and load at least one LLM.
+3. Open **Config → Enable LM Studio models…**.
+4. Review **Enable LM Studio models?**, then choose **Enable LM Studio**.
+5. Wait for transactional setup and certification to finish, reopen Codex, and
+   select the namespaced LM Studio model in the Codex model picker.
+
+The preview comes from the receipt-active installed release and retains bridge
+settings, unrelated user settings, and historical chats. It accepts no custom
+path/provider/model and never overwrites a configuration that already contains
+an external provider. Cancellation or an activation failure leaves the prior
+native-only state recoverable. For a custom provider, keep using the explicit
+CLI configuration workflow instead of the bundled LM Studio action.
+
+The compact PickerMux menu shows providers and completed-request usage, not the
+individual model inventory. **LM Studio** usage appears only after a request
+through that provider completes with valid usage. **Output speed** appears only
+when a validated provider-specific measurement matches the latest request. The
+reset control stays visible in Config when unavailable and shows the reason it
+is disabled; resetting totals cannot create a provider or model.
+
+## Reset accumulated counts is disabled although usage is visible
+
+The 0.24.6 companion could classify an otherwise valid receipt-owned installed
+distribution as unavailable when that distribution contained PickerMux's
+reviewed optional `runtime/mlx` files. Status then came from the read-only
+bundled fallback: validated durable counts could still be displayed, but that
+source was intentionally not allowed to reset another installation's usage
+store, so **Reset accumulated counts…** stayed disabled.
+
+PickerMux 0.30.0 fixes the installed-launcher validation without granting the
+fallback new authority. The exact four reviewed runtime files are accepted only
+under private real directories, as private single-link regular files, and only
+when their names and bytes match the receipt-bound distribution digest. Missing,
+extra, modified, linked, or shared runtime state remains unsafe and cannot be
+made resettable by the GUI.
+
+With version 0.30.0 or newer installed, open **Config** and choose
+**Check status**. When the receipt-owned backend and durable usage store are
+valid, **Config → Token usage → Reset accumulated counts…** is enabled.
+Confirming it clears only accumulated counts and retains the last model request.
+If Config reports an older backend, fully quit Codex and use **Update installed
+backend…** before retrying. If the reason names invalid installation or usage
+state, keep the files unchanged for review; do not edit the receipt, runtime,
+or usage JSON to bypass the check.
+
+## Kolibri is absent from Token usage
+
+This is intentional in PickerMux 0.24.5. The compact menu continues to show
+general token analysis for visible providers; provider ID `lmstudio` appears as
+**LM Studio**. Provider ID `kolibri` is filtered from every companion usage and
+performance row. The backend still validates and retains its bounded private
+Kolibri token telemetry, and still publishes volatile performance data when
+available. The filter does not delete the durable ledger, stop measurement, or
+change routing, certification, model availability, or lifecycle actions.
+
+If every expected non-Kolibri provider is also absent, make a completed request
+through PickerMux and use **Config → Check status**. Missing, interrupted, or
+invalid upstream usage remains unavailable rather than being guessed as zero.
 
 ## LM Studio was stopped and local models disappeared
 
@@ -1215,7 +1292,7 @@ and open an issue describing the compatibility problem instead.
 ## Complete CLI removal is refused
 
 For full removal with native Codex defaults, use **Remove PickerMux completely…**
-in companion Settings, or `pickermux uninstall --purge --restore-native` after
+in companion Config, or `pickermux uninstall --purge --restore-native` after
 fully quitting Codex. Unlike default uninstall, this explicit mode does not
 reactivate a gateway/catalog that preceded PickerMux. A fresh removal preview
 and ownership checks remain required; foreign configuration is never deleted
