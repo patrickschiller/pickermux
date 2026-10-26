@@ -220,6 +220,33 @@ JSON/streamed functions, tool results, and long-context behavior. A base pass
 grants Direct fidelity, bound to the exact provider, model, context, capability
 metadata, and Codex client version.
 
+The revised LM Studio tool-result probe supplies the complete conversation,
+including the validated function call and its matching result, as Codex does.
+It establishes the continuation rule before requesting the function call and
+requires an exact fresh marker supplied only in the tool result. An ordinary
+acknowledgement, extra text, or another tool invocation fails the gate. The
+probe does not interpret textual `<tool_call>` tags as executable calls.
+
+When LM Studio's discovered metadata offers reasoning but no `off` or `none`
+option, every base probe has a fixed 2,048-token output budget, including text,
+streaming, and long context. Other models retain their existing budgets. This
+allows room for mandatory reasoning; it changes neither the configured
+reasoning mode nor the success criteria, and adds no retries.
+
+The LM Studio long-context probe uses numbered records marked as inert test
+data instead of repeating one token thousands of times. It still requires the
+exact final marker and provider-reported input-token usage at or above the same
+model-derived minimum. This avoids turning the check into an analysis of
+pathological repetition without reducing its measured context requirement.
+
+This LM Studio probe revision participates in certification fingerprints.
+After upgrading to a backend containing the revision, earlier LM Studio passes
+become stale and require fresh certification. The receipt-store schema stays
+at version 1, preserving pending recovery state. Generic Responses and MLX
+probe contracts and fingerprints are unchanged. Editing this source checkout
+does not update the installed backend; use the normal reviewed backend upgrade
+before retesting.
+
 For LM Studio, an additional tool-search probe can grant Efficient Fidelity.
 If that additive evidence fails or becomes stale while the base receipt remains
 valid, the model retains Direct fidelity. Missing or stale base evidence means
@@ -233,6 +260,22 @@ Setup certifies models missing a valid base receipt. To retest manually, use
 pickermux certify --model lmstudio/example-model
 pickermux certify --all
 ```
+
+If a model passes the base matrix but its optional deferred-tool checks are
+unreliable, request Direct fidelity explicitly:
+
+```bash
+pickermux certify --model lmstudio/OWNER/MODEL --direct-only
+```
+
+`--direct-only` is supported only by `certify`, with either `--model` or
+`--all`. It runs every base gate through the same transaction and skips only
+the optional Efficient Fidelity probes. After a successful base pass, Codex
+can use the model's Direct file and command tools with complete tool schemas;
+deferred tool search is disabled. An existing Efficient Fidelity receipt is
+replaced by the new Direct receipt through normal recertification. Failure
+still recovers conservatively. Ordinary `certify` and automatic setup retain
+their existing optional-probe behavior.
 
 Use the exact discovered public slug. Do not certify alongside an active
 provider-model turn. Certification blocks new ordinary requests to the target
@@ -527,7 +570,7 @@ replace `pickermux` with `./bin/pickermux.mjs`.
 | `refresh --full` | Confirm native account-cache recovery and reactivation. |
 | `status [--json]` | Inspect managed state and compatibility. |
 | `doctor` / `doctor --live` | Deterministic checks / additional real inference. |
-| `certify --model SLUG` / `certify --all` | Live model-bound certification. |
+| `certify --model SLUG` / `certify --all` with optional `--direct-only` | Live model-bound certification; `--direct-only` skips only optional Efficient Fidelity probes. |
 | `repair-chats [--json]` | Restore an inert historical-chat provider table. |
 | `credential-set PROVIDER` | Store an interactively entered credential in Keychain. |
 | `credential-status PROVIDER` | Report credential availability without its value. |

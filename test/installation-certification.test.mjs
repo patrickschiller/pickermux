@@ -89,6 +89,7 @@ test("installation preserves valid Direct and Efficient receipts and selects mis
   assert.equal(transactions[0].exactModelSet, false);
   assert.equal(transactions[0].sourceRoot, "/managed/version");
   assert.equal(transactions[0].onProgress, onProgress);
+  assert.equal(transactions[0].directOnly, false);
   assert.deepEqual(await readFile(input.paths.certificationPath), before);
 });
 
@@ -103,6 +104,30 @@ test("valid receipts skip inference while explicit certify still rechecks all mo
   await certify({ ...input, onlyUncertified: false }, dependencies);
   assert.deepEqual(transactions[0].targetModelIds, models.slice(0, 2).map((entry) => entry.id));
   assert.equal(transactions[0].exactModelSet, true);
+});
+
+test("explicit Direct-only certification forwards its mode without reusing Efficient receipts", async (t) => {
+  const { input, dependencies, models, transactions } = await fixture(t);
+  await certify({ ...input, all: false, model: models[1].id,
+    onlyUncertified: false, directOnly: true }, dependencies);
+  assert.equal(transactions.length, 1);
+  assert.equal(transactions[0].directOnly, true);
+  assert.deepEqual(transactions[0].targetModelIds, [models[1].id]);
+});
+
+test("Direct-only rejects receipt reuse and nonboolean modes before checking live state", async () => {
+  let stateReads = 0;
+  const dependencies = {
+    configStatusImpl: async () => { stateReads += 1; },
+    serviceStatusImpl: async () => { stateReads += 1; },
+    runtimeImpl: async () => { stateReads += 1; },
+  };
+  await assert.rejects(certify({ directOnly: true, onlyUncertified: true }, dependencies),
+    /directOnly cannot reuse existing certification receipts/u);
+  for (const directOnly of ["true", 1, null]) {
+    await assert.rejects(certify({ directOnly }, dependencies), /directOnly must be a boolean/u);
+  }
+  assert.equal(stateReads, 0);
 });
 
 test("a loaded-model replacement never reuses the previous model receipt", async (t) => {

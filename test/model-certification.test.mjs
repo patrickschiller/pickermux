@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import {
   access,
   chmod,
@@ -120,6 +121,85 @@ test("fingerprint is canonical and bound to every routed model contract field", 
       `fingerprint changes for ${Object.keys(change)[0]}`,
     );
   }
+});
+
+test("revised LM Studio probes invalidate old fingerprints without changing other provider contracts", () => {
+  const legacyFingerprint = (input) => `sha256:${createHash("sha256")
+    .update("model-bridge-certification-v1\0")
+    .update(JSON.stringify(createCertificationSubject(input)))
+    .digest("hex")}`;
+  const lmStudio = subject();
+  assert.notEqual(computeCertificationFingerprint(lmStudio), legacyFingerprint(lmStudio));
+  for (const providerKind of ["openai-responses", "mlx-chat-completions"]) {
+    const provider = subject({ providerKind });
+    assert.equal(computeCertificationFingerprint(provider), legacyFingerprint(provider));
+  }
+  assert.equal(MODEL_CERTIFICATION_CONTRACT_VERSION, 1);
+});
+
+test("old LM Studio receipts remain readable and recover transactionally under the revised probes", async (t) => {
+  const { storePath } = await fixture(t);
+  const model = subject();
+  const publicModelId = model.publicModelId;
+  const otherPending = "lmstudio/other-pending-model";
+  const fingerprint = `sha256:${createHash("sha256")
+    .update("model-bridge-certification-v1\0")
+    .update(JSON.stringify(createCertificationSubject(model)))
+    .digest("hex")}`;
+  await recordPassedCertification(storePath, model, allGates());
+  const legacyStore = {
+    contractVersion: 1,
+    pendingDeactivations: [otherPending],
+    probeAuthorizations: [otherPending],
+    receipts: {
+      [publicModelId]: {
+        fingerprint,
+        passedAt: "2026-10-20T10:00:00.000Z",
+        gates: { ...allGates(), [EFFICIENT_FIDELITY_CERTIFICATION_GATE]: true },
+      },
+    },
+  };
+  const legacyBytes = `${JSON.stringify(legacyStore, null, 2)}\n`;
+  await writeFile(storePath, legacyBytes, "utf8");
+
+  const staleStore = await readCertificationStore(storePath);
+  assert.deepEqual(staleStore, legacyStore);
+  assert.equal(evaluateModelCertification(staleStore, model).status, "stale");
+  assert.equal(evaluateEfficientFidelityCertification(staleStore, model).status, "stale");
+  assert.equal(await readFile(storePath, "utf8"), legacyBytes);
+
+  await stageModelCertificationDeactivation(storePath, [publicModelId]);
+  const staged = await readCertificationStore(storePath);
+  assert.equal(staged.receipts[publicModelId].fingerprint, fingerprint);
+  assert.equal(evaluateModelCertification(staged, model).status, "pending");
+  await assert.rejects(
+    assertModelCertificationRequestAllowed(storePath, publicModelId, {
+      requiresDirectReceipt: true,
+    }),
+    /unavailable while certification recovery is pending/u,
+  );
+
+  await commitModelCertificationDeactivation(storePath, [publicModelId]);
+  const committed = await readCertificationStore(storePath);
+  assert.equal(Object.hasOwn(committed.receipts, publicModelId), false);
+  assert.deepEqual(committed.pendingDeactivations,
+    [otherPending, publicModelId].sort());
+  assert.deepEqual(committed.probeAuthorizations,
+    [otherPending, publicModelId].sort());
+  await assert.doesNotReject(
+    assertModelCertificationRequestAllowed(storePath, publicModelId, {
+      certificationRequest: true,
+    }),
+  );
+  await recordPassedCertification(storePath, model, allGates());
+  assert.equal((await getModelCertificationStatus(storePath, model)).status, "pending");
+  await clearModelCertificationDeactivation(storePath, [publicModelId]);
+  const recovered = await readCertificationStore(storePath);
+  assert.equal(recovered.contractVersion, 1);
+  assert.equal(evaluateModelCertification(recovered, model).status, "valid");
+  assert.equal(evaluateEfficientFidelityCertification(recovered, model).status, "missing");
+  assert.deepEqual(recovered.pendingDeactivations, [otherPending]);
+  assert.deepEqual(recovered.probeAuthorizations, [otherPending]);
 });
 
 test("subject validation rejects unsafe or incomplete fingerprint inputs", () => {

@@ -351,6 +351,55 @@ test("0.30.0 publication describes the compact-menu cleanup and authorized token
   }), { code: "UPDATE_INVALID" });
 });
 
+test("0.31.0 publishes strict Flint certification changes as the Config update from 0.30.0", async (t) => {
+  const value = await fixture(t, "0.31.0");
+  const result = await prepareDmgRelease({ ...value, tag: "v0.31.0" });
+  const body = await readFile(path.join(value.outputDirectory, "release-notes.md"), "utf8");
+  assert.match(body, /Changes in v0\.31\.0/u);
+  assert.match(body, /`certify --direct-only`.*all seven base requests and eight required gates.*skipping only optional Efficient Fidelity/u);
+  assert.match(body, /fresh Direct pass replaces prior tool-search authority.*failed base probes still grant no tools/u);
+  assert.match(body, /complete Codex-style replay.*continuation rule established before the function call.*fresh marker supplied only in the tool result/u);
+  assert.match(body, /Exact answers and valid invocation identities remain mandatory.*unsupported replay content is rejected/u);
+  assert.match(body, /measured mandatory reasoning, including Flint.*bounded 2,048-token output budget in every base probe/u);
+  assert.match(body, /same provider-reported minimum input-token count and exact final answer remain required/u);
+  assert.match(body, /recertification of older LM Studio receipts.*revised probe fingerprint/u);
+  assert.match(body, /Store schema 1 and pending recovery state remain readable.*other provider fingerprints are unchanged/u);
+  assert.match(body, /Existing users quit PickerMux, replace the app in Applications, eject the disk image and reopen PickerMux from Applications/u);
+  assert.match(body, /\*\*Config → Update installed backend…\*\*/u);
+  assert.match(body, /Custom provider settings are preserved/u);
+  assert.doesNotMatch(body, /Changes in v0\.30\.0|\*\*Settings → Update installed backend…\*\*/u);
+  assert.equal(body.split("pickermux-dmg-release-v1").length, 2);
+  assert.deepEqual(parseDmgReleaseRecord(body, { version: "0.31.0", file: PICKERMUX_DMG_ASSET }), {
+    version: "0.31.0", file: PICKERMUX_DMG_ASSET, sha256: result.sha256, signing: "developer-id-notarized",
+  });
+  assert.deepEqual(await readFile(path.join(value.outputDirectory, PICKERMUX_DMG_ASSET)), value.diskImage);
+  assert.deepEqual(await verifyDmgPublication({ directory: value.outputDirectory, tag: "v0.31.0" }), result);
+  const expectedUrl = `https://github.com/patrickschiller/pickermux/releases/download/v0.31.0/${PICKERMUX_DMG_ASSET}`;
+  const release = {
+    tag_name: "v0.31.0", draft: false, prerelease: false, body,
+    assets: [{ name: PICKERMUX_DMG_ASSET, browser_download_url: expectedUrl }],
+  };
+  assert.deepEqual(await checkForCompanionUpdate({
+    currentVersion: "0.30.0",
+    fetchImpl: async () => Response.json(release),
+  }), {
+    status: "available", distribution: "dmg", currentVersion: "0.30.0", targetVersion: "0.31.0",
+    assets: { [PICKERMUX_DMG_ASSET]: expectedUrl }, diskImageSha256: result.sha256,
+  });
+  for (const mutate of [
+    (candidate) => { candidate.body = dmgReleaseMarker({ version: "0.30.0", sha256: result.sha256 }); },
+    (candidate) => { candidate.body += dmgReleaseMarker({ version: "0.31.0", sha256: result.sha256 }); },
+    (candidate) => { candidate.assets[0].browser_download_url = expectedUrl.replace("v0.31.0", "v0.30.0"); },
+    (candidate) => { candidate.assets.push({ name: "SHA256SUMS", browser_download_url: `${expectedUrl}/SHA256SUMS` }); },
+  ]) {
+    const candidate = structuredClone(release);
+    mutate(candidate);
+    await assert.rejects(checkForCompanionUpdate({
+      currentVersion: "0.30.0", fetchImpl: async () => Response.json(candidate),
+    }), { code: "UPDATE_INVALID" });
+  }
+});
+
 test("later publication guidance keeps the Config navigation name", async (t) => {
   const value = await fixture(t, "0.24.7");
   await prepareDmgRelease({ ...value, tag: "v0.24.7" });

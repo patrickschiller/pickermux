@@ -1,6 +1,6 @@
 # PickerMux Architecture
 
-This document describes PickerMux v0.30.0.
+This document describes PickerMux v0.31.0.
 It is intended for contributors, security reviewers, and users who want to
 understand what runs on their Mac.
 
@@ -602,6 +602,22 @@ eight required gates:
 - `toolResult`;
 - `longContext`.
 
+LM Studio's tool-result gate replays the complete validated conversation,
+including reasoning and the matching function result, as Codex does. The
+continuation rule is supplied before the function request; only a fresh random
+marker carried in the result can satisfy the exact, invocation-free answer
+check. Mandatory reasoning discovered without an `off` or `none` option gives
+every base probe a fixed 2,048-token output budget. Other provider probes and
+their existing output limits are unchanged; no probe is retried automatically.
+The LM Studio long-context probe uses numbered records explicitly marked as
+inert data instead of repeating a single token. Its exact final marker and
+minimum provider-reported input-token usage remain authoritative.
+
+This LM Studio probe revision changes its fingerprint domain, so prior LM Studio
+receipts become stale and require a new pass. The version-1 store schema and
+pending recovery records remain readable. Generic Responses and MLX
+fingerprints retain their existing domains.
+
 Version 0.7.1 introduced bounded Node HTTP transport for these local bridge
 requests instead of global `fetch`. Its probe deadline remains authoritative
 without Undici's separate default header/body timers shortening it. Failure
@@ -663,6 +679,13 @@ call to the selected function. It deliberately does not use
 model-bound evidence. A search-probe failure retains the newly valid Direct
 receipt as the safe fallback; it does not silently claim Efficient Fidelity or
 demote a model that just passed the full base matrix.
+
+Explicit `certify --direct-only` runs the complete base matrix and omits only
+the optional Efficient Fidelity probes. It uses the same deactivation,
+revalidation, receipt, publication, and recovery transaction. A successful new
+base receipt replaces an existing additive grant with Direct fidelity: Codex
+receives complete tool definitions rather than deferred tool search. Ordinary
+certification and setup continue to attempt the optional probes.
 
 Receipts contain only the fingerprint, timestamp, and gate outcome. They do not
 contain prompts, responses, or credentials.

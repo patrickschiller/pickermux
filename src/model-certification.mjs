@@ -172,10 +172,14 @@ export function createCertificationSubject(input) {
 export function computeCertificationFingerprint(input) {
   const subject = createCertificationSubject(input);
   const hash = createHash("sha256")
-    .update(`model-bridge-certification-v${MODEL_CERTIFICATION_CONTRACT_VERSION}\0`)
-    .update(JSON.stringify(subject))
-    .digest("hex");
-  return `sha256:${hash}`;
+    .update(`model-bridge-certification-v${MODEL_CERTIFICATION_CONTRACT_VERSION}\0`);
+  // Keep recovery records readable while requiring a new pass for the
+  // result-derived full-replay probe. Other provider contracts are unchanged.
+  if (subject.providerKind === "lmstudio-responses") {
+    hash.update("lmstudio-certification-probes-v2\0");
+  }
+  hash.update(JSON.stringify(subject));
+  return `sha256:${hash.digest("hex")}`;
 }
 
 function normalizeGates(gates, label = "Certification gates") {

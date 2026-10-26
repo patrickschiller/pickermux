@@ -12,6 +12,32 @@ published as GitHub Releases.
 The 0.23.x and 0.24.x entries are local milestones included in the public
 0.30.0 release; they were not published separately.
 
+## [0.31.0] - 2026-10-26
+
+### Added
+
+- Add `certify --direct-only`, with `--model` or `--all`, to run every base
+  capability gate and skip only optional Efficient Fidelity probes. A complete
+  base pass publishes Direct tools with complete schemas through the existing
+  transaction; ordinary certification and setup retain their current behavior.
+
+### Changed
+
+- Revise LM Studio tool-result certification to replay the complete
+  conversation, establish its continuation rule before the function call, and
+  require an exact fresh marker from the matching tool result. Keep every
+  capability gate and add no retries or textual tool-call interpretation.
+- Give LM Studio models with measured mandatory reasoning a fixed 2,048-token
+  output budget for all base probes, including text, streaming, and long
+  context, so reasoning has room before the required visible answer.
+- Use numbered inert records for LM Studio's long-context probe instead of
+  pathological single-token repetition, while retaining the exact answer and
+  the same minimum provider-reported input-token count.
+- Bind the LM Studio probe revision to certification fingerprints. Earlier LM
+  Studio passes require recertification after the backend upgrade; the
+  version-1 store and pending recovery remain readable. Generic Responses and
+  MLX probe contracts and fingerprints are unchanged.
+
 ## [0.30.0] - 2026-10-06
 
 This release includes the changes developed in the 0.23.x and 0.24.x
@@ -1063,7 +1089,8 @@ confirm the release date before tagging. See the
   paths and file types, refuses root execution and foreign launchers, and
   restores the previous distribution state when activation fails.
 
-[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.30.0...HEAD
+[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.31.0...HEAD
+[0.31.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.31.0
 [0.30.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.30.0
 [0.24.6]: #0246---2026-10-06
 [0.24.5]: #0245---2026-10-06

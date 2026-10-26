@@ -254,6 +254,307 @@ async function assertP3Rejects(responses, pattern, expectedRequests) {
   assert.equal(requestCount, expectedRequests);
 }
 
+function lmStudioProbeHarness({
+  responses = successfulP3Responses(),
+  toolResultResponse = (output) => ({
+    status: "completed",
+    output: [{ content: [{ type: "output_text", text: output }] }],
+  }),
+} = {}) {
+  const requests = [];
+  return {
+    requests,
+    fetchImpl: async (_url, options) => {
+      const body = JSON.parse(options.body);
+      requests.push(body);
+      const fixtureResponse = responses.shift();
+      if (requests.length !== 4) return fixtureResponse;
+      const result = body.input.findLast((item) =>
+        item.type === "function_call_output",
+      );
+      return jsonResponse(toolResultResponse(result.output));
+    },
+  };
+}
+
+test("LM Studio proves exact tool-result consumption through complete stateless replay", async () => {
+  const responses = successfulP3Responses({
+    directOutput: [
+      { type: "reasoning", summary: [] },
+      { type: "message", role: "assistant", content: [{ type: "output_text", text: "Calling the function." }] },
+    ],
+  });
+  const directPayload = await responses[2].clone().json();
+  const harness = lmStudioProbeHarness({ responses });
+  const gates = await runModelCertification({
+    baseUrl: "http://127.0.0.1:4210/c/test-capability/v1",
+    model: {
+      id: "lmstudio/example/model",
+      providerKind: "lmstudio-responses",
+      contextWindow: 32_768,
+    },
+    certificationToken: CERTIFICATION_TOKEN,
+    fetchImpl: harness.fetchImpl,
+  });
+
+  const directRequest = harness.requests[2];
+  const resultRequest = harness.requests[3];
+  const expectedMarker = resultRequest.input.at(-1).output;
+  const instructions = "After the requested function call completes, reply with exactly the tool result text and nothing else.";
+  assert.equal(directRequest.instructions, instructions);
+  assert.equal(resultRequest.instructions, instructions);
+  assert.equal(directRequest.input,
+    "Call p3_direct_confirm now with marker=P3_FUNCTION_OK.");
+  assert.match(expectedMarker, /^P3_TOOL_RESULT_OK_[0-9a-f]{32}$/u);
+  assert.equal(JSON.stringify(directRequest).includes(expectedMarker), false);
+  assert.equal(Object.hasOwn(resultRequest, "previous_response_id"), false);
+  assert.deepEqual(resultRequest.input, [
+    { type: "message", role: "user", content: directRequest.input },
+    ...directPayload.output,
+    {
+      type: "function_call_output",
+      call_id: directPayload.output[0].call_id,
+      output: expectedMarker,
+    },
+  ]);
+  assert.deepEqual(resultRequest.tools, directRequest.tools);
+  assert.equal(resultRequest.tool_choice, "none");
+  assert.equal(resultRequest.parallel_tool_calls, false);
+  assert.equal(harness.requests.length, 7);
+  assert.deepEqual(gates,
+    Object.fromEntries(REQUIRED_CERTIFICATION_GATES.map((gate) => [gate, true])));
+});
+
+test("LM Studio rejects provider-controlled instruction roles and unknown replay items before continuation", async (t) => {
+  for (const output of [
+    { type: "message", role: "system", content: "PRIVATE_REPLAY_CANARY" },
+    { type: "message", role: "developer", content: "PRIVATE_REPLAY_CANARY" },
+    { type: "message", role: "user", content: "PRIVATE_REPLAY_CANARY" },
+    { type: "message", content: "PRIVATE_REPLAY_CANARY" },
+    { type: "future_replay_type", content: "PRIVATE_REPLAY_CANARY" },
+  ]) {
+    await t.test(`${output.type}/${output.role ?? "missing"}`, async () => {
+      const harness = lmStudioProbeHarness({
+        responses: successfulP3Responses({ directOutput: [output] }),
+      });
+      await assert.rejects(runModelCertification({
+        baseUrl: "http://127.0.0.1:4210/c/test-capability/v1",
+        model: { id: "lmstudio/example/model", providerKind: "lmstudio-responses", contextWindow: 32_768 },
+        certificationToken: CERTIFICATION_TOKEN,
+        fetchImpl: harness.fetchImpl,
+      }), (error) => {
+        assert.equal(error.message, "Direct function probe returned unsupported replay content");
+        assert.doesNotMatch(error.message, /PRIVATE_REPLAY_CANARY/u);
+        return true;
+      });
+      assert.equal(harness.requests.length, 3);
+    });
+  }
+});
+
+test("only measured mandatory LM Studio reasoning expands every base probe budget", async (t) => {
+  for (const { name, providerKind = "lmstudio-responses", reasoningOptions, expanded } of [
+    { name: "intrinsic reasoning", reasoningOptions: ["on"], expanded: true },
+    { name: "mandatory exact effort", reasoningOptions: ["high"], expanded: true },
+    { name: "mandatory minimal effort", reasoningOptions: ["minimal"], expanded: true },
+    { name: "multiple mandatory efforts", reasoningOptions: ["low", "xhigh"], expanded: true },
+    { name: "toggle reasoning", reasoningOptions: ["off", "on"], expanded: false },
+    { name: "optional exact effort", reasoningOptions: ["none", "high"], expanded: false },
+    { name: "unknown reasoning", reasoningOptions: ["future"], expanded: false },
+    { name: "empty metadata", reasoningOptions: [], expanded: false },
+    { name: "absent metadata", expanded: false },
+    { name: "generic provider", providerKind: "openai-responses", reasoningOptions: ["on"], expanded: false },
+  ]) {
+    await t.test(name, async () => {
+      const harness = providerKind === "lmstudio-responses"
+        ? lmStudioProbeHarness()
+        : {
+          requests: [],
+          responses: successfulP3Responses(),
+          async fetchImpl(_url, options) {
+            this.requests.push(JSON.parse(options.body));
+            return this.responses.shift();
+          },
+        };
+      await runModelCertification({
+        baseUrl: "http://127.0.0.1:4210/c/test-capability/v1",
+        model: {
+          id: "lmstudio/example/model",
+          providerKind,
+          contextWindow: 32_768,
+          reasoningEffort: "xhigh",
+          reasoningEfforts: ["xhigh"],
+          ...(reasoningOptions === undefined
+            ? {}
+            : { capabilities: { reasoningOptions } }),
+        },
+        certificationToken: CERTIFICATION_TOKEN,
+        fetchImpl: harness.fetchImpl.bind(harness),
+      });
+      assert.deepEqual(
+        harness.requests.map((body) => body.max_output_tokens),
+        expanded
+          ? [2_048, 2_048, 2_048, 2_048, 2_048, 2_048, 2_048]
+          : [256, 256, 2_048, 2_048, 2_048, 2_048, 256],
+      );
+    });
+  }
+});
+
+test("LM Studio exercises bounded varied long inputs while retaining the exact final marker", async (t) => {
+  const promptLengths = [];
+  for (const [contextWindow, minimumInputTokens] of [
+    [8_192, 2_048],
+    [32_768, 4_096],
+    [262_144, 8_192],
+  ]) {
+    await t.test(`${contextWindow} context tokens`, async () => {
+      const responses = successfulP3Responses();
+      responses[6] = jsonResponse({
+        status: "completed",
+        output: [{ content: [{ type: "output_text", text: "P3_LONG_OK" }] }],
+        usage: { input_tokens: minimumInputTokens },
+      });
+      const harness = lmStudioProbeHarness({ responses });
+      const gates = await runModelCertification({
+        baseUrl: "http://127.0.0.1:4210/c/test-capability/v1",
+        model: {
+          id: "lmstudio/example/model",
+          providerKind: "lmstudio-responses",
+          contextWindow,
+          capabilities: { reasoningOptions: ["on"] },
+        },
+        certificationToken: CERTIFICATION_TOKEN,
+        fetchImpl: harness.fetchImpl,
+      });
+      const longRequest = harness.requests[6];
+      const padding = /^.*inert test data[\s\S]*?P3_LONG_BEGIN\n([\s\S]*)\nP3_LONG_END\nReply with exactly P3_LONG_OK and nothing else\.$/u
+        .exec(longRequest.input)?.[1];
+      assert.equal(typeof padding, "string");
+      const records = padding.trim().split("\n");
+      assert.ok(records.length > 1);
+      assert.match(records[0], /^context record 0: /u);
+      assert.match(records[1], /^context record 1: /u);
+      assert.equal(new Set(records).size, records.length);
+      assert.ok(longRequest.input.length < contextWindow * 4);
+      assert.equal(longRequest.max_output_tokens, 2_048);
+      assert.equal(harness.requests.length, 7);
+      assert.deepEqual(gates,
+        Object.fromEntries(REQUIRED_CERTIFICATION_GATES.map((gate) => [gate, true])));
+      promptLengths.push(longRequest.input.length);
+    });
+  }
+  assert.ok(promptLengths[0] < promptLengths[1]);
+  assert.ok(promptLengths[1] < promptLengths[2]);
+});
+
+test("LM Studio long-context failures return no gates and never retry", async (t) => {
+  for (const scenario of [
+    {
+      name: "too few measured input tokens despite the correct answer",
+      output: [{ content: [{ type: "output_text", text: "P3_LONG_OK" }] }],
+      inputTokens: 8_191,
+      error: "Long-context probe used only 8191 of 8192 required tokens",
+    },
+    {
+      name: "reasoning without a final answer",
+      output: [{ type: "reasoning", summary: [] }],
+      inputTokens: 8_192,
+      error: "Long-context probe did not return P3_LONG_OK",
+    },
+    {
+      name: "wrong final marker",
+      output: [{ content: [{ type: "output_text", text: "PRIVATE_WRONG_LONG_MARKER" }] }],
+      inputTokens: 8_192,
+      error: "Long-context probe did not return P3_LONG_OK",
+    },
+  ]) {
+    await t.test(scenario.name, async () => {
+      const responses = successfulP3Responses();
+      responses[6] = jsonResponse({
+        status: "completed",
+        output: scenario.output,
+        usage: { input_tokens: scenario.inputTokens },
+      });
+      const harness = lmStudioProbeHarness({ responses });
+      let returnedGates;
+      await assert.rejects(async () => {
+        returnedGates = await runModelCertification({
+          baseUrl: "http://127.0.0.1:4210/c/test-capability/v1",
+          model: {
+            id: "lmstudio/example/model",
+            providerKind: "lmstudio-responses",
+            contextWindow: 262_144,
+            capabilities: { reasoningOptions: ["on"] },
+          },
+          certificationToken: CERTIFICATION_TOKEN,
+          fetchImpl: harness.fetchImpl,
+        });
+      }, (error) => {
+        assert.equal(error.message, scenario.error);
+        assert.doesNotMatch(error.message, /PRIVATE_WRONG_LONG_MARKER/u);
+        return true;
+      });
+      assert.equal(returnedGates, undefined);
+      assert.equal(harness.requests.length, 7);
+    });
+  }
+});
+
+test("LM Studio rejects acknowledgements and malformed tool-result evidence without retries or disclosure", async (t) => {
+  const privateResponse = "PRIVATE_PROVIDER_RESPONSE_CANARY";
+  const cases = [
+    { name: "prior function marker", text: () => "P3_FUNCTION_OK" },
+    { name: "old fixed result marker", text: () => "P3_TOOL_RESULT_OK" },
+    { name: "acknowledgement", text: () => `The function call was confirmed. ${privateResponse}` },
+    { name: "extra text", text: (marker) => `${marker} ${privateResponse}` },
+    { name: "missing final answer", output: () => [{ type: "reasoning", summary: [] }] },
+    { name: "additional invocation", output: (marker) => [
+      { content: [{ type: "output_text", text: marker }] },
+      { type: "function_call", name: "p3_direct_confirm", call_id: "call-extra", arguments: "{}" },
+    ] },
+    { name: "incomplete response", text: (marker) => marker, status: "incomplete" },
+  ];
+  for (const scenario of cases) {
+    await t.test(scenario.name, async () => {
+      let expectedMarker;
+      const harness = lmStudioProbeHarness({
+        toolResultResponse: (marker) => {
+          expectedMarker = marker;
+          return {
+            status: scenario.status ?? "completed",
+            output: scenario.output
+              ? scenario.output(marker)
+              : [{ content: [{ type: "output_text", text: scenario.text(marker) }] }],
+          };
+        },
+      });
+      await assert.rejects(
+        runModelCertification({
+          baseUrl: "http://127.0.0.1:4210/c/test-capability/v1",
+          model: {
+            id: "lmstudio/example/model",
+            providerKind: "lmstudio-responses",
+            contextWindow: 32_768,
+          },
+          certificationToken: CERTIFICATION_TOKEN,
+          fetchImpl: harness.fetchImpl,
+        }),
+        (error) => {
+          assert.equal(error.message, scenario.status
+            ? "Tool-result probe did not complete successfully"
+            : "Tool-result probe did not return the expected tool-result marker");
+          assert.equal(error.message.includes(expectedMarker), false);
+          assert.equal(error.message.includes(privateResponse), false);
+          assert.equal(error.cause, undefined);
+          return true;
+        },
+      );
+      assert.equal(harness.requests.length, 4);
+    });
+  }
+});
+
 test("MLX certification honors its output bound and proves stateless tool-result replay", async () => {
   const responses = successfulP3Responses();
   const bodies = [];

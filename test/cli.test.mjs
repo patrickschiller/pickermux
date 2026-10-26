@@ -16,6 +16,7 @@ import {
   buildCatalog,
   repairHistoricalChats,
   restoreRefreshState,
+  runCli,
 } from "../src/cli.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -36,7 +37,7 @@ test("release metadata and both CLI entry points identify PickerMux", async () =
     await readFile(path.join(projectDirectory, "package.json"), "utf8"),
   );
   assert.equal(packageMetadata.name, "pickermux");
-  assert.equal(packageMetadata.version, "0.30.0");
+  assert.equal(packageMetadata.version, "0.31.0");
   assert.equal(packageMetadata.license, "MIT");
 
   for (const entryPoint of ["pickermux.mjs", "lmstudio-picker.mjs"]) {
@@ -49,6 +50,8 @@ test("release metadata and both CLI entry points identify PickerMux", async () =
       assert.match(stdout, /PickerMux/u);
       assert.match(stdout, /CODEX_BINARY overrides discovery for this command/u);
       assert.match(stdout, /Setup and install automatically certify tool-capable providers/u);
+      assert.match(stdout, /certify .*\[--direct-only\]/u);
+      assert.match(stdout, /certify --direct-only runs every base probe and skips optional Efficient Fidelity/u);
       assert.match(stdout, /An explicit providers:\[\] configuration keeps the native Codex picker/u);
       assert.match(stdout, /setup and refresh require no external models and grant no external tools/u);
       assert.match(stdout, /Reviewed MLX tool protocols use the full certification matrix/u);
@@ -76,8 +79,61 @@ test("release metadata and both CLI entry points identify PickerMux", async () =
         [path.join(projectDirectory, "bin", entryPoint), versionArgument],
         { encoding: "utf8" },
       );
-      assert.equal(stdout, "pickermux 0.30.0\n");
+      assert.equal(stdout, "pickermux 0.31.0\n");
     }
+  }
+});
+
+test("direct-only certification is parsed and forwarded under the certification lock", async (t) => {
+  const cwd = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+  const directory = await mkdtemp(path.join(os.tmpdir(), "pickermux-direct-only-cli-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const configPath = path.join(directory, "config.json");
+  await writeFile(configPath, JSON.stringify({ schemaVersion: 2, bridge: {}, providers: [] }));
+  for (const selection of [
+    { args: ["--model", "lmstudio/example/model", "--direct-only"], directOnly: true, all: false },
+    { args: ["--all", "--direct-only"], directOnly: true, all: true },
+    { args: ["--model", "lmstudio/example/model"], directOnly: false, all: false },
+  ]) {
+    const script = `
+      import { runCli } from "./src/cli.mjs";
+      let locked = false;
+      await runCli(["certify", ...${JSON.stringify(selection.args)}, "--json"], {
+        assertNoPendingFullRefreshImpl: async () => {},
+        withLockImpl: async (_paths, operation) => {
+          locked = true;
+          try { return await operation(); } finally { locked = false; }
+        },
+        certifyImpl: async (input) => {
+          if (!locked) throw new Error("certification lock missing");
+          return {
+            certified: [], recoveredPending: [], restartRequired: true,
+            directOnly: input.directOnly, all: input.all, model: input.model,
+          };
+        },
+      });
+    `;
+    const { stdout } = await execFileAsync(process.execPath,
+      ["--input-type=module", "--eval", script], {
+        cwd,
+        env: { ...process.env, CODEX_HOME: directory, CODEX_BINARY: "/fixture/codex",
+          PICKERMUX_CONFIG_PATH: configPath },
+      });
+    const result = JSON.parse(stdout);
+    assert.equal(result.directOnly, selection.directOnly);
+    assert.equal(result.all, selection.all);
+    assert.equal(result.model, selection.all ? undefined : "lmstudio/example/model");
+  }
+});
+
+test("direct-only is rejected on commands other than certify before side effects", async () => {
+  for (const command of ["help", "refresh", "setup", "install", "uninstall", "discover"]) {
+    await assert.rejects(runCli([command, "--direct-only"]),
+      /--direct-only is supported only by certify/u);
+  }
+  for (const selection of [[], ["--all", "--model", "lmstudio/example/model"]]) {
+    await assert.rejects(runCli(["certify", "--direct-only", ...selection]),
+      /certify requires exactly one of --model SLUG or --all/u);
   }
 });
 

@@ -75,6 +75,15 @@ Load the models you want, fully quit Codex, choose **Refresh picker**, and reope
 Codex. Models appear in Codex's picker; the PickerMux menu shows provider usage.
 New models need **Certify models…** before using tools.
 
+The revised LM Studio certification checks tool-result continuation with the
+full conversation, uses numbered records for its long-context test, and allows
+more output tokens when discovered metadata requires reasoning. After upgrading
+to that backend revision, existing LM Studio models need a fresh certification.
+See
+[certification troubleshooting](docs/TROUBLESHOOTING.md#lm-studio-certification-returns-only-reasoning-or-the-wrong-answer).
+If optional tool search is unreliable, the CLI's `--direct-only` certification
+option retains Direct tools after a complete base pass.
+
 **Config…** contains status and installation checks, installation details,
 updates, startup preferences, notifications, token reset, and **Full refresh…**.
 A full refresh asks for confirmation before its two graceful Codex quits and
