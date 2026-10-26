@@ -839,6 +839,62 @@ remove that model's pending barrier without fabricating a receipt. The
 `tool-certifications` doctor detail reports how many recovery operations remain
 pending.
 
+## LM Studio certification returns only reasoning or the wrong answer
+
+A successful function-call probe establishes that the model emitted a
+structured call. The tool-result probe separately checks that it continues
+correctly after receiving the result. A sentence acknowledging a successful
+call does not satisfy the exact marker requirement. A response containing
+only reasoning also cannot pass a text or long-context probe.
+
+The revised LM Studio probes establish the tool-result rule before the first
+call, replay the full conversation with the matching function result, and
+require a fresh marker supplied only in that result. Models whose discovered
+options include supported reasoning and exclude both `off` and `none` receive
+a fixed 2,048-token output budget for every base probe, replacing the 256-token
+short/context budget. All completion, exact-output, tool-identity, stream, and
+context checks still apply. There is no retry-until-pass loop or model-name
+exception.
+
+The revised long-context input uses numbered records marked as inert test data.
+Repeating one token thousands of times could consume Flint's entire reasoning
+budget before a visible answer. The varied input avoids that observed pattern;
+the exact final answer and the same minimum provider-reported input-token count
+remain required.
+
+To use the revised probes, first upgrade the installed backend through the
+normal reviewed update flow. A changed source checkout or an isolated passing
+test does not update that installation or create a tool grant. The new LM
+Studio probe revision makes earlier LM Studio receipts stale; the existing
+version-1 store and pending recovery remain readable. With the exact model
+loaded and Codex fully closed, request a new certification:
+
+```bash
+pickermux certify --model lmstudio/OWNER/MODEL
+```
+
+If the base matrix passes but optional deferred-tool checks are unreliable,
+certify Direct fidelity explicitly instead:
+
+```bash
+pickermux certify --model lmstudio/OWNER/MODEL --direct-only
+```
+
+This runs every base gate and skips only the optional Efficient Fidelity
+probes. Direct tools still let Codex read project files and execute commands;
+Codex supplies complete tool schemas instead of deferred definitions. A new
+successful Direct receipt replaces any prior Efficient Fidelity grant through
+the normal transaction. The flag does not bypass failed base checks or their
+recovery. Ordinary certification and setup still try the optional probes.
+
+Reopen Codex after the complete base matrix passes and test a small project
+file read followed by a sourced answer. Larger budgets and representative
+replay do not guarantee that a model, including Flint, will pass or complete
+long tasks reliably. If a gate still fails, retain only its fixed probe label
+and redacted error code for diagnosis. Do not share raw provider logs or
+force-enable catalog flags; the model remains conservative until the required
+checks pass.
+
 ## Kolibri answers without using tools
 
 A model name and a large context window do not establish tool access. A Kolibri

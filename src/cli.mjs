@@ -205,7 +205,7 @@ Usage:
   pickermux mlx-stop --model NAME
   pickermux discover [--config PATH] [--json]
   pickermux build [--config PATH] [--output PATH] [--json]
-  pickermux certify (--model SLUG | --all) [--config PATH] [--json]
+  pickermux certify (--model SLUG | --all) [--direct-only] [--config PATH] [--json]
   pickermux credential-set PROVIDER [--config PATH]
   pickermux credential-status PROVIDER [--config PATH] [--json]
   pickermux credential-delete PROVIDER [--config PATH]
@@ -256,6 +256,11 @@ GPT-Live WebRTC bootstrap uses the native ChatGPT service; delegated tasks retai
 their selected model. Voice audio and startup context go to OpenAI. This requires
 account voice availability and a compatible Codex client; unknown schemas fail closed.
 Setup and install automatically certify tool-capable providers without a valid receipt.
+LM Studio certification tests full tool-result replay with a fresh result marker.
+Mandatory-reasoning models receive bounded reasoning headroom in every base probe.
+After a certification-probe upgrade, stale LM Studio receipts require recertification.
+certify --direct-only runs every base probe and skips optional Efficient Fidelity.
+It replaces previous tool-search authority with a fresh Direct-only certification.
 An explicit providers:[] configuration keeps the native Codex picker through
 PickerMux; setup and refresh require no external models and grant no external tools.
 Legacy MLX servers remain text-only. Reviewed MLX tool protocols use the full certification matrix.
@@ -302,6 +307,7 @@ function parseArguments(argv) {
     json: false,
     live: false,
     all: false,
+    directOnly: false,
     model: undefined,
     providerId: undefined,
     checkpointPath: undefined,
@@ -315,6 +321,7 @@ function parseArguments(argv) {
     else if (argument === "--full" || argument === "--FULL") options.full = true;
     else if (argument === "--full-worker") options.fullWorker = true;
     else if (argument === "--all") options.all = true;
+    else if (argument === "--direct-only") options.directOnly = true;
     else if (argument === "--json") options.json = true;
     else if (argument === "--live") options.live = true;
     else if (["--checkpoint", "--config", "--distribution-root", "--output", "--runtime", "--model"].includes(argument)) {
@@ -372,6 +379,7 @@ function parseArguments(argv) {
   if (options.outputPath && command !== "build") throw new Error("--output is supported only by build");
   if (options.runtimePath && command !== "serve") throw new Error("--runtime is supported only by serve");
   if (options.all && command !== "certify") throw new Error("--all is supported only by certify");
+  if (options.directOnly && command !== "certify") throw new Error("--direct-only is supported only by certify");
   if (options.model && command !== "certify") throw new Error("--model is supported only by certify");
   if (command === "certify" && options.all === Boolean(options.model)) {
     throw new Error("certify requires exactly one of --model SLUG or --all");
@@ -1479,6 +1487,7 @@ export async function runCertificationTransaction({
   targetModelIds,
   recoveryModelIds = [],
   exactModelSet = false,
+  directOnly = false,
   sourceRoot = projectRoot,
   onProgress,
 }, {
@@ -1496,6 +1505,9 @@ export async function runCertificationTransaction({
   recordPassedEfficientFidelityCertificationImpl =
     recordPassedEfficientFidelityCertification,
 } = {}) {
+  if (typeof directOnly !== "boolean") {
+    throw new TypeError("directOnly must be a boolean");
+  }
   if (!Array.isArray(targetModelIds) || !Array.isArray(recoveryModelIds)) {
     throw new TypeError("Certification and recovery model ids must be arrays");
   }
@@ -1603,8 +1615,8 @@ export async function runCertificationTransaction({
         phase: "model",
         index: completed.length + 1,
         total: rebound.length,
-        probeCount: subject.providerKind === "lmstudio-responses" ||
-          (subject.providerKind === "mlx-chat-completions" && supportsMlxTools(subject.capabilities)) ? 9 : 7,
+        probeCount: !directOnly && (subject.providerKind === "lmstudio-responses" ||
+          (subject.providerKind === "mlx-chat-completions" && supportsMlxTools(subject.capabilities))) ? 9 : 7,
       });
       assertMatchingCertificationSubjects(
         [entry],
@@ -1621,7 +1633,7 @@ export async function runCertificationTransaction({
 
       const gates = await runModelCertificationImpl({
         baseUrl: bridgeBaseUrl(config, runtime),
-        model: candidate,
+        model: { ...candidate, providerKind: subject.providerKind },
         certificationToken: runtime.instanceId,
         onProgress,
       });
@@ -1644,8 +1656,8 @@ export async function runCertificationTransaction({
       );
 
       const supportsEfficientFidelity =
-        subject.providerKind === "lmstudio-responses" ||
-        (subject.providerKind === "mlx-chat-completions" && supportsMlxTools(subject.capabilities));
+        !directOnly && (subject.providerKind === "lmstudio-responses" ||
+          (subject.providerKind === "mlx-chat-completions" && supportsMlxTools(subject.capabilities)));
       let efficientFidelity = supportsEfficientFidelity
         ? "direct-fallback"
         : "not-applicable";
@@ -1808,6 +1820,7 @@ export async function runCertificationTransaction({
 
 export async function certify({
   config, paths, codexPath, model, all,
+  directOnly = false,
   onlyUncertified = false,
   sourceRoot = projectRoot,
   onProgress,
@@ -1822,6 +1835,12 @@ export async function certify({
   transactionImpl = runCertificationTransaction,
   credentialResolver = createCredentialResolver(),
 } = {}) {
+  if (typeof directOnly !== "boolean") {
+    throw new TypeError("directOnly must be a boolean");
+  }
+  if (directOnly && onlyUncertified) {
+    throw new Error("directOnly cannot reuse existing certification receipts");
+  }
   const textOnlyProviders = new Set((config.providers ?? [])
     .filter((provider) => provider.kind === "mlx-chat-completions")
     .map((provider) => provider.id));
@@ -1894,6 +1913,7 @@ export async function certify({
     targetModelIds: candidates.map((candidate) => candidate.id),
     recoveryModelIds,
     exactModelSet: all && !onlyUncertified && textOnly.length === 0,
+    directOnly,
     sourceRoot,
     onProgress,
   });
@@ -3708,6 +3728,8 @@ export async function runCli(argv, {
   confirmFullRefreshImpl = confirmFullRefresh,
   assertNoPendingFullRefreshImpl = assertNoPendingFullRefresh,
   setupImpl = setupPickerMux,
+  certifyImpl = certify,
+  withLockImpl = withInstallationLock,
   companionImpl = runPickerMuxCompanion,
   mlxImpl = runMlxCli,
 } = {}) {
@@ -4058,16 +4080,17 @@ export async function runCli(argv, {
     return result;
   }
   if (options.command === "certify") {
-    const result = await withCertificationProgress((onProgress) => withInstallationLock(
+    const result = await withCertificationProgress((onProgress) => withLockImpl(
       distributionPaths,
       async () => {
         await assertNoPendingFullRefreshLocked();
-        return certify({
+        return certifyImpl({
           config,
           paths,
           codexPath,
           model: options.model,
           all: options.all,
+          directOnly: options.directOnly,
           onProgress,
         });
       },

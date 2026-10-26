@@ -66,6 +66,13 @@ const RELEASE_HIGHLIGHTS = Object.freeze({
     "- Keep token-reset authority bound to the receipt-validated installed backend. A bundled fallback may present validated usage but cannot mutate another installed distribution or weaken lifecycle ownership checks.",
     "- Shorten all READMEs and update the menu image from the current native view with synthetic usage. The maintainer tested the 0.30.0 candidate and approved publication.",
   ],
+  "0.31.0": [
+    "- Add `certify --direct-only` to run all seven base requests and eight required gates while skipping only optional Efficient Fidelity. A fresh Direct pass replaces prior tool-search authority; failed base probes still grant no tools.",
+    "- Test LM Studio tool-result consumption with complete Codex-style replay, one continuation rule established before the function call, and a fresh marker supplied only in the tool result. Exact answers and valid invocation identities remain mandatory; unsupported replay content is rejected.",
+    "- Give LM Studio models with measured mandatory reasoning, including Flint, a bounded 2,048-token output budget in every base probe. Keep existing deadlines, strict response checks and other provider budgets.",
+    "- Replace repeated-token LM Studio long-context padding with varied numbered records. The same provider-reported minimum input-token count and exact final answer remain required.",
+    "- Require recertification of older LM Studio receipts under the revised probe fingerprint. Store schema 1 and pending recovery state remain readable; other provider fingerprints are unchanged.",
+  ],
 });
 
 function fail() {

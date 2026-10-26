@@ -6,8 +6,8 @@ an external prerequisite. Earlier CLI archive releases remain available at
 their immutable version-pinned URLs. PickerMux is not published to npm.
 
 The maintainer tested the 0.30.0 candidate and authorized PR merge, tagging,
-and publication on 6 October 2026. The commands below describe its production
-release procedure; every signing and verification gate still applies.
+and publication on 6 October 2026. The commands below use the 0.31.0 candidate;
+every production signing and verification gate still applies.
 
 ## Preflight
 
@@ -46,7 +46,7 @@ https://github.com/patrickschiller/pickermux/releases/latest/download/PickerMux-
 The release tag still makes a download immutable:
 
 ```text
-https://github.com/patrickschiller/pickermux/releases/download/v0.30.0/PickerMux-macos-universal.dmg
+https://github.com/patrickschiller/pickermux/releases/download/v0.31.0/PickerMux-macos-universal.dmg
 ```
 
 The build retains its versioned DMG, app archive, backend manifest, companion
@@ -69,9 +69,9 @@ key available to `codesign`; the profile must already be usable by `notarytool`.
 Use fresh output directories, since the tools refuse to replace existing ones:
 
 ```bash
-node scripts/build-companion.mjs --release --output /tmp/pickermux-signed-0.30.0
-node scripts/prepare-dmg-release.mjs --source /tmp/pickermux-signed-0.30.0 --output /tmp/pickermux-public-0.30.0 --tag v0.30.0
-node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.30.0 --tag v0.30.0
+node scripts/build-companion.mjs --release --output /tmp/pickermux-signed-0.31.0
+node scripts/prepare-dmg-release.mjs --source /tmp/pickermux-signed-0.31.0 --output /tmp/pickermux-public-0.31.0 --tag v0.31.0
+node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.31.0 --tag v0.31.0
 ```
 
 The release builder signs and notarizes the app and DMG separately, staples
@@ -121,8 +121,8 @@ maintainer's Mac when using the local production route.
 After the exact approved commit is on main and all gates are ready:
 
 ```bash
-git tag -a v0.30.0 -m "PickerMux v0.30.0"
-git push origin v0.30.0
+git tag -a v0.31.0 -m "PickerMux v0.31.0"
+git push origin v0.31.0
 ```
 
 Watch the workflow through publication. If a candidate is wrong, fix the
@@ -146,10 +146,10 @@ production signing requirements above remain mandatory.
    replace its assets.
 
 ```bash
-node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.30.0 --tag v0.30.0
-gh release create v0.30.0 /tmp/pickermux-public-0.30.0/PickerMux-macos-universal.dmg \
-  --verify-tag --title "PickerMux v0.30.0" \
-  --notes-file /tmp/pickermux-public-0.30.0/release-notes.md
+node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.31.0 --tag v0.31.0
+gh release create v0.31.0 /tmp/pickermux-public-0.31.0/PickerMux-macos-universal.dmg \
+  --verify-tag --title "PickerMux v0.31.0" \
+  --notes-file /tmp/pickermux-public-0.31.0/release-notes.md
 ```
 
 Complete the independent public-download verification below before announcing
@@ -178,6 +178,47 @@ pinned backend upgrades through the existing setup transaction, preserving
 installed provider settings. Cancellation and failed activation must retain
 usable prior state; ordinary removal and deactivation continue using the
 validated installed backend.
+
+## 0.31.0 LM Studio certification acceptance
+
+Version 0.31.0 makes the LM Studio tool-result probe replay the complete
+conversation with a fresh marker carried only in the matching result. Measured
+mandatory reasoning receives a bounded 2,048-token output budget, and the
+long-context probe uses numbered inert records while retaining the exact
+answer and minimum provider-reported input-token requirement. The explicit
+`certify --direct-only` mode runs the full base matrix and skips only optional
+Efficient Fidelity probes.
+
+On 26 October 2026, two isolated live base matrices passed on the tested
+LM Studio Flint configuration through the revised adapter. The additional
+Efficient Fidelity checks passed once and failed once. This supports Direct
+certification as the intended mode for that tested configuration; it does not
+establish reliable deferred-tool behavior or completion of arbitrary long
+tasks. These isolated checks did not create an installed certification receipt
+or upgrade the active installation. Production signing, notarization, public
+download verification, and the installed-app upgrade must be verified
+separately through the release procedure above.
+
+For the reviewed candidate:
+
+1. Retain the offline regression evidence for complete replay, assistant-owned
+   history, exact fresh result consumption, rejected extra calls/text,
+   mandatory-reasoning bounds, measured long-context usage, unchanged other
+   provider contracts, and absence of retries.
+2. Confirm that older LM Studio receipts become stale while the version-1
+   store and pending recovery remain readable. Direct-only recertification
+   must use every base gate and the existing transaction; a new Direct receipt
+   must not retain earlier Efficient Fidelity authority. Base failures and
+   interrupted publication must recover conservatively.
+3. Verify that both CLI entry points, the app bundle, bundled backend and
+   manifests identify 0.31.0. The generated notes must describe the revised
+   probes, required LM Studio recertification and optional Direct-only mode,
+   and retain exactly one canonical DMG metadata record.
+4. Verify the public 0.31.0 DMG through the production gates above. Config's
+   update check must recognize the sole version-pinned asset from an older
+   app. After replacing the app, the normal **Config → Update installed
+   backend…** transaction must retain provider settings and use the reviewed
+   bundled source with Codex fully closed.
 
 ## 0.30.0 compact-menu and installed-runtime acceptance
 

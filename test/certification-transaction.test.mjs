@@ -318,13 +318,14 @@ test("pending recovery refuses to clear a route still present in the catalog", a
   );
 });
 
-test("a pending retry probes and receipts only the conservatively rebound route", async (t) => {
+test("a pending retry probes the rebound route with its configured provider kind", async (t) => {
   const setup = await fixture(t);
   const original = discoveredModel();
   const rebound = discoveredModel({
     upstreamId: "publisher/model-b",
     contextWindow: 65_536,
   });
+  assert.equal(Object.hasOwn(rebound, "providerKind"), false);
   await recordPassedCertification(
     setup.paths.certificationPath,
     subject(setup.config, original),
@@ -396,6 +397,11 @@ test("a pending retry probes and receipts only the conservatively rebound route"
       runModelCertificationImpl: async ({ model }) => {
         events.push("direct-probe");
         assert.equal(pending, true);
+        assert.equal(model.providerKind, "lmstudio-responses");
+        assert.deepEqual(model, {
+          ...rebound,
+          providerKind: subject(setup.config, rebound).providerKind,
+        });
         assert.equal(model.upstreamId, rebound.upstreamId);
         assert.equal(model.contextWindow, rebound.contextWindow);
         assert.equal(
@@ -449,6 +455,7 @@ test("a pending retry probes and receipts only the conservatively rebound route"
   );
 
   assert.equal(refreshCalls, 3);
+  assert.equal(Object.hasOwn(rebound, "providerKind"), false);
   assert.equal(result.certified[0].efficientFidelity, "enabled");
   assert.equal(
     events.indexOf("catalog-text-only-confirmed") < events.indexOf("direct-probe"),
@@ -544,6 +551,76 @@ test("an additive probe failure reports a safe Direct fallback", async (t) => {
     JSON.stringify(result),
     /private-provider-payload-must-not-surface/u,
   );
+});
+
+test("Direct-only recertification preserves every base gate and removes prior Efficient authority", async (t) => {
+  for (const basePasses of [true, false]) {
+    await t.test(basePasses ? "complete base pass" : "base failure", async (subtest) => {
+      const setup = await fixture(subtest);
+      const model = discoveredModel();
+      const receiptSubject = subject(setup.config, model);
+      await recordPassedCertification(setup.paths.certificationPath, receiptSubject, allDirectGates());
+      await recordPassedEfficientFidelityCertification(setup.paths.certificationPath,
+        receiptSubject, { [EFFICIENT_FIDELITY_CERTIFICATION_GATE]: true });
+      let baseCalls = 0;
+      let efficientCalls = 0;
+      let directReceipts = 0;
+      const progress = [];
+      const transaction = runCertificationTransaction({
+        ...setup,
+        targetModelIds: [model.id],
+        directOnly: true,
+        onProgress: (event) => progress.push(event),
+      }, {
+        refreshImpl: async () => ({
+          externalModels: [model], certificationPendingGateVersion: 1,
+        }),
+        clientVersionImpl: async () => CODEX_VERSION,
+        readCatalogImpl: async () => conservativeCatalog(model),
+        discoverImpl: async () => ({ models: [model], providers: [] }),
+        runModelCertificationImpl: async () => {
+          baseCalls += 1;
+          const pending = await getModelCertificationStatus(setup.paths.certificationPath, receiptSubject);
+          assert.equal(pending.status, "pending");
+          assert.equal(pending.receipt, undefined);
+          if (!basePasses) throw new Error("base protocol probe failed");
+          return allDirectGates();
+        },
+        recordPassedCertificationImpl: async (...args) => {
+          directReceipts += 1;
+          return recordPassedCertification(...args);
+        },
+        runEfficientFidelityCertificationImpl: async () => { efficientCalls += 1; },
+        recordPassedEfficientFidelityCertificationImpl: async () => { efficientCalls += 1; },
+      });
+      if (basePasses) {
+        const result = await transaction;
+        assert.equal(result.certified[0].efficientFidelity, "not-applicable");
+        assert.equal(Object.hasOwn(result.certified[0], "efficientFidelityFailure"), false);
+      } else {
+        await assert.rejects(transaction, /base protocol probe failed/u);
+      }
+      const status = await getModelCertificationStatus(setup.paths.certificationPath, receiptSubject);
+      assert.equal(status.status, basePasses ? "valid" : "missing");
+      if (basePasses) assert.deepEqual(status.receipt.gates, allDirectGates());
+      else assert.equal(status.receipt, undefined);
+      assert.equal(baseCalls, 1);
+      assert.equal(directReceipts, basePasses ? 1 : 0);
+      assert.equal(efficientCalls, 0);
+      assert.deepEqual(progress.find((event) => event.phase === "model"),
+        { phase: "model", index: 1, total: 1, probeCount: 7 });
+    });
+  }
+});
+
+test("Direct-only transaction rejects ambiguous modes before refresh", async () => {
+  let refreshCalls = 0;
+  for (const directOnly of ["true", 1, null]) {
+    await assert.rejects(runCertificationTransaction({ directOnly }, {
+      refreshImpl: async () => { refreshCalls += 1; },
+    }), /directOnly must be a boolean/u);
+  }
+  assert.equal(refreshCalls, 0);
 });
 
 test("route drift after a probe publishes no receipt and recovers text-only", async (t) => {

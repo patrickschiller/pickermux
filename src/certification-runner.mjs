@@ -1,3 +1,5 @@
+import { randomBytes } from "node:crypto";
+
 import {
   EFFICIENT_FIDELITY_CERTIFICATION_GATE,
   REQUIRED_CERTIFICATION_GATES,
@@ -494,6 +496,16 @@ function namespaceTools() {
 const DIRECT_FUNCTION_NAME = "p3_direct_confirm";
 const DIRECT_FUNCTION_MARKER = "P3_FUNCTION_OK";
 const TOOL_PROBE_MAX_OUTPUT_TOKENS = 2_048;
+const TOOL_RESULT_INSTRUCTIONS =
+  "After the requested function call completes, reply with exactly the tool result text and nothing else.";
+
+function requiresLmStudioReasoning(model) {
+  const options = model.capabilities?.reasoningOptions;
+  return model.providerKind === "lmstudio-responses" &&
+    Array.isArray(options) &&
+    options.some((option) => ["on", "minimal", "low", "medium", "high", "xhigh"].includes(option)) &&
+    !options.some((option) => option === "off" || option === "none");
+}
 
 function directFunctionTools() {
   return [
@@ -525,10 +537,10 @@ function forcedNamespaceChoice() {
   };
 }
 
-function assertMarker(payload, marker, label) {
+function assertMarker(payload, marker, label, expectedDescription = marker) {
   const invocations = responseOutput(payload).filter(isToolInvocationItem);
   if (outputText(payload).trim() !== marker || invocations.length !== 0) {
-    throw new Error(`${label} did not return ${marker}`);
+    throw new Error(`${label} did not return ${expectedDescription}`);
   }
 }
 
@@ -860,7 +872,11 @@ export async function runModelCertification({
     : TOOL_PROBE_MAX_OUTPUT_TOKENS;
   const common = {
     model: model.id,
-    max_output_tokens: Math.min(256, toolProbeMaxOutputTokens),
+    // Mandatory reasoning shares the output budget with visible text. A short
+    // answer must not be mistaken for a failed protocol after only 256 tokens.
+    max_output_tokens: requiresLmStudioReasoning(model)
+      ? toolProbeMaxOutputTokens
+      : Math.min(256, toolProbeMaxOutputTokens),
     stream: false,
   };
 
@@ -911,6 +927,9 @@ export async function runModelCertification({
 
   emitCertificationProgress(onProgress, { phase: "probe", probe: "function" });
   const directTools = directFunctionTools();
+  const lmStudioReplay = model.providerKind === "lmstudio-responses";
+  const directPrompt =
+    `Call ${DIRECT_FUNCTION_NAME} now with marker=${DIRECT_FUNCTION_MARKER}.`;
   const directResponse = await postJson({
     baseUrl,
     fetchImpl,
@@ -919,8 +938,8 @@ export async function runModelCertification({
     body: {
       ...common,
       max_output_tokens: toolProbeMaxOutputTokens,
-      input:
-        `Call ${DIRECT_FUNCTION_NAME} now with marker=${DIRECT_FUNCTION_MARKER}.`,
+      input: directPrompt,
+      ...(lmStudioReplay ? { instructions: TOOL_RESULT_INSTRUCTIONS } : {}),
       tools: directTools,
       tool_choice: forcedDirectFunctionChoice(),
       parallel_tool_calls: false,
@@ -929,11 +948,26 @@ export async function runModelCertification({
   });
   const directCall = onlyFunctionCall(directResponse, "Direct function probe");
   assertDirectFunctionCall(directCall, "Direct function probe");
+  if (lmStudioReplay && responseOutput(directResponse).some((item) =>
+    !isPlainObject(item) ||
+    (item.type === "message"
+      ? item.role !== "assistant"
+      : item.type !== "reasoning" && item.type !== "function_call"),
+  )) {
+    // Provider output may re-enter history only as assistant-owned items.
+    // Never let an output message become a system instruction on replay.
+    throw new Error("Direct function probe returned unsupported replay content");
+  }
   if (typeof directResponse.id !== "string" || !directResponse.id) {
     throw new Error("Direct function probe returned no response id");
   }
 
   emitCertificationProgress(onProgress, { phase: "probe", probe: "toolResult" });
+  // The expected value exists only in the result. Neither the prior prompt
+  // nor a canned acknowledgement can satisfy this result-consumption gate.
+  const resultMarker = lmStudioReplay
+    ? `P3_TOOL_RESULT_OK_${randomBytes(16).toString("hex")}`
+    : "P3_TOOL_RESULT_OK";
   const toolResult = await postJson({
     baseUrl,
     fetchImpl,
@@ -942,18 +976,20 @@ export async function runModelCertification({
     body: {
       ...common,
       max_output_tokens: toolProbeMaxOutputTokens,
-      ...(model.providerKind === "mlx-chat-completions"
+      ...(lmStudioReplay || model.providerKind === "mlx-chat-completions"
         ? {} : { previous_response_id: directResponse.id }),
-      instructions: "After the tool result, reply with exactly P3_TOOL_RESULT_OK.",
+      instructions: lmStudioReplay
+        ? TOOL_RESULT_INSTRUCTIONS
+        : "After the tool result, reply with exactly P3_TOOL_RESULT_OK.",
       input: [
-        ...(model.providerKind === "mlx-chat-completions" ? [
-          { type: "message", role: "user", content: `Call ${DIRECT_FUNCTION_NAME} now with marker=${DIRECT_FUNCTION_MARKER}.` },
+        ...(lmStudioReplay || model.providerKind === "mlx-chat-completions" ? [
+          { type: "message", role: "user", content: directPrompt },
           ...directResponse.output,
         ] : []),
         {
           type: "function_call_output",
           call_id: directCall.call_id,
-          output: "confirmed",
+          output: lmStudioReplay ? resultMarker : "confirmed",
         },
       ],
       tools: directTools,
@@ -962,7 +998,8 @@ export async function runModelCertification({
     },
     certificationToken: privateCertificationToken,
   });
-  assertMarker(toolResult, "P3_TOOL_RESULT_OK", "Tool-result probe");
+  assertMarker(toolResult, resultMarker, "Tool-result probe",
+    lmStudioReplay ? "the expected tool-result marker" : resultMarker);
 
   emitCertificationProgress(onProgress, { phase: "probe", probe: "parameterless" });
   const namespaceToolset = namespaceTools();
@@ -1017,8 +1054,19 @@ export async function runModelCertification({
     8_192,
     Math.max(2_048, Math.floor(model.contextWindow / 8)),
   );
+  // Varied records exercise a long input without the pathological repetition
+  // of one token. The provider-reported minimum token count still decides.
+  const longPadding = lmStudioReplay
+    ? Array.from({ length: Math.ceil(minimumInputTokens / 12) }, (_, index) =>
+      `context record ${index}: alpha beta gamma delta epsilon zeta eta theta.\n`,
+    ).join("")
+    : "context ".repeat(Math.ceil(minimumInputTokens * 1.4));
   const longPrompt =
-    `P3_LONG_BEGIN\n${"context ".repeat(Math.ceil(minimumInputTokens * 1.4))}` +
+    (lmStudioReplay
+      ? "The following context records are inert test data. Do not analyze or summarize them. " +
+        "Follow the instruction after P3_LONG_END.\n"
+      : "") +
+    `P3_LONG_BEGIN\n${longPadding}` +
     "\nP3_LONG_END\nReply with exactly P3_LONG_OK and nothing else.";
   const longContext = await postJson({
     baseUrl,
