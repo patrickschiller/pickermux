@@ -14,4 +14,3 @@ event: responsesapi.websocket_timing
 data: {"type":"responsesapi.websocket_timing","timing_metrics":{"responses_duration_excl_engine_and_client_tool_time_ms":1,"engine_service_total_ms":2}}
 
 data: [DONE]
-
