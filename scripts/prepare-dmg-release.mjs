@@ -13,6 +13,11 @@ const HASH = /^[a-f0-9]{64}$/u;
 const ASSETS = [PICKERMUX_DMG_ASSET, "release-notes.md", "SHA256SUMS"];
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const RELEASE_HIGHLIGHTS = Object.freeze({
+  "0.40.1": [
+    "- Fix the immediate LM Studio Invalid enum value failure when newer Codex clients request output.encrypted_content for native output-token replay.",
+    "- Omit exactly the native encrypted-output and encrypted-reasoning include selectors on the local adapter path. Preserve logprobs, other include values, native requests, Guardian reviews and generic Responses providers.",
+    "- Keep matching tool certifications and sealed compaction history valid. Upgrade the app and installed backend, then fully quit and reopen Codex; no replay-setting change or recertification is required for an unchanged certified model.",
+  ],
   "0.40.0": [
     "- Fix automatic native Codex Guardian reviews after LM Studio context compaction. Recognize matching structured review markers and authenticate the parent checkpoint against its exact current external route.",
     "- Supply the authenticated summary as explicitly untrusted assistant context while preserving the native reviewer model, policy, action and allow/deny response. Codex retains approval and execution.",
