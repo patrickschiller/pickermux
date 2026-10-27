@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createCompactionEnvelopeCodec } from "../src/compaction-envelope.mjs";
-import { isNativeGuardianReview, projectNativeReviewCompaction } from "../src/native-review.mjs";
+import { isNativeGuardianReview, projectNativeReviewCompaction, validateNativeReviewResponse } from "../src/native-review.mjs";
 
 const codec = createCompactionEnvelopeCodec("REVIEW_TEST_SECRET_0123456789_ABCDEFGHIJK");
 const source = Object.freeze({
@@ -132,4 +132,39 @@ test("ambiguous authenticated review sources cannot be admitted", async () => {
     admitSource: async () => { admitted = true; },
   }));
   assert.equal(admitted, false);
+});
+
+test("successful review JSON and SSE preserve their exact bytes while error envelopes fail closed", () => {
+  const completed = { type: "response.completed", response: { id: "review-response", status: "completed", output: [], error: null } };
+  const json = Buffer.from(' { "status" : "completed", "output": [], "error": null }\n');
+  assert.equal(validateNativeReviewResponse(json, "application/json"), json);
+  for (const data of [
+    "event: response.completed\r\ndata: " + JSON.stringify(completed) + "\r\n\r\ndata: [DONE]\r\n\r\n",
+    ": keepalive\n\ndata: " + JSON.stringify(completed) + "\n\n",
+    'data: {"type":"response.completed","response":{"id":"review-response","usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0}}}\n\n',
+  ]) {
+    const bytes = Buffer.from(data);
+    assert.equal(validateNativeReviewResponse(bytes, "text/event-stream"), bytes);
+  }
+  for (const [contentType, payload, code] of [
+    ["application/json", '{"error":{"message":"native-account-private-canary"}}', "REVIEW_SERVICE_ERROR"],
+    ["application/json", '{"status":"failed","output":[]}', "REVIEW_SERVICE_ERROR"],
+    ["application/json", "not-json", "UPSTREAM_RESPONSE_ERROR"],
+    ["application/json", '{"status":"completed","output":{}}', "UPSTREAM_RESPONSE_ERROR"],
+    ["text/event-stream", 'data: {"type":"response.failed","response":{"error":{"message":"native-account-private-canary"}}}\n\n', "REVIEW_SERVICE_ERROR"],
+    ["text/event-stream", 'data: {"type":"response.incomplete"}\n\n', "REVIEW_SERVICE_ERROR"],
+    ["text/event-stream", 'data: {"type":"response.created"}\n\n', "UPSTREAM_RESPONSE_ERROR"],
+    ["text/event-stream", 'data: [DONE]\n\n', "UPSTREAM_RESPONSE_ERROR"],
+    ["text/event-stream", 'data: {"type":"unknown"}\n\n', "UPSTREAM_RESPONSE_ERROR"],
+    ["text/event-stream", "event: error\n\n" + "data: " + JSON.stringify(completed) + "\n\n", "UPSTREAM_RESPONSE_ERROR"],
+    ["text/event-stream", 'data: {"type":"response.completed","response":{}}\n\n', "UPSTREAM_RESPONSE_ERROR"],
+    ["text/event-stream", "data: " + JSON.stringify(completed) + "\n\nevent: response.completed\ndata: [DONE]\n\n", "UPSTREAM_RESPONSE_ERROR"],
+    ["text/event-stream", "event: response.failed\ndata: " + JSON.stringify(completed) + "\n\n", "UPSTREAM_RESPONSE_ERROR"],
+    ["text/event-stream", "data: " + JSON.stringify(completed) + "\n\ndata: " + JSON.stringify(completed) + "\n\n", "UPSTREAM_RESPONSE_ERROR"],
+  ]) assert.throws(() => validateNativeReviewResponse(Buffer.from(payload), contentType), (error) => {
+    assert.equal(error.code, code);
+    assert.doesNotMatch(error.message, /native-account-private-canary/u);
+    return true;
+  });
+  assert.throws(() => validateNativeReviewResponse(Buffer.from([0xff]), "application/json"), { code: "UPSTREAM_RESPONSE_ERROR" });
 });

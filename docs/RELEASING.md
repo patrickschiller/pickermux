@@ -188,7 +188,8 @@ The deterministic integration tests use synthetic encrypted checkpoints and
 loopback upstreams, including original version-1 state after a proxy restart.
 They cover native JSON allow/deny results and SSE verdict bytes, gzip request
 projection, unchanged native traffic without bridge state, credential isolation,
-source certification denial, changed/removed source routes, bounded candidate
+buffered completion and redacted HTTP/JSON/SSE failures, the native SSE terminal
+that omits status/output, source certification denial, changed/removed source routes, bounded candidate
 work and rejected mixed, malformed, stale or tampered state. Unmarked native
 switches, other providers and unknown Guardian modes remain rejected.
 

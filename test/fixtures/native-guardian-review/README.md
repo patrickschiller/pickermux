@@ -16,6 +16,12 @@ Protocol provenance is official Codex revision
   credits reviewer header.
 - [Checkpoint policy](https://github.com/openai/codex/blob/4d3ed3f3b47d39f8fe0b60df74a20f528b6fc618/codex-rs/core/src/guardian/review_session_context.rs)
   supplies a single parent checkpoint to the separate reviewer.
+- [Native SSE fixtures](https://github.com/openai/codex/blob/4d3ed3f3b47d39f8fe0b60df74a20f528b6fc618/codex-rs/core/tests/common/responses.rs)
+  and the [client parser](https://github.com/openai/codex/blob/4d3ed3f3b47d39f8fe0b60df74a20f528b6fc618/codex-rs/codex-api/src/sse/responses.rs)
+  establish that the completed event can carry ID and usage without duplicating
+  status/output. The response guard accepts that form and preserves successful
+  bytes. It buffers only projected review replies within 32 MiB and rejects
+  HTTP/JSON/SSE failures before any output reaches the external parent's error.
 
 The two required markers are the HTTP `x-openai-subagent: guardian` header
 and `client_metadata["x-openai-subagent"] = "guardian"`. An optional

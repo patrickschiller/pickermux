@@ -395,9 +395,14 @@ input and client metadata remain semantically unchanged. There is no LM Studio
 resume instruction and no bridge-generated approval. The JSON request is bounded
 and its length and compression headers are corrected. The native response is
 relayed unchanged on success, including a deny result or streaming output.
-HTTP failures are replaced by fixed `REVIEW_SERVICE_ERROR` messages and
-unrecognized successful content types are rejected, preventing native error
-bodies or account headers from reaching the external parent's tool error. No review
+Projected replies are buffered within the existing 32 MiB response limit until
+validation completes. HTTP failures, JSON error envelopes and failed/incomplete
+SSE terminals use fixed `REVIEW_SERVICE_ERROR` messages. Unknown content types,
+malformed replies and missing successful terminals are rejected. Successful
+JSON and SSE bytes stay intact, including the native completion form that
+provides response ID and usage without repeating output/status. This prevents
+native error bodies or account headers from reaching the external parent's
+tool error; the internal review receives its output after full validation. No review
 payload or summary is logged, cached or persisted by this feature.
 
 Native Guardian traffic without a bridge checkpoint retains its original bytes.

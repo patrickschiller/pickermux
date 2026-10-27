@@ -1017,6 +1017,7 @@ test("native Guardian reviews authenticate external checkpoints and preserve all
         assert.ok(upstream.body.input[0].content[0].text.endsWith(SUMMARY));
         assert.equal(upstream.headers.authorization, "Bearer " + NATIVE_SECRET);
         assert.equal(upstream.headers["content-encoding"], undefined);
+        assert.equal(upstream.headers["accept-encoding"], "identity");
         assert.equal(Number(upstream.headers["content-length"]), upstream.raw.length);
         assert.doesNotMatch(upstream.raw.toString(), /pickermux\.compaction\.|external-credential/u);
         assert.equal(proxy.credentialReads(), initialCredentials);
@@ -1031,7 +1032,7 @@ test("native Guardian reviews authenticate external checkpoints and preserve all
 });
 
 test("native Guardian streams preserve verdict bytes after checkpoint projection and fail closed without a key", async (t) => {
-  const sse = 'data: {"type":"response.completed","response":{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"deny"}]}]}}\n\n';
+  const sse = 'data: {"type":"response.completed","response":{"id":"review-response","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"deny"}]}]}}\n\n';
   const proxy = await harness(t, { respond: ({ body, response }) => {
     if (body.model !== NATIVE_MODEL) return jsonResponse(response, completedResponse());
     response.writeHead(200, { "content-type": "text/event-stream" });
@@ -1069,6 +1070,26 @@ test("projected Guardian errors cannot disclose native upstream bodies or accoun
       assert.equal(proxy.credentialReads(), 1);
     });
   }
+});
+
+test("projected Guardian 200-error envelopes and incomplete streams are redacted before any bytes escape", async (t) => {
+  for (const [contentType, payload, code] of [
+    ["application/json", '{"error":{"message":"native-account-private-canary"}}', "REVIEW_SERVICE_ERROR"],
+    ["application/json", '{"status":"completed","output":{}}', "UPSTREAM_RESPONSE_ERROR"],
+    ["text/event-stream", 'data: {"type":"response.created"}\n\ndata: {"type":"response.failed","response":{"error":{"message":"native-account-private-canary"}}}\n\n', "REVIEW_SERVICE_ERROR"],
+    ["text/event-stream", 'data: {"type":"response.created"}\n\n', "UPSTREAM_RESPONSE_ERROR"],
+  ]) await t.test(contentType + code, async (subtest) => {
+    const proxy = await harness(subtest, { respond: ({ body, response }) => {
+      if (body.model !== NATIVE_MODEL) return jsonResponse(response, completedResponse());
+      response.writeHead(200, { "content-type": contentType, "x-native-account": "private-account" });
+      response.end(payload);
+    } });
+    const item = compactionItem(await send({ port: proxy.port, body: compactRequest() }));
+    const result = await send({ port: proxy.port, body: guardianRequest(item), headers: REVIEW_HEADERS });
+    assertError(result, 502, code);
+    assert.equal(result.headers["x-native-account"], undefined);
+    assert.doesNotMatch(result.body.toString(), /response.created|native-account-private-canary/u);
+  });
 });
 
 test("Guardian projection fails closed on stale state, forged markers, source changes and pending receipts", async (t) => {

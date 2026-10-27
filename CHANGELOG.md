@@ -25,6 +25,10 @@ The 0.23.x and 0.24.x entries are local milestones included in the public
   certification admission and an unchanged immutable route. Bound authentication
   to 256 source candidates; reject malformed, mixed, stale, tampered or ambiguous
   state before upstream I/O. No provider credentials or external calls are used.
+- Buffer projected native review replies within the existing 32 MiB response
+  bound and validate completion before forwarding successful bytes unchanged.
+  Redact HTTP failures, JSON error envelopes and failed/incomplete SSE replies
+  before native account details can reach an external parent's tool error.
 
 ### Compatibility
 

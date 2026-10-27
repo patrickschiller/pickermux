@@ -30,7 +30,11 @@ import {
 import { isCertificationRequest } from "./certification-transport.mjs";
 import { isValidProviderId } from "./provider-id.mjs";
 import { createTokenUsageObserver } from "./token-usage.mjs";
-import { isNativeGuardianReview, projectNativeReviewCompaction } from "./native-review.mjs";
+import {
+  isNativeGuardianReview,
+  projectNativeReviewCompaction,
+  validateNativeReviewResponse,
+} from "./native-review.mjs";
 import {
   createMlxChatRequest,
   createMlxChatSseTransformer,
@@ -1587,7 +1591,9 @@ function relayUpstream({
             }
           }
           transformMode =
-            mlxResponse
+            nativeReviewResponse
+              ? "review-buffer"
+              : mlxResponse
               ? mlxResponse.stream ? "mlx-sse" : "mlx-json"
               : liveResponse
               ? "live-sdp"
@@ -1658,7 +1664,7 @@ function relayUpstream({
             limits.streamIdleTimeoutMs,
           );
           try {
-            if (["json", "mlx-json", "search-json", "compaction-json", "live-sdp"].includes(transformMode)) {
+            if (["json", "mlx-json", "search-json", "compaction-json", "live-sdp", "review-buffer"].includes(transformMode)) {
               jsonBytes += chunk.length;
               const maxBytes = liveResponse
                 ? MAX_LIVE_RESPONSE_BYTES
@@ -1684,7 +1690,11 @@ function relayUpstream({
         incoming.once("end", () => {
           if (settled || terminating) return;
           try {
-            if (transformMode === "live-sdp") {
+            if (transformMode === "review-buffer") {
+              writeChunk(validateNativeReviewResponse(
+                Buffer.concat(jsonChunks), String(incoming.headers["content-type"]),
+              ));
+            } else if (transformMode === "live-sdp") {
               const projected = projectLiveResponse(Buffer.concat(jsonChunks), incoming.headers);
               if (!response.destroyed && !response.headersSent) {
                 response.writeHead(incoming.statusCode, {
@@ -1910,6 +1920,7 @@ export function createResponsesProxy({
         if (nativeReview && ownCompactionState) {
           delete headers["content-encoding"];
           headers["content-type"] = "application/json";
+          headers["accept-encoding"] = "identity";
         }
       } else {
         try {

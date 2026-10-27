@@ -511,6 +511,7 @@ test("0.40.0 Guardian release preserves exact metadata and updates older compact
   assert.match(body, /ordinary model-switch rejection.*Existing compacted history and matching tool certifications remain valid/u);
   assert.match(body, /Automatic review sends context to OpenAI even for local task models/u);
   assert.match(body, /changes no permission settings, bypasses no sandbox and guarantees no approval/u);
+  assert.match(body, /Buffer projected review replies within 32 MiB.*Redact native HTTP, JSON and SSE errors/u);
   assert.deepEqual(parseDmgReleaseRecord(body, { version: "0.40.0", file: PICKERMUX_DMG_ASSET }), {
     version: "0.40.0", file: PICKERMUX_DMG_ASSET,
     sha256: result.sha256, signing: "developer-id-notarized",

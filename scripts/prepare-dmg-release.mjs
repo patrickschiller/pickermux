@@ -16,6 +16,7 @@ const RELEASE_HIGHLIGHTS = Object.freeze({
   "0.40.0": [
     "- Fix automatic native Codex Guardian reviews after LM Studio context compaction. Recognize matching structured review markers and authenticate the parent checkpoint against its exact current external route.",
     "- Supply the authenticated summary as explicitly untrusted assistant context while preserving the native reviewer model, policy, action and allow/deny response. Codex retains approval and execution.",
+    "- Buffer projected review replies within 32 MiB, validate native JSON/SSE completion, and preserve successful bytes. Redact native HTTP, JSON and SSE errors before they can enter an external parent's tool-result path.",
     "- Require current tool certification and unchanged route identity. Bound source authentication and reject stale, tampered, mixed or ambiguous checkpoints before upstream I/O; resolve no external credentials and contact no external provider for the review.",
     "- Keep ordinary model-switch rejection, other provider boundaries and native bytes without bridge checkpoints unchanged. Existing compacted history and matching tool certifications remain valid.",
     "- Automatic review sends context to OpenAI even for local task models, according to Codex's enabled review policy. This release changes no permission settings, bypasses no sandbox and guarantees no approval. After the backend upgrade, refresh the picker and fully quit and reopen Codex.",

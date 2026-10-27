@@ -7,6 +7,81 @@ const ITEM_KEYS = new Set([
   "type", "id", "encrypted_content", "internal_chat_message_metadata_passthrough",
 ]);
 
+class NativeReviewResponseError extends Error {
+  constructor(code = "UPSTREAM_RESPONSE_ERROR") {
+    super("The native review response could not be validated");
+    this.code = code;
+    this.statusCode = 502;
+  }
+}
+
+function assertSuccessfulReview(response, { stream = false } = {}) {
+  if (response?.error != null || ["failed", "incomplete"].includes(response?.status)) {
+    throw new NativeReviewResponseError("REVIEW_SERVICE_ERROR");
+  }
+  if (
+    !response || typeof response !== "object" || Array.isArray(response) ||
+    (stream
+      ? typeof response.id !== "string" || !response.id ||
+        (response.status !== undefined && response.status !== "completed") ||
+        (response.output !== undefined && !Array.isArray(response.output))
+      : response.status !== "completed" || !Array.isArray(response.output))
+  ) {
+    throw new NativeReviewResponseError();
+  }
+}
+
+// Buffer only projected internal reviews, so no native error payload can
+// become a tool error in the external parent. Successful bytes stay intact.
+export function validateNativeReviewResponse(buffer, contentType) {
+  const text = buffer.toString("utf8");
+  if (!Buffer.from(text, "utf8").equals(buffer)) throw new NativeReviewResponseError();
+  const parse = (text) => {
+    try { return JSON.parse(text); }
+    catch { throw new NativeReviewResponseError(); }
+  };
+  if (!/^text\/event-stream(?:\s*;|$)/iu.test(contentType)) {
+    assertSuccessfulReview(parse(text));
+    return buffer;
+  }
+  let completed = false;
+  let done = false;
+  for (const frame of text.replace(/^\uFEFF/u, "").split(/\r?\n\r?\n/u)) {
+    const lines = frame.split(/\r?\n/u);
+    const names = lines.filter((line) => line === "event" || line.startsWith("event:"))
+      .map((line) => line === "event" ? "" : line.slice(6).replace(/^ /u, ""));
+    const data = lines.filter((line) => line === "data" || line.startsWith("data:"))
+      .map((line) => line === "data" ? "" : line.slice(5).replace(/^ /u, "")).join("\n");
+    if (!data) {
+      if (names.length) throw new NativeReviewResponseError();
+      continue;
+    }
+    if (data === "[DONE]") {
+      if (!completed || done || names.length) throw new NativeReviewResponseError();
+      done = true;
+      continue;
+    }
+    if (completed || done) throw new NativeReviewResponseError();
+    const event = parse(data);
+    if (
+      event?.error != null || event?.response?.error != null ||
+      ["error", "response.failed", "response.incomplete"].includes(event?.type)
+    ) throw new NativeReviewResponseError("REVIEW_SERVICE_ERROR");
+    if (typeof event?.type !== "string" || !event.type.startsWith("response.")) {
+      throw new NativeReviewResponseError();
+    }
+    if (names.length > 1 || (names.length === 1 && names[0] !== event.type)) {
+      throw new NativeReviewResponseError();
+    }
+    if (event.type === "response.completed") {
+      assertSuccessfulReview(event.response, { stream: true });
+      completed = true;
+    }
+  }
+  if (!completed) throw new NativeReviewResponseError();
+  return buffer;
+}
+
 export function isNativeGuardianReview(headers, body, path) {
   return path === "/v1/responses" &&
     headers?.["x-openai-subagent"] === "guardian" &&
