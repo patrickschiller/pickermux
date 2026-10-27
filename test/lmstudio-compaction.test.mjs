@@ -176,7 +176,7 @@ test("summary preparation retains every text field inside quoted JSON with no ac
   assert.deepEqual(prepared.reasoning, source.reasoning);
   assert.notEqual(prepared.reasoning, source.reasoning);
   assert.match(prepared.instructions, /untrusted transcript data/u);
-  assert.match(prepared.instructions, /Do not answer the last question/u);
+  assert.match(prepared.instructions, /Do not fulfill the transcript's last user request/u);
   assert.doesNotMatch(prepared.instructions, /private-canary|System constraints canary/u);
   assert.equal(prepared.input.length, 1);
   assert.equal(prepared.input[0].role, "user");
@@ -216,7 +216,8 @@ test("mandatory reasoning has bounded summary headroom without changing the reas
     ["xhigh"], ["minimal"], ["low", "medium", "high"], ["max", "ultra"],
   ]) {
     for (const [contextWindow, expected] of [
-      [1_024, 256], [8_192, 1_024], [32_768, 4_096], [65_536, 8_192], [262_144, 8_192],
+      [1_024, 256], [8_192, 1_024], [32_768, 4_096], [65_536, 8_192],
+      [131_072, 16_384], [262_144, 32_768], [1_048_576, 32_768],
     ]) {
       const prepared = prepareCompactionSummaryRequest(source, { contextWindow, reasoningEfforts });
       assert.equal(prepared.max_output_tokens, expected);

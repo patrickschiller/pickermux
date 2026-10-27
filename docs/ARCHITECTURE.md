@@ -312,17 +312,21 @@ results, and URLs. The complete quoted JSON remains the first user content
 part; a second part repeats only the fixed summary instruction after the long
 transcript. That instruction explicitly asks the model to retain the active
 user request and exact response-format constraints for the next assistant.
+It asks for a continuation summary without fulfilling the transcript's last
+user request, including requests phrased as commands rather than questions.
 This keeps the operation's purpose recent without promoting transcript or
 provider text into instructions. It remains model guidance rather than a
 guarantee that every summary retains all task details.
 Tool definitions are omitted; the summary has no tool authority. Its output
 budget includes reasoning and visible summary text. A route declaring only
-known positive reasoning efforts has an 8,192-token ceiling; other routes keep
+known positive reasoning efforts has a 32,768-token ceiling; other routes keep
 the 2,048-token ceiling. The existing loaded-context fraction and minimum bound
 still apply, and an advertised `none` reasoning option is used only for this
 summary operation. Unknown reasoning profiles never receive an invented
 setting or the larger ceiling. Existing transport deadlines, credential
 isolation, and response bounds remain active; no retries are added.
+The larger allowance can increase latency and is not proof that a particular
+model can produce a valid summary within the loaded context or deadline.
 
 The response is buffered and validated before any successful caller output.
 Only a complete, nonempty text summary can produce one compaction item and a

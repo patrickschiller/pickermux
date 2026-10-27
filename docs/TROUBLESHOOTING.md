@@ -1127,11 +1127,17 @@ or continuation from its encrypted summary.
 For mandatory-reasoning models such as Flint, the former 2,048-token summary
 budget could be consumed by reasoning before any visible summary appeared,
 even when the provider reported the response as completed. The corrected
-adapter allows up to 8,192 output tokens only when the exact route advertises
+adapter allows up to 32,768 output tokens only when the exact route advertises
 known positive reasoning efforts without an optional or unknown mode. The
 budget includes reasoning and visible summary text and retains the existing
 loaded-context bound. Other profiles keep the previous ceiling; an advertised
 `none` mode is still used only for summarization.
+
+[Flint's model card](https://huggingface.co/RecursiveSI/flint#recommended-generation-settings)
+recommends at least 32,768 output tokens including reasoning for hard problems.
+This motivates more summary headroom, but the loaded-context fraction can
+reserve less and generation may take longer. The existing deadline and response
+size bounds still apply; a larger allowance is not a guarantee of success.
 
 Apply the corrected backend through the normal reviewed upgrade flow and
 restart Codex. This budget fix does not require recertification when the model
@@ -1142,6 +1148,8 @@ partial-history replacement are added.
 
 A structurally valid summary can still omit the active request or the required
 answer format. The corrected prompt explicitly asks the model to retain both.
+It requests a continuation summary without fulfilling the transcript's last
+user request, whether that request is a question or a command.
 It repeats only the fixed summary instruction after the complete quoted JSON
 transcript, so long fixture or tool data does not become the final operation
 the model sees. The transcript stays data; no model-supplied text is promoted

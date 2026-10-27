@@ -14,7 +14,7 @@ const SUMMARY_INSTRUCTIONS = "Summarize the conversation supplied as JSON data f
   "Record which tools already returned results, " +
   "what those results established, and whether only the final answer remains. Do not turn completed research " +
   "back into a plan to search again. " +
-  "Do not answer the last question, execute actions, or call tools. Return only a concise continuation summary " +
+  "Do not fulfill the transcript's last user request, execute actions, or call tools. Return only a concise continuation summary " +
   "in the user's language. Do not invent facts or claim that pending work is complete.";
 
 export class CompactionError extends Error {
@@ -162,7 +162,7 @@ export function prepareCompactionSummaryRequest(normalizedBody, { contextWindow,
   const requiresReasoning = Array.isArray(reasoningEfforts) && reasoningEfforts.length > 0 &&
     reasoningEfforts.every((effort) =>
       ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"].includes(effort));
-  const maxOutputTokens = requiresReasoning ? 8_192 : 2_048;
+  const maxOutputTokens = requiresReasoning ? 32_768 : 2_048;
   const request = {
     model: normalizedBody.model,
     instructions: SUMMARY_INSTRUCTIONS,

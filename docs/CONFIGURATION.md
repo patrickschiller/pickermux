@@ -376,7 +376,8 @@ response-format constraints. The complete quoted JSON is the first user
 content part. A second part repeats only the trusted fixed summary instruction
 after that data, keeping the operation's purpose recent without treating
 transcript content as instructions. The continuation prompt asks the model to
-reuse recorded results.
+reuse recorded results. The summarizer must record the transcript's last user
+request without fulfilling it, even when it is a command rather than a question.
 Missing, stale, or conflicting evidence and instructions requiring a fresh
 check still permit another lookup. This is model guidance, not a tool blocker
 or a guarantee against repeated searches or omitted task details.
@@ -398,11 +399,18 @@ on the model, hardware, cache state, and number of tool/compaction steps.
 
 The summary output budget includes reasoning and visible text. Its usual
 ceiling is 2,048 tokens. When the exact route declares a nonempty list of only
-known positive reasoning efforts, the ceiling is 8,192 tokens so mandatory
+known positive reasoning efforts, the ceiling is 32,768 tokens so mandatory
 reasoning has room before the visible summary. Optional or unknown reasoning
 profiles retain the original ceiling. Both budgets still use the existing
 loaded-context fraction and minimum bound; the 16 KiB visible-summary and
 256 KiB response bounds remain unchanged. No reasoning setting is invented.
+
+This headroom is motivated by
+[Flint's recommended generation settings](https://huggingface.co/RecursiveSI/flint#recommended-generation-settings),
+which call for at least 32,768 output tokens, including reasoning, on hard
+problems. The loaded-context fraction can impose a lower limit. The larger
+allowance can increase latency; it does not guarantee summary quality, and the
+existing transport deadlines still apply.
 
 The next ordinary request still includes Codex's system context, tools, and
 retained messages. Compaction therefore cannot guarantee that the full request
