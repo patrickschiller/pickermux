@@ -30,6 +30,7 @@ import {
 import { isCertificationRequest } from "./certification-transport.mjs";
 import { isValidProviderId } from "./provider-id.mjs";
 import { createTokenUsageObserver } from "./token-usage.mjs";
+import { isNativeGuardianReview, projectNativeReviewCompaction } from "./native-review.mjs";
 import {
   createMlxChatRequest,
   createMlxChatSseTransformer,
@@ -246,6 +247,7 @@ const DEFAULT_LIMITS = Object.freeze({
 const PUBLIC_ERROR_CODES = new Set([
   "COMPACTION_FAILED",
   "COMPACTION_STATE_ROUTE_MISMATCH",
+  "REVIEW_SERVICE_ERROR",
   "COMPACTION_UNAVAILABLE",
   "INVALID_COMPACTION_REQUEST",
   "INVALID_COMPACTION_STATE",
@@ -1291,6 +1293,7 @@ function publicProxyError(error) {
   const clientMessages = {
     COMPACTION_FAILED: "The selected model could not complete context compaction; the previous conversation history was not replaced",
     COMPACTION_STATE_ROUTE_MISMATCH: "This compacted conversation belongs to an external model route; continue with that model or start a new task",
+    REVIEW_SERVICE_ERROR: "The native approval review could not be completed",
     COMPACTION_UNAVAILABLE: "Context compaction is unavailable for this external model route; update PickerMux and refresh its catalog",
     INVALID_COMPACTION_REQUEST: "The context-compaction request does not match the supported Codex contract",
     INVALID_COMPACTION_STATE: "This compacted conversation cannot be read with the current installation and model configuration; restore the original configuration or start a new task",
@@ -1366,6 +1369,7 @@ function relayUpstream({
   transports,
   lookup,
   responseCodec,
+  nativeReviewResponse = false,
   webSearchResponse = false,
   liveResponse = false,
   compactionResponse,
@@ -1472,6 +1476,24 @@ function relayUpstream({
           incoming.statusCode,
         );
         try {
+          if (nativeReviewResponse) {
+            const status = Number(incoming.statusCode);
+            if (status < 200 || status >= 300) {
+              // A failed review can become a tool error in the external parent.
+              // Never expose native error bodies or account headers there.
+              throw new ResponsesProxyError("Native approval review failed", {
+                statusCode: status >= 400 && status <= 599 ? status : 502,
+                code: "REVIEW_SERVICE_ERROR",
+              });
+            }
+            if (!/^(?:text\/event-stream|application\/(?:json|[a-z0-9.+-]+\+json))(?:\s*;|$)/iu.test(
+              String(incoming.headers["content-type"] ?? ""),
+            )) {
+              throw new ResponsesProxyError("Unknown native review response format", {
+                code: "UPSTREAM_RESPONSE_ERROR",
+              });
+            }
+          }
           if (mlxResponse) {
             const status = Number(incoming.statusCode);
             if (status < 200 || status >= 300) {
@@ -1842,7 +1864,10 @@ export function createResponsesProxy({
       let compactionResponse;
       let mlxResponse;
 
-      if (route.providerKind !== "lmstudio-responses" && hasOwnCompactionState(decoded.input)) {
+      const ownCompactionState = hasOwnCompactionState(decoded.input);
+      const nativeReview = kind === "native" &&
+        isNativeGuardianReview(request.headers, decoded, path);
+      if (route.providerKind !== "lmstudio-responses" && ownCompactionState && !nativeReview) {
         // A PickerMux envelope is scoped to its original external route. Do
         // not send its ciphertext to a native or different provider on switch.
         throw new ResponsesProxyError("Compacted context belongs to another route", {
@@ -1854,7 +1879,38 @@ export function createResponsesProxy({
       if (kind === "native") {
         target = upstreamUrl(nativeBase, path);
         outboundBody = rawBody;
+        if (nativeReview && ownCompactionState) {
+          if (!compactionCodec) throw compactionUnavailable();
+          const projected = await projectNativeReviewCompaction({
+            body: decoded, registry, codec: compactionCodec,
+            bindingForRoute: (source) => compactionBinding({ model: source.slug }, source),
+            admitSource: async (source) => {
+              try {
+                await externalRequestGate({
+                  publicModelId: source.slug,
+                  certificationRequest: false,
+                  requiresDirectReceipt: true,
+                  requiresEfficientFidelityReceipt: source.clientToolSearchEnabled === true,
+                });
+              } catch {
+                throw new ResponsesProxyError("Review source certification is unavailable", {
+                  statusCode: 503, code: "MODEL_CERTIFICATION_PENDING",
+                });
+              }
+            },
+          });
+          outboundBody = Buffer.from(JSON.stringify(projected), "utf8");
+          if (outboundBody.length > limits.requestBodyBytes) {
+            throw new ResponsesProxyError("Review request is too large", {
+              statusCode: 413, code: "BODY_TOO_LARGE",
+            });
+          }
+        }
         headers = buildNativeRequestHeaders(request.headers, outboundBody.length);
+        if (nativeReview && ownCompactionState) {
+          delete headers["content-encoding"];
+          headers["content-type"] = "application/json";
+        }
       } else {
         try {
           await externalRequestGate({
@@ -2003,6 +2059,7 @@ export function createResponsesProxy({
           transports,
           lookup,
           responseCodec,
+          nativeReviewResponse: nativeReview && ownCompactionState,
           compactionResponse,
           mlxResponse,
           tokenUsageObserver,

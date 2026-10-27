@@ -1,0 +1,30 @@
+# Native Guardian review contract
+
+The tests use synthetic requests and freshly generated test-only encrypted
+checkpoints. No captured prompts, account data, request identifiers, credentials
+or usable capability URLs are stored here.
+
+Protocol provenance is official Codex revision
+`4d3ed3f3b47d39f8fe0b60df74a20f528b6fc618`:
+
+- [Client transport](https://github.com/openai/codex/blob/4d3ed3f3b47d39f8fe0b60df74a20f528b6fc618/codex-rs/core/src/client.rs)
+  emits the subagent transport header and recognizes the optional Guardian
+  reviewer header.
+- [Guardian tests](https://github.com/openai/codex/blob/4d3ed3f3b47d39f8fe0b60df74a20f528b6fc618/codex-rs/core/tests/suite/guardian_review.rs)
+  identify review input by the structured client metadata, verify matching
+  subagent transport on the shared client path and distinguish the optional
+  credits reviewer header.
+- [Checkpoint policy](https://github.com/openai/codex/blob/4d3ed3f3b47d39f8fe0b60df74a20f528b6fc618/codex-rs/core/src/guardian/review_session_context.rs)
+  supplies a single parent checkpoint to the separate reviewer.
+
+The two required markers are the HTTP `x-openai-subagent: guardian` header
+and `client_metadata["x-openai-subagent"] = "guardian"`. An optional
+`x-codex-guardian` header must equal `reviewer`. These identify an operation
+from the existing private-capability client; they are not an approval or a new
+authentication credential. The bridge separately authenticates the ciphertext
+against an exact current external route and applies its certification gate.
+
+Unknown modes and incomplete markers fail closed. Ordinary native/provider
+switches retain their rejection. The summary is assistant data, not trusted
+user authorization or reviewer policy. Native allow and deny output is relayed
+unchanged; PickerMux does not interpret it or execute the proposed command.

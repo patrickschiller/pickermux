@@ -12,6 +12,30 @@ published as GitHub Releases.
 The 0.23.x and 0.24.x entries are local milestones included in the public
 0.30.0 release; they were not published separately.
 
+## [0.40.0] - 2026-10-27
+
+### Added
+
+- Support native Codex Guardian approval reviews after LM Studio context
+  compaction. Recognize matching structured transport/client markers, authenticate
+  one checkpoint against its exact current source route and supply the summary
+  as explicitly untrusted assistant context. Codex retains its native review
+  policy, action, verdict and command execution.
+- Require a current tool-enabled LM Studio route, successful persistent
+  certification admission and an unchanged immutable route. Bound authentication
+  to 256 source candidates; reject malformed, mixed, stale, tampered or ambiguous
+  state before upstream I/O. No provider credentials or external calls are used.
+
+### Compatibility
+
+- Preserve ordinary model-switch rejection, all other provider boundaries and
+  native bytes without bridge state, including Guardian traffic. Keep existing
+  envelopes, model hashes and matching certifications valid. Upgrade the
+  installed backend, refresh the picker and fully restart Codex.
+- Automatic review sends context to OpenAI even for local task models. This
+  follows Codex's enabled review policy and does not enable automatic review,
+  bypass the sandbox, guarantee approval or change user permission settings.
+
 ## [0.31.2] - 2026-10-27
 
 ### Added
@@ -1132,6 +1156,7 @@ confirm the release date before tagging. See the
   restores the previous distribution state when activation fails.
 
 [Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.31.1...HEAD
+[0.40.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.40.0
 [0.31.2]: https://github.com/patrickschiller/pickermux/releases/tag/v0.31.2
 [0.31.1]: https://github.com/patrickschiller/pickermux/releases/tag/v0.31.1
 [0.31.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.31.0

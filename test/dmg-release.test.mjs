@@ -500,6 +500,46 @@ test("0.31.2 sandbox guidance release preserves the DMG update from 0.31.1", asy
   }
 });
 
+test("0.40.0 Guardian release preserves exact metadata and updates older compaction releases", async (t) => {
+  const value = await fixture(t, "0.40.0");
+  const result = await prepareDmgRelease({ ...value, tag: "v0.40.0" });
+  const body = await readFile(path.join(value.outputDirectory, "release-notes.md"), "utf8");
+  assert.match(body, /Changes in v0\.40\.0/u);
+  assert.match(body, /Guardian reviews after LM Studio context compaction/u);
+  assert.match(body, /explicitly untrusted assistant context.*native reviewer model, policy, action and allow\/deny response/u);
+  assert.match(body, /reject stale, tampered, mixed or ambiguous.*resolve no external credentials/u);
+  assert.match(body, /ordinary model-switch rejection.*Existing compacted history and matching tool certifications remain valid/u);
+  assert.match(body, /Automatic review sends context to OpenAI even for local task models/u);
+  assert.match(body, /changes no permission settings, bypasses no sandbox and guarantees no approval/u);
+  assert.deepEqual(parseDmgReleaseRecord(body, { version: "0.40.0", file: PICKERMUX_DMG_ASSET }), {
+    version: "0.40.0", file: PICKERMUX_DMG_ASSET,
+    sha256: result.sha256, signing: "developer-id-notarized",
+  });
+  assert.deepEqual(await verifyDmgPublication({ directory: value.outputDirectory, tag: "v0.40.0" }), result);
+  const expectedUrl = `https://github.com/patrickschiller/pickermux/releases/download/v0.40.0/${PICKERMUX_DMG_ASSET}`;
+  const release = {
+    tag_name: "v0.40.0", draft: false, prerelease: false, body,
+    assets: [{ name: PICKERMUX_DMG_ASSET, browser_download_url: expectedUrl }],
+  };
+  for (const currentVersion of ["0.31.1", "0.31.2"]) {
+    assert.deepEqual(await checkForCompanionUpdate({
+      currentVersion, fetchImpl: async () => Response.json(release),
+    }), {
+      status: "available", distribution: "dmg", currentVersion, targetVersion: "0.40.0",
+      assets: { [PICKERMUX_DMG_ASSET]: expectedUrl }, diskImageSha256: result.sha256,
+    });
+  }
+  for (const mutate of [
+    (candidate) => { candidate.body += dmgReleaseMarker({ version: "0.40.0", sha256: result.sha256 }); },
+    (candidate) => { candidate.assets[0].browser_download_url = expectedUrl.replace("v0.40.0", "v0.31.2"); },
+  ]) {
+    const candidate = structuredClone(release); mutate(candidate);
+    await assert.rejects(checkForCompanionUpdate({
+      currentVersion: "0.31.2", fetchImpl: async () => Response.json(candidate),
+    }), { code: "UPDATE_INVALID" });
+  }
+});
+
 test("later publication guidance keeps the Config navigation name", async (t) => {
   const value = await fixture(t, "0.24.7");
   await prepareDmgRelease({ ...value, tag: "v0.24.7" });

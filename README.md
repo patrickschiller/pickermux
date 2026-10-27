@@ -81,6 +81,11 @@ Codex's approval flow when permitted. Individual approvals may still be needed;
 PickerMux does not change execution permissions. After a backend upgrade,
 refresh the picker and fully quit and reopen Codex to load updated guidance.
 
+Automatic Codex Guardian reviews also work with PickerMux's compacted LM Studio
+history. Recognized native reviews receive the authenticated summary as untrusted
+context; Codex still decides approval. This review context goes to OpenAI when
+automatic review is enabled, even with a local task model.
+
 The revised LM Studio certification checks tool-result continuation with the
 full conversation, uses numbered records for its long-context test, and allows
 more output tokens when discovered metadata requires reasoning. After upgrading

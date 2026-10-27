@@ -1,6 +1,6 @@
 # PickerMux Architecture
 
-This document describes PickerMux v0.31.2.
+This document describes PickerMux v0.40.0.
 It is intended for contributors, security reviewers, and users who want to
 understand what runs on their Mac.
 
@@ -354,9 +354,10 @@ message status. The resume boundary prevents continuation of the summary text.
 It does not promote model text, add tool authority, or trigger another inference.
 Later conversation input and a new compaction do not receive this instruction.
 
-Native and other provider routes refuse the entire PickerMux envelope family,
-including retyped input items, so model switching cannot forward private bridge
-state into another trust domain. All other native request bytes stay unchanged.
+Ordinary native and other provider routes refuse the entire PickerMux envelope
+family, including retyped input items, so model switching cannot forward private
+bridge state into another trust domain. The specific native Guardian-review
+exception is described below. All other native request bytes stay unchanged.
 Restart, ordinary refresh, and normal upgrades retain the key; full refresh and
 reinstallation replace it. These limits and the lossy nature of model summaries
 are documented in [configuration](CONFIGURATION.md#lm-studio-context-compaction).
@@ -367,6 +368,46 @@ Neither instruction grants tool authority or enforces a model decision. Search
 and final-answer acceptance passed on 0.7.5. The user reported about eight
 minutes for the first question and a faster follow-up; this is an individual
 observation rather than a controlled performance benchmark.
+
+## Native Guardian review of compacted local history
+
+Version 0.40.0 handles Codex's separate automatic reviewer without weakening
+ordinary model-switch rejection. The reviewed Codex contract uses matching
+`x-openai-subagent: guardian` markers in the transport header and
+`client_metadata`. The optional `x-codex-guardian` header must be exactly
+`reviewer`; unknown modes, including classifier requests, are not inferred.
+See the pinned [client transport](https://github.com/openai/codex/blob/4d3ed3f3b47d39f8fe0b60df74a20f528b6fc618/codex-rs/core/src/client.rs)
+and [Guardian request tests](https://github.com/openai/codex/blob/4d3ed3f3b47d39f8fe0b60df74a20f528b6fc618/codex-rs/core/tests/suite/guardian_review.rs).
+The [parent-checkpoint policy](https://github.com/openai/codex/blob/4d3ed3f3b47d39f8fe0b60df74a20f528b6fc618/codex-rs/core/src/guardian/review_session_context.rs)
+explains why a native reviewer can receive the local task's encrypted state.
+
+Only a native `/v1/responses` request with those markers and one bridge
+checkpoint enters `native-review.mjs`. Authentication tries at most 256 current
+external descriptors. It must find exactly one tool-enabled LM Studio route,
+using the original route's complete compaction binding, then pass that source's
+persistent certification gate and verify that the immutable route did not
+change during admission. Missing, stale, tampered, ambiguous and mixed
+checkpoints fail before upstream I/O. No external credential resolver is used.
+
+The authenticated summary becomes an explicitly untrusted assistant message
+at the checkpoint's position. The native model, review policy, action, other
+input and client metadata remain semantically unchanged. There is no LM Studio
+resume instruction and no bridge-generated approval. The JSON request is bounded
+and its length and compression headers are corrected. The native response is
+relayed unchanged on success, including a deny result or streaming output.
+HTTP failures are replaced by fixed `REVIEW_SERVICE_ERROR` messages and
+unrecognized successful content types are rejected, preventing native error
+bodies or account headers from reaching the external parent's tool error. No review
+payload or summary is logged, cached or persisted by this feature.
+
+Native Guardian traffic without a bridge checkpoint retains its original bytes.
+Normal native model switching and all other provider routes retain the original
+envelope-family rejection. Existing envelopes, model hashes and matching
+certification fingerprints remain valid across the backend upgrade.
+
+Automatic review sends context to OpenAI even for a local task model. It
+requires native account access and Codex's enabled review policy. This adapter
+does not enable that policy, grant execution rights or guarantee approval.
 
 ## LM Studio adaptation
 

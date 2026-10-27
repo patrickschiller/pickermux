@@ -6,7 +6,7 @@ an external prerequisite. Earlier CLI archive releases remain available at
 their immutable version-pinned URLs. PickerMux is not published to npm.
 
 The maintainer tested the 0.30.0 candidate and authorized PR merge, tagging,
-and publication on 6 October 2026. The commands below use the 0.31.2 candidate;
+and publication on 6 October 2026. The commands below use the 0.40.0 candidate;
 every production signing and verification gate still applies.
 
 ## Preflight
@@ -46,7 +46,7 @@ https://github.com/patrickschiller/pickermux/releases/latest/download/PickerMux-
 The release tag still makes a download immutable:
 
 ```text
-https://github.com/patrickschiller/pickermux/releases/download/v0.31.2/PickerMux-macos-universal.dmg
+https://github.com/patrickschiller/pickermux/releases/download/v0.40.0/PickerMux-macos-universal.dmg
 ```
 
 The build retains its versioned DMG, app archive, backend manifest, companion
@@ -69,9 +69,9 @@ key available to `codesign`; the profile must already be usable by `notarytool`.
 Use fresh output directories, since the tools refuse to replace existing ones:
 
 ```bash
-node scripts/build-companion.mjs --release --output /tmp/pickermux-signed-0.31.2
-node scripts/prepare-dmg-release.mjs --source /tmp/pickermux-signed-0.31.2 --output /tmp/pickermux-public-0.31.2 --tag v0.31.2
-node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.31.2 --tag v0.31.2
+node scripts/build-companion.mjs --release --output /tmp/pickermux-signed-0.40.0
+node scripts/prepare-dmg-release.mjs --source /tmp/pickermux-signed-0.40.0 --output /tmp/pickermux-public-0.40.0 --tag v0.40.0
+node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.40.0 --tag v0.40.0
 ```
 
 The release builder signs and notarizes the app and DMG separately, staples
@@ -121,8 +121,8 @@ maintainer's Mac when using the local production route.
 After the exact approved commit is on main and all gates are ready:
 
 ```bash
-git tag -a v0.31.2 -m "PickerMux v0.31.2"
-git push origin v0.31.2
+git tag -a v0.40.0 -m "PickerMux v0.40.0"
+git push origin v0.40.0
 ```
 
 Watch the workflow through publication. If a candidate is wrong, fix the
@@ -146,10 +146,10 @@ production signing requirements above remain mandatory.
    replace its assets.
 
 ```bash
-node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.31.2 --tag v0.31.2
-gh release create v0.31.2 /tmp/pickermux-public-0.31.2/PickerMux-macos-universal.dmg \
-  --verify-tag --title "PickerMux v0.31.2" \
-  --notes-file /tmp/pickermux-public-0.31.2/release-notes.md
+node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.40.0 --tag v0.40.0
+gh release create v0.40.0 /tmp/pickermux-public-0.40.0/PickerMux-macos-universal.dmg \
+  --verify-tag --title "PickerMux v0.40.0" \
+  --notes-file /tmp/pickermux-public-0.40.0/release-notes.md
 ```
 
 Complete the independent public-download verification below before announcing
@@ -178,6 +178,33 @@ pinned backend upgrades through the existing setup transaction, preserving
 installed provider settings. Cancellation and failed activation must retain
 usable prior state; ordinary removal and deactivation continue using the
 validated installed backend.
+
+## 0.40.0 native Guardian compaction acceptance
+
+The Guardian wire contract is pinned to official Codex source in
+[architecture](ARCHITECTURE.md#native-guardian-review-of-compacted-local-history)
+and [fixture provenance](../test/fixtures/native-guardian-review/README.md).
+The deterministic integration tests use synthetic encrypted checkpoints and
+loopback upstreams, including original version-1 state after a proxy restart.
+They cover native JSON allow/deny results and SSE verdict bytes, gzip request
+projection, unchanged native traffic without bridge state, credential isolation,
+source certification denial, changed/removed source routes, bounded candidate
+work and rejected mixed, malformed, stale or tampered state. Unmarked native
+switches, other providers and unknown Guardian modes remain rejected.
+
+These tests validate the protocol projection and fail-closed boundaries. They
+do not make a live native approval decision, upgrade the installed backend or
+replay a private conversation. The observed failed tool result and official
+parent-checkpoint source establish the reported compatibility case; model
+approval quality and future Codex schemas remain separate compatibility limits.
+No live-inference acceptance is claimed by the automated tests.
+
+Verify 0.40.0 updater recognition from 0.31.1 and 0.31.2, the sole DMG record,
+and production signing/notarization and public-download checks. After the
+normal installed-backend upgrade, picker refresh and complete Codex restart,
+matching certifications and existing envelopes remain valid. Automatic review
+context goes to OpenAI under Codex's enabled review policy; no PickerMux setting
+enables that policy or changes the sandbox.
 
 ## 0.31.2 sandbox-recovery guidance acceptance
 

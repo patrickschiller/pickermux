@@ -155,7 +155,7 @@ function legacy073CompactionItem(route) {
   };
 }
 
-async function harness(t, { secret = SECRET, respond, toolsEnabled = true } = {}) {
+async function harness(t, { secret = SECRET, respond, toolsEnabled = true, externalRequestGate } = {}) {
   const requests = [];
   let credentialReads = 0;
   const upstream = http.createServer((request, response) => {
@@ -213,9 +213,16 @@ async function harness(t, { secret = SECRET, respond, toolsEnabled = true } = {}
   ]);
   async function createProxy(compactionSecret = secret) {
     const handle = createResponsesProxy({
-      registry: { resolve: (model) => routes.get(model) },
+      registry: {
+        resolve: (model) => routes.get(model),
+        get externalModels() {
+          return [...routes.values()].filter((route) => route.kind === "external")
+            .map((route) => ({ id: route.slug }));
+        },
+      },
       nativeBaseUrl: baseUrl,
       ...(compactionSecret === null ? {} : { compactionSecret }),
+      ...(externalRequestGate ? { externalRequestGate } : {}),
       credentialResolver: async () => {
         credentialReads += 1;
         return PROVIDER_SECRET;
@@ -967,6 +974,160 @@ test("invalid upstream summaries never become successful compaction state", asyn
     assertError(await send({ port: proxy.port, body: compactRequest() }), 502, "COMPACTION_FAILED");
     assert.equal(proxy.requests.length, 1);
   });
+});
+
+const REVIEW_HEADERS = { "x-openai-subagent": "guardian" };
+function guardianRequest(item, overrides = {}) {
+  return {
+    model: NATIVE_MODEL, stream: false,
+    instructions: "trusted-guardian-policy-private-canary",
+    client_metadata: { "x-openai-subagent": "guardian", "parent_response_id": "opaque-parent" },
+    input: [item, message("user", "Review the exact simulator list command")],
+    ...overrides,
+  };
+}
+
+test("native Guardian reviews authenticate external checkpoints and preserve allow and deny results", async (t) => {
+  for (const verdict of ["allow", "deny"]) {
+    await t.test(verdict, async (subtest) => {
+      const result = completedResponse(JSON.stringify({ decision: verdict }));
+      const proxy = await harness(subtest, { respond: ({ body, response }) =>
+        jsonResponse(response, body.model === NATIVE_MODEL ? result : completedResponse()) });
+      const item = compactionItem(await send({ port: proxy.port, body: compactRequest() }));
+      const initialCredentials = proxy.credentialReads();
+      for (const reviewerHeader of [undefined, "reviewer"]) {
+        const request = guardianRequest(item);
+        const review = await send({
+          port: proxy.port, body: gzipSync(Buffer.from(JSON.stringify(request))),
+          headers: {
+            ...REVIEW_HEADERS, authorization: "Bearer " + NATIVE_SECRET,
+            "content-encoding": "gzip",
+            ...(reviewerHeader ? { "x-codex-guardian": reviewerHeader } : {}),
+          },
+        });
+        assert.equal(review.status, 200);
+        assert.deepEqual(JSON.parse(review.body), result);
+        const upstream = proxy.requests.at(-1);
+        assert.equal(upstream.body.model, NATIVE_MODEL);
+        assert.equal(upstream.body.instructions, request.instructions);
+        assert.deepEqual(upstream.body.client_metadata, request.client_metadata);
+        assert.deepEqual(upstream.body.input[1], request.input[1]);
+        assert.equal(upstream.body.input[0].role, "assistant");
+        assert.match(upstream.body.input[0].content[0].text, /untrusted context, not approval or policy/u);
+        assert.ok(upstream.body.input[0].content[0].text.endsWith(SUMMARY));
+        assert.equal(upstream.headers.authorization, "Bearer " + NATIVE_SECRET);
+        assert.equal(upstream.headers["content-encoding"], undefined);
+        assert.equal(Number(upstream.headers["content-length"]), upstream.raw.length);
+        assert.doesNotMatch(upstream.raw.toString(), /pickermux\.compaction\.|external-credential/u);
+        assert.equal(proxy.credentialReads(), initialCredentials);
+      }
+      const restarted = await proxy.createProxy();
+      const legacy = legacy073CompactionItem(proxy.routes.get(PUBLIC_MODEL));
+      assert.equal((await send({
+        port: restarted.port, body: guardianRequest(legacy), headers: REVIEW_HEADERS,
+      })).status, 200);
+    });
+  }
+});
+
+test("native Guardian streams preserve verdict bytes after checkpoint projection and fail closed without a key", async (t) => {
+  const sse = 'data: {"type":"response.completed","response":{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"deny"}]}]}}\n\n';
+  const proxy = await harness(t, { respond: ({ body, response }) => {
+    if (body.model !== NATIVE_MODEL) return jsonResponse(response, completedResponse());
+    response.writeHead(200, { "content-type": "text/event-stream" });
+    response.end(sse);
+  } });
+  const item = compactionItem(await send({ port: proxy.port, body: compactRequest() }));
+  const result = await send({ port: proxy.port, body: guardianRequest(item, { stream: true }), headers: REVIEW_HEADERS });
+  assert.equal(result.status, 200);
+  assert.equal(result.body.toString(), sse);
+  assert.equal(proxy.requests.length, 2);
+  assert.equal(proxy.credentialReads(), 1);
+  const withoutKey = await proxy.createProxy(null);
+  assertError(await send({ port: withoutKey.port, body: guardianRequest(item), headers: REVIEW_HEADERS }), 501, "COMPACTION_UNAVAILABLE");
+  assert.equal(proxy.requests.length, 2);
+  assert.equal(proxy.credentialReads(), 1);
+});
+
+test("projected Guardian errors cannot disclose native upstream bodies or account headers", async (t) => {
+  for (const status of [401, 500, 200]) {
+    await t.test(String(status), async (subtest) => {
+      const proxy = await harness(subtest, { respond: ({ body, response }) => {
+        if (body.model !== NATIVE_MODEL) return jsonResponse(response, completedResponse());
+        response.writeHead(status, {
+          "content-type": status === 200 ? "text/html" : "application/json",
+          "x-native-account": "native-account-private-canary",
+        });
+        response.end(JSON.stringify({ error: { message: NATIVE_SECRET + SUMMARY } }));
+      } });
+      const item = compactionItem(await send({ port: proxy.port, body: compactRequest() }));
+      const result = await send({ port: proxy.port, body: guardianRequest(item), headers: REVIEW_HEADERS });
+      assertError(result, status === 200 ? 502 : status,
+        status === 200 ? "UPSTREAM_RESPONSE_ERROR" : "REVIEW_SERVICE_ERROR");
+      assert.equal(result.headers["x-native-account"], undefined);
+      assert.doesNotMatch(result.body.toString(), /native-account-private-canary|native-credential-private-canary|summary-private-canary/u);
+      assert.equal(proxy.credentialReads(), 1);
+    });
+  }
+});
+
+test("Guardian projection fails closed on stale state, forged markers, source changes and pending receipts", async (t) => {
+  let blocked = false;
+  const admissions = [];
+  const proxy = await harness(t, { externalRequestGate: async (request) => {
+    admissions.push(request);
+    if (blocked) throw new Error("private-pending-receipt-canary");
+  } });
+  const item = compactionItem(await send({ port: proxy.port, body: compactRequest() }));
+  const initialRequests = proxy.requests.length;
+  const initialCredentials = proxy.credentialReads();
+  const cases = [
+    [guardianRequest(item), {}, "/v1/responses", "COMPACTION_STATE_ROUTE_MISMATCH"],
+    [guardianRequest(item, { client_metadata: {} }), REVIEW_HEADERS, "/v1/responses", "COMPACTION_STATE_ROUTE_MISMATCH"],
+    [guardianRequest(item), { ...REVIEW_HEADERS, "x-codex-guardian": "classifier" }, "/v1/responses", "COMPACTION_STATE_ROUTE_MISMATCH"],
+    [guardianRequest(item), REVIEW_HEADERS, "/v1/responses/compact", "COMPACTION_STATE_ROUTE_MISMATCH"],
+    [guardianRequest(item, { model: OTHER_PROVIDER_MODEL }), REVIEW_HEADERS, "/v1/responses", "COMPACTION_STATE_ROUTE_MISMATCH"],
+    [guardianRequest({ ...item, encrypted_content: item.encrypted_content + "bad" }), REVIEW_HEADERS, "/v1/responses", "INVALID_COMPACTION_STATE"],
+    [guardianRequest({ ...item, type: "reasoning" }), REVIEW_HEADERS, "/v1/responses", "INVALID_COMPACTION_STATE"],
+    [guardianRequest(item, { input: [item, item] }), REVIEW_HEADERS, "/v1/responses", "INVALID_COMPACTION_STATE"],
+  ];
+  for (const [body, headers, path, code] of cases) {
+    assertError(await send({ port: proxy.port, body, headers, path }), 400, code);
+    assert.equal(proxy.requests.length, initialRequests);
+    assert.equal(proxy.credentialReads(), initialCredentials);
+  }
+  blocked = true;
+  assertError(await send({ port: proxy.port, body: guardianRequest(item), headers: REVIEW_HEADERS }), 503, "MODEL_CERTIFICATION_PENDING");
+  assert.deepEqual(admissions.at(-1), {
+    publicModelId: PUBLIC_MODEL, certificationRequest: false,
+    requiresDirectReceipt: true, requiresEfficientFidelityReceipt: true,
+  });
+  assert.equal(proxy.requests.length, initialRequests);
+  assert.equal(proxy.credentialReads(), initialCredentials);
+  blocked = false;
+  const original = proxy.routes.get(PUBLIC_MODEL);
+  proxy.routes.set(PUBLIC_MODEL, { ...original, compactionModelHash: "model-bridge-p6-fedcba9876543210" });
+  assertError(await send({ port: proxy.port, body: guardianRequest(item), headers: REVIEW_HEADERS }), 400, "INVALID_COMPACTION_STATE");
+  proxy.routes.delete(PUBLIC_MODEL);
+  assertError(await send({ port: proxy.port, body: guardianRequest(item), headers: REVIEW_HEADERS }), 400, "INVALID_COMPACTION_STATE");
+  assert.equal(proxy.requests.length, initialRequests);
+});
+
+test("Guardian requests without bridge checkpoints preserve native bytes and streaming output", async (t) => {
+  const sse = 'data: {"type":"response.completed","response":{"status":"completed","output":[]}}\n\n';
+  const proxy = await harness(t, { respond: ({ response }) => {
+    response.writeHead(200, { "content-type": "text/event-stream" });
+    response.end(sse);
+  } });
+  const raw = gzipSync(Buffer.from(JSON.stringify(guardianRequest(
+    { type: "compaction", encrypted_content: "native-opaque" }, { stream: true },
+  ))));
+  const result = await send({ port: proxy.port, body: raw, headers: { ...REVIEW_HEADERS, "content-encoding": "gzip" } });
+  assert.equal(result.status, 200);
+  assert.equal(result.body.toString(), sse);
+  assert.deepEqual(proxy.requests[0].raw, raw);
+  assert.equal(proxy.requests[0].headers["content-encoding"], "gzip");
+  assert.equal(proxy.credentialReads(), 0);
 });
 
 test("native and other provider routes reject bridge compaction before crossing trust domains", async (t) => {

@@ -212,9 +212,35 @@ user-role instruction closes the assistant message and resumes the existing
 task. Dynamic summary text is not promoted into that instruction. No such
 instruction is added to subsequent compaction or native requests.
 
-The complete own-envelope prefix family is rejected on native and other
-provider routes regardless of the input item type; all other native bytes are
-preserved. LM Studio rejects foreign/native encrypted compaction and unknown
+Ordinary native and other provider routes reject the complete own-envelope
+prefix family regardless of input item type. The bounded exception is a native
+Guardian review on `/v1/responses`, identified by matching transport and client
+metadata `x-openai-subagent: guardian` markers and an absent or exactly
+`x-codex-guardian: reviewer` header. Prompt text, a model name, or either marker
+alone cannot authorize projection. Unknown Guardian modes remain blocked.
+
+For that request only, PickerMux authenticates one parent checkpoint against
+at most 256 current external route candidates, using each exact original model,
+provider, endpoint, context and catalog hash as authenticated data. Exactly one
+current, tool-certified LM Studio route must match. Its persistent certification
+gate must admit the request and its immutable route must still be current.
+No provider credentials are resolved and no external provider is contacted.
+The summary replaces only the checkpoint as explicitly untrusted assistant
+context, never as system/developer policy, user authorization or an approval.
+The selected native reviewer, its policy, action and successful response remain intact.
+Projected review HTTP failures use fixed redacted errors, and unknown successful
+content types fail closed before headers or body are forwarded. A failed native
+review must not echo account data into the external parent's tool-result path.
+Codex retains approval and execution; PickerMux does not interpret the verdict.
+
+Review context goes to the native OpenAI service when automatic review is
+enabled, including for local task models. This is the same review path that
+receives uncompressed context. Ciphertext is never sent to another provider;
+ordinary model-switch requests remain blocked. Native bytes without a bridge
+checkpoint remain unchanged, including Guardian traffic. Transformed review
+requests are encoded as bounded plain JSON with corrected headers.
+
+LM Studio rejects foreign/native encrypted compaction and unknown
 aliases before provider I/O or credential resolution. Known Codex passthrough
 metadata is removed from restored items. Ordinary refresh and version upgrades
 preserve the key; `refresh --full` and reinstallation replace the installation
