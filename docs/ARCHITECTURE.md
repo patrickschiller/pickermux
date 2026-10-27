@@ -1,6 +1,6 @@
 # PickerMux Architecture
 
-This document describes PickerMux v0.40.2.
+This document describes PickerMux v0.40.3.
 It is intended for contributors, security reviewers, and users who want to
 understand what runs on their Mac.
 
@@ -404,6 +404,24 @@ provides response ID and usage without repeating output/status. This prevents
 native error bodies or account headers from reaching the external parent's
 tool error; the internal review receives its output after full validation. No review
 payload or summary is logged, cached or persisted by this feature.
+
+Classified projected-review response errors also carry a fixed diagnostic marker in the public
+message, so the category survives clients that omit the JSON error code.
+The finite `REVIEW_*` vocabulary distinguishes HTTP rejection, content type or
+encoding, size bounds, UTF-8/JSON validity, SSE framing/order, completion shape,
+reported native errors and stream transport failures. Markers describe the
+failed check; they never contain received header values, event names, response
+identifiers, payload text or exception messages. Unknown diagnostic values
+cannot supply public text. No additional review data is logged or persisted.
+This classification leaves the accepted protocol, buffering, response bounds,
+routing, credentials and Codex approval policy unchanged. It does not diagnose
+an earlier generic HTTP 502 retroactively or establish a live compatibility fix.
+For a stream read failure or abort, the existing complete validator may inspect
+the already bounded buffer once to select an `_AFTER_COMPLETION` marker. This
+records that the received bytes passed validation before the transport failure;
+the response remains rejected. The original public error-code class is retained.
+General request, connection and timeout failures retain their existing separate
+public codes and messages.
 
 The buffered SSE validator also accepts exactly `codex.response.metadata`,
 `codex.rate_limits` and `responsesapi.websocket_timing` as opaque native transport

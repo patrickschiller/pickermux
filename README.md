@@ -86,6 +86,10 @@ history. Recognized native reviews receive the authenticated summary as untruste
 context; Codex still decides approval. This review context goes to OpenAI when
 automatic review is enabled, even with a local task model.
 Known native metadata and timing events in a completed review stream are retained.
+Response-validation failures and stream interruptions in projected reviews
+include a fixed `REVIEW_*` diagnostic marker in the public error.
+This changes diagnostics only; it does not relax approval or response checks.
+See [approval troubleshooting](docs/TROUBLESHOOTING.md#automatic-approval-fails-with-http-502-after-the-0401-upgrade).
 
 Since 0.40.1, the LM Studio adapter removes native encrypted-output replay requests, including
 Codex's newer `output.encrypted_content` selector, before provider validation.
