@@ -12,6 +12,21 @@ published as GitHub Releases.
 The 0.23.x and 0.24.x entries are local milestones included in the public
 0.30.0 release; they were not published separately.
 
+## [Unreleased]
+
+### Fixed
+
+- Allow up to 8,192 output tokens for LM Studio compaction summaries when the
+  exact route declares only known positive reasoning efforts. The budget
+  includes reasoning and visible text; other profiles retain the 2,048-token
+  ceiling and all routes keep their existing context and response bounds.
+  The existing validation still preserves prior history when a summary is
+  reasoning-only, incomplete, empty, or otherwise invalid. The fix adds no
+  retries, changes no compaction
+  envelope or certification fingerprint, and requires no recertification of
+  an unchanged model with matching tool evidence. Document separate compaction
+  acceptance because the tool-certification matrix does not cover it.
+
 ## [0.31.0] - 2026-10-26
 
 ### Added

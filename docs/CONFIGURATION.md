@@ -391,12 +391,25 @@ this V2 adapter. Search and the final sourced answer passed on 0.7.5; the user
 reported about eight minutes and a faster follow-up. Timing remains dependent
 on the model, hardware, cache state, and number of tool/compaction steps.
 
-The summary output is capped at 2,048 tokens, but the next ordinary request
-still includes Codex's system context, tools, and retained messages. Compaction
-therefore cannot guarantee that the full request fits a 32K context window.
+The summary output budget includes reasoning and visible text. Its usual
+ceiling is 2,048 tokens. When the exact route declares a nonempty list of only
+known positive reasoning efforts, the ceiling is 8,192 tokens so mandatory
+reasoning has room before the visible summary. Optional or unknown reasoning
+profiles retain the original ceiling. Both budgets still use the existing
+loaded-context fraction and minimum bound; the 16 KiB visible-summary and
+256 KiB response bounds remain unchanged. No reasoning setting is invented.
+
+The next ordinary request still includes Codex's system context, tools, and
+retained messages. Compaction therefore cannot guarantee that the full request
+fits a 32K context window.
 If that fixed context stays near the limit, Codex may request another summary
 after the next tool step; the adapter performs one inference per requested
 compaction and does not retry it automatically.
+
+Tool certification does not test compaction or continuation from its encrypted
+summary. Those operations need separate acceptance on the selected model. This
+budget adjustment does not change the model configuration, envelope format,
+or certification fingerprint; existing matching tool receipts remain valid.
 
 ## Provider fields
 

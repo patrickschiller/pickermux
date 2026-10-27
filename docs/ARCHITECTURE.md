@@ -309,15 +309,22 @@ lose that provenance boundary. Ordinary and legacy-compact requests retain
 their instructions. The summary includes supported text history as JSON data under a fixed
 summary instruction, preserving public function identities, results, and URLs.
 Tool definitions are omitted; the summary has no tool authority. Its output
-budget is bounded by the loaded context, and an advertised `none` reasoning
-option is used only for this summary operation. Existing transport deadlines,
-credential isolation, and response bounds remain active; no retries are added.
+budget includes reasoning and visible summary text. A route declaring only
+known positive reasoning efforts has an 8,192-token ceiling; other routes keep
+the 2,048-token ceiling. The existing loaded-context fraction and minimum bound
+still apply, and an advertised `none` reasoning option is used only for this
+summary operation. Unknown reasoning profiles never receive an invented
+setting or the larger ceiling. Existing transport deadlines, credential
+isolation, and response bounds remain active; no retries are added.
 
 The response is buffered and validated before any successful caller output.
 Only a complete, nonempty text summary can produce one compaction item and a
 completed response. Provider usage is projected from actual numeric counts.
 Calls, refusals, incomplete output, invalid UTF-8, and oversized responses fail
 without installing compacted history. Ordinary inference adds no summary call.
+Tool certification does not exercise this summary-and-continuation operation;
+it requires separate acceptance. The summary-budget adjustment leaves existing
+matching tool certifications valid and does not change the compaction envelope.
 
 `compaction-envelope.mjs` encrypts the summary with AES-256-GCM and a
 purpose-separated HKDF key derived from the private installation capability.

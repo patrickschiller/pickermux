@@ -129,7 +129,7 @@ export function classifyCompactionRequest(body, { path } = {}) {
   return true;
 }
 
-export function prepareCompactionSummaryRequest(normalizedBody, { contextWindow } = {}) {
+export function prepareCompactionSummaryRequest(normalizedBody, { contextWindow, reasoningEfforts } = {}) {
   if (
     !plainObject(normalizedBody) ||
     !nonemptyString(normalizedBody.model) ||
@@ -155,12 +155,19 @@ export function prepareCompactionSummaryRequest(normalizedBody, { contextWindow 
   } catch {
     throw new CompactionError();
   }
+  // The output limit includes hidden reasoning. Give routes that cannot turn
+  // it off room to finish before requiring a visible summary; unknown profiles
+  // keep the original bound and no reasoning policy is invented.
+  const requiresReasoning = Array.isArray(reasoningEfforts) && reasoningEfforts.length > 0 &&
+    reasoningEfforts.every((effort) =>
+      ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"].includes(effort));
+  const maxOutputTokens = requiresReasoning ? 8_192 : 2_048;
   const request = {
     model: normalizedBody.model,
     instructions: SUMMARY_INSTRUCTIONS,
     input: [{ role: "user", content: [{ type: "input_text", text: quotedTranscript }] }],
     stream: false,
-    max_output_tokens: Math.min(2_048, Math.max(256, Math.floor(contextWindow / 8))),
+    max_output_tokens: Math.min(maxOutputTokens, Math.max(256, Math.floor(contextWindow / 8))),
   };
   if (Object.hasOwn(normalizedBody, "reasoning")) {
     request.reasoning = JSON.parse(JSON.stringify(normalizedBody.reasoning));

@@ -1951,7 +1951,7 @@ export function createResponsesProxy({
           if (external.compactionInput !== undefined) normalized.input = external.compactionInput;
           const summaryRequest = prepareCompactionSummaryRequest(
             normalized,
-            { contextWindow: route.model.contextWindow },
+            { contextWindow: route.model.contextWindow, reasoningEfforts: route.reasoningEfforts },
           );
           outboundBody = Buffer.from(JSON.stringify(summaryRequest), "utf8");
           if (outboundBody.length > limits.requestBodyBytes) {

@@ -207,6 +207,40 @@ test("summary budget is bounded and no reasoning policy is invented", () => {
   }
 });
 
+test("mandatory reasoning has bounded summary headroom without changing the reasoning policy", () => {
+  const source = { model: "example", input: [USER_MESSAGE] };
+  for (const reasoningEfforts of [
+    ["xhigh"], ["minimal"], ["low", "medium", "high"], ["max", "ultra"],
+  ]) {
+    for (const [contextWindow, expected] of [
+      [1_024, 256], [8_192, 1_024], [32_768, 4_096], [65_536, 8_192], [262_144, 8_192],
+    ]) {
+      const prepared = prepareCompactionSummaryRequest(source, { contextWindow, reasoningEfforts });
+      assert.equal(prepared.max_output_tokens, expected);
+      assert.equal(Object.hasOwn(prepared, "reasoning"), false);
+      assert.deepEqual(JSON.parse(prepared.input[0].content[0].text), { input: source.input });
+    }
+  }
+  const withReasoning = { ...source, reasoning: { effort: "high" } };
+  const prepared = prepareCompactionSummaryRequest(withReasoning, {
+    contextWindow: 262_144, reasoningEfforts: ["high"],
+  });
+  assert.deepEqual(prepared.reasoning, withReasoning.reasoning);
+  assert.notEqual(prepared.reasoning, withReasoning.reasoning);
+});
+
+test("optional, absent and unknown reasoning profiles retain the original summary bound", () => {
+  const source = { model: "example", input: [USER_MESSAGE] };
+  for (const reasoningEfforts of [
+    undefined, null, [], "xhigh", ["none"], ["off"], ["none", "xhigh"],
+    ["xhigh", "unknown"], ["on"], [null],
+  ]) {
+    const prepared = prepareCompactionSummaryRequest(source, { contextWindow: 262_144, reasoningEfforts });
+    assert.equal(prepared.max_output_tokens, 2_048);
+    assert.equal(Object.hasOwn(prepared, "reasoning"), false);
+  }
+});
+
 test("public tool names and namespaces retain their purpose without advertising tool schemas", () => {
   const source = replay();
   source.input[5].name = "run";
