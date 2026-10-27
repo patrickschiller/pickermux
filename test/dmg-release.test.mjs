@@ -570,6 +570,35 @@ test("0.40.1 replay compatibility release updates 0.40.0 with the exact signed D
   }
 });
 
+test("0.40.2 native metadata release updates 0.40.0 and 0.40.1 with the exact signed DMG record", async (t) => {
+  const value = await fixture(t, "0.40.2");
+  const result = await prepareDmgRelease({ ...value, tag: "v0.40.2" });
+  const body = await readFile(path.join(value.outputDirectory, "release-notes.md"), "utf8");
+  assert.match(body, /Changes in v0\.40\.2/u);
+  assert.match(body, /HTTP 502.*native metadata/u);
+  assert.match(body, /codex\.response\.metadata, codex\.rate_limits and responsesapi\.websocket_timing/u);
+  assert.match(body, /Require successful completion.*unknown event families/u);
+  assert.match(body, /original live Flint review remains to be confirmed/u);
+  assert.deepEqual(parseDmgReleaseRecord(body, { version: "0.40.2", file: PICKERMUX_DMG_ASSET }), {
+    version: "0.40.2", file: PICKERMUX_DMG_ASSET,
+    sha256: result.sha256, signing: "developer-id-notarized",
+  });
+  assert.deepEqual(await verifyDmgPublication({ directory: value.outputDirectory, tag: "v0.40.2" }), result);
+  const expectedUrl = `https://github.com/patrickschiller/pickermux/releases/download/v0.40.2/${PICKERMUX_DMG_ASSET}`;
+  const release = {
+    tag_name: "v0.40.2", draft: false, prerelease: false, body,
+    assets: [{ name: PICKERMUX_DMG_ASSET, browser_download_url: expectedUrl }],
+  };
+  for (const currentVersion of ["0.40.0", "0.40.1"]) {
+    assert.deepEqual(await checkForCompanionUpdate({
+      currentVersion, fetchImpl: async () => Response.json(release),
+    }), {
+      status: "available", distribution: "dmg", currentVersion, targetVersion: "0.40.2",
+      assets: { [PICKERMUX_DMG_ASSET]: expectedUrl }, diskImageSha256: result.sha256,
+    });
+  }
+});
+
 test("later publication guidance keeps the Config navigation name", async (t) => {
   const value = await fixture(t, "0.24.7");
   await prepareDmgRelease({ ...value, tag: "v0.24.7" });

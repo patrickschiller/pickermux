@@ -394,7 +394,7 @@ also produced this public 502. The corrected guard admits only the exact known
 native metadata names while preserving response bytes, completion requirements,
 error redaction, source authentication and Codex's approval decision.
 
-Upgrade both the app and installed backend to a release containing this fix,
+Upgrade both the app and installed backend to 0.40.2 or newer,
 fully quit and reopen Codex, then retry the approval. Existing matching
 certifications and sealed history remain valid. A remaining 502 can also
 indicate another malformed, compressed, interrupted or unsupported response;

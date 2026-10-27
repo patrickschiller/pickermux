@@ -14,6 +14,8 @@ The 0.23.x and 0.24.x entries are local milestones included in the public
 
 ## [Unreleased]
 
+## [0.40.2] - 2026-10-27
+
 ### Fixed
 
 - Accept the exact native review stream metadata types `codex.response.metadata`,
@@ -1180,7 +1182,8 @@ confirm the release date before tagging. See the
   paths and file types, refuses root execution and foreign launchers, and
   restores the previous distribution state when activation fails.
 
-[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.40.1...HEAD
+[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.40.2...HEAD
+[0.40.2]: https://github.com/patrickschiller/pickermux/releases/tag/v0.40.2
 [0.40.1]: https://github.com/patrickschiller/pickermux/releases/tag/v0.40.1
 [0.40.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.40.0
 [0.31.2]: https://github.com/patrickschiller/pickermux/releases/tag/v0.31.2
