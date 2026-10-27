@@ -12,6 +12,28 @@ published as GitHub Releases.
 The 0.23.x and 0.24.x entries are local milestones included in the public
 0.30.0 release; they were not published separately.
 
+## [0.31.2] - 2026-10-27
+
+### Added
+
+- Add sandbox-recovery guidance to both instruction formats for certified
+  external models, including reviewed MLX profiles. Explain that CoreSimulator
+  connection errors can reflect sandbox restrictions and that xcrun lookup
+  errors can require checking the selected developer directory.
+- Direct models to request the same narrowly scoped command through Codex's
+  approval mechanism only when its tool schema and current policy permit
+  escalation. Respect denial and unavailable escalation; check that retries
+  with possible side effects are safe. The hint grants no permission and
+  changes no sandbox or approval policy.
+
+### Compatibility
+
+- Preserve donor policies, native models, text-only profiles, certification
+  fingerprints and compacted-history identity. Refresh the picker and fully
+  quit and reopen Codex after the backend upgrade to load updated guidance.
+  Matching certifications remain valid. The hint cannot guarantee a model's
+  decisions or remove Codex's approval requirements.
+
 ## [0.31.1] - 2026-10-27
 
 ### Fixed
@@ -1110,6 +1132,7 @@ confirm the release date before tagging. See the
   restores the previous distribution state when activation fails.
 
 [Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.31.1...HEAD
+[0.31.2]: https://github.com/patrickschiller/pickermux/releases/tag/v0.31.2
 [0.31.1]: https://github.com/patrickschiller/pickermux/releases/tag/v0.31.1
 [0.31.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.31.0
 [0.30.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.30.0

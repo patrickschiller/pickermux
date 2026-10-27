@@ -6,7 +6,7 @@ an external prerequisite. Earlier CLI archive releases remain available at
 their immutable version-pinned URLs. PickerMux is not published to npm.
 
 The maintainer tested the 0.30.0 candidate and authorized PR merge, tagging,
-and publication on 6 October 2026. The commands below use the 0.31.1 candidate;
+and publication on 6 October 2026. The commands below use the 0.31.2 candidate;
 every production signing and verification gate still applies.
 
 ## Preflight
@@ -46,7 +46,7 @@ https://github.com/patrickschiller/pickermux/releases/latest/download/PickerMux-
 The release tag still makes a download immutable:
 
 ```text
-https://github.com/patrickschiller/pickermux/releases/download/v0.31.1/PickerMux-macos-universal.dmg
+https://github.com/patrickschiller/pickermux/releases/download/v0.31.2/PickerMux-macos-universal.dmg
 ```
 
 The build retains its versioned DMG, app archive, backend manifest, companion
@@ -69,9 +69,9 @@ key available to `codesign`; the profile must already be usable by `notarytool`.
 Use fresh output directories, since the tools refuse to replace existing ones:
 
 ```bash
-node scripts/build-companion.mjs --release --output /tmp/pickermux-signed-0.31.1
-node scripts/prepare-dmg-release.mjs --source /tmp/pickermux-signed-0.31.1 --output /tmp/pickermux-public-0.31.1 --tag v0.31.1
-node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.31.1 --tag v0.31.1
+node scripts/build-companion.mjs --release --output /tmp/pickermux-signed-0.31.2
+node scripts/prepare-dmg-release.mjs --source /tmp/pickermux-signed-0.31.2 --output /tmp/pickermux-public-0.31.2 --tag v0.31.2
+node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.31.2 --tag v0.31.2
 ```
 
 The release builder signs and notarizes the app and DMG separately, staples
@@ -121,8 +121,8 @@ maintainer's Mac when using the local production route.
 After the exact approved commit is on main and all gates are ready:
 
 ```bash
-git tag -a v0.31.1 -m "PickerMux v0.31.1"
-git push origin v0.31.1
+git tag -a v0.31.2 -m "PickerMux v0.31.2"
+git push origin v0.31.2
 ```
 
 Watch the workflow through publication. If a candidate is wrong, fix the
@@ -146,10 +146,10 @@ production signing requirements above remain mandatory.
    replace its assets.
 
 ```bash
-node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.31.1 --tag v0.31.1
-gh release create v0.31.1 /tmp/pickermux-public-0.31.1/PickerMux-macos-universal.dmg \
-  --verify-tag --title "PickerMux v0.31.1" \
-  --notes-file /tmp/pickermux-public-0.31.1/release-notes.md
+node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.31.2 --tag v0.31.2
+gh release create v0.31.2 /tmp/pickermux-public-0.31.2/PickerMux-macos-universal.dmg \
+  --verify-tag --title "PickerMux v0.31.2" \
+  --notes-file /tmp/pickermux-public-0.31.2/release-notes.md
 ```
 
 Complete the independent public-download verification below before announcing
@@ -178,6 +178,25 @@ pinned backend upgrades through the existing setup transaction, preserving
 installed provider settings. Cancellation and failed activation must retain
 usable prior state; ordinary removal and deactivation continue using the
 validated installed backend.
+
+## 0.31.2 sandbox-recovery guidance acceptance
+
+Version 0.31.2 appends fixed guidance only to certified external model
+instructions. Offline tests cover Direct and Efficient Fidelity, generic
+Responses providers, reviewed versus unreviewed MLX tools, preservation of donor
+policies and native entries, text-only exclusion, rejected malformed instruction
+fields, and stable certification/compaction identity. Release tests bind the
+0.31.2 notes and sole DMG record and check the updater from 0.31.1.
+
+A read-only diagnostic on the target Mac reproduced the CoreSimulator
+connection failure inside Codex's sandbox. The same command with the selected
+Xcode developer directory succeeded outside it. This establishes the diagnostic
+distinction, not that every external model will independently request recovery.
+The hint does not change the sandbox, approval policy, service state, or
+certification matrix. No live inference or installed-backend upgrade is part
+of the offline tests. After the normal backend upgrade and picker refresh,
+fully quit and reopen Codex to load updated guidance; matching receipts and
+sealed compaction history remain valid.
 
 ## 0.31.1 mandatory-reasoning compaction acceptance
 

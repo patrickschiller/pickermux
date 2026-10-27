@@ -320,6 +320,40 @@ If `CODEX_BINARY` is set, confirm that it points to the intended bundled
 executable. It overrides automatic discovery and is not saved to the installed
 service. See [discovery order](CONFIGURATION.md#codex-executable-discovery).
 
+## Simulator connections fail inside Codex
+
+A `CoreSimulatorService` connection error or `simdiskimaged` failure does not
+by itself prove that Xcode or the Simulator is broken. Codex's execution sandbox
+can block access to these macOS services even when they work outside it.
+First check the selected tools with `xcode-select -p` and
+`xcrun --find simctl`. `xcrun --find xcodebuild` checks the Xcode build tool;
+`xcrun --find xcode` is not a valid Xcode availability test.
+
+If full Xcode is installed at the standard location, a read-only check is:
+
+```bash
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcrun simctl list devices available
+```
+
+Keep the assignment and command on one line. It selects the tools for this
+process without changing the global developer directory. It does not grant
+access through the execution sandbox.
+
+Version 0.31.2 adds guidance for certified external models to check the failure
+and request that same narrowly scoped command through Codex's approval flow,
+using `sandbox_permissions: "require_escalated"` and a justification only
+when the supplied tool schema and current policy allow it. Codex may ask the
+user to approve the command. A denied or unavailable request must be respected;
+commands with possible side effects require a safe-retry check. The hint does
+not change permissions, disable the sandbox or restart services. It cannot
+guarantee that every model will choose the correct recovery.
+
+Upgrade the installed backend, refresh the picker, then fully quit and reopen
+Codex to load the guidance. Matching tool certifications and previously sealed
+compacted history remain valid. Native and text-only model instructions are
+unchanged. If an approved invocation outside the sandbox also fails, continue
+investigating Xcode and CoreSimulator rather than assuming a sandbox cause.
+
 ## LM Studio reports `Channel Error` or a context-length failure
 
 `Channel Error` can wrap different inference failures. Read the nested error

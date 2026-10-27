@@ -75,6 +75,12 @@ Load the models you want, fully quit Codex, choose **Refresh picker**, and reope
 Codex. Models appear in Codex's picker; the PickerMux menu shows provider usage.
 New models need **Certify models…** before using tools.
 
+Certified models receive guidance for sandbox-related command failures, including
+macOS Simulator connections. They can request the specific command through
+Codex's approval flow when permitted. Individual approvals may still be needed;
+PickerMux does not change execution permissions. After a backend upgrade,
+refresh the picker and fully quit and reopen Codex to load updated guidance.
+
 The revised LM Studio certification checks tool-result continuation with the
 full conversation, uses numbered records for its long-context test, and allows
 more output tokens when discovered metadata requires reasoning. After upgrading

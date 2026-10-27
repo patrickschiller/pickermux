@@ -76,6 +76,14 @@ the public feature-request form.
 
 ## Provider request boundary
 
+Certified external catalog entries include fixed sandbox-recovery guidance.
+It requests Codex's normal approval only when the supplied tool schema and
+current policy permit escalation, respects denied or unavailable approval,
+and requires safe retries for commands with possible side effects. The hint
+grants no execution rights and changes no sandbox, approval policy, service,
+or certification state. Existing donor policies remain intact; native and
+text-only profiles receive no appended guidance.
+
 External provider headers are rebuilt from a narrow allowlist. External JSON
 bodies also exclude Codex `client_metadata` and internal content annotations;
 ordinary provider API `metadata` remains available to configured providers.

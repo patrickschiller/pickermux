@@ -11,7 +11,7 @@ import {
   resolveCertificationStatuses,
   resolveModelCapabilitySlugs,
 } from "../src/certification-runner.mjs";
-import { MLX_TOOL_MODEL_INSTRUCTIONS, TEXT_ONLY_MODEL_INSTRUCTIONS, buildMixedCodexCatalog } from "../src/catalog.mjs";
+import { MLX_TOOL_MODEL_INSTRUCTIONS, SANDBOX_RECOVERY_INSTRUCTIONS, TEXT_ONLY_MODEL_INSTRUCTIONS, buildMixedCodexCatalog } from "../src/catalog.mjs";
 import { normalizeMlxCapabilities, supportsMlxTools } from "../src/mlx-capabilities.mjs";
 import { buildProviderRegistry } from "../src/provider-registry.mjs";
 import {
@@ -372,7 +372,8 @@ test("MLX tools require both a reviewed live protocol and the certified catalog 
       assert.equal(entry.tool_mode, expected ? "direct" : null);
       assert.equal(entry.shell_type, expected ? "unified_exec" : "disabled");
       assert.equal(entry.supports_search_tool, expected);
-      assert.equal(entry.base_instructions, expected ? MLX_TOOL_MODEL_INSTRUCTIONS : TEXT_ONLY_MODEL_INSTRUCTIONS);
+      assert.equal(entry.base_instructions, expected ? `${MLX_TOOL_MODEL_INSTRUCTIONS}\n\n${SANDBOX_RECOVERY_INSTRUCTIONS}` : TEXT_ONLY_MODEL_INSTRUCTIONS);
+      assert.equal(entry.model_messages.instructions_template, entry.base_instructions);
       const route = buildProviderRegistry({ config: config(), mixedCatalog, discoveredModels: [model] }).resolve(publicModelId);
       assert.equal(route.toolsEnabled, expected);
       assert.equal(route.clientToolSearchEnabled, expected);
@@ -473,7 +474,7 @@ test("managed 262k MLX discovery grants tools only from the exact persisted Dire
     assert.equal(result.entry.tool_mode, direct ? "direct" : null);
     assert.equal(result.entry.shell_type, direct ? "unified_exec" : "disabled");
     assert.equal(result.entry.supports_search_tool, efficient);
-    assert.equal(result.entry.base_instructions, direct ? MLX_TOOL_MODEL_INSTRUCTIONS : TEXT_ONLY_MODEL_INSTRUCTIONS);
+    assert.equal(result.entry.base_instructions, direct ? `${MLX_TOOL_MODEL_INSTRUCTIONS}\n\n${SANDBOX_RECOVERY_INSTRUCTIONS}` : TEXT_ONLY_MODEL_INSTRUCTIONS);
     assert.equal(result.route.toolsEnabled, direct);
     assert.equal(result.route.clientToolSearchEnabled, efficient);
     assert.equal(result.route.upstreamModel, result.model.upstreamId);

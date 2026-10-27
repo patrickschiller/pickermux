@@ -33,6 +33,19 @@ export const TEXT_ONLY_MODEL_INSTRUCTIONS =
   "You are a text-only assistant in Codex Desktop. Answer the user's request " +
   "directly and accurately. You cannot use tools or inspect workspace files " +
   "unless their contents are included in the conversation.";
+export const SANDBOX_RECOVERY_INSTRUCTIONS =
+  "Local command permissions: Codex owns the execution sandbox and approval decisions. " +
+  "A permission denial or blocked service connection can make installed tools appear unavailable. " +
+  "CoreSimulatorService connection errors and simdiskimaged failures can be caused by the sandbox; " +
+  "xcrun lookup errors can instead require checking xcode-select and DEVELOPER_DIR. " +
+  "Check the error and current execution policy before declaring a tool missing or a service broken. " +
+  "For a command needed for the user's authorized task, only when the supplied exec_command schema " +
+  "and current policy permit escalation, request the same narrowly scoped command with " +
+  "sandbox_permissions=\"require_escalated\" and a brief justification through Codex's approval mechanism. " +
+  "Wait for Codex's approval decision; this guidance grants no permission. " +
+  "If escalation is unavailable or denied, respect that decision and explain the limitation. " +
+  "Before retrying a command with possible side effects, establish that the retry is safe. " +
+  "Never disable the sandbox, change approval policy, or restart services merely to bypass a restriction.";
 export const MLX_TOOL_MODEL_INSTRUCTIONS =
   "You are an assistant in Codex Desktop. Answer in the user's language. " +
   "Use available tools when you need current facts, sources, calculations or workspace files. " +
@@ -485,6 +498,38 @@ function catalogEntry(
       instructions_variables: null,
     };
     entry.base_instructions = MLX_TOOL_MODEL_INSTRUCTIONS;
+  }
+
+  if (certifiedForTools) {
+    // Extend both client instruction formats without replacing donor policy.
+    // Keep comp_hash stable: the routed model and sealed history are unchanged.
+    // The hint requests Codex's decision; it confers no execution authority.
+    if (entry.base_instructions != null && typeof entry.base_instructions !== "string") {
+      throw new Error("Certified model base instructions must be text");
+    }
+    const baseInstructions = entry.base_instructions ??
+      (typeof entry.model_messages?.instructions_template === "string"
+        ? entry.model_messages.instructions_template
+        : "");
+    entry.base_instructions = [baseInstructions, SANDBOX_RECOVERY_INSTRUCTIONS]
+      .filter(Boolean).join("\n\n");
+    if (entry.model_messages == null) {
+      entry.model_messages = {
+        instructions_template: entry.base_instructions,
+        instructions_variables: null,
+      };
+    } else {
+      if (
+        !isPlainObject(entry.model_messages) ||
+        typeof entry.model_messages.instructions_template !== "string"
+      ) {
+        throw new Error("Certified model instruction template must be text");
+      }
+      entry.model_messages.instructions_template = [
+        entry.model_messages.instructions_template,
+        SANDBOX_RECOVERY_INSTRUCTIONS,
+      ].filter(Boolean).join("\n\n");
+    }
   }
 
   if (isPlainObject(entry.truncation_policy)) {

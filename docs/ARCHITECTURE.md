@@ -1,6 +1,6 @@
 # PickerMux Architecture
 
-This document describes PickerMux v0.31.1.
+This document describes PickerMux v0.31.2.
 It is intended for contributors, security reviewers, and users who want to
 understand what runs on their Mac.
 
@@ -438,6 +438,21 @@ otherwise unknown historical namespace name without adding a tool definition.
 This keeps the transcript compactable but cannot make the historical tool
 callable or grant a new capability. The compact response has zero call
 authority: any new invocation emitted by the provider is rejected.
+
+Certified external catalog entries append fixed sandbox-recovery guidance to
+both the canonical instruction template and legacy base instructions. Existing
+donor policies and template variables remain intact; reviewed MLX tool profiles
+retain their compact prompt before the same suffix. Native and text-only
+entries receive no suffix. Unknown non-text certified instruction fields stop
+catalog construction rather than discarding donor policy.
+
+The hint treats CoreSimulator connection failures as a possible sandbox symptom
+and directs a model to request the same narrowly scoped command through Codex's
+approval mechanism only when the supplied tool schema and current policy allow
+it. Denied or unavailable escalation remains binding; a retry with possible side
+effects must first be safe. PickerMux does not execute the retry or grant rights.
+Certification fingerprints and compacted-history identity are unchanged:
+refreshed instructions do not change the routed model contract.
 
 Successful tool certification restores the full donor coding-agent prompt and
 preserves its annotated context because those models can use the corresponding

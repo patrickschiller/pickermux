@@ -256,6 +256,8 @@ GPT-Live WebRTC bootstrap uses the native ChatGPT service; delegated tasks retai
 their selected model. Voice audio and startup context go to OpenAI. This requires
 account voice availability and a compatible Codex client; unknown schemas fail closed.
 Setup and install automatically certify tool-capable providers without a valid receipt.
+Certified external models receive sandbox-recovery guidance; Codex still controls approvals.
+After a backend upgrade, refresh the picker and reopen Codex to load updated model guidance.
 LM Studio certification tests full tool-result replay with a fresh result marker.
 Mandatory-reasoning models receive bounded reasoning headroom in every base probe.
 After a certification-probe upgrade, stale LM Studio receipts require recertification.

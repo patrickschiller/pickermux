@@ -456,6 +456,50 @@ test("0.31.1 compaction patch retains exact DMG metadata and the Config update f
   }
 });
 
+test("0.31.2 sandbox guidance release preserves the DMG update from 0.31.1", async (t) => {
+  const value = await fixture(t, "0.31.2");
+  const result = await prepareDmgRelease({ ...value, tag: "v0.31.2" });
+  const body = await readFile(path.join(value.outputDirectory, "release-notes.md"), "utf8");
+  assert.match(body, /Changes in v0\.31\.2/u);
+  assert.match(body, /certified external models.*sandbox-recovery guidance.*CoreSimulatorService.*simdiskimaged/u);
+  assert.match(body, /schema and current policy permit escalation.*narrowly scoped command.*require_escalated/u);
+  assert.match(body, /Respect denied or unavailable approval.*side effects.*safe to retry/u);
+  assert.match(body, /grants no permissions, disables no sandbox, changes no approval policy/u);
+  assert.match(body, /refresh the picker.*fully quit and reopen Codex/u);
+  assert.match(body, /Matching tool certifications remain valid.*approve individual commands/u);
+  assert.match(body, /\*\*Config → Update installed backend…\*\*/u);
+  assert.doesNotMatch(body, /Changes in v0\.31\.1/u);
+  assert.deepEqual(parseDmgReleaseRecord(body, { version: "0.31.2", file: PICKERMUX_DMG_ASSET }), {
+    version: "0.31.2", file: PICKERMUX_DMG_ASSET,
+    sha256: result.sha256, signing: "developer-id-notarized",
+  });
+  assert.deepEqual(await readFile(path.join(value.outputDirectory, PICKERMUX_DMG_ASSET)), value.diskImage);
+  assert.deepEqual((await readdir(value.outputDirectory)).sort(),
+    [PICKERMUX_DMG_ASSET, "SHA256SUMS", "release-notes.md"].sort());
+  assert.deepEqual(await verifyDmgPublication({ directory: value.outputDirectory, tag: "v0.31.2" }), result);
+  const expectedUrl = `https://github.com/patrickschiller/pickermux/releases/download/v0.31.2/${PICKERMUX_DMG_ASSET}`;
+  const release = {
+    tag_name: "v0.31.2", draft: false, prerelease: false, body,
+    assets: [{ name: PICKERMUX_DMG_ASSET, browser_download_url: expectedUrl }],
+  };
+  assert.deepEqual(await checkForCompanionUpdate({
+    currentVersion: "0.31.1", fetchImpl: async () => Response.json(release),
+  }), {
+    status: "available", distribution: "dmg", currentVersion: "0.31.1", targetVersion: "0.31.2",
+    assets: { [PICKERMUX_DMG_ASSET]: expectedUrl }, diskImageSha256: result.sha256,
+  });
+  for (const mutate of [
+    (candidate) => { candidate.body += dmgReleaseMarker({ version: "0.31.2", sha256: result.sha256 }); },
+    (candidate) => { candidate.assets[0].browser_download_url = expectedUrl.replace("v0.31.2", "v0.31.1"); },
+  ]) {
+    const candidate = structuredClone(release);
+    mutate(candidate);
+    await assert.rejects(checkForCompanionUpdate({
+      currentVersion: "0.31.1", fetchImpl: async () => Response.json(candidate),
+    }), { code: "UPDATE_INVALID" });
+  }
+});
+
 test("later publication guidance keeps the Config navigation name", async (t) => {
   const value = await fixture(t, "0.24.7");
   await prepareDmgRelease({ ...value, tag: "v0.24.7" });
