@@ -426,7 +426,14 @@ The LM Studio adapter therefore performs bounded, explicit normalization:
   agent fields added to a future donor cannot silently re-enable bootstrap
   context;
 - maps supported reasoning levels and omits only known synthetic defaults;
-- removes unsupported cache and encrypted-reasoning fields;
+- removes unsupported cache fields and exactly the native encrypted-state
+  `include` selectors `reasoning.encrypted_content` and
+  `output.encrypted_content`. The latter is requested by Codex's
+  [output-token replay](https://github.com/openai/codex/blob/aa854dabf54e1dd6c2bda80653944b4f2c0672d7/codex-rs/core/src/client.rs),
+  which LM Studio's include enum does not support. Other selectors remain
+  intact, including logprobs and unknown future values, so unsupported schemas
+  still fail at the provider boundary. Native and generic Responses routes
+  retain their include values;
 - for an uncertified LM Studio route, removes allowlisted generated
   cross-thread-memory, skill-catalog, permission, app/plugin/environment usage,
   collaboration/multi-agent, deferred-tool, and plugin-recommendation bootstrap

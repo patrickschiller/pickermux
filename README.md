@@ -86,6 +86,11 @@ history. Recognized native reviews receive the authenticated summary as untruste
 context; Codex still decides approval. This review context goes to OpenAI when
 automatic review is enabled, even with a local task model.
 
+The LM Studio adapter removes native encrypted-output replay requests, including
+Codex's newer `output.encrypted_content` selector, before provider validation.
+This prevents the immediate `Invalid enum value` failure without a Codex setting
+change. Existing matching certifications and compacted history remain valid.
+
 The revised LM Studio certification checks tool-result continuation with the
 full conversation, uses numbered records for its long-context test, and allows
 more output tokens when discovered metadata requires reasoning. After upgrading

@@ -14,6 +14,7 @@ const item = { type: "compaction", encrypted_content: codec.seal(summary, bindin
 const body = {
   model: "native-reviewer", instructions: "Trusted review policy: deny unauthorized actions",
   client_metadata: { "x-openai-subagent": "guardian" },
+  include: ["reasoning.encrypted_content", "output.encrypted_content"],
   input: [item, { type: "message", role: "user", content: "Review the requested action" }],
 };
 function fixture(overrides = {}) {
@@ -54,6 +55,7 @@ test("review projection keeps policy, action and native model intact and summary
   assert.equal(projected.model, body.model);
   assert.equal(projected.instructions, body.instructions);
   assert.deepEqual(projected.client_metadata, body.client_metadata);
+  assert.deepEqual(projected.include, body.include);
   assert.deepEqual(projected.input[1], body.input[1]);
   assert.equal(projected.input[0].role, "assistant");
   assert.equal(projected.input[0].content[0].type, "output_text");

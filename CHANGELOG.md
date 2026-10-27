@@ -12,6 +12,16 @@ published as GitHub Releases.
 The 0.23.x and 0.24.x entries are local milestones included in the public
 0.30.0 release; they were not published separately.
 
+## [Unreleased]
+
+### Fixed
+
+- Remove Codex's native `output.encrypted_content` include selector before
+  LM Studio validation, alongside the existing encrypted-reasoning selector.
+  Prevent the immediate `Invalid enum value` failure when newer Codex clients
+  enable output-token replay. Preserve other selectors, native and generic
+  Responses behavior, matching certifications and sealed compaction history.
+
 ## [0.40.0] - 2026-10-27
 
 ### Added
@@ -1159,7 +1169,7 @@ confirm the release date before tagging. See the
   paths and file types, refuses root execution and foreign launchers, and
   restores the previous distribution state when activation fails.
 
-[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.31.1...HEAD
+[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.40.0...HEAD
 [0.40.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.40.0
 [0.31.2]: https://github.com/patrickschiller/pickermux/releases/tag/v0.31.2
 [0.31.1]: https://github.com/patrickschiller/pickermux/releases/tag/v0.31.1
