@@ -6,6 +6,12 @@ const MAX_SOURCE_ROUTES = 256;
 const ITEM_KEYS = new Set([
   "type", "id", "encrypted_content", "internal_chat_message_metadata_passthrough",
 ]);
+// Native transport metadata can surround the response lifecycle, including
+// timing after completion. These exact types carry no review verdict and
+// cannot substitute for completion or suppress a reported failure.
+const NATIVE_METADATA_EVENTS = new Set([
+  "codex.response.metadata", "codex.rate_limits", "responsesapi.websocket_timing",
+]);
 
 class NativeReviewResponseError extends Error {
   constructor(code = "UPSTREAM_RESPONSE_ERROR") {
@@ -61,13 +67,17 @@ export function validateNativeReviewResponse(buffer, contentType) {
       done = true;
       continue;
     }
-    if (completed || done) throw new NativeReviewResponseError();
+    if (done) throw new NativeReviewResponseError();
     const event = parse(data);
     if (
       event?.error != null || event?.response?.error != null ||
       ["error", "response.failed", "response.incomplete"].includes(event?.type)
     ) throw new NativeReviewResponseError("REVIEW_SERVICE_ERROR");
-    if (typeof event?.type !== "string" || !event.type.startsWith("response.")) {
+    const metadata = NATIVE_METADATA_EVENTS.has(event?.type);
+    if (
+      typeof event?.type !== "string" ||
+      (!metadata && (!event.type.startsWith("response.") || completed))
+    ) {
       throw new NativeReviewResponseError();
     }
     if (names.length > 1 || (names.length === 1 && names[0] !== event.type)) {

@@ -1,0 +1,16 @@
+event: codex.response.metadata
+data: {"type":"codex.response.metadata","headers":{"x-models-etag":"synthetic-models-etag"}}
+
+data: {"type":"codex.rate_limits","rate_limits":{"allowed":true,"primary":null,"secondary":null}}
+
+event: response.created
+data: {"type":"response.created","response":{"id":"synthetic-review"}}
+
+data: {"type":"response.output_text.delta","delta":"{\"decision\":\"deny\"}"}
+
+data: {"type":"response.completed","response":{"id":"synthetic-review","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}
+
+event: responsesapi.websocket_timing
+data: {"type":"responsesapi.websocket_timing","timing_metrics":{"responses_duration_excl_engine_and_client_tool_time_ms":1,"engine_service_total_ms":2}}
+
+data: [DONE]

@@ -6,7 +6,7 @@ an external prerequisite. Earlier CLI archive releases remain available at
 their immutable version-pinned URLs. PickerMux is not published to npm.
 
 The maintainer tested the 0.30.0 candidate and authorized PR merge, tagging,
-and publication on 6 October 2026. The commands below use the 0.40.1 candidate;
+and publication on 6 October 2026. The commands below use the 0.40.2 candidate;
 every production signing and verification gate still applies.
 
 ## Preflight
@@ -46,7 +46,7 @@ https://github.com/patrickschiller/pickermux/releases/latest/download/PickerMux-
 The release tag still makes a download immutable:
 
 ```text
-https://github.com/patrickschiller/pickermux/releases/download/v0.40.1/PickerMux-macos-universal.dmg
+https://github.com/patrickschiller/pickermux/releases/download/v0.40.2/PickerMux-macos-universal.dmg
 ```
 
 The build retains its versioned DMG, app archive, backend manifest, companion
@@ -69,9 +69,9 @@ key available to `codesign`; the profile must already be usable by `notarytool`.
 Use fresh output directories, since the tools refuse to replace existing ones:
 
 ```bash
-node scripts/build-companion.mjs --release --output /tmp/pickermux-signed-0.40.1
-node scripts/prepare-dmg-release.mjs --source /tmp/pickermux-signed-0.40.1 --output /tmp/pickermux-public-0.40.1 --tag v0.40.1
-node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.40.1 --tag v0.40.1
+node scripts/build-companion.mjs --release --output /tmp/pickermux-signed-0.40.2
+node scripts/prepare-dmg-release.mjs --source /tmp/pickermux-signed-0.40.2 --output /tmp/pickermux-public-0.40.2 --tag v0.40.2
+node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.40.2 --tag v0.40.2
 ```
 
 The release builder signs and notarizes the app and DMG separately, staples
@@ -121,8 +121,8 @@ maintainer's Mac when using the local production route.
 After the exact approved commit is on main and all gates are ready:
 
 ```bash
-git tag -a v0.40.1 -m "PickerMux v0.40.1"
-git push origin v0.40.1
+git tag -a v0.40.2 -m "PickerMux v0.40.2"
+git push origin v0.40.2
 ```
 
 Watch the workflow through publication. If a candidate is wrong, fix the
@@ -146,10 +146,10 @@ production signing requirements above remain mandatory.
    replace its assets.
 
 ```bash
-node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.40.1 --tag v0.40.1
-gh release create v0.40.1 /tmp/pickermux-public-0.40.1/PickerMux-macos-universal.dmg \
-  --verify-tag --title "PickerMux v0.40.1" \
-  --notes-file /tmp/pickermux-public-0.40.1/release-notes.md
+node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.40.2 --tag v0.40.2
+gh release create v0.40.2 /tmp/pickermux-public-0.40.2/PickerMux-macos-universal.dmg \
+  --verify-tag --title "PickerMux v0.40.2" \
+  --notes-file /tmp/pickermux-public-0.40.2/release-notes.md
 ```
 
 Complete the independent public-download verification below before announcing
@@ -178,6 +178,27 @@ pinned backend upgrades through the existing setup transaction, preserving
 installed provider settings. Cancellation and failed activation must retain
 usable prior state; ordinary removal and deactivation continue using the
 validated installed backend.
+
+## 0.40.2 native Guardian metadata acceptance
+
+The fixed public 502 was observed with the target Mac's app and installed
+backend both at 0.40.1. Offline probes reproduce rejection of each known native
+metadata name before and after successful completion. Pinned official source
+and the entirely synthetic stream fixture establish the supported protocol.
+Regression tests cover exact successful bytes, LF/CRLF, checkpoint projection,
+credential isolation and rejection of metadata-only, unknown, erroneous or
+unterminated streams. The source authentication and approval boundaries remain
+unchanged.
+
+The original native review payload was not captured, so its exact failing
+condition is unconfirmed. Do not report these tests as a successful live Flint
+approval or Simulator run. After upgrading the app and backend and completely
+restarting Codex, retry the original approval as a separate acceptance step.
+The Xcode variable is DEVELOPER_DIR, not DEVELOPMENT_DIR.
+
+Verify updater recognition from 0.40.0 and 0.40.1 and complete the production
+signing, notarization and independent public-download checks above. Matching
+certifications and existing sealed history remain valid.
 
 ## 0.40.1 native output replay compatibility acceptance
 

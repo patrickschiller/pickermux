@@ -13,6 +13,11 @@ const HASH = /^[a-f0-9]{64}$/u;
 const ASSETS = [PICKERMUX_DMG_ASSET, "release-notes.md", "SHA256SUMS"];
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const RELEASE_HIGHLIGHTS = Object.freeze({
+  "0.40.2": [
+    "- Fix HTTP 502 caused by rejecting known native metadata in otherwise completed Guardian review streams. Accept exactly codex.response.metadata, codex.rate_limits and responsesapi.websocket_timing before or after completion.",
+    "- Preserve successful review bytes, native policy and the approval verdict. Require successful completion and retain rejection of unknown event families, errors, incomplete streams, duplicate completion and data after DONE.",
+    "- Keep matching tool certifications and sealed history valid. Upgrade both app and installed backend, fully quit and reopen Codex, then retry the original approval. Regression tests establish the stream fix; the original live Flint review remains to be confirmed after the upgrade.",
+  ],
   "0.40.1": [
     "- Fix the immediate LM Studio Invalid enum value failure when newer Codex clients request output.encrypted_content for native output-token replay.",
     "- Omit exactly the native encrypted-output and encrypted-reasoning include selectors on the local adapter path. Preserve logprobs, other include values, native requests, Guardian reviews and generic Responses providers.",

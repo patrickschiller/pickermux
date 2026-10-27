@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { createCompactionEnvelopeCodec } from "../src/compaction-envelope.mjs";
 import { isNativeGuardianReview, projectNativeReviewCompaction, validateNativeReviewResponse } from "../src/native-review.mjs";
@@ -63,6 +64,44 @@ test("review projection keeps policy, action and native model intact and summary
   assert.ok(projected.input[0].content[0].text.endsWith(summary));
   assert.doesNotMatch(JSON.stringify(projected), /pickermux\.compaction\./u);
   assert.deepEqual(body, original);
+});
+
+test("native review SSE preserves known metadata before and after successful completion", async () => {
+  const fixture = await readFile(new URL("./fixtures/native-guardian-review/metadata-stream.sse", import.meta.url));
+  assert.equal(validateNativeReviewResponse(fixture, "text/event-stream"), fixture);
+  const terminal = 'data: {"type":"response.completed","response":{"id":"synthetic-review"}}\n\n';
+  for (const type of ["codex.response.metadata", "codex.rate_limits", "responsesapi.websocket_timing"]) {
+    const metadata = `event: ${type}\ndata: ${JSON.stringify({ type })}\n\n`;
+    for (const stream of [metadata + terminal, terminal + metadata]) {
+      for (const source of [stream, stream.replaceAll("\n", "\r\n")]) {
+        const bytes = Buffer.from(source);
+        assert.equal(validateNativeReviewResponse(bytes, "text/event-stream"), bytes);
+      }
+    }
+  }
+});
+
+test("native metadata cannot replace completion, hide errors or authorize unknown event families", () => {
+  const terminal = 'data: {"type":"response.completed","response":{"id":"synthetic-review"}}\n\n';
+  const metadata = 'data: {"type":"codex.response.metadata"}\n\n';
+  const unknown = 'data: {"type":"codex.unreviewed.metadata"}\n\n';
+  const error = 'data: {"type":"codex.response.metadata","error":{"message":"private-account-canary"}}\n\n';
+  for (const [stream, code] of [
+    [metadata, "UPSTREAM_RESPONSE_ERROR"],
+    [unknown + terminal, "UPSTREAM_RESPONSE_ERROR"],
+    [terminal + unknown, "UPSTREAM_RESPONSE_ERROR"],
+    [terminal + metadata + terminal, "UPSTREAM_RESPONSE_ERROR"],
+    [terminal + 'data: [DONE]\n\n' + metadata, "UPSTREAM_RESPONSE_ERROR"],
+    ['event: response.completed\n' + metadata + terminal, "UPSTREAM_RESPONSE_ERROR"],
+    [error + terminal, "REVIEW_SERVICE_ERROR"],
+    [terminal + error, "REVIEW_SERVICE_ERROR"],
+    [metadata + 'data: {"type":"response.failed"}\n\n', "REVIEW_SERVICE_ERROR"],
+    [metadata + 'data: {"type":"response.incomplete"}\n\n', "REVIEW_SERVICE_ERROR"],
+  ]) assert.throws(() => validateNativeReviewResponse(Buffer.from(stream), "text/event-stream"), (error) => {
+    assert.equal(error.code, code);
+    assert.doesNotMatch(error.message, /private-account-canary/u);
+    return true;
+  });
 });
 
 test("review source authentication rejects tampering, stale bindings and unmeasured tool authority", async () => {

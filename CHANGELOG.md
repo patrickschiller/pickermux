@@ -14,6 +14,17 @@ The 0.23.x and 0.24.x entries are local milestones included in the public
 
 ## [Unreleased]
 
+## [0.40.2] - 2026-10-27
+
+### Fixed
+
+- Accept the exact native review stream metadata types `codex.response.metadata`,
+  `codex.rate_limits` and `responsesapi.websocket_timing`, including metadata
+  after completion. Prevent a valid Guardian response from becoming HTTP 502
+  solely because it contains those events. Preserve successful bytes and require
+  one completed response; metadata alone, unknown event families, reported
+  errors, incomplete streams and duplicate completion still fail closed.
+
 ## [0.40.1] - 2026-10-27
 
 ### Fixed
@@ -1171,7 +1182,8 @@ confirm the release date before tagging. See the
   paths and file types, refuses root execution and foreign launchers, and
   restores the previous distribution state when activation fails.
 
-[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.40.1...HEAD
+[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.40.2...HEAD
+[0.40.2]: https://github.com/patrickschiller/pickermux/releases/tag/v0.40.2
 [0.40.1]: https://github.com/patrickschiller/pickermux/releases/tag/v0.40.1
 [0.40.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.40.0
 [0.31.2]: https://github.com/patrickschiller/pickermux/releases/tag/v0.31.2

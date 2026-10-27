@@ -232,7 +232,10 @@ Projected review replies are buffered within the existing 32 MiB response bound
 and validated before forwarding. HTTP failures, JSON error envelopes and failed
 or incomplete SSE replies use fixed redacted errors. Unknown content types and
 malformed or unterminated replies fail closed. Successful response bytes remain
-intact; no review output is persisted. A failed native
+intact. Exactly allowlisted native metadata and timing events can precede or
+follow completion; they cannot replace the required successful completion or
+suppress a reported error. Unknown non-response event families remain rejected.
+No review output is persisted. A failed native
 review must not echo account data into the external parent's tool-result path.
 Codex retains approval and execution; PickerMux does not interpret the verdict.
 

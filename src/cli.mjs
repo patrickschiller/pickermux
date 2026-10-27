@@ -258,6 +258,7 @@ account voice availability and a compatible Codex client; unknown schemas fail c
 Setup and install automatically certify tool-capable providers without a valid receipt.
 Certified external models receive sandbox-recovery guidance; Codex still controls approvals.
 Native Guardian reviews can consume authenticated compacted LM Studio context.
+Completed review streams retain known native metadata and timing events.
 Automatic review sends that context to OpenAI even when the task model is local.
 After a backend upgrade, refresh the picker and reopen Codex to load updated model guidance.
 LM Studio requests omit native encrypted reasoning and output-token replay selectors.

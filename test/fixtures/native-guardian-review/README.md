@@ -23,6 +23,24 @@ Protocol provenance is official Codex revision
   bytes. It buffers only projected review replies within 32 MiB and rejects
   HTTP/JSON/SSE failures before any output reaches the external parent's error.
 
+The synthetic `metadata-stream.sse` adds the native side-event contract from
+official revision `33d306d457a4632b22bebf214e0c25d91f90f6e8`:
+
+- [SSE parser](https://github.com/openai/codex/blob/33d306d457a4632b22bebf214e0c25d91f90f6e8/codex-rs/codex-api/src/sse/responses.rs)
+  recognizes `codex.response.metadata` and `responsesapi.websocket_timing`.
+- [Native transport tests](https://github.com/openai/codex/blob/33d306d457a4632b22bebf214e0c25d91f90f6e8/codex-rs/core/tests/suite/client_websockets.rs)
+  combine metadata and `codex.rate_limits` with the response lifecycle.
+- [Timing telemetry](https://github.com/openai/codex/blob/33d306d457a4632b22bebf214e0c25d91f90f6e8/codex-rs/otel/src/events/session_telemetry.rs)
+  names the timing event and its metrics field.
+
+All values and the deny verdict in this fixture are synthetic. Tests exercise
+these exact metadata names before and after completion, LF/CRLF framing,
+unchanged successful bytes and end-to-end checkpoint projection. Metadata-only
+streams, unknown event families, mismatched names, duplicate completion, errors
+and data after DONE stay rejected. The original reported review payload was
+not captured; these fixtures establish the protocol regression without
+claiming a live approval decision or the exact event in that failed request.
+
 The two required markers are the HTTP `x-openai-subagent: guardian` header
 and `client_metadata["x-openai-subagent"] = "guardian"`. An optional
 `x-codex-guardian` header must equal `reviewer`. These identify an operation

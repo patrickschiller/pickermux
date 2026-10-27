@@ -85,6 +85,7 @@ Automatic Codex Guardian reviews also work with PickerMux's compacted LM Studio
 history. Recognized native reviews receive the authenticated summary as untrusted
 context; Codex still decides approval. This review context goes to OpenAI when
 automatic review is enabled, even with a local task model.
+Known native metadata and timing events in a completed review stream are retained.
 
 Since 0.40.1, the LM Studio adapter removes native encrypted-output replay requests, including
 Codex's newer `output.encrypted_content` selector, before provider validation.
