@@ -6,7 +6,7 @@ an external prerequisite. Earlier CLI archive releases remain available at
 their immutable version-pinned URLs. PickerMux is not published to npm.
 
 The maintainer tested the 0.30.0 candidate and authorized PR merge, tagging,
-and publication on 6 October 2026. The commands below use the 0.40.2 candidate;
+and publication on 6 October 2026. The commands below use the 0.40.3 candidate;
 every production signing and verification gate still applies.
 
 ## Preflight
@@ -46,7 +46,7 @@ https://github.com/patrickschiller/pickermux/releases/latest/download/PickerMux-
 The release tag still makes a download immutable:
 
 ```text
-https://github.com/patrickschiller/pickermux/releases/download/v0.40.2/PickerMux-macos-universal.dmg
+https://github.com/patrickschiller/pickermux/releases/download/v0.40.3/PickerMux-macos-universal.dmg
 ```
 
 The build retains its versioned DMG, app archive, backend manifest, companion
@@ -69,9 +69,9 @@ key available to `codesign`; the profile must already be usable by `notarytool`.
 Use fresh output directories, since the tools refuse to replace existing ones:
 
 ```bash
-node scripts/build-companion.mjs --release --output /tmp/pickermux-signed-0.40.2
-node scripts/prepare-dmg-release.mjs --source /tmp/pickermux-signed-0.40.2 --output /tmp/pickermux-public-0.40.2 --tag v0.40.2
-node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.40.2 --tag v0.40.2
+node scripts/build-companion.mjs --release --output /tmp/pickermux-signed-0.40.3
+node scripts/prepare-dmg-release.mjs --source /tmp/pickermux-signed-0.40.3 --output /tmp/pickermux-public-0.40.3 --tag v0.40.3
+node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.40.3 --tag v0.40.3
 ```
 
 The release builder signs and notarizes the app and DMG separately, staples
@@ -121,8 +121,8 @@ maintainer's Mac when using the local production route.
 After the exact approved commit is on main and all gates are ready:
 
 ```bash
-git tag -a v0.40.2 -m "PickerMux v0.40.2"
-git push origin v0.40.2
+git tag -a v0.40.3 -m "PickerMux v0.40.3"
+git push origin v0.40.3
 ```
 
 Watch the workflow through publication. If a candidate is wrong, fix the
@@ -146,10 +146,10 @@ production signing requirements above remain mandatory.
    replace its assets.
 
 ```bash
-node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.40.2 --tag v0.40.2
-gh release create v0.40.2 /tmp/pickermux-public-0.40.2/PickerMux-macos-universal.dmg \
-  --verify-tag --title "PickerMux v0.40.2" \
-  --notes-file /tmp/pickermux-public-0.40.2/release-notes.md
+node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.40.3 --tag v0.40.3
+gh release create v0.40.3 /tmp/pickermux-public-0.40.3/PickerMux-macos-universal.dmg \
+  --verify-tag --title "PickerMux v0.40.3" \
+  --notes-file /tmp/pickermux-public-0.40.3/release-notes.md
 ```
 
 Complete the independent public-download verification below before announcing
@@ -178,6 +178,26 @@ pinned backend upgrades through the existing setup transaction, preserving
 installed provider settings. Cancellation and failed activation must retain
 usable prior state; ordinary removal and deactivation continue using the
 validated installed backend.
+
+## 0.40.3 native Guardian failure diagnostics acceptance
+
+This candidate classifies projected Guardian failures with fixed markers in the
+public error message. The recurring HTTP 502 was observed with both app and
+installed backend at 0.40.2; its exact cause is still unknown. These diagnostics
+do not constitute a compatibility fix, grant approval or relax validation.
+
+Offline acceptance covers each fixed diagnostic boundary, private-value
+redaction, interrupted transports before and after a validated completion,
+unchanged success bytes and ordinary native forwarding. Verify updater
+recognition from 0.40.2 and complete every production signing, notarization and
+independent public-download gate above before publication.
+
+After an explicitly approved upgrade of both app and backend, fully quit and
+reopen Codex and retry the original approval. Record only the fixed marker and
+version; do not capture or share raw review payloads, headers or capability URLs.
+Classify and reproduce the live cause before claiming the Flint review or the
+Simulator command is fixed. Matching certifications and sealed history remain
+valid.
 
 ## 0.40.2 native Guardian metadata acceptance
 

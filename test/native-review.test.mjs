@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { createCompactionEnvelopeCodec } from "../src/compaction-envelope.mjs";
-import { isNativeGuardianReview, projectNativeReviewCompaction, validateNativeReviewResponse } from "../src/native-review.mjs";
+import { NativeReviewResponseError, nativeReviewDiagnostic, isNativeGuardianReview, projectNativeReviewCompaction, validateNativeReviewResponse } from "../src/native-review.mjs";
+import { sendProxyError } from "../src/responses-proxy.mjs";
 
 const codec = createCompactionEnvelopeCodec("REVIEW_TEST_SECRET_0123456789_ABCDEFGHIJK");
 const source = Object.freeze({
@@ -102,6 +103,74 @@ test("native metadata cannot replace completion, hide errors or authorize unknow
     assert.doesNotMatch(error.message, /private-account-canary/u);
     return true;
   });
+});
+
+function publicError(error) {
+  let payload;
+  sendProxyError({
+    writeHead(status) { assert.equal(status, 502); },
+    end(bytes) { payload = JSON.parse(bytes.toString()); },
+  }, error);
+  return payload.error;
+}
+
+test("review validation exposes only fixed diagnostic markers for every failure boundary", () => {
+  const frame = (event) => `data: ${JSON.stringify(event)}\n\n`;
+  const terminal = frame({ type: "response.completed", response: { id: "synthetic" } });
+  const completion = (response) => frame({ type: "response.completed", response });
+  const canary = "private-response-canary";
+  const cases = [
+    ["application/json", Buffer.from([0xff]), "REVIEW_INVALID_UTF8"],
+    ["application/json", `{"${canary}":`, "REVIEW_INVALID_JSON"],
+    ["application/json", "null", "REVIEW_RESPONSE_SHAPE"],
+    ["application/json", '{"status":"completed","output":{}}', "REVIEW_COMPLETION_OUTPUT"],
+    ["application/json", '{"output":[]}', "REVIEW_COMPLETION_STATUS"],
+    ["application/json", JSON.stringify({ error: { message: canary } }), "REVIEW_REPORTED_ERROR"],
+    ["text/event-stream", completion(null), "REVIEW_RESPONSE_SHAPE"],
+    ["text/event-stream", completion({}), "REVIEW_COMPLETION_ID"],
+    ["text/event-stream", completion({ id: "synthetic", status: null }), "REVIEW_COMPLETION_STATUS"],
+    ["text/event-stream", completion({ id: "synthetic", output: null }), "REVIEW_COMPLETION_OUTPUT"],
+    ["text/event-stream", `event: ${canary}\n\n` + terminal, "REVIEW_EVENT_WITHOUT_DATA"],
+    ["text/event-stream", "data: [DONE]\n\n" + terminal, "REVIEW_DONE_ORDER"],
+    ["text/event-stream", terminal + "data: [DONE]\n\n" + frame({ type: canary }), "REVIEW_DATA_AFTER_DONE"],
+    ["text/event-stream", frame({ type: canary }) + terminal, "REVIEW_EVENT_TYPE"],
+    ["text/event-stream", frame({}) + terminal, "REVIEW_EVENT_TYPE"],
+    ["text/event-stream", terminal + terminal, "REVIEW_DATA_AFTER_COMPLETION"],
+    ["text/event-stream", `event: ${canary}\n` + terminal, "REVIEW_EVENT_NAME"],
+    ["text/event-stream", "event: response.completed\nevent: response.completed\n" + terminal, "REVIEW_EVENT_NAME"],
+    ["text/event-stream", frame({ type: "response.created", private: canary }), "REVIEW_MISSING_COMPLETION"],
+    ["text/event-stream", terminal + frame({ type: "error", error: { message: canary } }), "REVIEW_REPORTED_ERROR"],
+    ["text/event-stream", frame({ type: "response.failed" }), "REVIEW_REPORTED_ERROR"],
+  ];
+  for (const [contentType, data, diagnostic] of cases) {
+    assert.throws(() => validateNativeReviewResponse(Buffer.from(data), contentType), (error) => {
+      const code = diagnostic === "REVIEW_REPORTED_ERROR" ? "REVIEW_SERVICE_ERROR" : "UPSTREAM_RESPONSE_ERROR";
+      assert.equal(error.code, code);
+      assert.equal(nativeReviewDiagnostic(error), diagnostic);
+      const result = publicError(error);
+      assert.deepEqual(result, {
+        code,
+        message: (code === "REVIEW_SERVICE_ERROR"
+          ? "The native approval review could not be completed"
+          : "The upstream response could not be read or validated") + ` (${diagnostic})`,
+      });
+      assert.doesNotMatch(JSON.stringify(result), /private-response-canary|synthetic/u);
+      return true;
+    }, diagnostic);
+  }
+});
+
+test("untrusted errors and unknown diagnostic values cannot add native review wire details", () => {
+  for (const error of [
+    { code: "UPSTREAM_RESPONSE_ERROR", statusCode: 502, diagnostic: "REVIEW_INVALID_JSON", message: "private-canary" },
+    new NativeReviewResponseError(undefined, "private-canary"),
+    Object.assign(new NativeReviewResponseError(), { diagnostic: "private-canary", cause: new Error("private-canary") }),
+  ]) {
+    assert.equal(nativeReviewDiagnostic(error), undefined);
+    assert.deepEqual(publicError(error), {
+      code: "UPSTREAM_RESPONSE_ERROR", message: "The upstream response could not be read or validated",
+    });
+  }
 });
 
 test("review source authentication rejects tampering, stale bindings and unmeasured tool authority", async () => {

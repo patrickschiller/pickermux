@@ -239,6 +239,15 @@ No review output is persisted. A failed native
 review must not echo account data into the external parent's tool-result path.
 Codex retains approval and execution; PickerMux does not interpret the verdict.
 
+Classified projected-review response errors expose only an allowlisted, fixed diagnostic marker
+and fixed explanatory text for the failed check. They do not interpolate
+upstream header values, event names, IDs, response content, credentials,
+exception messages or causes. Unknown diagnostic values cannot become public
+text. This adds no raw review logging or persistence and does not relax response
+validation, checkpoint authentication, certification, sandbox or approval rules.
+Ordinary native traffic without a bridge checkpoint and external response paths
+retain their existing behavior.
+
 Review context goes to the native OpenAI service when automatic review is
 enabled, including for local task models. This is the same review path that
 receives uncompressed context. Ciphertext is never sent to another provider;

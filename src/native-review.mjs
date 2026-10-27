@@ -13,27 +13,48 @@ const NATIVE_METADATA_EVENTS = new Set([
   "codex.response.metadata", "codex.rate_limits", "responsesapi.websocket_timing",
 ]);
 
-class NativeReviewResponseError extends Error {
-  constructor(code = "UPSTREAM_RESPONSE_ERROR") {
+// Only these fixed labels may cross the native-review error boundary. Never
+// include upstream values: Codex may put this message in the external task.
+const REVIEW_DIAGNOSTICS = new Set([
+  "REVIEW_CONTENT_TYPE", "REVIEW_CONTENT_ENCODING", "REVIEW_BODY_TOO_LARGE",
+  "REVIEW_INVALID_UTF8", "REVIEW_INVALID_JSON", "REVIEW_RESPONSE_SHAPE",
+  "REVIEW_COMPLETION_ID", "REVIEW_COMPLETION_STATUS", "REVIEW_COMPLETION_OUTPUT",
+  "REVIEW_EVENT_WITHOUT_DATA", "REVIEW_DONE_ORDER", "REVIEW_DATA_AFTER_DONE",
+  "REVIEW_EVENT_TYPE", "REVIEW_DATA_AFTER_COMPLETION", "REVIEW_EVENT_NAME",
+  "REVIEW_MISSING_COMPLETION", "REVIEW_HTTP_STATUS", "REVIEW_REPORTED_ERROR",
+  "REVIEW_STREAM_READ", "REVIEW_STREAM_ABORTED",
+  "REVIEW_STREAM_READ_AFTER_COMPLETION", "REVIEW_STREAM_ABORTED_AFTER_COMPLETION",
+]);
+
+export class NativeReviewResponseError extends Error {
+  constructor(code = "UPSTREAM_RESPONSE_ERROR", diagnostic) {
     super("The native review response could not be validated");
     this.code = code;
     this.statusCode = 502;
+    this.diagnostic = REVIEW_DIAGNOSTICS.has(diagnostic) ? diagnostic : undefined;
   }
+}
+
+export function nativeReviewDiagnostic(error) {
+  return error instanceof NativeReviewResponseError && REVIEW_DIAGNOSTICS.has(error.diagnostic)
+    ? error.diagnostic : undefined;
 }
 
 function assertSuccessfulReview(response, { stream = false } = {}) {
   if (response?.error != null || ["failed", "incomplete"].includes(response?.status)) {
-    throw new NativeReviewResponseError("REVIEW_SERVICE_ERROR");
+    throw new NativeReviewResponseError("REVIEW_SERVICE_ERROR", "REVIEW_REPORTED_ERROR");
   }
-  if (
-    !response || typeof response !== "object" || Array.isArray(response) ||
-    (stream
-      ? typeof response.id !== "string" || !response.id ||
-        (response.status !== undefined && response.status !== "completed") ||
-        (response.output !== undefined && !Array.isArray(response.output))
-      : response.status !== "completed" || !Array.isArray(response.output))
-  ) {
-    throw new NativeReviewResponseError();
+  if (!response || typeof response !== "object" || Array.isArray(response)) {
+    throw new NativeReviewResponseError(undefined, "REVIEW_RESPONSE_SHAPE");
+  }
+  if (stream && (typeof response.id !== "string" || !response.id)) {
+    throw new NativeReviewResponseError(undefined, "REVIEW_COMPLETION_ID");
+  }
+  if ((!stream || response.status !== undefined) && response.status !== "completed") {
+    throw new NativeReviewResponseError(undefined, "REVIEW_COMPLETION_STATUS");
+  }
+  if ((!stream || response.output !== undefined) && !Array.isArray(response.output)) {
+    throw new NativeReviewResponseError(undefined, "REVIEW_COMPLETION_OUTPUT");
   }
 }
 
@@ -41,10 +62,12 @@ function assertSuccessfulReview(response, { stream = false } = {}) {
 // become a tool error in the external parent. Successful bytes stay intact.
 export function validateNativeReviewResponse(buffer, contentType) {
   const text = buffer.toString("utf8");
-  if (!Buffer.from(text, "utf8").equals(buffer)) throw new NativeReviewResponseError();
+  if (!Buffer.from(text, "utf8").equals(buffer)) {
+    throw new NativeReviewResponseError(undefined, "REVIEW_INVALID_UTF8");
+  }
   const parse = (text) => {
     try { return JSON.parse(text); }
-    catch { throw new NativeReviewResponseError(); }
+    catch { throw new NativeReviewResponseError(undefined, "REVIEW_INVALID_JSON"); }
   };
   if (!/^text\/event-stream(?:\s*;|$)/iu.test(contentType)) {
     assertSuccessfulReview(parse(text));
@@ -59,36 +82,39 @@ export function validateNativeReviewResponse(buffer, contentType) {
     const data = lines.filter((line) => line === "data" || line.startsWith("data:"))
       .map((line) => line === "data" ? "" : line.slice(5).replace(/^ /u, "")).join("\n");
     if (!data) {
-      if (names.length) throw new NativeReviewResponseError();
+      if (names.length) throw new NativeReviewResponseError(undefined, "REVIEW_EVENT_WITHOUT_DATA");
       continue;
     }
     if (data === "[DONE]") {
-      if (!completed || done || names.length) throw new NativeReviewResponseError();
+      if (!completed || done || names.length) throw new NativeReviewResponseError(undefined, "REVIEW_DONE_ORDER");
       done = true;
       continue;
     }
-    if (done) throw new NativeReviewResponseError();
+    if (done) throw new NativeReviewResponseError(undefined, "REVIEW_DATA_AFTER_DONE");
     const event = parse(data);
     if (
       event?.error != null || event?.response?.error != null ||
       ["error", "response.failed", "response.incomplete"].includes(event?.type)
-    ) throw new NativeReviewResponseError("REVIEW_SERVICE_ERROR");
+    ) throw new NativeReviewResponseError("REVIEW_SERVICE_ERROR", "REVIEW_REPORTED_ERROR");
     const metadata = NATIVE_METADATA_EVENTS.has(event?.type);
     if (
       typeof event?.type !== "string" ||
-      (!metadata && (!event.type.startsWith("response.") || completed))
+      (!metadata && !event.type.startsWith("response."))
     ) {
-      throw new NativeReviewResponseError();
+      throw new NativeReviewResponseError(undefined, "REVIEW_EVENT_TYPE");
+    }
+    if (!metadata && completed) {
+      throw new NativeReviewResponseError(undefined, "REVIEW_DATA_AFTER_COMPLETION");
     }
     if (names.length > 1 || (names.length === 1 && names[0] !== event.type)) {
-      throw new NativeReviewResponseError();
+      throw new NativeReviewResponseError(undefined, "REVIEW_EVENT_NAME");
     }
     if (event.type === "response.completed") {
       assertSuccessfulReview(event.response, { stream: true });
       completed = true;
     }
   }
-  if (!completed) throw new NativeReviewResponseError();
+  if (!completed) throw new NativeReviewResponseError(undefined, "REVIEW_MISSING_COMPLETION");
   return buffer;
 }
 

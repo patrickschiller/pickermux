@@ -31,6 +31,8 @@ import { isCertificationRequest } from "./certification-transport.mjs";
 import { isValidProviderId } from "./provider-id.mjs";
 import { createTokenUsageObserver } from "./token-usage.mjs";
 import {
+  NativeReviewResponseError,
+  nativeReviewDiagnostic,
   isNativeGuardianReview,
   projectNativeReviewCompaction,
   validateNativeReviewResponse,
@@ -1341,9 +1343,11 @@ function publicProxyError(error) {
     UNSUPPORTED_TOOL_CHOICE: "The selected tool choice is not supported by this model",
   };
   // Never derive wire text from upstream errors, causes or response contents.
+  const diagnostic = nativeReviewDiagnostic(error);
   return {
     code,
-    message: clientMessages[code] ?? "The model bridge could not complete the request",
+    message: (clientMessages[code] ?? "The model bridge could not complete the request") +
+      (diagnostic ? ` (${diagnostic})` : ""),
   };
 }
 
@@ -1487,17 +1491,14 @@ function relayUpstream({
             if (status < 200 || status >= 300) {
               // A failed review can become a tool error in the external parent.
               // Never expose native error bodies or account headers there.
-              throw new ResponsesProxyError("Native approval review failed", {
-                statusCode: status >= 400 && status <= 599 ? status : 502,
-                code: "REVIEW_SERVICE_ERROR",
-              });
+              const error = new NativeReviewResponseError("REVIEW_SERVICE_ERROR", "REVIEW_HTTP_STATUS");
+              error.statusCode = status >= 400 && status <= 599 ? status : 502;
+              throw error;
             }
             if (!/^(?:text\/event-stream|application\/(?:json|[a-z0-9.+-]+\+json))(?:\s*;|$)/iu.test(
               String(incoming.headers["content-type"] ?? ""),
             )) {
-              throw new ResponsesProxyError("Unknown native review response format", {
-                code: "UPSTREAM_RESPONSE_ERROR",
-              });
+              throw new NativeReviewResponseError(undefined, "REVIEW_CONTENT_TYPE");
             }
           }
           if (mlxResponse) {
@@ -1611,6 +1612,9 @@ function relayUpstream({
             incoming.headers["content-encoding"] &&
             String(incoming.headers["content-encoding"]).toLowerCase() !== "identity"
           ) {
+            if (nativeReviewResponse) {
+              throw new NativeReviewResponseError(undefined, "REVIEW_CONTENT_ENCODING");
+            }
             throw new ResponsesProxyError(
               "A compressed namespace response cannot be transformed",
               { code: "UPSTREAM_RESPONSE_ERROR" },
@@ -1637,6 +1641,19 @@ function relayUpstream({
 
         const jsonChunks = [];
         let jsonBytes = 0;
+        const reviewTransportError = (code, diagnostic) => {
+          if (settled || terminating) return new NativeReviewResponseError(code, diagnostic);
+          // Inspect only the already bounded buffer, and only on failure. A
+          // valid terminal distinguishes a broken transport tail; it does not
+          // turn the interrupted review into success or release its contents.
+          try {
+            validateNativeReviewResponse(
+              Buffer.concat(jsonChunks), String(incoming.headers["content-type"]),
+            );
+            diagnostic += "_AFTER_COMPLETION";
+          } catch { /* Preserve the original failure when buffered bytes are incomplete. */ }
+          return new NativeReviewResponseError(code, diagnostic);
+        };
         sseTransformer = transformMode === "sse"
           ? createSseResponseTransformer(responseCodec)
           : transformMode === "mlx-sse"
@@ -1674,6 +1691,9 @@ function relayUpstream({
                 ? MAX_COMPACTION_RESPONSE_BYTES
                 : RESPONSE_TRANSFORM_MAX_BYTES;
               if (jsonBytes > maxBytes) {
+                if (nativeReviewResponse) {
+                  throw new NativeReviewResponseError(undefined, "REVIEW_BODY_TOO_LARGE");
+                }
                 throw new ResponsesProxyError("Upstream JSON response is too large", {
                   code: compactionResponse ? "COMPACTION_FAILED" : "UPSTREAM_RESPONSE_ERROR",
                 });
@@ -1757,17 +1777,21 @@ function relayUpstream({
         });
         incoming.once("aborted", () =>
           fail(
-            new ResponsesProxyError("The upstream response ended unexpectedly", {
-              code: "UPSTREAM_ABORTED",
-            }),
+            nativeReviewResponse
+              ? reviewTransportError("UPSTREAM_ABORTED", "REVIEW_STREAM_ABORTED")
+              : new ResponsesProxyError("The upstream response ended unexpectedly", {
+                code: "UPSTREAM_ABORTED",
+              }),
           ),
         );
         incoming.once("error", (error) =>
           fail(
-            new ResponsesProxyError("The upstream response failed", {
-              code: "UPSTREAM_RESPONSE_ERROR",
-              cause: error,
-            }),
+            nativeReviewResponse
+              ? reviewTransportError("UPSTREAM_RESPONSE_ERROR", "REVIEW_STREAM_READ")
+              : new ResponsesProxyError("The upstream response failed", {
+                code: "UPSTREAM_RESPONSE_ERROR",
+                cause: error,
+              }),
           ),
         );
       },

@@ -396,12 +396,41 @@ error redaction, source authentication and Codex's approval decision.
 
 Upgrade both the app and installed backend to 0.40.2 or newer,
 fully quit and reopen Codex, then retry the approval. Existing matching
-certifications and sealed history remain valid. A remaining 502 can also
-indicate another malformed, compressed, interrupted or unsupported response;
-the public message alone does not identify which condition occurred. Raw review
-payloads are not persisted. Record the version, time and public error when
-reporting a recurrence rather than sharing private prompts or native account
-details.
+certifications and sealed history remain valid. The same generic 502 can still
+occur on 0.40.2 for another malformed, compressed, interrupted or unsupported
+response. Its old public text does not identify the failed check, even after
+confirming that both app and backend are current.
+
+The diagnostic update adds a fixed `REVIEW_*` marker to the public error text
+for projected Guardian replies. It preserves every existing response check;
+it does not grant approval or establish that the recurring live failure has
+been fixed. Use the marker to identify the next investigation:
+
+| Diagnostic marker | Failed check |
+| --- | --- |
+| `REVIEW_HTTP_STATUS`, `REVIEW_REPORTED_ERROR` | Native HTTP failure or a reported error/failed or incomplete response. Native details remain redacted. |
+| `REVIEW_CONTENT_TYPE`, `REVIEW_CONTENT_ENCODING` | Unsupported response format or compressed response despite the identity request. |
+| `REVIEW_BODY_TOO_LARGE`, `REVIEW_INVALID_UTF8`, `REVIEW_INVALID_JSON` | Response size bound or text/JSON decoding. |
+| `REVIEW_RESPONSE_SHAPE`, `REVIEW_COMPLETION_ID`, `REVIEW_COMPLETION_STATUS`, `REVIEW_COMPLETION_OUTPUT` | Response or successful-completion structure. |
+| `REVIEW_EVENT_WITHOUT_DATA`, `REVIEW_EVENT_TYPE`, `REVIEW_EVENT_NAME` | SSE data, event type or event-name consistency. |
+| `REVIEW_DONE_ORDER`, `REVIEW_DATA_AFTER_DONE`, `REVIEW_DATA_AFTER_COMPLETION`, `REVIEW_MISSING_COMPLETION` | SSE completion or terminal ordering. |
+| `REVIEW_STREAM_READ`, `REVIEW_STREAM_ABORTED` | Upstream response read failure or interrupted transport. |
+
+`REVIEW_STREAM_READ_AFTER_COMPLETION` and
+`REVIEW_STREAM_ABORTED_AFTER_COMPLETION` mean the bounded bytes received before
+the transport failure already passed the complete response validator. The
+request still fails under the existing transport rule; this suffix does not
+authorize the action or turn the interrupted reply into a successful review.
+General connection and timeout errors retain their existing separate codes
+and messages without a `REVIEW_*` suffix.
+
+Record both app and installed-backend versions, the time and the fixed marker
+when reporting a recurrence. Do not share private capability URLs from the
+surrounding tool error. No raw review payloads, header values, event names,
+identifiers, prompts or credentials are added to logs or stored by this
+diagnostic change. An old error without a marker cannot be classified
+retroactively; a new attempt with the updated backend is needed. A failed
+review still means the proposed command was not executed.
 
 For an eventual Simulator command, use
 `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcrun simctl list devices available`.

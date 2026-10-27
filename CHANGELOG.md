@@ -14,6 +14,17 @@ The 0.23.x and 0.24.x entries are local milestones included in the public
 
 ## [Unreleased]
 
+## [0.40.3] - 2026-10-27
+
+### Changed
+
+- Add fixed diagnostic markers to public errors for projected native Guardian
+  replies. Distinguish HTTP, response-format, stream and completion-validation
+  failures without exposing or persisting upstream values, headers, identifiers,
+  prompts or credentials. Preserve existing acceptance and approval rules.
+  The earlier generic HTTP 502 text does not identify the cause of a recurrence
+  on 0.40.2; these diagnostics do not establish that the live failure is fixed.
+
 ## [0.40.2] - 2026-10-27
 
 ### Fixed
@@ -1182,7 +1193,8 @@ confirm the release date before tagging. See the
   paths and file types, refuses root execution and foreign launchers, and
   restores the previous distribution state when activation fails.
 
-[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.40.2...HEAD
+[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.40.3...HEAD
+[0.40.3]: https://github.com/patrickschiller/pickermux/releases/tag/v0.40.3
 [0.40.2]: https://github.com/patrickschiller/pickermux/releases/tag/v0.40.2
 [0.40.1]: https://github.com/patrickschiller/pickermux/releases/tag/v0.40.1
 [0.40.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.40.0

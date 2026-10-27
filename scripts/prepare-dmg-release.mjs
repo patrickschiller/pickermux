@@ -13,6 +13,11 @@ const HASH = /^[a-f0-9]{64}$/u;
 const ASSETS = [PICKERMUX_DMG_ASSET, "release-notes.md", "SHA256SUMS"];
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const RELEASE_HIGHLIGHTS = Object.freeze({
+  "0.40.3": [
+    "- Add fixed REVIEW_* diagnostic markers to projected native Guardian failures, distinguishing HTTP, response-format, stream and completion-validation errors without exposing upstream content or credentials.",
+    "- Preserve existing validation, buffering, source authentication and approval rules. Successful native review bytes and ordinary native forwarding remain unchanged.",
+    "- This is a diagnostic update: the recurring live Flint HTTP 502 is not yet diagnosed or confirmed fixed. Upgrade both app and installed backend, fully quit and reopen Codex, then retry and report only the fixed marker. Matching certifications and sealed history remain valid.",
+  ],
   "0.40.2": [
     "- Fix HTTP 502 caused by rejecting known native metadata in otherwise completed Guardian review streams. Accept exactly codex.response.metadata, codex.rate_limits and responsesapi.websocket_timing before or after completion.",
     "- Preserve successful review bytes, native policy and the approval verdict. Require successful completion and retain rejection of unknown event families, errors, incomplete streams, duplicate completion and data after DONE.",
