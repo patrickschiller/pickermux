@@ -1,6 +1,6 @@
 # PickerMux Architecture
 
-This document describes PickerMux v0.31.0.
+This document describes PickerMux v0.31.1.
 It is intended for contributors, security reviewers, and users who want to
 understand what runs on their Mac.
 
@@ -306,18 +306,36 @@ and [request construction](https://github.com/openai/codex/blob/36f0dbe796d9bb1a
 The adapter preserves all historical system/developer/user input, even if its
 text equals the omitted field. A role-wide filter or text subtraction would
 lose that provenance boundary. Ordinary and legacy-compact requests retain
-their instructions. The summary includes supported text history as JSON data under a fixed
-summary instruction, preserving public function identities, results, and URLs.
+their instructions. The summary includes supported text history as JSON data
+under a fixed summary instruction, preserving public function identities,
+results, and URLs. The complete quoted JSON remains the first user content
+part; a second part repeats only the fixed summary instruction after the long
+transcript. That instruction explicitly asks the model to retain the active
+user request and exact response-format constraints for the next assistant.
+It asks for a continuation summary without fulfilling the transcript's last
+user request, including requests phrased as commands rather than questions.
+This keeps the operation's purpose recent without promoting transcript or
+provider text into instructions. It remains model guidance rather than a
+guarantee that every summary retains all task details.
 Tool definitions are omitted; the summary has no tool authority. Its output
-budget is bounded by the loaded context, and an advertised `none` reasoning
-option is used only for this summary operation. Existing transport deadlines,
-credential isolation, and response bounds remain active; no retries are added.
+budget includes reasoning and visible summary text. A route declaring only
+known positive reasoning efforts has a 32,768-token ceiling; other routes keep
+the 2,048-token ceiling. The existing loaded-context fraction and minimum bound
+still apply, and an advertised `none` reasoning option is used only for this
+summary operation. Unknown reasoning profiles never receive an invented
+setting or the larger ceiling. Existing transport deadlines, credential
+isolation, and response bounds remain active; no retries are added.
+The larger allowance can increase latency and is not proof that a particular
+model can produce a valid summary within the loaded context or deadline.
 
 The response is buffered and validated before any successful caller output.
 Only a complete, nonempty text summary can produce one compaction item and a
 completed response. Provider usage is projected from actual numeric counts.
 Calls, refusals, incomplete output, invalid UTF-8, and oversized responses fail
 without installing compacted history. Ordinary inference adds no summary call.
+Tool certification does not exercise this summary-and-continuation operation;
+it requires separate acceptance. The summary-budget adjustment leaves existing
+matching tool certifications valid and does not change the compaction envelope.
 
 `compaction-envelope.mjs` encrypts the summary with AES-256-GCM and a
 purpose-separated HKDF key derived from the private installation capability.

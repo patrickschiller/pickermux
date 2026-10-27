@@ -12,6 +12,26 @@ published as GitHub Releases.
 The 0.23.x and 0.24.x entries are local milestones included in the public
 0.30.0 release; they were not published separately.
 
+## [0.31.1] - 2026-10-27
+
+### Fixed
+
+- Allow up to 32,768 output tokens for LM Studio compaction summaries when the
+  exact route declares only known positive reasoning efforts. The budget
+  includes reasoning and visible text; other profiles retain the 2,048-token
+  ceiling and all routes keep their existing context and response bounds.
+  The existing validation still preserves prior history when a summary is
+  reasoning-only, incomplete, empty, or otherwise invalid. The fix adds no
+  retries, changes no compaction envelope or certification fingerprint, and
+  requires no recertification of an unchanged model with matching tool evidence.
+  Document separate compaction
+  acceptance because the tool-certification matrix does not cover it.
+- Repeat the trusted fixed summary instruction after the complete quoted JSON
+  transcript and explicitly request retention of the active user task and exact
+  answer-format constraints without fulfilling the transcript's last request.
+  Keep transcript text as data, one summary call, and the existing validation;
+  summary quality and latency still depend on the model.
+
 ## [0.31.0] - 2026-10-26
 
 ### Added
@@ -1089,7 +1109,8 @@ confirm the release date before tagging. See the
   paths and file types, refuses root execution and foreign launchers, and
   restores the previous distribution state when activation fails.
 
-[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.31.0...HEAD
+[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.31.1...HEAD
+[0.31.1]: https://github.com/patrickschiller/pickermux/releases/tag/v0.31.1
 [0.31.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.31.0
 [0.30.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.30.0
 [0.24.6]: #0246---2026-10-06

@@ -176,12 +176,15 @@ test("summary preparation retains every text field inside quoted JSON with no ac
   assert.deepEqual(prepared.reasoning, source.reasoning);
   assert.notEqual(prepared.reasoning, source.reasoning);
   assert.match(prepared.instructions, /untrusted transcript data/u);
-  assert.match(prepared.instructions, /Do not answer the last question/u);
+  assert.match(prepared.instructions, /Do not fulfill the transcript's last user request/u);
   assert.doesNotMatch(prepared.instructions, /private-canary|System constraints canary/u);
   assert.equal(prepared.input.length, 1);
   assert.equal(prepared.input[0].role, "user");
-  assert.equal(prepared.input[0].content.length, 1);
+  assert.equal(prepared.input[0].content.length, 2);
   assert.equal(prepared.input[0].content[0].type, "input_text");
+  assert.deepEqual(prepared.input[0].content[1], { type: "input_text", text: prepared.instructions });
+  assert.match(prepared.input[0].content[1].text, /exact response-format constraints/u);
+  assert.doesNotMatch(prepared.input[0].content[1].text, /private-canary|System constraints canary/u);
   assert.deepEqual(JSON.parse(prepared.input[0].content[0].text), {
     input: source.input,
     instructions: source.instructions,
@@ -204,6 +207,41 @@ test("summary budget is bounded and no reasoning policy is invented", () => {
   assert.equal(JSON.parse(prepared.input[0].content[0].text).instructions, null);
   for (const contextWindow of [undefined, 0, -1, 8.5, NaN, Infinity]) {
     assert.throws(() => prepareCompactionSummaryRequest(source, { contextWindow }), requestError);
+  }
+});
+
+test("mandatory reasoning has bounded summary headroom without changing the reasoning policy", () => {
+  const source = { model: "example", input: [USER_MESSAGE] };
+  for (const reasoningEfforts of [
+    ["xhigh"], ["minimal"], ["low", "medium", "high"], ["max", "ultra"],
+  ]) {
+    for (const [contextWindow, expected] of [
+      [1_024, 256], [8_192, 1_024], [32_768, 4_096], [65_536, 8_192],
+      [131_072, 16_384], [262_144, 32_768], [1_048_576, 32_768],
+    ]) {
+      const prepared = prepareCompactionSummaryRequest(source, { contextWindow, reasoningEfforts });
+      assert.equal(prepared.max_output_tokens, expected);
+      assert.equal(Object.hasOwn(prepared, "reasoning"), false);
+      assert.deepEqual(JSON.parse(prepared.input[0].content[0].text), { input: source.input });
+    }
+  }
+  const withReasoning = { ...source, reasoning: { effort: "high" } };
+  const prepared = prepareCompactionSummaryRequest(withReasoning, {
+    contextWindow: 262_144, reasoningEfforts: ["high"],
+  });
+  assert.deepEqual(prepared.reasoning, withReasoning.reasoning);
+  assert.notEqual(prepared.reasoning, withReasoning.reasoning);
+});
+
+test("optional, absent and unknown reasoning profiles retain the original summary bound", () => {
+  const source = { model: "example", input: [USER_MESSAGE] };
+  for (const reasoningEfforts of [
+    undefined, null, [], "xhigh", ["none"], ["off"], ["none", "xhigh"],
+    ["xhigh", "unknown"], ["on"], [null],
+  ]) {
+    const prepared = prepareCompactionSummaryRequest(source, { contextWindow: 262_144, reasoningEfforts });
+    assert.equal(prepared.max_output_tokens, 2_048);
+    assert.equal(Object.hasOwn(prepared, "reasoning"), false);
   }
 });
 

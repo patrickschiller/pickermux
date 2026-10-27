@@ -400,6 +400,62 @@ test("0.31.0 publishes strict Flint certification changes as the Config update f
   }
 });
 
+test("0.31.1 compaction patch retains exact DMG metadata and the Config update from 0.31.0", async (t) => {
+  const value = await fixture(t, "0.31.1");
+  const result = await prepareDmgRelease({ ...value, tag: "v0.31.1" });
+  const body = await readFile(path.join(value.outputDirectory, "release-notes.md"), "utf8");
+  assert.match(body, /Changes in v0\.31\.1/u);
+  assert.match(body, /remote context-compaction failures.*mandatory reasoning, including Flint/u);
+  assert.match(body, /32,768 output tokens.*reasoning and the visible summary.*exact route declares known positive reasoning efforts/u);
+  assert.match(body, /optional or unknown profiles retain the 2,048-token ceiling.*bounded by loaded context/u);
+  assert.match(body, /trusted fixed summary instruction after the complete quoted JSON transcript/u);
+  assert.match(body, /active user request and exact answer-format constraints.*without fulfilling the transcript's last request/u);
+  assert.match(body, /one summary request with no tool authority.*unchanged response and visible-summary size limits/u);
+  assert.match(body, /Invalid or incomplete summaries preserve the prior history.*no automatic retries or partial-history replacement/u);
+  assert.match(body, /Preserve matching tool certifications.*no certification fingerprint or model configuration.*no recertification/u);
+  assert.match(body, /Tool certification does not itself test compaction/u);
+  assert.match(body, /large synthetic full-replay summary.*authenticated compaction SSE output.*same-model continuation with the exact expected marker/u);
+  assert.match(body, /does not upgrade the active installation or replay the original private chat/u);
+  assert.match(body, /summary quality and latency still depend on the model/u);
+  assert.match(body, /\*\*Config → Update installed backend…\*\*/u);
+  assert.match(body, /Custom provider settings are preserved/u);
+  assert.doesNotMatch(body, /Changes in v0\.31\.0|\*\*Settings → Update installed backend…\*\*/u);
+  assert.equal(body.split("pickermux-dmg-release-v1").length, 2);
+  assert.deepEqual(parseDmgReleaseRecord(body, { version: "0.31.1", file: PICKERMUX_DMG_ASSET }), {
+    version: "0.31.1", file: PICKERMUX_DMG_ASSET,
+    sha256: result.sha256, signing: "developer-id-notarized",
+  });
+  assert.deepEqual(await readFile(path.join(value.outputDirectory, PICKERMUX_DMG_ASSET)), value.diskImage);
+  assert.deepEqual((await readdir(value.outputDirectory)).sort(),
+    [PICKERMUX_DMG_ASSET, "SHA256SUMS", "release-notes.md"].sort());
+  assert.deepEqual(await verifyDmgPublication({ directory: value.outputDirectory, tag: "v0.31.1" }), result);
+  const expectedUrl = `https://github.com/patrickschiller/pickermux/releases/download/v0.31.1/${PICKERMUX_DMG_ASSET}`;
+  const release = {
+    tag_name: "v0.31.1", draft: false, prerelease: false, body,
+    assets: [{ name: PICKERMUX_DMG_ASSET, browser_download_url: expectedUrl }],
+  };
+  for (const currentVersion of ["0.30.0", "0.31.0"]) {
+    assert.deepEqual(await checkForCompanionUpdate({
+      currentVersion, fetchImpl: async () => Response.json(release),
+    }), {
+      status: "available", distribution: "dmg", currentVersion, targetVersion: "0.31.1",
+      assets: { [PICKERMUX_DMG_ASSET]: expectedUrl }, diskImageSha256: result.sha256,
+    });
+  }
+  for (const mutate of [
+    (candidate) => { candidate.body = dmgReleaseMarker({ version: "0.31.0", sha256: result.sha256 }); },
+    (candidate) => { candidate.body += dmgReleaseMarker({ version: "0.31.1", sha256: result.sha256 }); },
+    (candidate) => { candidate.assets[0].browser_download_url = expectedUrl.replace("v0.31.1", "v0.31.0"); },
+    (candidate) => { candidate.assets.push({ name: "SHA256SUMS", browser_download_url: `${expectedUrl}/SHA256SUMS` }); },
+  ]) {
+    const candidate = structuredClone(release);
+    mutate(candidate);
+    await assert.rejects(checkForCompanionUpdate({
+      currentVersion: "0.31.0", fetchImpl: async () => Response.json(candidate),
+    }), { code: "UPDATE_INVALID" });
+  }
+});
+
 test("later publication guidance keeps the Config navigation name", async (t) => {
   const value = await fixture(t, "0.24.7");
   await prepareDmgRelease({ ...value, tag: "v0.24.7" });

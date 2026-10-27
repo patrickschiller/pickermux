@@ -1116,6 +1116,53 @@ answer instead. [Compaction behavior and limits](CONFIGURATION.md#lm-studio-cont
 | `INVALID_COMPACTION_STATE` | Restore the original installation/model configuration or start a new task. Full refresh and reinstallation invalidate previous state. |
 | `COMPACTION_STATE_ROUTE_MISMATCH` | Continue on the original external model or start a new task for the different provider. |
 
+## LM Studio context compaction fails with HTTP 502
+
+`COMPACTION_FAILED` means the selected model did not produce a complete valid
+summary. PickerMux preserves the prior history instead of replacing it with a
+partial answer or empty state. A model may complete ordinary tool calls and
+still fail this separate operation; tool certification does not test compaction
+or continuation from its encrypted summary.
+
+For mandatory-reasoning models such as Flint, the former 2,048-token summary
+budget could be consumed by reasoning before any visible summary appeared,
+even when the provider reported the response as completed. The corrected
+adapter allows up to 32,768 output tokens only when the exact route advertises
+known positive reasoning efforts without an optional or unknown mode. The
+budget includes reasoning and visible summary text and retains the existing
+loaded-context bound. Other profiles keep the previous ceiling; an advertised
+`none` mode is still used only for summarization.
+
+[Flint's model card](https://huggingface.co/RecursiveSI/flint#recommended-generation-settings)
+recommends at least 32,768 output tokens including reasoning for hard problems.
+This motivates more summary headroom, but the loaded-context fraction can
+reserve less and generation may take longer. The existing deadline and response
+size bounds still apply; a larger allowance is not a guarantee of success.
+
+Apply the corrected backend through the normal reviewed upgrade flow and
+restart Codex. This budget fix does not require recertification when the model
+configuration and its existing receipt still match. The adapter still makes
+one bounded summary request with no tools. Empty, reasoning-only, incomplete,
+tool-calling, or oversized responses remain rejected; no automatic retries or
+partial-history replacement are added.
+
+A structurally valid summary can still omit the active request or the required
+answer format. The corrected prompt explicitly asks the model to retain both.
+It requests a continuation summary without fulfilling the transcript's last
+user request, whether that request is a question or a command.
+It repeats only the fixed summary instruction after the complete quoted JSON
+transcript, so long fixture or tool data does not become the final operation
+the model sees. The transcript stays data; no model-supplied text is promoted
+into instructions. This improves continuation guidance without guaranteeing
+semantic completeness.
+
+Validate compaction separately with a small synthetic text conversation and a
+same-model continuation that retains the active task and required answer
+format. If it still fails, report the fixed error code and
+safe output-type/token counters, without raw prompts, summaries, or capability
+URLs. More reasoning headroom cannot guarantee a valid summary or make an
+oversized retained prompt fit the selected context window.
+
 ## Only a sentence fragment appears after automatic compaction
 
 Version 0.7.3 restored the compacted context as an assistant message. If that

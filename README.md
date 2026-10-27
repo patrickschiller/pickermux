@@ -84,6 +84,13 @@ See
 If optional tool search is unreliable, the CLI's `--direct-only` certification
 option retains Direct tools after a complete base pass.
 
+Tool certification does not test automatic context compaction. Its separate
+summary budget allows more room for mandatory reasoning, and a failed summary
+preserves the prior history. Summary guidance asks the model to retain the
+active task and exact answer-format constraints. These compaction fixes leave
+matching certifications valid. Larger reasoning allowances can take longer;
+summary quality still depends on the model. See [compaction troubleshooting](docs/TROUBLESHOOTING.md#lm-studio-context-compaction-fails-with-http-502).
+
 **Config…** contains status and installation checks, installation details,
 updates, startup preferences, notifications, token reset, and **Full refresh…**.
 A full refresh asks for confirmation before its two graceful Codex quits and

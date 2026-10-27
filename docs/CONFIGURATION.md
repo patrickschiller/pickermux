@@ -371,10 +371,16 @@ would otherwise treat it as response prefill and continue the summary text.
 The dynamic summary stays at assistant authority. Later conversation input and
 another compaction do not receive this extra instruction.
 The summary prompt separates completed actions and evidence from remaining
-work, and the continuation prompt asks the model to reuse recorded results.
+work and explicitly asks the model to retain the active user request and exact
+response-format constraints. The complete quoted JSON is the first user
+content part. A second part repeats only the trusted fixed summary instruction
+after that data, keeping the operation's purpose recent without treating
+transcript content as instructions. The continuation prompt asks the model to
+reuse recorded results. The summarizer must record the transcript's last user
+request without fulfilling it, even when it is a command rather than a question.
 Missing, stale, or conflicting evidence and instructions requiring a fresh
 check still permit another lookup. This is model guidance, not a tool blocker
-or a guarantee against repeated searches.
+or a guarantee against repeated searches or omitted task details.
 
 Service restarts, ordinary refresh, and version upgrades retain the key.
 `refresh --full` and uninstall/reinstall create a new installation capability,
@@ -391,12 +397,32 @@ this V2 adapter. Search and the final sourced answer passed on 0.7.5; the user
 reported about eight minutes and a faster follow-up. Timing remains dependent
 on the model, hardware, cache state, and number of tool/compaction steps.
 
-The summary output is capped at 2,048 tokens, but the next ordinary request
-still includes Codex's system context, tools, and retained messages. Compaction
-therefore cannot guarantee that the full request fits a 32K context window.
+The summary output budget includes reasoning and visible text. Its usual
+ceiling is 2,048 tokens. When the exact route declares a nonempty list of only
+known positive reasoning efforts, the ceiling is 32,768 tokens so mandatory
+reasoning has room before the visible summary. Optional or unknown reasoning
+profiles retain the original ceiling. Both budgets still use the existing
+loaded-context fraction and minimum bound; the 16 KiB visible-summary and
+256 KiB response bounds remain unchanged. No reasoning setting is invented.
+
+This headroom is motivated by
+[Flint's recommended generation settings](https://huggingface.co/RecursiveSI/flint#recommended-generation-settings),
+which call for at least 32,768 output tokens, including reasoning, on hard
+problems. The loaded-context fraction can impose a lower limit. The larger
+allowance can increase latency; it does not guarantee summary quality, and the
+existing transport deadlines still apply.
+
+The next ordinary request still includes Codex's system context, tools, and
+retained messages. Compaction therefore cannot guarantee that the full request
+fits a 32K context window.
 If that fixed context stays near the limit, Codex may request another summary
 after the next tool step; the adapter performs one inference per requested
 compaction and does not retry it automatically.
+
+Tool certification does not test compaction or continuation from its encrypted
+summary. Those operations need separate acceptance on the selected model. This
+budget adjustment does not change the model configuration, envelope format,
+or certification fingerprint; existing matching tool receipts remain valid.
 
 ## Provider fields
 
