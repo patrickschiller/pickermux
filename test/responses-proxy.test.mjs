@@ -262,7 +262,7 @@ test("native route relays compressed request bytes, approved headers and SSE byt
       client_metadata: {
         thread_id: "native-thread-id-must-remain-byte-exact",
       },
-      include: ["reasoning.encrypted_content"],
+      include: ["reasoning.encrypted_content", "output.encrypted_content"],
       tools: [
         { type: "web_search" },
         { type: "namespace", name: "functions", tools: [] },
@@ -430,6 +430,7 @@ test("generic external route preserves caller reasoning and annotated context", 
       model: "vendor/public",
       instructions: "generic-provider-instructions-stay",
       reasoning: { effort: "medium" },
+      include: ["reasoning.encrypted_content", "output.encrypted_content", "message.output_text.logprobs"],
       input: [
         {
           type: "message",
@@ -452,6 +453,8 @@ test("generic external route preserves caller reasoning and annotated context", 
   assert.equal(observed.instructions, "generic-provider-instructions-stay");
   assert.equal(observed.input[0].role, "developer");
   assert.deepEqual(observed.reasoning, { effort: "medium" });
+  assert.deepEqual(observed.include,
+    ["reasoning.encrypted_content", "output.encrypted_content", "message.output_text.logprobs"]);
   assert.match(JSON.stringify(observed.input), /generic-provider-context-stays/u);
   assert.doesNotMatch(
     JSON.stringify(observed.input),
@@ -923,7 +926,7 @@ test("LM Studio route removes unsupported Codex fields without touching supporte
     body: Buffer.from(JSON.stringify({
       model: "lmstudio/qwen/qwen3.8-27b",
       prompt_cache_key: "must-not-reach-lm-studio",
-      include: ["reasoning.encrypted_content", "message.input_image.image_url"],
+      include: ["reasoning.encrypted_content", "output.encrypted_content", "message.input_image.image_url"],
       reasoning: { effort: "max", summary: "auto" },
       input: [
         {
@@ -1423,6 +1426,66 @@ test("native and provider credentials stay isolated across sequential model swit
     JSON.stringify(observed.filter((entry) => entry.path.includes("external"))),
     /native-secret/u,
   );
+});
+
+test("LM Studio removes only known native encrypted include selectors before provider validation", async (t) => {
+  for (const toolsEnabled of [false, true]) {
+    await t.test(toolsEnabled ? "certified tools" : "text only", async (subtest) => {
+      const observed = [];
+      const upstream = http.createServer((request, response) => {
+        const chunks = [];
+        request.on("data", (chunk) => chunks.push(chunk));
+        request.once("end", () => {
+          const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+          observed.push(body);
+          // Mirror LM Studio's reviewed include enum, so the regression fails
+          // at the provider boundary rather than only comparing adapter output.
+          const valid = body.include === undefined || body.include.every((value) =>
+            ["reasoning.encrypted_content", "message.output_text.logprobs"].includes(value));
+          response.writeHead(valid ? 200 : 400, { "content-type": "application/json" });
+          response.end(JSON.stringify(valid ? { output: [] } : { error: { code: "invalid_enum_value" } }));
+        });
+      });
+      const upstreamPort = await listen(upstream);
+      subtest.after(() => close(upstream));
+      const proxy = await createProxyHarness({
+        registry: {
+          resolve: () => ({
+            kind: "external",
+            providerKind: "lmstudio-responses",
+            baseUrl: `http://127.0.0.1:${upstreamPort}/v1`,
+            allowPrivateNetwork: true,
+            upstreamModel: "example-model",
+            toolsEnabled,
+          }),
+        },
+      });
+      subtest.after(() => close(proxy.server));
+      for (const [include, expected, status] of [
+        [undefined, undefined, 200],
+        [["output.encrypted_content"], undefined, 200],
+        [["reasoning.encrypted_content"], undefined, 200],
+        [["reasoning.encrypted_content", "output.encrypted_content"], undefined, 200],
+        [["message.output_text.logprobs", "output.encrypted_content", "reasoning.encrypted_content"],
+          ["message.output_text.logprobs"], 200],
+        [["future.encrypted_content", "output.encrypted_content"], ["future.encrypted_content"], 400],
+      ]) {
+        await subtest.test(JSON.stringify(include) ?? "absent", async () => {
+          const plain = Buffer.from(JSON.stringify({
+            model: "lmstudio/example-model", input: "Hello", include,
+          }));
+          const result = await httpRequest({
+            port: proxy.port,
+            body: toolsEnabled ? zlib.gzipSync(plain) : plain,
+            headers: toolsEnabled ? { "content-encoding": "gzip" } : {},
+          });
+          assert.equal(result.statusCode, status);
+          assert.deepEqual(observed.at(-1).include, expected);
+          assert.equal(observed.at(-1).model, "example-model");
+        });
+      }
+    });
+  }
 });
 
 test("LM Studio route drops an empty unsupported tool set and maps every Codex effort", async (t) => {

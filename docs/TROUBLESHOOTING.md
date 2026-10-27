@@ -380,6 +380,23 @@ Do not delete the old history or disable approval checks to force recovery.
 check Codex's native account availability. Provider API keys do not authorize
 this native operation. Native error details are deliberately redacted.
 
+## LM Studio immediately rejects `output.encrypted_content`
+
+`Invalid enum value. Expected 'reasoning.encrypted_content' |
+'message.output_text.logprobs', received 'output.encrypted_content'` is an
+LM Studio request-schema failure before inference. Newer Codex clients can ask
+for native encrypted output-token replay; LM Studio does not implement that
+include selector. This is independent of Keychain access, Simulator services
+and command approvals.
+
+The corrected adapter removes exactly `output.encrypted_content` alongside the
+older unsupported encrypted-reasoning request. Other include selectors and all
+native requests keep their existing behavior. Upgrade the app and installed
+backend to 0.40.1 or newer, then fully quit and reopen
+Codex and retry. Replacing the app alone does not update an older installed
+backend. Matching model certifications and sealed compaction history remain
+valid; no recertification, history deletion or replay-setting change is needed.
+
 ## LM Studio reports `Channel Error` or a context-length failure
 
 `Channel Error` can wrap different inference failures. Read the nested error

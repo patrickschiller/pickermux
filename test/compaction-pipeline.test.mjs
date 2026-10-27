@@ -719,6 +719,7 @@ test("a terminal compaction capsule starts a fresh LM Studio answer for JSON and
         body: {
           model: PUBLIC_MODEL,
           stream,
+          include: ["reasoning.encrypted_content", "output.encrypted_content"],
           input: [policy, item],
           tools: tools(),
           tool_choice: "auto",
@@ -731,6 +732,7 @@ test("a terminal compaction capsule starts a fresh LM Studio answer for JSON and
       assert.equal(result.body.includes(PREFILL_CONTINUATION), false);
       assert.equal(proxy.requests.length, 2);
       const upstream = proxy.requests[1].body;
+      assert.equal(upstream.include, undefined);
       assert.equal(upstream.input.length, 3);
       assert.equal(upstream.input[0].role, "system");
       assert.equal(upstream.input[0].content[0].text, policy.content[0].text);

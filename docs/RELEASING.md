@@ -6,7 +6,7 @@ an external prerequisite. Earlier CLI archive releases remain available at
 their immutable version-pinned URLs. PickerMux is not published to npm.
 
 The maintainer tested the 0.30.0 candidate and authorized PR merge, tagging,
-and publication on 6 October 2026. The commands below use the 0.40.0 candidate;
+and publication on 6 October 2026. The commands below use the 0.40.1 candidate;
 every production signing and verification gate still applies.
 
 ## Preflight
@@ -46,7 +46,7 @@ https://github.com/patrickschiller/pickermux/releases/latest/download/PickerMux-
 The release tag still makes a download immutable:
 
 ```text
-https://github.com/patrickschiller/pickermux/releases/download/v0.40.0/PickerMux-macos-universal.dmg
+https://github.com/patrickschiller/pickermux/releases/download/v0.40.1/PickerMux-macos-universal.dmg
 ```
 
 The build retains its versioned DMG, app archive, backend manifest, companion
@@ -69,9 +69,9 @@ key available to `codesign`; the profile must already be usable by `notarytool`.
 Use fresh output directories, since the tools refuse to replace existing ones:
 
 ```bash
-node scripts/build-companion.mjs --release --output /tmp/pickermux-signed-0.40.0
-node scripts/prepare-dmg-release.mjs --source /tmp/pickermux-signed-0.40.0 --output /tmp/pickermux-public-0.40.0 --tag v0.40.0
-node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.40.0 --tag v0.40.0
+node scripts/build-companion.mjs --release --output /tmp/pickermux-signed-0.40.1
+node scripts/prepare-dmg-release.mjs --source /tmp/pickermux-signed-0.40.1 --output /tmp/pickermux-public-0.40.1 --tag v0.40.1
+node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.40.1 --tag v0.40.1
 ```
 
 The release builder signs and notarizes the app and DMG separately, staples
@@ -121,8 +121,8 @@ maintainer's Mac when using the local production route.
 After the exact approved commit is on main and all gates are ready:
 
 ```bash
-git tag -a v0.40.0 -m "PickerMux v0.40.0"
-git push origin v0.40.0
+git tag -a v0.40.1 -m "PickerMux v0.40.1"
+git push origin v0.40.1
 ```
 
 Watch the workflow through publication. If a candidate is wrong, fix the
@@ -146,10 +146,10 @@ production signing requirements above remain mandatory.
    replace its assets.
 
 ```bash
-node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.40.0 --tag v0.40.0
-gh release create v0.40.0 /tmp/pickermux-public-0.40.0/PickerMux-macos-universal.dmg \
-  --verify-tag --title "PickerMux v0.40.0" \
-  --notes-file /tmp/pickermux-public-0.40.0/release-notes.md
+node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.40.1 --tag v0.40.1
+gh release create v0.40.1 /tmp/pickermux-public-0.40.1/PickerMux-macos-universal.dmg \
+  --verify-tag --title "PickerMux v0.40.1" \
+  --notes-file /tmp/pickermux-public-0.40.1/release-notes.md
 ```
 
 Complete the independent public-download verification below before announcing
@@ -178,6 +178,27 @@ pinned backend upgrades through the existing setup transaction, preserving
 installed provider settings. Cancellation and failed activation must retain
 usable prior state; ordinary removal and deactivation continue using the
 validated installed backend.
+
+## 0.40.1 native output replay compatibility acceptance
+
+The exact LM Studio enum failure was observed before inference on the target
+Mac. The official Codex client and its output-token replay tests establish the
+new include selector; the pinned source is linked in
+[architecture](ARCHITECTURE.md#lm-studio-adaptation).
+
+Offline loopback tests reproduce provider rejection before the fix and verify
+plain and gzip requests from text-only and certified-tool routes after it.
+They cover omission of both known native encrypted-state selectors, retention
+of logprobs, rejection of unknown selectors by the provider, byte-preserving
+native traffic, unchanged generic Responses and projected Guardian include
+values, and JSON/SSE continuation from sealed history. These checks do not
+claim live model inference or an installed-backend upgrade.
+
+Verify updater recognition from 0.31.1, 0.31.2 and 0.40.0, the sole signed DMG
+record and the production signing/notarization and public-download gates above.
+After upgrading the app and installed backend, fully quit and reopen Codex and
+retry the conversation. Matching model certifications and sealed compaction
+history remain valid.
 
 ## 0.40.0 native Guardian compaction acceptance
 

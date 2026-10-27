@@ -1057,8 +1057,10 @@ function externalBody(body, route, maxBytes, {
     }
     delete rewritten.prompt_cache_key;
     if (Array.isArray(body.include)) {
+      // Codex can request native output-token replay as well as encrypted
+      // reasoning. Local adapters do not support these native state requests.
       const include = body.include.filter(
-        (value) => value !== "reasoning.encrypted_content",
+        (value) => value !== "reasoning.encrypted_content" && value !== "output.encrypted_content",
       );
       if (include.length === 0) delete rewritten.include;
       else rewritten.include = include;
