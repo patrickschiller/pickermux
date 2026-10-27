@@ -6,7 +6,7 @@ an external prerequisite. Earlier CLI archive releases remain available at
 their immutable version-pinned URLs. PickerMux is not published to npm.
 
 The maintainer tested the 0.30.0 candidate and authorized PR merge, tagging,
-and publication on 6 October 2026. The commands below use the 0.31.0 candidate;
+and publication on 6 October 2026. The commands below use the 0.31.1 candidate;
 every production signing and verification gate still applies.
 
 ## Preflight
@@ -46,7 +46,7 @@ https://github.com/patrickschiller/pickermux/releases/latest/download/PickerMux-
 The release tag still makes a download immutable:
 
 ```text
-https://github.com/patrickschiller/pickermux/releases/download/v0.31.0/PickerMux-macos-universal.dmg
+https://github.com/patrickschiller/pickermux/releases/download/v0.31.1/PickerMux-macos-universal.dmg
 ```
 
 The build retains its versioned DMG, app archive, backend manifest, companion
@@ -69,9 +69,9 @@ key available to `codesign`; the profile must already be usable by `notarytool`.
 Use fresh output directories, since the tools refuse to replace existing ones:
 
 ```bash
-node scripts/build-companion.mjs --release --output /tmp/pickermux-signed-0.31.0
-node scripts/prepare-dmg-release.mjs --source /tmp/pickermux-signed-0.31.0 --output /tmp/pickermux-public-0.31.0 --tag v0.31.0
-node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.31.0 --tag v0.31.0
+node scripts/build-companion.mjs --release --output /tmp/pickermux-signed-0.31.1
+node scripts/prepare-dmg-release.mjs --source /tmp/pickermux-signed-0.31.1 --output /tmp/pickermux-public-0.31.1 --tag v0.31.1
+node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.31.1 --tag v0.31.1
 ```
 
 The release builder signs and notarizes the app and DMG separately, staples
@@ -121,8 +121,8 @@ maintainer's Mac when using the local production route.
 After the exact approved commit is on main and all gates are ready:
 
 ```bash
-git tag -a v0.31.0 -m "PickerMux v0.31.0"
-git push origin v0.31.0
+git tag -a v0.31.1 -m "PickerMux v0.31.1"
+git push origin v0.31.1
 ```
 
 Watch the workflow through publication. If a candidate is wrong, fix the
@@ -146,10 +146,10 @@ production signing requirements above remain mandatory.
    replace its assets.
 
 ```bash
-node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.31.0 --tag v0.31.0
-gh release create v0.31.0 /tmp/pickermux-public-0.31.0/PickerMux-macos-universal.dmg \
-  --verify-tag --title "PickerMux v0.31.0" \
-  --notes-file /tmp/pickermux-public-0.31.0/release-notes.md
+node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.31.1 --tag v0.31.1
+gh release create v0.31.1 /tmp/pickermux-public-0.31.1/PickerMux-macos-universal.dmg \
+  --verify-tag --title "PickerMux v0.31.1" \
+  --notes-file /tmp/pickermux-public-0.31.1/release-notes.md
 ```
 
 Complete the independent public-download verification below before announcing
@@ -178,6 +178,44 @@ pinned backend upgrades through the existing setup transaction, preserving
 installed provider settings. Cancellation and failed activation must retain
 usable prior state; ordinary removal and deactivation continue using the
 validated installed backend.
+
+## 0.31.1 mandatory-reasoning compaction acceptance
+
+Version 0.31.1 raises only the mandatory-reasoning LM Studio summary ceiling to
+32,768 output tokens, including reasoning. The loaded-context fraction and all
+response/summary byte limits remain enforced. Other profiles keep the original
+ceiling, and an advertised `none` mode remains eligible only for summarization.
+The fixed summary instruction is repeated after the complete quoted JSON; it
+asks for the active request and exact response format to be retained without
+fulfilling the transcript's last request. The adapter still makes one summary
+call and rejects invalid or incomplete output without replacing history.
+
+On 27 October 2026, an isolated manual acceptance fixture passed through the
+revised adapter with LM Studio Flint:
+
+- Summarization used 151,480 synthetic input tokens and 7,290 output tokens,
+  including 7,134 reasoning tokens, and produced an 808-byte visible summary.
+- The authenticated compaction item was returned through the SSE response and
+  replayed on the same model. Continuation used 240 input and 1,940 output
+  tokens, including 1,933 reasoning tokens, and returned the exact expected
+  marker.
+- The combined summary-and-continuation run took 354 seconds. This is one
+  synthetic fixture, not a latency or summary-quality guarantee.
+
+The fixture did not upgrade the active installation or replay the original
+private chat. Matching existing tool certifications remain valid because the
+patch changes neither the receipt fingerprint nor model configuration. Tool
+certification itself does not exercise compaction. Production signing,
+notarization, public-download verification, and the installed-app upgrade
+remain separate release checks.
+
+Retain the offline evidence for mandatory versus optional/unknown reasoning
+budgets, context bounds, the fixed suffix after unaltered quoted data,
+preservation of active-task constraints, rejected empty/reasoning-only/partial
+summaries, unchanged native routing, and absence of retries. Verify the generated
+0.31.1 notes and sole DMG record, then verify that an older app's Config update
+check recognizes the version-pinned asset and that the normal bundled-backend
+upgrade preserves provider configuration and matching certification evidence.
 
 ## 0.31.0 LM Studio certification acceptance
 

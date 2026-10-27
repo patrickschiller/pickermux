@@ -12,7 +12,7 @@ published as GitHub Releases.
 The 0.23.x and 0.24.x entries are local milestones included in the public
 0.30.0 release; they were not published separately.
 
-## [Unreleased]
+## [0.31.1] - 2026-10-27
 
 ### Fixed
 
@@ -23,8 +23,8 @@ The 0.23.x and 0.24.x entries are local milestones included in the public
   The existing validation still preserves prior history when a summary is
   reasoning-only, incomplete, empty, or otherwise invalid. The fix adds no
   retries, changes no compaction envelope or certification fingerprint, and
-  requires no recertification of
-  an unchanged model with matching tool evidence. Document separate compaction
+  requires no recertification of an unchanged model with matching tool evidence.
+  Document separate compaction
   acceptance because the tool-certification matrix does not cover it.
 - Repeat the trusted fixed summary instruction after the complete quoted JSON
   transcript and explicitly request retention of the active user task and exact
@@ -1109,7 +1109,8 @@ confirm the release date before tagging. See the
   paths and file types, refuses root execution and foreign launchers, and
   restores the previous distribution state when activation fails.
 
-[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.31.0...HEAD
+[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.31.1...HEAD
+[0.31.1]: https://github.com/patrickschiller/pickermux/releases/tag/v0.31.1
 [0.31.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.31.0
 [0.30.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.30.0
 [0.24.6]: #0246---2026-10-06

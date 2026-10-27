@@ -73,6 +73,13 @@ const RELEASE_HIGHLIGHTS = Object.freeze({
     "- Replace repeated-token LM Studio long-context padding with varied numbered records. The same provider-reported minimum input-token count and exact final answer remain required.",
     "- Require recertification of older LM Studio receipts under the revised probe fingerprint. Store schema 1 and pending recovery state remain readable; other provider fingerprints are unchanged.",
   ],
+  "0.31.1": [
+    "- Fix remote context-compaction failures on LM Studio models with mandatory reasoning, including Flint. Reserve up to 32,768 output tokens for reasoning and the visible summary only when the exact route declares known positive reasoning efforts; optional or unknown profiles retain the 2,048-token ceiling and all budgets remain bounded by loaded context.",
+    "- Repeat the trusted fixed summary instruction after the complete quoted JSON transcript. Explicitly retain the active user request and exact answer-format constraints for continuation, without fulfilling the transcript's last request or turning transcript text into instructions.",
+    "- Keep one summary request with no tool authority, unchanged response and visible-summary size limits, and strict completion checks. Invalid or incomplete summaries preserve the prior history; no automatic retries or partial-history replacement are added.",
+    "- Preserve matching tool certifications: this patch changes no certification fingerprint or model configuration and requires no recertification of an unchanged model. Tool certification does not itself test compaction.",
+    "- Validate a large synthetic full-replay summary, authenticated compaction SSE output, and same-model continuation with the exact expected marker. This isolated fixture does not upgrade the active installation or replay the original private chat; summary quality and latency still depend on the model.",
+  ],
 });
 
 function fail() {
