@@ -257,6 +257,8 @@ their selected model. Voice audio and startup context go to OpenAI. This require
 account voice availability and a compatible Codex client; unknown schemas fail closed.
 Setup and install automatically certify tool-capable providers without a valid receipt.
 Certified external models receive sandbox-recovery guidance; Codex still controls approvals.
+Native Guardian reviews can consume authenticated compacted LM Studio context.
+Automatic review sends that context to OpenAI even when the task model is local.
 After a backend upgrade, refresh the picker and reopen Codex to load updated model guidance.
 LM Studio certification tests full tool-result replay with a fresh result marker.
 Mandatory-reasoning models receive bounded reasoning headroom in every base probe.

@@ -354,6 +354,32 @@ compacted history remain valid. Native and text-only model instructions are
 unchanged. If an approved invocation outside the sandbox also fails, continue
 investigating Xcode and CoreSimulator rather than assuming a sandbox cause.
 
+## Automatic approval fails with COMPACTION_STATE_ROUTE_MISMATCH
+
+Before 0.40.0, Codex's native automatic reviewer could receive a PickerMux
+checkpoint from a local model and hit the ordinary model-switch guard. The
+review failed before the proposed command ran; the error was not a safety
+decision about the command itself.
+
+Upgrade the app and installed backend to 0.40.0, then refresh the picker and
+fully quit and reopen Codex. Existing matching tool certifications and sealed
+LM Studio history remain valid. PickerMux now recognizes the reviewed native
+Guardian request markers, authenticates the checkpoint against its exact
+current external source and supplies the summary as untrusted assistant
+context to the native reviewer. Codex continues to approve or deny the action.
+Automatic review sends this context to OpenAI even when the task model is local.
+
+This does not authorize switching the task itself to another provider with
+local encrypted history. Such switches still fail closed. Missing or malformed
+Guardian markers, unknown review modes, stale/changed model bindings, unavailable
+source certifications and mixed checkpoints also remain blocked. Complete
+certification recovery when reported rather than editing state or bypassing the
+sandbox. If needed, use Codex's manual approval mode for the specific command.
+Do not delete the old history or disable approval checks to force recovery.
+`REVIEW_SERVICE_ERROR` means the native service could not complete the review;
+check Codex's native account availability. Provider API keys do not authorize
+this native operation. Native error details are deliberately redacted.
+
 ## LM Studio reports `Channel Error` or a context-length failure
 
 `Channel Error` can wrap different inference failures. Read the nested error

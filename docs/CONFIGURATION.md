@@ -386,8 +386,20 @@ Service restarts, ordinary refresh, and version upgrades retain the key.
 `refresh --full` and uninstall/reinstall create a new installation capability,
 making previous compacted state unavailable. Changing the bound model
 configuration has the same effect. Restore the original state or start a new
-task; do not edit or copy encrypted state between models. Native and other
-provider routes refuse PickerMux-owned compacted state.
+task; do not edit or copy encrypted state between models. Ordinary native and
+other provider routes refuse PickerMux-owned compacted state.
+
+Since 0.40.0, a separately marked native Codex Guardian review can consume one
+authenticated LM Studio checkpoint from its original current, tool-certified
+route. No PickerMux configuration switch is required. The summary is untrusted
+assistant context for the reviewer; its policy and allow/deny response remain
+Codex's responsibility. Automatic review sends this context to OpenAI even
+for a local task model and requires Codex's enabled automatic-review policy
+and native account access. It changes no sandbox or approval setting.
+Normal model switches, unknown reviewer modes, malformed or mixed checkpoints
+and stale source bindings remain blocked. Native requests without bridge
+state retain their original bytes. After the backend upgrade, refresh the
+picker and fully restart Codex; matching certifications and history remain valid.
 
 This adapter supports text history only. Unsupported media, foreign encrypted
 state, malformed controls, failed or incomplete summaries, and still-oversized

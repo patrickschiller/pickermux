@@ -13,6 +13,14 @@ const HASH = /^[a-f0-9]{64}$/u;
 const ASSETS = [PICKERMUX_DMG_ASSET, "release-notes.md", "SHA256SUMS"];
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const RELEASE_HIGHLIGHTS = Object.freeze({
+  "0.40.0": [
+    "- Fix automatic native Codex Guardian reviews after LM Studio context compaction. Recognize matching structured review markers and authenticate the parent checkpoint against its exact current external route.",
+    "- Supply the authenticated summary as explicitly untrusted assistant context while preserving the native reviewer model, policy, action and allow/deny response. Codex retains approval and execution.",
+    "- Buffer projected review replies within 32 MiB, validate native JSON/SSE completion, and preserve successful bytes. Redact native HTTP, JSON and SSE errors before they can enter an external parent's tool-result path.",
+    "- Require current tool certification and unchanged route identity. Bound source authentication and reject stale, tampered, mixed or ambiguous checkpoints before upstream I/O; resolve no external credentials and contact no external provider for the review.",
+    "- Keep ordinary model-switch rejection, other provider boundaries and native bytes without bridge checkpoints unchanged. Existing compacted history and matching tool certifications remain valid.",
+    "- Automatic review sends context to OpenAI even for local task models, according to Codex's enabled review policy. This release changes no permission settings, bypasses no sandbox and guarantees no approval. After the backend upgrade, refresh the picker and fully quit and reopen Codex.",
+  ],
   "0.31.2": [
     "- Give certified external models targeted sandbox-recovery guidance, including macOS CoreSimulatorService and simdiskimaged failures. Check the execution context before treating installed tools or services as unavailable.",
     "- When the supplied exec_command schema and current policy permit escalation, ask Codex to approve the same narrowly scoped command with sandbox_permissions=\"require_escalated\" and a brief justification. Respect denied or unavailable approval and check that commands with possible side effects are safe to retry.",

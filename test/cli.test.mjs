@@ -37,7 +37,7 @@ test("release metadata and both CLI entry points identify PickerMux", async () =
     await readFile(path.join(projectDirectory, "package.json"), "utf8"),
   );
   assert.equal(packageMetadata.name, "pickermux");
-  assert.equal(packageMetadata.version, "0.31.2");
+  assert.equal(packageMetadata.version, "0.40.0");
   assert.equal(packageMetadata.license, "MIT");
 
   for (const entryPoint of ["pickermux.mjs", "lmstudio-picker.mjs"]) {
@@ -51,6 +51,8 @@ test("release metadata and both CLI entry points identify PickerMux", async () =
       assert.match(stdout, /CODEX_BINARY overrides discovery for this command/u);
       assert.match(stdout, /Setup and install automatically certify tool-capable providers/u);
       assert.match(stdout, /Certified external models receive sandbox-recovery guidance/u);
+      assert.match(stdout, /Native Guardian reviews can consume authenticated compacted LM Studio context/u);
+      assert.match(stdout, /Automatic review sends that context to OpenAI/u);
       assert.match(stdout, /certify .*\[--direct-only\]/u);
       assert.match(stdout, /certify --direct-only runs every base probe and skips optional Efficient Fidelity/u);
       assert.match(stdout, /An explicit providers:\[\] configuration keeps the native Codex picker/u);
@@ -80,7 +82,7 @@ test("release metadata and both CLI entry points identify PickerMux", async () =
         [path.join(projectDirectory, "bin", entryPoint), versionArgument],
         { encoding: "utf8" },
       );
-      assert.equal(stdout, "pickermux 0.31.2\n");
+      assert.equal(stdout, "pickermux 0.40.0\n");
     }
   }
 });
