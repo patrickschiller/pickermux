@@ -405,6 +405,17 @@ native error bodies or account headers from reaching the external parent's
 tool error; the internal review receives its output after full validation. No review
 payload or summary is logged, cached or persisted by this feature.
 
+The buffered SSE validator also accepts exactly `codex.response.metadata`,
+`codex.rate_limits` and `responsesapi.websocket_timing` as opaque native transport
+metadata before or after the completed response. The
+[official client parser](https://github.com/openai/codex/blob/33d306d457a4632b22bebf214e0c25d91f90f6e8/codex-rs/codex-api/src/sse/responses.rs)
+and [native transport fixtures](https://github.com/openai/codex/blob/33d306d457a4632b22bebf214e0c25d91f90f6e8/codex-rs/core/tests/suite/client_websockets.rs)
+establish these side events. They carry no approval authority and cannot replace
+one successful completion, hide an error or permit an unknown event family.
+Duplicate terminal events and data after the optional final DONE sentinel remain
+invalid. Earlier 0.40.0/0.40.1 validation rejected these native event names and
+could turn an otherwise successful review into a fixed HTTP 502.
+
 Native Guardian traffic without a bridge checkpoint retains its original bytes.
 Normal native model switching and all other provider routes retain the original
 envelope-family rejection. Existing envelopes, model hashes and matching

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createCipheriv, hkdfSync } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import http from "node:http";
 import test from "node:test";
 import { gzipSync, gunzipSync } from "node:zlib";
@@ -1052,6 +1053,25 @@ test("native Guardian streams preserve verdict bytes after checkpoint projection
   assert.equal(proxy.credentialReads(), 1);
 });
 
+test("projected Guardian SSE accepts native transport metadata without changing verdict bytes or credentials", async (t) => {
+  const sse = await readFile(new URL("./fixtures/native-guardian-review/metadata-stream.sse", import.meta.url));
+  const proxy = await harness(t, { respond: ({ body, response }) => {
+    if (body.model !== NATIVE_MODEL) return jsonResponse(response, completedResponse());
+    response.writeHead(200, { "content-type": "text/event-stream" });
+    response.end(sse);
+  } });
+  const item = compactionItem(await send({ port: proxy.port, body: compactRequest() }));
+  const result = await send({
+    port: proxy.port, body: guardianRequest(item, { stream: true }),
+    headers: { ...REVIEW_HEADERS, authorization: "Bearer " + NATIVE_SECRET },
+  });
+  assert.equal(result.status, 200);
+  assert.deepEqual(result.body, sse);
+  assert.equal(proxy.requests.length, 2);
+  assert.equal(proxy.requests[1].headers.authorization, "Bearer " + NATIVE_SECRET);
+  assert.equal(proxy.credentialReads(), 1);
+});
+
 test("projected Guardian errors cannot disclose native upstream bodies or account headers", async (t) => {
   for (const status of [401, 500, 200]) {
     await t.test(String(status), async (subtest) => {
@@ -1080,6 +1100,9 @@ test("projected Guardian 200-error envelopes and incomplete streams are redacted
     ["application/json", '{"status":"completed","output":{}}', "UPSTREAM_RESPONSE_ERROR"],
     ["text/event-stream", 'data: {"type":"response.created"}\n\ndata: {"type":"response.failed","response":{"error":{"message":"native-account-private-canary"}}}\n\n', "REVIEW_SERVICE_ERROR"],
     ["text/event-stream", 'data: {"type":"response.created"}\n\n', "UPSTREAM_RESPONSE_ERROR"],
+    ["text/event-stream", 'data: {"type":"codex.response.metadata"}\n\n', "UPSTREAM_RESPONSE_ERROR"],
+    ["text/event-stream", 'data: {"type":"codex.unreviewed.metadata"}\n\ndata: {"type":"response.completed","response":{"id":"synthetic-review"}}\n\n', "UPSTREAM_RESPONSE_ERROR"],
+    ["text/event-stream", 'data: {"type":"response.completed","response":{"id":"synthetic-review"}}\n\ndata: {"type":"codex.response.metadata","error":{"message":"native-account-private-canary"}}\n\n', "REVIEW_SERVICE_ERROR"],
   ]) await t.test(contentType + code, async (subtest) => {
     const proxy = await harness(subtest, { respond: ({ body, response }) => {
       if (body.model !== NATIVE_MODEL) return jsonResponse(response, completedResponse());

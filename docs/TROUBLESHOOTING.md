@@ -380,6 +380,34 @@ Do not delete the old history or disable approval checks to force recovery.
 check Codex's native account availability. Provider API keys do not authorize
 this native operation. Native error details are deliberately redacted.
 
+## Automatic approval fails with HTTP 502 after the 0.40.1 upgrade
+
+`Automatic approval review failed: unexpected status 502 Bad Gateway: The
+upstream response could not be read or validated` identifies a response failure
+before the proposed command executes. It does not establish an Xcode,
+CoreSimulator or command-sandbox failure.
+
+In 0.40.0 and 0.40.1, PickerMux's review response guard rejected known native
+transport events outside the `response.*` family, including metadata and timing
+events around a successful completion. That deterministic compatibility error
+also produced this public 502. The corrected guard admits only the exact known
+native metadata names while preserving response bytes, completion requirements,
+error redaction, source authentication and Codex's approval decision.
+
+Upgrade both the app and installed backend to a release containing this fix,
+fully quit and reopen Codex, then retry the approval. Existing matching
+certifications and sealed history remain valid. A remaining 502 can also
+indicate another malformed, compressed, interrupted or unsupported response;
+the public message alone does not identify which condition occurred. Raw review
+payloads are not persisted. Record the version, time and public error when
+reporting a recurrence rather than sharing private prompts or native account
+details.
+
+For an eventual Simulator command, use
+`DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcrun simctl list devices available`.
+`DEVELOPMENT_DIR` is a different variable and does not select Xcode for `xcrun`.
+That typo matters only once approval succeeds and the command actually runs.
+
 ## LM Studio immediately rejects `output.encrypted_content`
 
 `Invalid enum value. Expected 'reasoning.encrypted_content' |

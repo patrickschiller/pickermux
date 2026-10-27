@@ -14,6 +14,15 @@ The 0.23.x and 0.24.x entries are local milestones included in the public
 
 ## [Unreleased]
 
+### Fixed
+
+- Accept the exact native review stream metadata types `codex.response.metadata`,
+  `codex.rate_limits` and `responsesapi.websocket_timing`, including metadata
+  after completion. Prevent a valid Guardian response from becoming HTTP 502
+  solely because it contains those events. Preserve successful bytes and require
+  one completed response; metadata alone, unknown event families, reported
+  errors, incomplete streams and duplicate completion still fail closed.
+
 ## [0.40.1] - 2026-10-27
 
 ### Fixed
