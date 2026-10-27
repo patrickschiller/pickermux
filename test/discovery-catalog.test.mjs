@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { chmod, mkdtemp, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
@@ -9,6 +10,7 @@ import {
   CODEX_CONTEXT_HIGH_RISK_BELOW_TOKENS,
   CODEX_CONTEXT_RECOMMENDED_TOKENS,
   MODEL_DEFAULT_REASONING_DESCRIPTION,
+  SANDBOX_RECOVERY_INSTRUCTIONS,
   TEXT_ONLY_MODEL_INSTRUCTIONS,
   buildCodexCatalog,
   buildMixedCodexCatalog,
@@ -691,8 +693,11 @@ test("enables only direct unified-exec after an exact model certification", () =
   assert.equal(certified.supports_search_tool, false);
   assert.deepEqual(certified.experimental_supported_tools, []);
   assert.equal(certified.multi_agent_version, null);
-  assert.equal(certified.base_instructions, donor.base_instructions);
-  assert.deepEqual(certified.model_messages, donor.model_messages);
+  assert.equal(certified.base_instructions, `${donor.base_instructions}\n\n${SANDBOX_RECOVERY_INSTRUCTIONS}`);
+  assert.deepEqual(certified.model_messages, {
+    ...donor.model_messages,
+    instructions_template: `${donor.model_messages.instructions_template}\n\n${SANDBOX_RECOVERY_INSTRUCTIONS}`,
+  });
 
   assert.equal(textOnly.tool_mode, null);
   assert.equal(textOnly.shell_type, "disabled");
@@ -722,8 +727,11 @@ test("enables Efficient Fidelity only after its additive LM Studio certification
   assert.equal(efficient.tool_mode, "direct");
   assert.equal(efficient.shell_type, "unified_exec");
   assert.equal(efficient.supports_search_tool, true);
-  assert.equal(efficient.base_instructions, donor.base_instructions);
-  assert.deepEqual(efficient.model_messages, donor.model_messages);
+  assert.equal(efficient.base_instructions, `${donor.base_instructions}\n\n${SANDBOX_RECOVERY_INSTRUCTIONS}`);
+  assert.deepEqual(efficient.model_messages, {
+    ...donor.model_messages,
+    instructions_template: `${donor.model_messages.instructions_template}\n\n${SANDBOX_RECOVERY_INSTRUCTIONS}`,
+  });
 
   assert.throws(
     () =>
@@ -734,6 +742,80 @@ test("enables Efficient Fidelity only after its additive LM Studio certification
       }),
     /requires direct tool certification/u,
   );
+});
+
+test("sandbox guidance preserves donor policies, native models and compaction identity", () => {
+  const originalDonor = structuredClone(donor);
+  for (const source of ["lmstudio-rest", "openai-compatible-models"]) {
+    for (const efficient of [false, true]) {
+      const model = {
+        id: "provider/certified-model",
+        displayName: "Certified model",
+        type: "llm",
+        contextWindow: 32_768,
+        source,
+        reasoningEffort: "medium",
+        reasoningEfforts: ["medium"],
+        reasoningOmitEfforts: [],
+      };
+      const catalog = buildMixedCodexCatalog({
+        bundledCatalog: { models: [donor] },
+        discoveredModels: [model],
+        certifiedModelSlugs: [model.id],
+        efficientFidelityModelSlugs: efficient && source === "lmstudio-rest" ? [model.id] : [],
+      });
+      const entry = catalog.models[1];
+      assert.deepEqual(catalog.models[0], originalDonor);
+      assert.deepEqual(donor, originalDonor);
+      assert.deepEqual(entry.model_messages, {
+        ...originalDonor.model_messages,
+        instructions_template: `${originalDonor.model_messages.instructions_template}\n\n${SANDBOX_RECOVERY_INSTRUCTIONS}`,
+      });
+      const previousHash = createHash("sha256").update([
+        "model-bridge-p6-v1", model.id, model.contextWindow,
+        "medium", "medium", "",
+        efficient && source === "lmstudio-rest" ? "tools-efficient-fidelity" : "tools-direct",
+      ].join("\0")).digest("hex").slice(0, 16);
+      assert.equal(entry.comp_hash, `model-bridge-p6-${previousHash}`);
+      assert.equal(entry.model_messages.instructions_template.split(SANDBOX_RECOVERY_INSTRUCTIONS).length, 2);
+    }
+  }
+  assert.match(SANDBOX_RECOVERY_INSTRUCTIONS, /CoreSimulatorService.*simdiskimaged/u);
+  assert.match(SANDBOX_RECOVERY_INSTRUCTIONS, /only when.*schema.*policy permit escalation/u);
+  assert.match(SANDBOX_RECOVERY_INSTRUCTIONS, /sandbox_permissions="require_escalated".*justification/u);
+  assert.match(SANDBOX_RECOVERY_INSTRUCTIONS, /unavailable or denied.*respect that decision/u);
+  assert.match(SANDBOX_RECOVERY_INSTRUCTIONS, /possible side effects.*retry is safe/u);
+  assert.match(SANDBOX_RECOVERY_INSTRUCTIONS, /Never disable the sandbox, change approval policy/u);
+});
+
+test("sandbox guidance supports legacy donors and rejects malformed certified instruction fields", () => {
+  const model = {
+    id: "provider/certified-model", displayName: "Certified model", type: "llm",
+    contextWindow: 32_768, source: "openai-compatible-models",
+  };
+  const build = (template, certified = true) => buildCodexCatalog({
+    bundledCatalog: { models: [template] }, discoveredModels: [model],
+    certifiedModelSlugs: certified ? [model.id] : [],
+  }).models[0];
+  const legacy = structuredClone(donor);
+  delete legacy.model_messages;
+  const entry = build(legacy);
+  assert.equal(entry.model_messages.instructions_template, entry.base_instructions);
+  assert.equal(entry.model_messages.instructions_variables, null);
+  const modern = structuredClone(donor);
+  delete modern.base_instructions;
+  const modernEntry = build(modern);
+  assert.equal(modernEntry.base_instructions, modernEntry.model_messages.instructions_template);
+  assert.equal(modernEntry.base_instructions, `${donor.model_messages.instructions_template}\n\n${SANDBOX_RECOVERY_INSTRUCTIONS}`);
+  for (const invalid of [
+    { ...donor, base_instructions: {} },
+    { ...donor, model_messages: [] },
+    { ...donor, model_messages: { instructions_template: {} } },
+  ]) {
+    assert.throws(() => build(invalid), /Certified model.*must be text/u);
+  }
+  assert.deepEqual(build(donor, false).model_messages, donor.model_messages);
+  assert.equal(build(donor, false).base_instructions.includes(SANDBOX_RECOVERY_INSTRUCTIONS), false);
 });
 
 test("keeps the donor prompt for generic Responses-compatible providers", () => {

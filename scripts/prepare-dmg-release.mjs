@@ -13,6 +13,12 @@ const HASH = /^[a-f0-9]{64}$/u;
 const ASSETS = [PICKERMUX_DMG_ASSET, "release-notes.md", "SHA256SUMS"];
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const RELEASE_HIGHLIGHTS = Object.freeze({
+  "0.31.2": [
+    "- Give certified external models targeted sandbox-recovery guidance, including macOS CoreSimulatorService and simdiskimaged failures. Check the execution context before treating installed tools or services as unavailable.",
+    "- When the supplied exec_command schema and current policy permit escalation, ask Codex to approve the same narrowly scoped command with sandbox_permissions=\"require_escalated\" and a brief justification. Respect denied or unavailable approval and check that commands with possible side effects are safe to retry.",
+    "- Preserve existing model instructions, native models, text-only profiles, tool certification, and compacted-history identity. This guidance grants no permissions, disables no sandbox, changes no approval policy, and guarantees no model decision.",
+    "- After upgrading the bundled backend, refresh the picker and fully quit and reopen Codex to load the guidance. Matching tool certifications remain valid; users may still need to approve individual commands in Codex.",
+  ],
   "0.20.0": [
     "- View each external provider's input, output and total tokens in the menu-bar panel.",
     "- Compare the last finalized request with cumulative reported usage **since bridge start**. Totals reset when the bridge restarts.",
