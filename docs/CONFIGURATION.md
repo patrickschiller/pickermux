@@ -371,10 +371,15 @@ would otherwise treat it as response prefill and continue the summary text.
 The dynamic summary stays at assistant authority. Later conversation input and
 another compaction do not receive this extra instruction.
 The summary prompt separates completed actions and evidence from remaining
-work, and the continuation prompt asks the model to reuse recorded results.
+work and explicitly asks the model to retain the active user request and exact
+response-format constraints. The complete quoted JSON is the first user
+content part. A second part repeats only the trusted fixed summary instruction
+after that data, keeping the operation's purpose recent without treating
+transcript content as instructions. The continuation prompt asks the model to
+reuse recorded results.
 Missing, stale, or conflicting evidence and instructions requiring a fresh
 check still permit another lookup. This is model guidance, not a tool blocker
-or a guarantee against repeated searches.
+or a guarantee against repeated searches or omitted task details.
 
 Service restarts, ordinary refresh, and version upgrades retain the key.
 `refresh --full` and uninstall/reinstall create a new installation capability,

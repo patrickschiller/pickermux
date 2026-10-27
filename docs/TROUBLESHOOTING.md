@@ -1140,8 +1140,17 @@ one bounded summary request with no tools. Empty, reasoning-only, incomplete,
 tool-calling, or oversized responses remain rejected; no automatic retries or
 partial-history replacement are added.
 
+A structurally valid summary can still omit the active request or the required
+answer format. The corrected prompt explicitly asks the model to retain both.
+It repeats only the fixed summary instruction after the complete quoted JSON
+transcript, so long fixture or tool data does not become the final operation
+the model sees. The transcript stays data; no model-supplied text is promoted
+into instructions. This improves continuation guidance without guaranteeing
+semantic completeness.
+
 Validate compaction separately with a small synthetic text conversation and a
-same-model continuation. If it still fails, report the fixed error code and
+same-model continuation that retains the active task and required answer
+format. If it still fails, report the fixed error code and
 safe output-type/token counters, without raw prompts, summaries, or capability
 URLs. More reasoning headroom cannot guarantee a valid summary or make an
 oversized retained prompt fit the selected context window.

@@ -180,8 +180,11 @@ test("summary preparation retains every text field inside quoted JSON with no ac
   assert.doesNotMatch(prepared.instructions, /private-canary|System constraints canary/u);
   assert.equal(prepared.input.length, 1);
   assert.equal(prepared.input[0].role, "user");
-  assert.equal(prepared.input[0].content.length, 1);
+  assert.equal(prepared.input[0].content.length, 2);
   assert.equal(prepared.input[0].content[0].type, "input_text");
+  assert.deepEqual(prepared.input[0].content[1], { type: "input_text", text: prepared.instructions });
+  assert.match(prepared.input[0].content[1].text, /exact response-format constraints/u);
+  assert.doesNotMatch(prepared.input[0].content[1].text, /private-canary|System constraints canary/u);
   assert.deepEqual(JSON.parse(prepared.input[0].content[0].text), {
     input: source.input,
     instructions: source.instructions,

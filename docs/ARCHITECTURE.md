@@ -306,8 +306,15 @@ and [request construction](https://github.com/openai/codex/blob/36f0dbe796d9bb1a
 The adapter preserves all historical system/developer/user input, even if its
 text equals the omitted field. A role-wide filter or text subtraction would
 lose that provenance boundary. Ordinary and legacy-compact requests retain
-their instructions. The summary includes supported text history as JSON data under a fixed
-summary instruction, preserving public function identities, results, and URLs.
+their instructions. The summary includes supported text history as JSON data
+under a fixed summary instruction, preserving public function identities,
+results, and URLs. The complete quoted JSON remains the first user content
+part; a second part repeats only the fixed summary instruction after the long
+transcript. That instruction explicitly asks the model to retain the active
+user request and exact response-format constraints for the next assistant.
+This keeps the operation's purpose recent without promoting transcript or
+provider text into instructions. It remains model guidance rather than a
+guarantee that every summary retains all task details.
 Tool definitions are omitted; the summary has no tool authority. Its output
 budget includes reasoning and visible summary text. A route declaring only
 known positive reasoning efforts has an 8,192-token ceiling; other routes keep

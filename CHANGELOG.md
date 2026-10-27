@@ -26,6 +26,10 @@ The 0.23.x and 0.24.x entries are local milestones included in the public
   envelope or certification fingerprint, and requires no recertification of
   an unchanged model with matching tool evidence. Document separate compaction
   acceptance because the tool-certification matrix does not cover it.
+- Repeat the trusted fixed summary instruction after the complete quoted JSON
+  transcript and explicitly request retention of the active user task and exact
+  answer-format constraints. Keep transcript text as data, one summary call,
+  and the existing validation; summary quality still depends on the model.
 
 ## [0.31.0] - 2026-10-26
 
