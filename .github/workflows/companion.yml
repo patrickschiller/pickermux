@@ -77,7 +77,7 @@ jobs:
             *) exit 1 ;;
           esac
       - name: Retain development artifacts
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: pickermux-companion-unsigned-development
           path: |
@@ -112,7 +112,7 @@ jobs:
           PICKERMUX_NOTARY_PROFILE: ${{ vars.PICKERMUX_NOTARY_PROFILE }}
         run: node scripts/build-companion.mjs --release --output "$RUNNER_TEMP/pickermux-companion-release-${{ github.run_id }}"
       - name: Retain signed artifacts for release review
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: pickermux-companion-developer-id-notarized
           path: |
