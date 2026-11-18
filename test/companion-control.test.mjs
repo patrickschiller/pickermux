@@ -725,6 +725,41 @@ test("intentional OFF is inactive and offers confirmed reactivation only", async
   for (const action of ["recover", "refresh", "certify", "integration-deactivate", "update"]) assert.equal(result.actions.includes(action), false);
 });
 
+test("reviewable paused edits authorize only setup from a verified installed state", async () => {
+  const paused = {
+    managedConfig: async () => ({ status: "deactivated-changed" }),
+    integration: async () => ({ status: "none" }),
+    service: async () => ({ status: "not-installed" }),
+    compatibility: async () => ({ status: "not-installed" }),
+  };
+  const ready = await collectCompanionStatus({ probes: probes(paused) });
+  assert.equal(ready.state, "inactive");
+  assert.deepEqual(ready.actions, ["diagnose", "update-check", "configuration-preview", "configuration-apply"]);
+  for (const override of [
+    { desktop: async () => true },
+    { installation: async () => ({ status: "not-installed" }) },
+    { integration: async () => ({ status: "conflict" }) },
+    { integration: async () => ({ status: "foreign" }) },
+    { accountCache: async () => ({ status: "refresh-required" }) },
+    { recovery: async () => ({ phase: "prepared", operationId: OPERATION_ID }) },
+  ]) {
+    const blocked = await collectCompanionStatus({ probes: probes({ ...paused, ...override }) });
+    assert.equal(blocked.actions.includes("configuration-apply"), false);
+    assert.equal(blocked.actions.includes("uninstall"), false);
+  }
+  const changes = [
+    "review-paused-config-changes", "replace-paused-native-model",
+    "replace-paused-native-provider", "replace-paused-native-reasoning-effort",
+  ];
+  const preview = companionSuccess("configuration-preview", {
+    status: "none", canApply: true, requiresConfirmation: true,
+    previewToken: "a".repeat(64), changes: [...changes, SECRET], text: SECRET,
+  });
+  assert.deepEqual(preview.changes, changes);
+  assert.equal(preview.requiresConfirmation, true);
+  assert.equal(JSON.stringify(preview).includes(SECRET), false);
+});
+
 test("fresh configuration has no compatibility manifest obligation or service startup side effects", async (t) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "pickermux-fresh-status-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -743,7 +778,7 @@ test("deactivation requires its own exact confirmation and never projects privat
   assert.deepEqual(companionSuccess("integration-deactivate", { deactivated: true, status: "deactivated", restartRequired: true, runtime: SECRET }), {
     schemaVersion: 1, ok: true, code: "COMPLETE", action: "integration-deactivate", restartRequired: true, deactivated: true, status: "deactivated",
   });
-  for (const code of ["PROVIDER_UNAVAILABLE", "NO_LOADED_MODELS", "DEACTIVATION_FAILED", "DEACTIVATION_ROLLBACK_FAILED"]) {
+  for (const code of ["PROVIDER_UNAVAILABLE", "NO_LOADED_MODELS", "DEACTIVATION_FAILED", "DEACTIVATION_ROLLBACK_FAILED", "REACTIVATION_ROLLBACK_FAILED"]) {
     const result = companionFailure(Object.assign(new Error(SECRET), { code }));
     assert.equal(result.code, code);
     assert.equal(JSON.stringify(result).includes(SECRET), false);

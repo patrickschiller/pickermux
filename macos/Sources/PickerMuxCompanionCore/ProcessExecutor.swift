@@ -197,8 +197,8 @@ public struct PickerMuxClient {
     return try await run(.updateCheck, confirmed: false, previewToken: nil, selected: selected)
   }
 
-  public func bundledSetupClient(appVersion: String) -> BundledSetupClient {
-    BundledSetupClient(client: self, appVersion: appVersion)
+  public func bundledSetupClient(appVersion: String, requiringPausedConfigurationReview: Bool = false) -> BundledSetupClient {
+    BundledSetupClient(client: self, appVersion: appVersion, requiringPausedConfigurationReview: requiringPausedConfigurationReview)
   }
 
   public func run(_ action: CompanionAction, confirmed: Bool = false, previewToken: String? = nil) async throws -> CompanionResult {
@@ -272,7 +272,8 @@ public struct PickerMuxClient {
     return (try CompanionSnapshot.decode(result.stdout).allowingOnly([.configurationPreview, .configurationApply, .updateCheck, .diagnose], bundledBackend: true), invocation, true, runtime)
   }
 
-  fileprivate func bundledUpgradeStatus(appVersion: String) async throws -> (snapshot: CompanionSnapshot, invocation: BackendInvocation, bundled: Bool, runtime: URL) {
+  fileprivate func bundledUpgradeStatus(appVersion: String, requiringPausedConfigurationReview: Bool) async throws
+    -> (snapshot: CompanionSnapshot, invocation: BackendInvocation, bundled: Bool, runtime: URL) {
     // A newer app is setup authority only after both installed and pinned
     // sources have been verified afresh. Ordinary service/removal control stays
     // on the receipt-active installed source regardless of the app version.
@@ -285,13 +286,19 @@ public struct PickerMuxClient {
           compareCompanionVersions(bundled.snapshot.version, installed.snapshot.version) == 1 else {
       throw CompanionFailure.incompatibleProtocol
     }
+    if requiringPausedConfigurationReview {
+      guard bundled.snapshot.hasPausedConfigurationChanges,
+            IntegrationToggleState(snapshot: bundled.snapshot).canReviewSetup
+      else { throw CompanionFailure.incompatibleProtocol }
+    }
     return (bundled.snapshot.allowingOnly([.configurationPreview, .configurationApply], bundledBackend: true),
       bundled.invocation, true, bundled.runtime)
   }
 
-  fileprivate func runBundledUpgrade(_ action: CompanionAction, appVersion: String, confirmed: Bool, previewToken: String?) async throws -> CompanionResult {
+  fileprivate func runBundledUpgrade(_ action: CompanionAction, appVersion: String, confirmed: Bool, previewToken: String?,
+                                    requiringPausedConfigurationReview: Bool) async throws -> CompanionResult {
     guard [.configurationPreview, .configurationApply].contains(action) else { throw CompanionFailure.incompatibleProtocol }
-    let selected = try await bundledUpgradeStatus(appVersion: appVersion)
+    let selected = try await bundledUpgradeStatus(appVersion: appVersion, requiringPausedConfigurationReview: requiringPausedConfigurationReview)
     return try await run(action, confirmed: confirmed, previewToken: previewToken, selected: selected)
   }
 
@@ -308,17 +315,20 @@ public struct PickerMuxClient {
 public struct BundledSetupClient: CompanionControlling {
   private let client: PickerMuxClient
   private let appVersion: String
+  private let requiringPausedConfigurationReview: Bool
 
-  fileprivate init(client: PickerMuxClient, appVersion: String) {
+  fileprivate init(client: PickerMuxClient, appVersion: String, requiringPausedConfigurationReview: Bool) {
     self.client = client
     self.appVersion = appVersion
+    self.requiringPausedConfigurationReview = requiringPausedConfigurationReview
   }
 
   public func status() async throws -> CompanionSnapshot {
-    try await client.bundledUpgradeStatus(appVersion: appVersion).snapshot
+    try await client.bundledUpgradeStatus(appVersion: appVersion, requiringPausedConfigurationReview: requiringPausedConfigurationReview).snapshot
   }
 
   public func run(_ action: CompanionAction, confirmed: Bool, previewToken: String?) async throws -> CompanionResult {
-    try await client.runBundledUpgrade(action, appVersion: appVersion, confirmed: confirmed, previewToken: previewToken)
+    try await client.runBundledUpgrade(action, appVersion: appVersion, confirmed: confirmed, previewToken: previewToken,
+      requiringPausedConfigurationReview: requiringPausedConfigurationReview)
   }
 }

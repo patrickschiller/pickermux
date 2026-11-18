@@ -112,7 +112,7 @@ final class CompanionController: ObservableObject {
   }
 
   var canReviewBackendUpgrade: Bool {
-    backendUpgradeAvailable && integrationState.canReviewSetup
+    backendUpgradeAvailable && (integrationState.canReviewSetup || integrationState.canReviewLegacyPausedConfiguration)
   }
 
   var bundledSetupAvailability: CompanionPresentation.ActionAvailability {
@@ -279,6 +279,7 @@ final class CompanionController: ObservableObject {
       guard integrationState.canChange, integrationState.isEnabled != enabled else { return }
     }
     let upgradingBundledBackend = reviewInstalledSetup && backendUpgradeAvailable
+    let reviewingPausedConfiguration = upgradingBundledBackend && integrationState.canReviewLegacyPausedConfiguration
     if automaticallyOffered {
       guard upgradingBundledBackend, integrationState.isEnabled else { return }
     }
@@ -295,7 +296,7 @@ final class CompanionController: ObservableObject {
       guard removal.permitsActivity(generation) else { operationQueue.release(lease); return }
       do {
         let setupClient: any CompanionControlling = upgradingBundledBackend ?
-          client.bundledSetupClient(appVersion: appVersion) : client
+          client.bundledSetupClient(appVersion: appVersion, requiringPausedConfigurationReview: reviewingPausedConfiguration) : client
         let outcome = try await changePickerMuxIntegration(enabled, reviewInstalledSetup: reviewInstalledSetup,
           client: setupClient, consent: automaticallyOffered ? .automaticUpgradeReview : reviewInstalledSetup ? .review : .toggleIntent,
           confirm: { review in
@@ -1304,7 +1305,9 @@ private struct CompanionConfig: View {
                   controller.setIntegrationEnabled(true, reviewInstalledSetup: true)
                 }
                 .disabled(!controller.canReviewBackendUpgrade)
-                Text("Use this app's bundled version to update the installed CLI and bridge. Provider settings are retained. This also enables PickerMux if it is off and may send live certification prompts. Fully quit Codex before reviewing the upgrade.")
+                Text(controller.integrationState.canReviewLegacyPausedConfiguration ?
+                  "Review the paused Codex settings with this app's verified backend. Confirming the review updates the backend and re-enables PickerMux." :
+                  "Use this app's bundled version to update the installed CLI and bridge. Provider settings are retained. This also enables PickerMux if it is off and may send live certification prompts. Fully quit Codex before reviewing the upgrade.")
                   .font(CompanionTypography.body).foregroundStyle(.secondary)
                   .fixedSize(horizontal: false, vertical: true)
               } else if controller.snapshot?.usesBundledBackend == true && controller.integrationState.needsSetupUpgrade {

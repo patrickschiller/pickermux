@@ -13,7 +13,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 
 import {
@@ -220,8 +220,9 @@ test("Ollama preview is redacted, read-only and requires an exact approved switc
   assert.equal(preview.status, "ollama");
   assert.equal(preview.canApply, true);
   assert.equal(preview.requiresConfirmation, true);
-  assert.match(preview.previewToken, /^[a-f0-9]{64}$/u);
-  assert.doesNotMatch(JSON.stringify(preview), /private-ollama-model|private\/user|127\.0\.0\.1|11434|api\/codex|auth/u);
+  const { previewToken, ...redactedPreview } = preview;
+  assert.match(previewToken, /^[a-f0-9]{64}$/u);
+  assert.doesNotMatch(JSON.stringify(redactedPreview), /private-ollama-model|private\/user|127\.0\.0\.1|11434|api\/codex|auth/u);
   assert.deepEqual(await snapshotFile(fixture.configPath), before);
   await assert.rejects(installConfig(fixture.options()), { code: "INTEGRATION_CONFLICT" });
   await assert.rejects(installConfig(fixture.options({ integrationSwitchReceipt: {} })), { code: "INTEGRATION_CONFLICT" });
@@ -3359,6 +3360,193 @@ test("deactivation preserves edits outside owned blocks during reactivation and 
     await uninstallConfig(fixture.paths());
     assert.equal(await readFile(fixture.configPath, "utf8"), `${original}user_added = true\n`);
   }
+});
+
+test("reviewed reactivation preserves paused edits, exact rollback, and the original uninstall baseline", async (t) => {
+  const originalGateway = 'openai_base_url = "http://127.0.0.1:11434/api/codex/v1"\n';
+  for (const original of [undefined, originalGateway + '[features]\nother = true\n']) {
+    await t.test(original === undefined ? "previously absent config" : "previous gateway", async (subtest) => {
+      const fixture = await makeFixture(subtest);
+      if (original !== undefined) await writeFile(fixture.configPath, original);
+      const options = fixture.options();
+      options.modelProvider = options.provider.id = "model_bridge";
+      const initialPreview = await previewConfigIntegration(fixture.paths());
+      const integrationSwitchReceipt = original === undefined ? undefined :
+        await inventoryConfigIntegrationSwitch({ ...fixture.paths(), expectedPreviewToken: initialPreview.previewToken });
+      await installConfig({ ...options, integrationSwitchReceipt });
+      await deactivateManagedConfiguration(fixture.paths());
+      const pausedState = await readFile(fixture.statePath);
+      const baseline = JSON.parse(pausedState);
+      const backup = await snapshotFile(baseline.backupPath);
+      assert.equal(baseline.suspension.pristine, true);
+
+      const paused = await readFile(fixture.configPath, "utf8");
+      const nativeChoices = 'model = "private-paused-model"\nmodel_provider = "openai"\nmodel_reasoning_effort = "high"\n';
+      const unownedRoot = 'approval_policy = "on-request"\n';
+      const unownedTable = '[mcp_servers.fixture]\ncommand = "private-fixture-command"\n';
+      const edited = nativeChoices + unownedRoot + paused.replace(
+        "# >>> pickermux:historical-model-bridge >>>",
+        unownedTable + "\n# >>> pickermux:historical-model-bridge >>>",
+      );
+      await writeFile(fixture.configPath, edited);
+      await chmod(fixture.configPath, 0o640);
+      const reviewed = await snapshotFile(fixture.configPath);
+
+      assert.deepEqual(pickStatus(await getConfigStatus(fixture.paths())), { installed: false, healthy: true, status: "deactivated-changed" });
+      const preview = await previewConfigIntegration(fixture.paths());
+      assert.equal(preview.status, "none");
+      assert.equal(preview.canApply, true);
+      assert.equal(preview.requiresConfirmation, true);
+      assert.deepEqual(preview.changes.slice(-4), [
+        "review-paused-config-changes", "replace-paused-native-model",
+        "replace-paused-native-provider", "replace-paused-native-reasoning-effort",
+      ]);
+      assert.doesNotMatch(JSON.stringify(preview), /private-paused-model|private-fixture-command|on-request/u);
+      assert.deepEqual(await snapshotFile(fixture.configPath), reviewed);
+      await assert.rejects(inventoryDeactivatedConfigReactivation(fixture.paths()), { code: "CONFIGURATION_SUSPENSION_CONFLICT" });
+      await assert.rejects(inventoryManagedConfigReactivation(fixture.paths()), { code: "CONFIGURATION_SUSPENSION_CONFLICT" });
+      await assert.rejects(uninstallConfig({ ...fixture.paths(), force: true }), { code: "CONFIGURATION_SUSPENSION_CONFLICT" });
+      await assert.rejects(inventoryNativeConfigRestoration(fixture.paths()), { code: "CONFIGURATION_SUSPENSION_CONFLICT" });
+
+      const reactivationReceipt = await inventoryDeactivatedConfigReactivation({ ...fixture.paths(), expectedPreviewToken: preview.previewToken });
+      const installed = await installConfig({ ...options, reactivationReceipt });
+      const activeConfig = await readFile(fixture.configPath, "utf8");
+      const activeState = JSON.parse(await readFile(fixture.statePath));
+      assert.ok(activeConfig.includes(unownedRoot) && activeConfig.includes(unownedTable));
+      assert.doesNotMatch(activeConfig, /private-paused-model|model_provider = "openai"/u);
+      assert.equal(activeState.backupPath, baseline.backupPath);
+      assert.equal(activeState.sourceSha256, baseline.sourceSha256);
+      assert.equal(activeState.providerBaseUrl, baseline.providerBaseUrl);
+      assert.deepEqual(activeState.priorAssignments, baseline.priorAssignments);
+      assert.equal(activeState.installedSha256, undefined);
+      await installed.rollback();
+      assert.equal(await readFile(fixture.configPath, "utf8"), edited);
+      assert.equal((await stat(fixture.configPath)).mode & 0o777, 0o640);
+      assert.deepEqual(await readFile(fixture.statePath), pausedState);
+
+      const retry = await inventoryDeactivatedConfigReactivation({ ...fixture.paths(), expectedPreviewToken: preview.previewToken });
+      await installConfig({ ...options, reactivationReceipt: retry });
+      await uninstallConfig(fixture.paths());
+      const restored = await readFile(fixture.configPath, "utf8");
+      assert.ok(restored.includes(unownedRoot) && restored.includes(unownedTable));
+      assert.equal(restored.includes(originalGateway), original !== undefined);
+      assert.equal((await stat(fixture.configPath)).mode & 0o777, 0o640);
+      assert.deepEqual(await snapshotFile(baseline.backupPath), backup);
+    });
+  }
+});
+
+test("edited paused config cannot adopt a foreign integration or ambiguous historical alias", async (t) => {
+  const fixture = await makeFixture(t);
+  await writeFile(fixture.configPath, 'approval_policy = "on-request"\n');
+  const options = fixture.options();
+  options.modelProvider = options.provider.id = "model_bridge";
+  await installConfig(options);
+  await deactivateManagedConfiguration(fixture.paths());
+  const paused = await readFile(fixture.configPath, "utf8");
+  const state = await snapshotFile(fixture.statePath);
+  const invalidEdits = [
+    'openai_base_url = "http://127.0.0.1:11434/v1"\n' + paused,
+    'model_provider = "foreign"\n' + paused,
+    'model_catalog_json = "/foreign.json"\n' + paused,
+    'profile = "foreign"\n' + paused,
+    'model = "native-one"\nmodel = "native-two"\n' + paused,
+    '"\\u006dodel" = "native"\n' + paused,
+    CONFIG_MARKERS.rootBegin + "\n" + paused,
+    '[model_providers."model_bridge"]\nbase_url = "https://example.invalid/v1"\n' + paused,
+    '[model_providers."openai"]\nbase_url = "https://example.invalid/v1"\n' + paused,
+    paused.replace("127.0.0.1:0/v1", "127.0.0.1:9/v1"),
+    paused.replace("historical-model-bridge-config-existed=true", "historical-model-bridge-config-existed=false"),
+    paused + "# after historical alias\n",
+    Buffer.concat([Buffer.from("# invalid UTF-8 "), Buffer.from([0xff, 0x0a]), Buffer.from(paused)]),
+  ];
+  for (const edited of invalidEdits) {
+    await writeFile(fixture.configPath, edited);
+    const before = await snapshotFile(fixture.configPath);
+    const preview = await previewConfigIntegration(fixture.paths());
+    assert.equal(preview.status, "conflict");
+    assert.equal(preview.canApply, false);
+    assert.equal((await getConfigStatus(fixture.paths())).healthy, false);
+    await assert.rejects(inventoryDeactivatedConfigReactivation({ ...fixture.paths(), expectedPreviewToken: preview.previewToken }), { name: "ConfigManagerError" });
+    assert.deepEqual(await snapshotFile(fixture.configPath), before);
+    assert.deepEqual(await snapshotFile(fixture.statePath), state);
+  }
+});
+
+test("reactivation review binds paused bytes, mode, and the original backup", async (t) => {
+  const fixture = await makeFixture(t);
+  const options = fixture.options();
+  options.modelProvider = options.provider.id = "model_bridge";
+  await installConfig(options);
+  await deactivateManagedConfiguration(fixture.paths());
+  const before = await snapshotFile(fixture.configPath);
+  const withEdit = (comment) => Buffer.concat([Buffer.from("# " + comment + "\n\n"), before.contents]);
+  await writeFile(fixture.configPath, withEdit("reviewed"));
+  const preview = await previewConfigIntegration(fixture.paths());
+  const expectedPreviewToken = preview.previewToken;
+  const reactivationReceipt = await inventoryDeactivatedConfigReactivation({ ...fixture.paths(), expectedPreviewToken });
+  await writeFile(fixture.configPath, withEdit("changed after review"));
+  await assert.rejects(inventoryDeactivatedConfigReactivation({ ...fixture.paths(), expectedPreviewToken }), { code: "INTEGRATION_PREVIEW_CHANGED" });
+  await assert.rejects(installConfig({ ...options, reactivationReceipt }), { code: "INTEGRATION_PREVIEW_CHANGED" });
+  await writeFile(fixture.configPath, withEdit("reviewed"));
+  const changedMode = before.mode === 0o600 ? 0o640 : 0o600;
+  await chmod(fixture.configPath, changedMode);
+  await assert.rejects(installConfig({ ...options, reactivationReceipt }), { code: "INTEGRATION_PREVIEW_CHANGED" });
+  await chmod(fixture.configPath, before.mode);
+  await assert.rejects(installConfig({ ...options, reactivationReceipt, beforeConfigCommit: () => chmod(fixture.configPath, changedMode) }), { code: "CONFIG_CHANGED_CONCURRENTLY" });
+  assert.equal((await stat(fixture.configPath)).mode & 0o777, changedMode);
+  assert.deepEqual(await readFile(fixture.configPath), withEdit("reviewed"));
+  await chmod(fixture.configPath, before.mode);
+
+  const state = JSON.parse(await readFile(fixture.statePath));
+  await writeFile(state.backupPath, "changed original backup\n");
+  const unverified = await previewConfigIntegration(fixture.paths());
+  assert.equal(unverified.status, "conflict");
+  assert.equal(unverified.canApply, false);
+  await assert.rejects(inventoryDeactivatedConfigReactivation({ ...fixture.paths(), expectedPreviewToken }), { code: "BACKUP_MISMATCH" });
+  await assert.rejects(installConfig({ ...options, reactivationReceipt }), { code: "MANAGED_FILE_CHANGED" });
+});
+
+test("reviewed reactivation restores the exact paused configuration if the receipt cannot be committed", async (t) => {
+  const fixture = await makeFixture(t);
+  const options = fixture.options();
+  options.modelProvider = options.provider.id = "model_bridge";
+  await installConfig(options);
+  await deactivateManagedConfiguration(fixture.paths());
+  const paused = "# edited while paused\n\n" + await readFile(fixture.configPath, "utf8");
+  await writeFile(fixture.configPath, paused);
+  const configBefore = await snapshotFile(fixture.configPath);
+  const stateBefore = await snapshotFile(fixture.statePath);
+  const preview = await previewConfigIntegration(fixture.paths());
+  const reactivationReceipt = await inventoryDeactivatedConfigReactivation({
+    ...fixture.paths(), expectedPreviewToken: preview.previewToken,
+  });
+  const stateDirectory = join(fixture.directory, "state");
+  try {
+    await assert.rejects(installConfig({
+      ...options, reactivationReceipt, beforeConfigCommit: () => chmod(stateDirectory, 0o500),
+    }), (error) => error.code === "INSTALL_FAILED" && error.cause?.code === "EACCES" &&
+      dirname(error.cause.path) === stateDirectory);
+    assert.equal((await stat(stateDirectory)).mode & 0o777, 0o500);
+  } finally {
+    await chmod(stateDirectory, 0o700);
+  }
+  assert.deepEqual(await snapshotFile(fixture.statePath), stateBefore);
+  const rolledBack = await snapshotFile(fixture.configPath);
+  assert.deepEqual(rolledBack.contents, configBefore.contents);
+  assert.equal(rolledBack.mode, configBefore.mode);
+
+  const installed = await installConfig({ ...options, reactivationReceipt });
+  const active = await readFile(fixture.configPath);
+  const differentMode = configBefore.mode === 0o600 ? 0o640 : 0o600;
+  await chmod(fixture.configPath, differentMode);
+  await assert.rejects(installed.rollback(), { code: "CONFIG_CHANGED_CONCURRENTLY" });
+  assert.deepEqual(await readFile(fixture.configPath), active);
+  assert.equal((await stat(fixture.configPath)).mode & 0o777, differentMode);
+  await chmod(fixture.configPath, configBefore.mode);
+  await installed.rollback();
+  assert.equal(await readFile(fixture.configPath, "utf8"), paused);
+  assert.deepEqual(await readFile(fixture.statePath), stateBefore.contents);
 });
 
 test("native uninstall resets recorded picker fields for active and OFF baselines without restoring Ollama", async (t) => {

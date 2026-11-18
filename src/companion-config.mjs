@@ -118,12 +118,17 @@ export async function readCompanionPrivateFile({ paths, kind, allowMissing = fal
   }
 }
 
-export async function loadCompanionServiceConfig({ paths, allowMissing = false } = {}) {
+export async function readCompanionServiceConfigSnapshot({ paths, allowMissing = false } = {}) {
   const bytes = await readCompanionPrivateFile({ paths, kind: "service-config", allowMissing });
   if (bytes === null) return null;
   try {
-    return validateBridgeConfig(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)));
+    const config = validateBridgeConfig(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)));
+    return { config, bytes };
   } catch {
     throw failure();
   }
+}
+
+export async function loadCompanionServiceConfig(options) {
+  return (await readCompanionServiceConfigSnapshot(options))?.config ?? null;
 }

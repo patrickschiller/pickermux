@@ -14,6 +14,20 @@ The 0.23.x and 0.24.x entries are local milestones included in the public
 
 ## [Unreleased]
 
+## [0.41.0] - 2026-11-18
+
+### Fixed
+
+- Let the menu-bar app review a backend upgrade when an older installed
+  backend reports an integration conflict after Codex settings changed
+  while PickerMux was off. The new bundled backend must verify the retained
+  installation and provide a fresh preview before the user can confirm.
+- Reactivate a verified switched-off installation after reviewing native
+  picker settings that PickerMux will manage again. Preserve unrelated
+  Codex settings, the configured providers, retained runtime identity and
+  the original uninstall baseline. Ambiguous routing, changed ownership
+  evidence and stale previews still block activation.
+
 ## [0.40.3] - 2026-10-27
 
 ### Changed
@@ -1193,7 +1207,8 @@ confirm the release date before tagging. See the
   paths and file types, refuses root execution and foreign launchers, and
   restores the previous distribution state when activation fails.
 
-[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.40.3...HEAD
+[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.41.0...HEAD
+[0.41.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.41.0
 [0.40.3]: https://github.com/patrickschiller/pickermux/releases/tag/v0.40.3
 [0.40.2]: https://github.com/patrickschiller/pickermux/releases/tag/v0.40.2
 [0.40.1]: https://github.com/patrickschiller/pickermux/releases/tag/v0.40.1

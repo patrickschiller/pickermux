@@ -52,7 +52,7 @@ import {
 import { isCodexDesktopRunning, openCodexDesktop } from "./codex-desktop-state.mjs";
 import { executeCompanionAction } from "./companion-actions.mjs";
 import { runCompanionCli } from "./companion-cli.mjs";
-import { loadCompanionServiceConfig } from "./companion-config.mjs";
+import { loadCompanionServiceConfig, readCompanionPrivateFile, readCompanionServiceConfigSnapshot } from "./companion-config.mjs";
 import { CompanionControlError, COMPANION_UNINSTALL_CHANGES, collectCompanionStatus, createCompanionReadOnlyProbes } from "./companion-control.mjs";
 import { applyCompanionUpdate, checkForCompanionUpdate } from "./companion-update.mjs";
 import { BUNDLED_LMSTUDIO_CONFIG_FILE, previewBundledLmStudioSetup } from "./native-only-setup.mjs";
@@ -229,6 +229,8 @@ Companion schema 1 advertises integration-toggle-v1. configuration-apply require
 its previewToken and replaceIntegration:true; integration-deactivate requires
 deactivateIntegration:true. Deactivation retains setup, historical aliases and
 private runtime identity for confirmed reactivation without full-refresh purge.
+If the native configuration changed while PickerMux was off, review a fresh
+configuration preview before applying; setup without that confirmation stops.
 Companion status advertises token-usage-v2: per-provider input, output and
 total tokens for the last model request and private saved totals since reset.
 Config resets accumulated counts through usage-reset with exact
@@ -636,17 +638,29 @@ async function rollbackInstallation({
       failures.push(error);
     }
   }
-  if (failures.length > 0) {
-    throw new Error(
-      `PickerMux installation failed and rollback was incomplete. Original: ${cause.message}; rollback: ${failures.map((error) => error.message).join("; ")}`,
+  if (failures.length > 0 || cause?.code === "CONFIG_REACTIVATION_ROLLBACK_FAILED") {
+    const additionalFailures = failures.length > 0
+      ? `; rollback: ${failures.map((error) => error.message).join("; ")}`
+      : "";
+    const error = new Error(
+      `PickerMux installation failed and rollback was incomplete. Original: ${cause.message}${additionalFailures}`,
       { cause: new AggregateError([cause, ...failures]) },
     );
+    if (previousRuntime) error.code = "REACTIVATION_ROLLBACK_FAILED";
+    throw error;
   }
   throw new Error(`PickerMux installation failed; all managed changes were rolled back: ${cause.message}`, { cause });
 }
 
+function isDeactivatedConfiguration(status) {
+  return ["deactivated", "deactivated-changed"].includes(status?.status);
+}
+
 export async function resolveIntegrationReactivationRuntime({ paths, status, reactivationReceipt, runtimeImpl = readRuntime } = {}) {
-  if (status?.status !== "deactivated") return createRuntimeRecord({ configPath: paths.serviceConfigPath });
+  if (!isDeactivatedConfiguration(status)) {
+    if (reactivationReceipt && status?.status !== "suspended") throw new CompanionControlError("CONFIGURATION_CONFLICT");
+    return createRuntimeRecord({ configPath: paths.serviceConfigPath });
+  }
   if (!reactivationReceipt) throw new CompanionControlError("CONFIGURATION_CONFLICT");
   const runtime = await runtimeImpl(paths.runtimePath);
   if (path.resolve(runtime.configPath) !== path.resolve(paths.serviceConfigPath)) throw new CompanionControlError("CONFIGURATION_CONFLICT");
@@ -668,14 +682,16 @@ async function install({
   sourceRoot = projectRoot,
   integrationSwitchReceipt,
   reactivationReceipt,
+  expectedServiceConfig,
   beforeConfigCommit = async () => {},
 }) {
   assertRuntimeCompressionSupport();
   assertPersistentCredentialSupport(config);
-  const existing = await getConfigStatus({ configPath: paths.configPath, statePath: paths.statePath });
+  const configurationPaths = { configPath: paths.configPath, statePath: paths.statePath, backupDirectory: paths.backupDirectory };
+  const existing = await getConfigStatus(configurationPaths);
   if (existing.installed) throw new Error(`PickerMux is already installed (${existing.status})`);
   if (!reactivationReceipt) {
-    const preview = await previewConfigIntegration({ configPath: paths.configPath, statePath: paths.statePath });
+    const preview = await previewConfigIntegration(configurationPaths);
     if (!preview.canApply || (["ollama", "foreign"].includes(preview.status) && !integrationSwitchReceipt)) throw new CompanionControlError("CONFIGURATION_CONFLICT");
   }
 
@@ -684,7 +700,7 @@ async function install({
     `.models.install-${process.pid}-${randomUUID()}.json`,
   );
   const runtime = await resolveIntegrationReactivationRuntime({ paths, status: existing, reactivationReceipt });
-  const previousRuntime = existing.status === "deactivated" ? runtime : undefined;
+  const previousRuntime = isDeactivatedConfiguration(existing) ? runtime : undefined;
   let serviceStarted = false;
   let configInstalled = false;
   let configRollback;
@@ -728,7 +744,16 @@ async function install({
       sourceRoot,
       installDirectory: paths.installDirectory,
       config,
+      expectedServiceConfig,
+      beforeServiceConfigCommit: expectedServiceConfig === undefined ? undefined : beforeConfigCommit,
     });
+    const assertActivationAllowed = async () => {
+      await beforeConfigCommit();
+      if (expectedServiceConfig !== undefined) {
+        const current = await readCompanionPrivateFile({ paths, kind: "service-config" });
+        if (!current.equals(servicePackage.committedServiceConfig)) throw new CompanionControlError("CONFIGURATION_CONFLICT");
+      }
+    };
     await writeCatalogAtomic(paths.catalogPath, built.catalog);
     catalogPromoted = true;
     await writeCompatibilityManifest(
@@ -750,12 +775,17 @@ async function install({
       workingDirectory: servicePackage.serviceDirectory,
       nodePath: resolveLaunchAgentNodePath(),
       runtime,
-      preserveRuntime: existing.status === "deactivated",
-      beforeBootstrap: beforeConfigCommit,
+      preserveRuntime: isDeactivatedConfiguration(existing),
+      beforeBootstrap: assertActivationAllowed,
     });
     serviceStarted = true;
     assertBridgeWebSearchCompatibility(started.health);
-    const installed = await installConfig({ ...installationOptions({ config, paths, runtime }), integrationSwitchReceipt, reactivationReceipt, beforeConfigCommit });
+    const installed = await installConfig({
+      ...installationOptions({ config, paths, runtime }),
+      integrationSwitchReceipt,
+      reactivationReceipt,
+      beforeConfigCommit: assertActivationAllowed,
+    });
     configInstalled = true;
     configRollback = installed.rollback;
 
@@ -2089,7 +2119,7 @@ async function suspendPickerMuxIntegration({
   }
 
   if (deactivation && (!status.installed || !["installed", "installed-marker-recovered"].includes(status.status))) throw new CompanionControlError("CONFIGURATION_CONFLICT");
-  if (!deactivation && status.status === "deactivated") throw new CompanionControlError("CONFIGURATION_CONFLICT");
+  if (!deactivation && isDeactivatedConfiguration(status)) throw new CompanionControlError("CONFIGURATION_CONFLICT");
   if (!status.installed) {
     const service = await stopServiceImpl({
       runtimePath: paths.runtimePath,
@@ -2257,7 +2287,7 @@ export async function reactivatePickerMuxAfterFullRefresh({
       `PickerMux full refresh refuses inconsistent integration state (${status.status ?? "unknown"})`,
     );
   }
-  if (status.status === "deactivated") throw new CompanionControlError("CONFIGURATION_CONFLICT");
+  if (isDeactivatedConfiguration(status)) throw new CompanionControlError("CONFIGURATION_CONFLICT");
   if (!status.installed) {
     const reactivationReceipt = status.status === "suspended"
       ? await reactivationImpl({ configPath: paths.configPath, statePath: paths.statePath, backupDirectory: paths.backupDirectory })
@@ -2979,6 +3009,7 @@ async function scheduleFullRefreshLocked({
       `PickerMux full refresh refuses inconsistent integration state (${status.status ?? "unknown"})`,
     );
   }
+  if (isDeactivatedConfiguration(status)) throw new CompanionControlError("CONFIGURATION_CONFLICT");
   const runtimeInventory = await inventoryRuntimeImpl({
     serviceDirectory: paths.serviceDirectory,
     sourceRoot: distribution.activeDirectory,
@@ -3327,6 +3358,7 @@ export async function setupPickerMux({
   reactivationImpl = inventoryDeactivatedConfigReactivation,
   onProgress,
   integrationSwitchReceipt,
+  expectedReactivationPreviewToken,
   configurationPreflightImpl = async () => {},
   assertNoPendingFullRefreshImpl = async () => null,
 } = {}) {
@@ -3342,10 +3374,8 @@ export async function setupPickerMux({
   const fixedSetupConfig = setupConfig === undefined
     ? undefined
     : validateBridgeConfig(setupConfig);
-  const initialStatus = await configStatusImpl({
-    configPath: paths.configPath,
-    statePath: paths.statePath,
-  });
+  const configurationPaths = { configPath: paths.configPath, statePath: paths.statePath, backupDirectory: paths.backupDirectory };
+  const initialStatus = await configStatusImpl(configurationPaths);
   if (initialStatus.healthy !== true) {
     const recovery = initialStatus.status === "modified"
       ? " Fully quit Codex, review ~/.codex/config.toml, privately save intentional edits, then use the receipt-active CLI to run 'pickermux uninstall --force' only if PickerMux's recorded configuration should be removed. Open Codex once without PickerMux to refresh its signed-in model cache, quit it with Command-Q, and rerun the latest PickerMux release installer."
@@ -3363,7 +3393,7 @@ export async function setupPickerMux({
     );
   }
   if (!initialStatus.installed) {
-    const preview = await previewConfigIntegration({ configPath: paths.configPath, statePath: paths.statePath });
+    const preview = await previewConfigIntegration(configurationPaths);
     if (!preview.canApply || (["ollama", "foreign"].includes(preview.status) && !integrationSwitchReceipt)) throw new CompanionControlError("CONFIGURATION_CONFLICT");
   }
   await configurationPreflightImpl();
@@ -3428,15 +3458,24 @@ export async function setupPickerMux({
     }
   };
   await assertAccountCacheReady({ allowMarkerRepair: true });
-  const reactivationReceipt = initialStatus.status === "deactivated"
-    ? await reactivationImpl({ configPath: paths.configPath, statePath: paths.statePath, backupDirectory: paths.backupDirectory })
+  const reactivating = isDeactivatedConfiguration(initialStatus);
+  const reactivationReceipt = reactivating
+    ? await reactivationImpl({
+      ...configurationPaths,
+      ...(expectedReactivationPreviewToken === undefined ? {} : { expectedPreviewToken: expectedReactivationPreviewToken }),
+    })
     : undefined;
   const effectiveConfigPath = setupConfigPath
     ? path.resolve(setupConfigPath)
-    : initialStatus.installed || initialStatus.status === "deactivated"
+    : initialStatus.installed || reactivating
       ? paths.serviceConfigPath
       : path.join(path.resolve(sourceRoot), "lmstudio-picker.config.json");
-  const loadEffectiveConfig = () => fixedSetupConfig ?? loadConfigImpl(effectiveConfigPath);
+  const pausedWithEdits = initialStatus.status === "deactivated-changed";
+  if (pausedWithEdits && (setupConfigPath !== undefined || fixedSetupConfig !== undefined)) {
+    throw new CompanionControlError("CONFIGURATION_CONFLICT");
+  }
+  const retainedConfig = pausedWithEdits ? await readCompanionServiceConfigSnapshot({ paths }) : undefined;
+  const loadEffectiveConfig = () => retainedConfig?.config ?? fixedSetupConfig ?? loadConfigImpl(effectiveConfigPath);
   const preflightConfig = await loadEffectiveConfig();
   let discovery;
   try {
@@ -3459,7 +3498,7 @@ export async function setupPickerMux({
   const assertActivationAllowed = async () => {
     await assertNoPendingFullRefreshImpl();
     await configurationPreflightImpl();
-    const status = await configStatusImpl({ configPath: paths.configPath, statePath: paths.statePath });
+    const status = await configStatusImpl(configurationPaths);
     if (status.healthy !== true || status.installed !== initialStatus.installed || status.status !== initialStatus.status) throw new CompanionControlError("CONFIGURATION_CONFLICT");
     await assertAccountCacheReady();
     await assertNoPendingFullRefreshImpl();
@@ -3473,11 +3512,9 @@ export async function setupPickerMux({
     async beforeControlCommit() {
       await assertNoPendingFullRefreshImpl();
       await configurationPreflightImpl();
-      const status = await configStatusImpl({
-        configPath: paths.configPath,
-        statePath: paths.statePath,
-      });
-      if (status.healthy !== true || status.installed !== initialStatus.installed) {
+      const status = await configStatusImpl(configurationPaths);
+      if (status.healthy !== true || status.installed !== initialStatus.installed ||
+        (reactivating && status.status !== initialStatus.status)) {
         throw new Error("PickerMux integration state changed concurrently during setup");
       }
       if (await desktopRunningImpl()) {
@@ -3489,16 +3526,13 @@ export async function setupPickerMux({
     },
     async activate({ distributionRoot, previousVersion, version }) {
       await configurationPreflightImpl();
-      const status = await configStatusImpl({
-        configPath: paths.configPath,
-        statePath: paths.statePath,
-      });
+      const status = await configStatusImpl(configurationPaths);
       if (status.healthy !== true) {
         throw new Error(
           `PickerMux setup refuses inconsistent integration state (${status.status ?? "unknown"})`,
         );
       }
-      if (status.installed !== initialStatus.installed) {
+      if (status.installed !== initialStatus.installed || (reactivating && status.status !== initialStatus.status)) {
         throw new Error("PickerMux integration state changed concurrently during setup");
       }
       if (await desktopRunningImpl()) {
@@ -3533,6 +3567,7 @@ export async function setupPickerMux({
         sourceRoot: distributionRoot,
         integrationSwitchReceipt,
         ...(reactivationReceipt ? { reactivationReceipt } : {}),
+        ...(retainedConfig ? { expectedServiceConfig: retainedConfig.bytes } : {}),
         beforeConfigCommit: assertActivationAllowed,
       });
       return { action: "install", integration: result };
@@ -3677,9 +3712,10 @@ export async function runPickerMuxCompanion(argv, {
       const integrationSwitchReceipt = ["ollama", "foreign"].includes(preview.status)
         ? await inventoryConfigIntegrationSwitch({ ...configurationPaths, expectedPreviewToken: request.previewToken })
         : undefined;
-      const result = await setupPickerMux({
+      const result = await setupImpl({
         sourceRoot, paths, distributionPaths, codexPath,
         integrationSwitchReceipt,
+        expectedReactivationPreviewToken: request.previewToken,
         configurationPreflightImpl: assertPreview,
         assertNoPendingFullRefreshImpl: noRecovery,
         onProgress: certificationProgress(onProgress),

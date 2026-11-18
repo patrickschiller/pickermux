@@ -64,6 +64,12 @@ Then fully quit Codex and confirm the offered backend upgrade, or use
 **Config → Update installed backend…**. App and backend versions are separate;
 the backend upgrade preserves provider settings.
 
+If Codex settings changed while PickerMux was off and the older backend
+reports an integration conflict, use **Config → Update installed backend…**
+in the new app with Codex fully closed. Review which native picker settings
+PickerMux will manage again, then confirm to update and re-enable it. See the
+[reactivation troubleshooting guide](docs/TROUBLESHOOTING.md#codex-settings-changed-while-pickermux-was-off).
+
 If an earlier setup has no external providers, **Config → Enable LM Studio
 models…** offers a reviewed migration. Keep Codex closed and an LM Studio model
 loaded. Existing external-provider configurations are never replaced by this

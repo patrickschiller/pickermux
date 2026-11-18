@@ -188,6 +188,18 @@ public struct ConfigurationPreview: Decodable {
   public let canApply: Bool
   public let changes: [String]
   public let requiresConfirmation: Bool
+
+  var reviewsPausedConfigurationChanges: Bool {
+    changes.contains("review-paused-config-changes")
+  }
+
+  var pausedPickerSettings: [String] {
+    [("replace-paused-native-model", "model"),
+     ("replace-paused-native-provider", "model provider"),
+     ("replace-paused-native-reasoning-effort", "reasoning effort")].compactMap { code, label in
+      changes.contains(code) ? label : nil
+    }
+  }
 }
 
 public struct LMStudioDefaultPreview: Decodable, Equatable {
@@ -325,6 +337,13 @@ public struct CompanionResult: Decodable {
             preview.previewToken.map({ $0.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil }) ?? true,
             !preview.canApply || preview.previewToken != nil
       else { throw CompanionFailure.incompatibleProtocol }
+      if preview.reviewsPausedConfigurationChanges {
+        guard preview.status == "none", preview.canApply, preview.requiresConfirmation,
+              Set(preview.changes).count == preview.changes.count
+        else { throw CompanionFailure.incompatibleProtocol }
+      } else if !preview.pausedPickerSettings.isEmpty {
+        throw CompanionFailure.incompatibleProtocol
+      }
     }
     if let fields = object["data"] as? [String: Any],
        fields["action"] as? String == CompanionAction.lmStudioDefaultPreview.rawValue {
@@ -484,6 +503,7 @@ public func statusLabel(_ value: String) -> String {
     "native-opened": "Waiting for Codex account cache", "cache-refreshed": "Account cache refreshed",
     "second-quit-complete": "Restoring picker", "reactivated": "Picker restored",
     "inactive": "PickerMux is off", "deactivated": "Turned off",
+    "deactivated-changed": "Turned off, configuration changed",
   ]
   return labels[value] ?? "Needs review"
 }
@@ -518,6 +538,7 @@ public func companionActionFailureMessage(_ code: String) -> String {
     "NO_LOADED_MODELS": "No loaded model was found during setup. Load a model on the configured server, then retry setup.",
     "DEACTIVATION_FAILED": "PickerMux could not be turned off. Check status in Config before retrying; review the installation in Help.",
     "DEACTIVATION_ROLLBACK_FAILED": "Turning PickerMux off could not finish or fully restore its prior state. Check status in Config and review the pending repair in Help before changing it again.",
+    "REACTIVATION_ROLLBACK_FAILED": "PickerMux could not restore the paused configuration after reactivation failed. Keep Codex closed and check status in Config before retrying.",
     "UNINSTALL_CONFLICT": "The installation changed since the removal review. Keep Codex closed, check status in Config and review a fresh removal preview. Modified or foreign files are retained.",
     "UNINSTALL_PREFLIGHT_FAILED": "PickerMux could not verify all removal ownership. Keep the app installed and review the CLI installation before retrying.",
     "PURGE_INCOMPLETE": "Complete removal could not finish. Some registered credentials or files may already be removed. Keep the app installed for an explicit retry; Codex data is preserved.",

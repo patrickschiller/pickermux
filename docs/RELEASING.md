@@ -6,7 +6,7 @@ an external prerequisite. Earlier CLI archive releases remain available at
 their immutable version-pinned URLs. PickerMux is not published to npm.
 
 The maintainer tested the 0.30.0 candidate and authorized PR merge, tagging,
-and publication on 6 October 2026. The commands below use the 0.40.3 candidate;
+and publication on 6 October 2026. The commands below use the 0.41.0 candidate;
 every production signing and verification gate still applies.
 
 ## Preflight
@@ -46,7 +46,7 @@ https://github.com/patrickschiller/pickermux/releases/latest/download/PickerMux-
 The release tag still makes a download immutable:
 
 ```text
-https://github.com/patrickschiller/pickermux/releases/download/v0.40.3/PickerMux-macos-universal.dmg
+https://github.com/patrickschiller/pickermux/releases/download/v0.41.0/PickerMux-macos-universal.dmg
 ```
 
 The build retains its versioned DMG, app archive, backend manifest, companion
@@ -69,9 +69,9 @@ key available to `codesign`; the profile must already be usable by `notarytool`.
 Use fresh output directories, since the tools refuse to replace existing ones:
 
 ```bash
-node scripts/build-companion.mjs --release --output /tmp/pickermux-signed-0.40.3
-node scripts/prepare-dmg-release.mjs --source /tmp/pickermux-signed-0.40.3 --output /tmp/pickermux-public-0.40.3 --tag v0.40.3
-node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.40.3 --tag v0.40.3
+node scripts/build-companion.mjs --release --output /tmp/pickermux-signed-0.41.0
+node scripts/prepare-dmg-release.mjs --source /tmp/pickermux-signed-0.41.0 --output /tmp/pickermux-public-0.41.0 --tag v0.41.0
+node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.41.0 --tag v0.41.0
 ```
 
 The release builder signs and notarizes the app and DMG separately, staples
@@ -121,8 +121,8 @@ maintainer's Mac when using the local production route.
 After the exact approved commit is on main and all gates are ready:
 
 ```bash
-git tag -a v0.40.3 -m "PickerMux v0.40.3"
-git push origin v0.40.3
+git tag -a v0.41.0 -m "PickerMux v0.41.0"
+git push origin v0.41.0
 ```
 
 Watch the workflow through publication. If a candidate is wrong, fix the
@@ -146,10 +146,10 @@ production signing requirements above remain mandatory.
    replace its assets.
 
 ```bash
-node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.40.3 --tag v0.40.3
-gh release create v0.40.3 /tmp/pickermux-public-0.40.3/PickerMux-macos-universal.dmg \
-  --verify-tag --title "PickerMux v0.40.3" \
-  --notes-file /tmp/pickermux-public-0.40.3/release-notes.md
+node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.41.0 --tag v0.41.0
+gh release create v0.41.0 /tmp/pickermux-public-0.41.0/PickerMux-macos-universal.dmg \
+  --verify-tag --title "PickerMux v0.41.0" \
+  --notes-file /tmp/pickermux-public-0.41.0/release-notes.md
 ```
 
 Complete the independent public-download verification below before announcing
@@ -178,6 +178,30 @@ pinned backend upgrades through the existing setup transaction, preserving
 installed provider settings. Cancellation and failed activation must retain
 usable prior state; ordinary removal and deactivation continue using the
 validated installed backend.
+
+## 0.41.0 paused integration recovery acceptance
+
+Use an isolated configuration and retained installation fixture to exercise
+changes made while the PickerMux integration is off. Verify a fresh, confirmed
+preview identifies native model, provider and reasoning settings that
+activation will manage again. Check that setup preserves unrelated Codex
+settings, provider configuration, the retained runtime identity and the
+original picker restoration baseline. Exercise cancellation, changed aliases
+and backup evidence, foreign and ambiguous routing, full refresh, stale
+previews, concurrent edits and rollback.
+
+The companion tests cover the manually initiated **Config → Update installed
+backend…** review when an older installed backend reports a suspension
+conflict. The verified bundled backend must identify the eligible paused
+state before offering the preview. Check that both the current integration
+toggle and the legacy upgrade path require confirmation and that a failed or
+cancelled review leaves the integration off. This release does not change the
+production signing or notarization procedure.
+
+Verify updater recognition from 0.40.3 and complete the signed build and
+public download checks described above. Native menu launch and a real
+installed-backend upgrade remain distinct from the deterministic tests and
+require an explicitly authorized target.
 
 ## 0.40.3 native Guardian failure diagnostics acceptance
 

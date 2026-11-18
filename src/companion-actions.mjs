@@ -9,6 +9,7 @@ const RECEIPT_ACTIVE_ONLY = new Set(["lmstudio-default-preview", "lmstudio-defau
 function unavailable(snapshot, action) {
   if (snapshot.recovery.status === "pending") return "RECOVERY_PENDING";
   if (STOPPED_DESKTOP.has(action) && snapshot.desktop.status === "running") return "CODEX_RUNNING";
+  if (snapshot.managedConfig.status === "deactivated-changed" && ["uninstall", "uninstall-preview"].includes(action)) return "CONFIGURATION_CONFLICT";
   if (["modified", "inconsistent", "invalid-state", "unreadable-config", "orphaned-managed-block", "suspension-conflict", "integration-conflict"].includes(snapshot.managedConfig.status) || snapshot.integration.status === "conflict") return "CONFIGURATION_CONFLICT";
   if (["uninstall", "uninstall-preview"].includes(action)) return "UNINSTALL_PREFLIGHT_FAILED";
   if (snapshot.accountCache.status === "refresh-required") return "ACCOUNT_CACHE_REFRESH_REQUIRED";

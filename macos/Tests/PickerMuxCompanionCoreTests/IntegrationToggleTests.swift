@@ -111,6 +111,64 @@ final class IntegrationToggleTests: XCTestCase {
     XCTAssertFalse(IntegrationToggleState(snapshot: client.snapshotValue).isEnabled)
   }
 
+  func testPausedConfigurationChangesRequireReviewEvenForAnExplicitToggle() async throws {
+    let value = try snapshot(changes: ["managedConfig": ["status": "deactivated-changed"]])
+    let state = IntegrationToggleState(snapshot: value)
+    XCTAssertFalse(state.isEnabled)
+    XCTAssertTrue(state.canChange)
+    XCTAssertTrue(state.guidance.contains("review"))
+
+    let client = ToggleClient(snapshot: value)
+    client.previewResult = try pausedConfigurationPreview()
+    let declined = try await changePickerMuxIntegration(true, client: client, consent: .toggleIntent) { review in
+      XCTAssertTrue(review.text.contains("model, model provider, reasoning effort"))
+      XCTAssertTrue(review.text.contains("other Codex changes"))
+      XCTAssertTrue(review.text.contains("original picker settings"))
+      return false
+    }
+    guard case .cancelled = declined else { return XCTFail("Declining review must leave the integration paused") }
+    XCTAssertEqual(client.calls.map(\.action), [.configurationPreview])
+
+    let accepted = try await changePickerMuxIntegration(true, client: client, consent: .toggleIntent) { _ in true }
+    guard case .completed(let result) = accepted else { return XCTFail("Reviewed activation should complete") }
+    XCTAssertTrue(result.ok)
+    XCTAssertEqual(client.calls.map(\.action), [.configurationPreview, .configurationPreview, .configurationApply])
+    XCTAssertEqual(client.calls.last?.confirmed, true)
+    XCTAssertEqual(client.calls.last?.previewToken, String(repeating: "b", count: 64))
+  }
+
+  func testStatusAndPreviewMustAgreeAboutPausedConfigurationChanges() async throws {
+    let paused = ToggleClient(snapshot: try snapshot(changes: ["managedConfig": ["status": "deactivated-changed"]]))
+    let unchanged = ToggleClient(snapshot: try snapshot())
+    unchanged.previewResult = try pausedConfigurationPreview()
+    for client in [paused, unchanged] {
+      let result = try await changePickerMuxIntegration(true, client: client, consent: .toggleIntent) { _ in
+        XCTFail("A changed preview must be rechecked before confirmation")
+        return true
+      }
+      guard case .blocked = result else { XCTFail("Mismatched status and preview must remain blocked"); continue }
+      XCTAssertEqual(client.calls.map(\.action), [.configurationPreview])
+    }
+  }
+
+  func testPausedConfigurationPreviewRequiresNativeStatusAndExplicitConsent() throws {
+    XCTAssertNoThrow(try pausedConfigurationPreview())
+    XCTAssertThrowsError(try pausedConfigurationPreview(status: "foreign"))
+    XCTAssertThrowsError(try pausedConfigurationPreview(requiresConfirmation: false))
+    XCTAssertThrowsError(try pausedConfigurationPreview(changes: ["replace-paused-native-model"]))
+    XCTAssertThrowsError(try pausedConfigurationPreview(changes: ["review-paused-config-changes", "review-paused-config-changes"]))
+  }
+
+  private func pausedConfigurationPreview(status: String = "none", requiresConfirmation: Bool = true,
+      changes: [String] = ["review-paused-config-changes", "replace-paused-native-model", "replace-paused-native-provider",
+                           "replace-paused-native-reasoning-effort"]) throws -> CompanionResult {
+    try CompanionResult.decode(JSONSerialization.data(withJSONObject: [
+      "schemaVersion": 1, "ok": true, "code": "COMPLETE",
+      "data": ["status": status, "canApply": true, "requiresConfirmation": requiresConfirmation,
+               "changes": changes, "previewToken": String(repeating: "b", count: 64)],
+    ]))
+  }
+
   func testExplicitOffToggleIsExactConsentAndDoesNotRequestModalReview() async throws {
     let client = ToggleClient(snapshot: try snapshot(active: true))
     let outcome = try await changePickerMuxIntegration(false, client: client, consent: .toggleIntent) { _ in

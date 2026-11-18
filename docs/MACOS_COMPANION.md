@@ -1,6 +1,6 @@
 # macOS companion
 
-PickerMux 0.40.3 includes a SwiftUI menu-bar app with native macOS controls for inspecting and
+PickerMux 0.41.0 includes a SwiftUI menu-bar app with native macOS controls for inspecting and
 operating the existing PickerMux installation. It requires macOS 13 or newer,
 Apple silicon or Intel, and Node.js 22.15.0 or newer. The supported Node
 locations are `/opt/homebrew/bin/node`, `/usr/local/bin/node`, and
@@ -180,10 +180,14 @@ installation, turning it on obtains a fresh status and configuration preview,
 then automatically installs using that exact preview token. Switching on is
 your explicit consent; there is no second confirmation popup. Setup may
 replace the current integration after a verified backup and send live
-certification test prompts to configured models. On an inactive installation it offers
-reactivation with the retained provider settings. It displays the verified
-backend state after the operation; a cancelled or failed request cannot turn
-the switch on by itself.
+certification test prompts to configured models. On an inactive installation it
+offers reactivation with the retained provider settings. If Codex settings
+changed while PickerMux was off, the verified backend reports
+`deactivated-changed` and the switch opens a confirmation review. The preview
+identifies any existing native model, provider or reasoning setting that
+activation will manage again. Other Codex settings and the original uninstall
+baseline are preserved. The switch displays the verified backend state after
+the operation.
 
 Fully quit Codex before changing the toggle. Setup requires the current native
 account cache and a reachable configured provider with an available external
@@ -494,8 +498,8 @@ integration with Codex stopped. It is available only through the receipt-owned
 installed CLI. The app detects older backends even when both versions are
 labelled 0.9.0; the missing capability marker selects its pinned setup backend
 before any mutation. Confirm setup to upgrade that CLI before deactivating.
-The current 0.40.3 payload installs into its own version directory; the older
-0.9.0 contents are never overwritten to add this feature.
+The current payload installs into its own version directory. This keeps the
+receipt-owned older payload available during the reviewed upgrade.
 
 `usage-reset` requires exactly
 `confirmation: {"resetAccumulatedUsage": true}` and a validated installed
@@ -543,8 +547,11 @@ Quit PickerMux, replace its app from the reviewed DMG, eject the image, and
 reopen the copied app. If its canonical version is newer than the validated
 installed backend, Config offers **Update installed backend**. Keep Codex
 closed, ensure its native account cache is ready, and review the setup change.
-Updating an inactive installation also activates it; the confirmation explains
-that setup can send live model-certification prompts.
+Updating an inactive installation also activates it. The confirmation explains
+that setup can send live model-certification prompts. If a verified older
+backend reports a suspension conflict, use this Config action to check for a
+recoverable paused installation. The newer bundled backend must verify the
+state and obtain a fresh confirmed preview before any change.
 
 Since 0.22.2, the companion automatically presents this existing review after a
 successful status check only when the installed backend is validated and older
@@ -592,8 +599,8 @@ node scripts/build-companion.mjs --output /tmp/pickermux-companion-development
 
 Choose a new output directory for each build; the builder refuses to replace
 one. The output contains `PickerMux.app`,
-`PickerMux-v0.40.3-macos-universal.tar.gz`,
-`PickerMux-v0.40.3-macos-universal.dmg`, `companion-manifest.json`, and
+`PickerMux-v0.41.0-macos-universal.tar.gz`,
+`PickerMux-v0.41.0-macos-universal.dmg`, `companion-manifest.json`, and
 `SHA256SUMS`. The universal binary contains `arm64` and `x86_64` slices
 targeting macOS 13. The manifest distinguishes `unsigned-development`,
 `apple-development` and `developer-id-notarized` artifacts and binds the bundled backend manifest,
