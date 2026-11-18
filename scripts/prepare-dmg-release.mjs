@@ -13,6 +13,11 @@ const HASH = /^[a-f0-9]{64}$/u;
 const ASSETS = [PICKERMUX_DMG_ASSET, "release-notes.md", "SHA256SUMS"];
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const RELEASE_HIGHLIGHTS = Object.freeze({
+  "0.41.0": [
+    "- Fix the menu-bar upgrade path when an older backend reports an integration conflict after Codex settings changed while PickerMux was off. Fully quit Codex, then use **Config → Update installed backend…** to open a review with the verified bundled backend.",
+    "- Reactivate after explicitly reviewing a fresh preview. It lists the native model, provider or reasoning settings that PickerMux will manage again and preserves unrelated Codex settings, retained provider configuration and runtime identity, and the original uninstall baseline.",
+    "- Edited historical aliases, foreign or ambiguous routing, changed ownership evidence, stale previews and pending full refresh still block activation.",
+  ],
   "0.40.3": [
     "- Add fixed REVIEW_* diagnostic markers to projected native Guardian failures, distinguishing HTTP, response-format, stream and completion-validation errors without exposing upstream content or credentials.",
     "- Preserve existing validation, buffering, source authentication and approval rules. Successful native review bytes and ordinary native forwarding remain unchanged.",

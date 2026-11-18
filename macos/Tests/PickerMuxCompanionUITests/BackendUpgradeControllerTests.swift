@@ -81,6 +81,70 @@ final class BackendUpgradeControllerTests: XCTestCase {
     XCTAssertFalse(controller.integrationState.isEnabled)
   }
 
+  func testLegacyPausedConflictCanBeReviewedManuallyWithAValidatedNewerBackend() async throws {
+    let executor = BackendUpdateExecutor()
+    executor.active = false
+    executor.legacyPausedConflict = true
+    var reviews = 0
+    let controller = controller(executor) { review in
+      reviews += 1
+      XCTAssertTrue(review.text.contains("reasoning effort"))
+      return true
+    }
+
+    await controller.refreshStatus()
+    XCTAssertTrue(controller.backendUpgradeAvailable)
+    XCTAssertTrue(controller.canReviewBackendUpgrade)
+    XCTAssertFalse(controller.integrationState.canChange)
+    XCTAssertTrue(controller.integrationState.guidance.contains("Config"))
+    XCTAssertTrue(executor.requests.isEmpty)
+
+    controller.setIntegrationEnabled(true)
+    XCTAssertTrue(executor.requests.isEmpty)
+    controller.setIntegrationEnabled(true, reviewInstalledSetup: true)
+    await settle(controller)
+    await controller.refreshStatus(manual: true)
+    XCTAssertEqual(reviews, 1)
+    XCTAssertEqual(executor.requests.map(\.action), ["configuration-preview", "configuration-apply"])
+    XCTAssertEqual(executor.requests.map(\.source), ["bundled", "bundled"])
+    XCTAssertEqual(controller.snapshot?.version, "0.22.1")
+  }
+
+  func testLegacyConflictCannotApplyWhenThePinnedBackendNoLongerVerifiesThePausedState() async throws {
+    let executor = BackendUpdateExecutor()
+    executor.active = false
+    executor.legacyPausedConflict = true
+    let controller = controller(executor) { _ in
+      executor.bundledCanReviewPausedConfiguration = false
+      return true
+    }
+    await controller.refreshStatus()
+    controller.setIntegrationEnabled(true, reviewInstalledSetup: true)
+    await settle(controller)
+    XCTAssertTrue(controller.operationFailed)
+    XCTAssertEqual(executor.requests.map(\.action), ["configuration-preview"])
+    XCTAssertEqual(executor.installedVersion, "0.22.0")
+  }
+
+  func testLegacyPausedReviewRequiresAClearDesktopAndRecoveryStatus() async throws {
+    let executor = BackendUpdateExecutor()
+    executor.active = false
+    executor.legacyPausedConflict = true
+    let controller = controller(executor) { _ in XCTFail("Blocked states cannot request consent"); return true }
+    executor.desktop = "running"
+    await controller.refreshStatus()
+    XCTAssertFalse(controller.canReviewBackendUpgrade)
+    executor.desktop = "stopped"
+    executor.recovery = "pending"
+    await controller.refreshStatus()
+    XCTAssertFalse(controller.canReviewBackendUpgrade)
+    executor.recovery = "idle"
+    executor.managedConflictStatus = "modified"
+    await controller.refreshStatus()
+    XCTAssertFalse(controller.canReviewBackendUpgrade)
+    XCTAssertTrue(executor.requests.isEmpty)
+  }
+
   func testManualReviewConsumesTheAutomaticOfferForTheSameSession() async throws {
     let executor = BackendUpdateExecutor()
     executor.desktop = "running"
@@ -144,6 +208,10 @@ private final class BackendUpdateExecutor: CompanionExecuting {
   var desktop = "stopped"
   var installedVersion = "0.22.0"
   var active = true
+  var legacyPausedConflict = false
+  var bundledCanReviewPausedConfiguration = true
+  var managedConflictStatus = "suspension-conflict"
+  var recovery = "idle"
   var applyFailure = false
   var requests = [Request]()
 
@@ -152,15 +220,18 @@ private final class BackendUpdateExecutor: CompanionExecuting {
   }
 
   private func statusData(bundled: Bool) throws -> Data {
-    try JSONSerialization.data(withJSONObject: [
+    let conflict = legacyPausedConflict && (!bundled || !bundledCanReviewPausedConfiguration)
+    let managedStatus = conflict ? managedConflictStatus : active ? "installed" :
+      legacyPausedConflict ? "deactivated-changed" : "deactivated"
+    return try JSONSerialization.data(withJSONObject: [
       "schemaVersion": 1, "version": bundled ? "0.22.1" : installedVersion,
-      "capabilities": ["integration-toggle-v1"], "state": active ? "ready" : "inactive",
+      "capabilities": ["integration-toggle-v1"], "state": conflict ? "configuration-conflict" : active ? "ready" : "inactive",
       "desktop": ["status": desktop], "installation": ["status": "installed"],
-      "managedConfig": ["status": active ? "installed" : "deactivated"],
+      "managedConfig": ["status": managedStatus],
       "service": ["status": active ? "running" : "stopped"],
       "compatibility": ["status": "compatible"], "accountCache": ["status": "ready"],
-      "recovery": ["status": "idle"], "integration": ["status": active ? "pickermux" : "none"],
-      "actions": ["configuration-preview", "configuration-apply", "integration-deactivate"], "issues": [],
+      "recovery": ["status": recovery], "integration": ["status": conflict ? "conflict" : active ? "pickermux" : "none"],
+      "actions": conflict ? [] : ["configuration-preview", "configuration-apply", "integration-deactivate"], "issues": [],
     ])
   }
 
@@ -175,11 +246,20 @@ private final class BackendUpdateExecutor: CompanionExecuting {
       token: request["previewToken"] as? String))
     var result: [String: Any] = ["schemaVersion": 1, "ok": true, "code": "COMPLETE"]
     if action == "configuration-preview" {
+      let changes = legacyPausedConflict ? ["review-paused-config-changes", "replace-paused-native-reasoning-effort"] :
+        ["activate-integration"]
       result["data"] = ["status": active ? "pickermux" : "none", "canApply": true,
-        "requiresConfirmation": true, "changes": ["activate-integration"], "previewToken": String(repeating: "b", count: 64)]
+        "requiresConfirmation": true, "changes": changes, "previewToken": String(repeating: "b", count: 64)]
     } else if action == "configuration-apply" {
-      if applyFailure { result["ok"] = false; result["code"] = "PREVIEW_STALE" }
-      else { installedVersion = "0.22.1" }
+      if applyFailure {
+        result["ok"] = false; result["code"] = "PREVIEW_STALE"
+      } else {
+        installedVersion = "0.22.1"
+        if legacyPausedConflict {
+          active = true
+          legacyPausedConflict = false
+        }
+      }
     } else { XCTFail("Unexpected action \(action)") }
     return ProcessOutput(stdout: try JSONSerialization.data(withJSONObject: result), exitCode: 0)
   }

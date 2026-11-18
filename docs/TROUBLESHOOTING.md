@@ -232,6 +232,26 @@ committed installation when certification is incomplete; use the existing
 [certification recovery](#installation-completes-but-model-certification-does-not)
 instead of assuming the old version remains active.
 
+### Codex settings changed while PickerMux was off
+
+After upgrading the app to 0.41.0, fully quit Codex with **Command-Q**. If the
+installed backend is older and reports `suspension-conflict`, choose
+**Config → Update installed backend…**. The new app checks the paused
+installation with its verified bundled backend. If the installed backend
+already reports `deactivated-changed`, turn on **Use PickerMux in Codex** to
+open the review.
+
+The review lists any native model, provider or reasoning setting that PickerMux
+will manage again. If you confirm, setup preserves your other Codex settings
+and the existing provider configuration. Standard CLI uninstall restores the
+original picker settings. Keep your configured provider models available for
+setup and reopen Codex when it finishes.
+
+If the review is unavailable, check status. A changed historical alias,
+ambiguous routing, a changed backup or a pending full refresh requires its
+own recovery. If settings changed after opening the review, check status and
+open a fresh preview.
+
 ## Companion login startup, notifications, or Apple events are denied
 
 An unavailable removal button does not always mean the CLI needs an update.

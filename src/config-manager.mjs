@@ -29,6 +29,11 @@ const MANAGED_KEYS = [
   "model_reasoning_effort",
 ];
 const INTEGRATION_KEYS = [...MANAGED_KEYS, "openai_base_url"];
+const PAUSED_PICKER_REPLACEMENTS = Object.freeze({
+  model: "replace-paused-native-model",
+  model_provider: "replace-paused-native-provider",
+  model_reasoning_effort: "replace-paused-native-reasoning-effort",
+});
 const PICKER_REASONING_EFFORTS = new Set([
   "none",
   "minimal",
@@ -109,7 +114,11 @@ export async function installConfig(options) {
   }
 
   const current = await readConfigFile(configPath);
-  if (reactivation) assertSuspendedConfiguration(current, reactivation.state);
+  const changedDeactivation = reactivation?.changedDeactivation === true;
+  if (reactivation) {
+    assertReactivationPreview(current, configPath, statePath, reactivation.stateFile, reactivation.previewToken);
+    assertSuspendedConfiguration(current, reactivation.state, { allowDeactivatedChanges: changedDeactivation });
+  }
   const integration = inspectRootIntegration(current.text);
   const integrationSwitchReceipt = integrationSwitchReceiptDetails.get(options.integrationSwitchReceipt);
   if (integration.foreign) {
@@ -191,52 +200,70 @@ export async function installConfig(options) {
       ...(webSearch.block ? { webSearch: webSearch.block } : {}),
     },
   };
-  if (reactivation && !reactivation.state.suspension.pristine) {
+  if (reactivation && (changedDeactivation || !reactivation.state.suspension.pristine)) {
     delete state.installedSha256;
   }
   const expectedState = reactivation
     ? { exists: true, sha256: reactivation.stateFile.sha256 }
     : { exists: false, sha256: sha256("") };
   const nextStateBytes = Buffer.from(`${JSON.stringify(state, null, 2)}\n`);
+  const installedBytes = Buffer.from(installedText, "utf8");
+  const beforeConfigCommit = async () => {
+    await settings.beforeConfigCommit?.();
+    if (reactivation) await revalidateManagedConfigOwnership(reactivation.ownership);
+  };
 
-  let configWritten = false;
-  try {
-    await atomicWrite(configPath, installedText, current.mode, {
-      expectedSource: snapshotOf(current),
-      beforeCommit: async () => {
-        if (settings.beforeConfigCommit) await settings.beforeConfigCommit();
-        if (reactivation) await revalidateManagedConfigOwnership(reactivation.ownership);
-        await assertSourceUnchanged(statePath, expectedState);
-      },
-    });
-    configWritten = true;
-    await ensurePrivateDirectory(dirname(statePath));
-    await atomicWrite(statePath, nextStateBytes, 0o600, {
-      expectedSource: expectedState,
-    });
-    await chmod(statePath, 0o600);
-  } catch (error) {
-    if (configWritten) {
-      try {
-        await atomicWrite(configPath, current.bytes, current.mode, {
-          expectedSource: {
-            exists: true,
-            sha256: sha256(installedText),
-          },
-        });
-      } catch {
-        // Preserve the original failure. The exact backup path is included below.
+  if (changedDeactivation) {
+    try {
+      await writeManagedConfigPair(
+        settings,
+        current.mode,
+        { config: current.bytes, state: reactivation.stateFile.contents, mode: current.mode },
+        { config: installedBytes, state: nextStateBytes },
+        beforeConfigCommit,
+        "CONFIG_REACTIVATION_ROLLBACK_FAILED",
+        () => revalidateManagedConfigOwnership(reactivation.ownership),
+      );
+    } catch (error) {
+      if (error instanceof ConfigManagerError) throw error;
+      throw failure("INSTALL_FAILED", "Could not reactivate the reviewed Codex configuration.", { cause: error });
+    }
+  } else {
+    let configWritten = false;
+    try {
+      await atomicWrite(configPath, installedBytes, current.mode, {
+        expectedSource: snapshotOf(current),
+        beforeCommit: async () => {
+          await beforeConfigCommit();
+          await assertSourceUnchanged(statePath, expectedState);
+        },
+      });
+      configWritten = true;
+      await ensurePrivateDirectory(dirname(statePath));
+      await atomicWrite(statePath, nextStateBytes, 0o600, {
+        expectedSource: expectedState,
+      });
+      await chmod(statePath, 0o600);
+    } catch (error) {
+      if (configWritten) {
+        try {
+          await atomicWrite(configPath, current.bytes, current.mode, {
+            expectedSource: { exists: true, sha256: sha256(installedBytes) },
+          });
+        } catch {
+          // Preserve the original failure. The exact backup path is included below.
+        }
       }
+      if (error?.code === "CONFIG_CHANGED_CONCURRENTLY") {
+        error.details = { ...(error.details ?? {}), backupPath };
+        throw error;
+      }
+      throw failure(
+        "INSTALL_FAILED",
+        `Could not install managed Codex configuration. Exact backup: ${backupPath}`,
+        { cause: error, backupPath },
+      );
     }
-    if (error?.code === "CONFIG_CHANGED_CONCURRENTLY") {
-      error.details = { ...(error.details ?? {}), backupPath };
-      throw error;
-    }
-    throw failure(
-      "INSTALL_FAILED",
-      `Could not install managed Codex configuration. Exact backup: ${backupPath}`,
-      { cause: error, backupPath },
-    );
   }
 
   let reactivationActive = true;
@@ -259,16 +286,23 @@ export async function installConfig(options) {
         if (!reactivationActive) return;
         const rollbackOwnership = await inventoryManagedConfigOwnership(settings);
         await readOwnershipBackup(rollbackOwnership);
-        await writeManagedConfigPair(settings, current.mode, {
-          config: Buffer.from(installedText),
-          state: nextStateBytes,
-        }, {
-          config: current.bytes,
-          state: reactivation.stateFile.contents,
-        }, async () => {
+        const revalidateRollback = async () => {
           await revalidateManagedConfigOwnership(rollbackOwnership);
           await readOwnershipBackup(reactivation.ownership, { cache: false });
-        }, "CONFIG_REACTIVATION_ROLLBACK_FAILED");
+        };
+        await writeManagedConfigPair(
+          settings,
+          current.mode,
+          {
+            config: installedBytes,
+            state: nextStateBytes,
+            ...(changedDeactivation ? { mode: current.mode } : {}),
+          },
+          { config: current.bytes, state: reactivation.stateFile.contents },
+          revalidateRollback,
+          "CONFIG_REACTIVATION_ROLLBACK_FAILED",
+          changedDeactivation ? revalidateRollback : undefined,
+        );
         reactivationActive = false;
       },
     } : {}),
@@ -455,9 +489,19 @@ export async function previewConfigIntegration(options = {}) {
       const state = parseState(stateFile.contents, settings.statePath);
       assertStateMatchesConfig(state, settings.configPath);
       if (state.suspension) {
-        assertSuspendedConfiguration(current, state);
+        const { changed, replacedPickerSettings } = assertSuspendedConfiguration(current, state, { allowDeactivatedChanges: true });
         if (state.suspension.kind !== "integration-toggle-v1") return integrationPreview("conflict", false, false, [], previewToken);
-        return integrationPreview("none", true, true, ["reactivate-integration", "retain-explicit-provider", "preserve-historical-chats"], previewToken);
+        const changes = ["reactivate-integration", "retain-explicit-provider", "preserve-historical-chats"];
+        if (changed) {
+          const ownership = await inventoryManagedConfigOwnership(options);
+          const captured = ownershipDetails(ownership).stateFile;
+          if (!captured || !sameFileSnapshot(stateFile.snapshot, captured.snapshot) || captured.sha256 !== stateFile.sha256) {
+            throw failure("STATE_CHANGED_CONCURRENTLY", "Managed configuration state changed during the reactivation preview.");
+          }
+          await readOwnershipBackup(ownership);
+          changes.push("review-paused-config-changes", ...replacedPickerSettings);
+        }
+        return integrationPreview("none", true, true, changes, previewToken);
       }
       const located = locateHealthyManagedBlocks(current.text, state);
       const canonical = canonicalProviderBlock(located.provider, state);
@@ -620,17 +664,16 @@ async function inventoryConfigurationReactivation(options, kind) {
   if (!stateFile) throw failure("STATE_MISSING", "Full-refresh reactivation requires its retained configuration receipt.");
   const state = parseState(stateFile.contents, settings.statePath);
   const current = await readConfigFile(settings.configPath, { mustExist: true });
-  assertSuspendedConfiguration(current, state);
+  const { changed } = assertSuspendedConfiguration(current, state, { allowDeactivatedChanges: kind === "integration-toggle-v1" });
   if (state.suspension.kind !== kind) throw failure("CONFIGURATION_SUSPENDED", "The integration is suspended by another lifecycle operation.");
-  if (options.expectedPreviewToken !== undefined) {
-    requirePreviewToken(options.expectedPreviewToken);
-    if (options.expectedPreviewToken !== integrationPreviewToken(current, settings.configPath, settings.statePath, stateFile.contents)) {
-      throw failure("INTEGRATION_PREVIEW_CHANGED", "Codex configuration changed after the reactivation preview.");
-    }
+  const previewToken = options.expectedPreviewToken;
+  if (changed && previewToken === undefined) {
+    throw failure("CONFIGURATION_SUSPENSION_CONFLICT", "Review the changes made while PickerMux was off before reactivating it.");
   }
+  assertReactivationPreview(current, settings.configPath, settings.statePath, stateFile, previewToken);
   await readOwnershipBackup(ownership);
   const receipt = Object.freeze({});
-  reactivationReceiptDetails.set(receipt, { settings, ownership, state, stateFile });
+  reactivationReceiptDetails.set(receipt, { settings, ownership, state, stateFile, changedDeactivation: changed, previewToken });
   return receipt;
 }
 
@@ -763,10 +806,19 @@ export async function enableManagedStandaloneWebSearch(options = {}) {
   };
 }
 
-async function writeManagedConfigPair(settings, configMode, before, after, beforeCommit, rollbackCode = "WEB_SEARCH_CONFIG_ROLLBACK_FAILED") {
-  const previousConfig = { exists: true, sha256: sha256(before.config) };
+async function writeManagedConfigPair(
+  settings,
+  configMode,
+  before,
+  after,
+  beforeCommit,
+  rollbackCode = "WEB_SEARCH_CONFIG_ROLLBACK_FAILED",
+  beforeStateCommit,
+) {
+  const reviewedMode = before.mode === undefined ? {} : { mode: before.mode };
+  const previousConfig = { exists: true, sha256: sha256(before.config), ...reviewedMode };
   const previousState = { exists: true, sha256: sha256(before.state) };
-  const nextConfig = { exists: true, sha256: sha256(after.config) };
+  const nextConfig = { exists: true, sha256: sha256(after.config), ...reviewedMode };
   await atomicWrite(settings.configPath, after.config, configMode, {
     expectedSource: previousConfig,
     beforeCommit: async () => {
@@ -777,7 +829,10 @@ async function writeManagedConfigPair(settings, configMode, before, after, befor
   try {
     await atomicWrite(settings.statePath, after.state, 0o600, {
       expectedSource: previousState,
-      beforeCommit: () => assertSourceUnchanged(settings.configPath, nextConfig),
+      beforeCommit: async () => {
+        await beforeStateCommit?.();
+        await assertSourceUnchanged(settings.configPath, nextConfig);
+      },
     });
   } catch (error) {
     try {
@@ -1455,11 +1510,11 @@ export async function getConfigStatus(options) {
     inspectRootIntegration(current.text);
     if (state.suspension) {
       try {
-        assertSuspendedConfiguration(current, state);
+        const { changed } = assertSuspendedConfiguration(current, state, { allowDeactivatedChanges: true });
         return {
           installed: false,
           healthy: true,
-          status: state.suspension.kind === "integration-toggle-v1" ? "deactivated" : "suspended",
+          status: state.suspension.kind === "full-refresh-v1" ? "suspended" : changed ? "deactivated-changed" : "deactivated",
           configPath,
           statePath,
           providerId: state.providerId,
@@ -1886,18 +1941,42 @@ function integrationPreview(status, canApply, requiresConfirmation, changes, pre
   return { schemaVersion: 1, status, canApply, requiresConfirmation, changes, previewToken };
 }
 
-function assertSuspendedConfiguration(current, state) {
+function assertSuspendedConfiguration(current, state, { allowDeactivatedChanges = false } = {}) {
   if (!state.suspension) {
     throw failure("CONFIGURATION_NOT_SUSPENDED", "The managed configuration has no full-refresh suspension receipt.");
   }
-  if (state.suspension.kind === "integration-toggle-v1" &&
-    (state.providerId !== HISTORICAL_MODEL_BRIDGE_PROVIDER_ID || !removeDeactivatedHistoricalCompatibility(current.text, state).removed)) {
+  const deactivated = state.suspension.kind === "integration-toggle-v1";
+  const historical = deactivated && removeDeactivatedHistoricalCompatibility(current.text, state);
+  if (deactivated && (state.providerId !== HISTORICAL_MODEL_BRIDGE_PROVIDER_ID || !historical.removed)) {
     throw failure("CONFIGURATION_SUSPENSION_CONFLICT", "The exact historical provider alias could not be verified.");
   }
-  if (!current.exists || sha256(current.bytes) !== state.suspension.configSha256 ||
-    containsAnyManagedMarker(current.text) || inspectRootIntegration(current.text).foreign) {
+  const changed = sha256(current.bytes) !== state.suspension.configSha256;
+  if (!current.exists || (changed && !(deactivated && allowDeactivatedChanges)) || containsAnyManagedMarker(current.text)) {
     throw failure("CONFIGURATION_SUSPENSION_CONFLICT", "Native configuration changed after full-refresh suspension. Review it before resuming.");
   }
+  const integration = inspectRootIntegration(current.text);
+  if (integration.foreign) {
+    throw failure("CONFIGURATION_SUSPENSION_CONFLICT", "The suspended configuration no longer has a native picker.");
+  }
+  if (!changed) return { changed: false, replacedPickerSettings: [] };
+
+  // An edited OFF config may enter reactivation only through an exact reviewed
+  // snapshot. The historical block itself is still the only removable alias.
+  if (historical.configExisted !== state.configExisted || !current.bytes.equals(Buffer.from(current.text, "utf8"))) {
+    throw failure("CONFIGURATION_SUSPENSION_CONFLICT", "The changed native configuration cannot be preserved exactly.");
+  }
+  assertNoHistoricalModelBridgeMarkerComments(historical.text);
+  if (hasProviderDefinition(historical.text, "openai")) {
+    throw failure("CONFIGURATION_SUSPENSION_CONFLICT", "A custom definition shadows the native picker provider.");
+  }
+  const { assignments } = analyzeConfig(historical.text, state.providerId);
+  // Reject keys recognized by routing inspection that the config writer would
+  // leave behind, such as escaped spellings of native picker assignments.
+  if (integration.keys.length !== assignments.length ||
+    assignments.some(({ key }) => !integration.keys.includes(key) || !Object.hasOwn(PAUSED_PICKER_REPLACEMENTS, key))) {
+    throw failure("CONFIGURATION_SUSPENSION_CONFLICT", "Native picker assignments cannot be replaced unambiguously.");
+  }
+  return { changed, replacedPickerSettings: assignments.map(({ key }) => PAUSED_PICKER_REPLACEMENTS[key]) };
 }
 
 function locateSuspendedRestorationBoundary(source) {
@@ -1924,6 +2003,14 @@ function integrationPreviewToken(current, configPath, statePath, stateContents) 
 function requirePreviewToken(token) {
   if (typeof token !== "string" || !/^[a-f0-9]{64}$/u.test(token)) {
     throw failure("INVALID_ARGUMENT", "An exact integration preview token is required.");
+  }
+}
+
+function assertReactivationPreview(current, configPath, statePath, stateFile, previewToken) {
+  if (previewToken === undefined) return;
+  requirePreviewToken(previewToken);
+  if (previewToken !== integrationPreviewToken(current, configPath, statePath, stateFile.contents)) {
+    throw failure("INTEGRATION_PREVIEW_CHANGED", "Codex configuration changed after the reactivation preview.");
   }
 }
 
@@ -1977,7 +2064,7 @@ function inspectRootIntegration(source) {
       // to contact a provider or to infer an Ollama ownership claim.
     }
   }
-  return { gateway, foreign, ollama };
+  return { gateway, foreign, ollama, keys: [...values.keys()] };
 }
 
 function locateHealthyManagedBlocks(source, state) {
@@ -3287,10 +3374,12 @@ async function assertSourceUnchanged(path, expected) {
   const actual = {
     exists: current.exists,
     sha256: sha256(current.bytes),
+    ...(expected.mode === undefined ? {} : { mode: current.mode }),
   };
   if (
     actual.exists !== expected.exists ||
-    actual.sha256 !== expected.sha256
+    actual.sha256 !== expected.sha256 ||
+    actual.mode !== expected.mode
   ) {
     throw failure(
       "CONFIG_CHANGED_CONCURRENTLY",

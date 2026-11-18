@@ -1,10 +1,18 @@
 import Foundation
 
+extension CompanionSnapshot {
+  var hasPausedConfigurationChanges: Bool {
+    state == "inactive" && installation.status == "installed" &&
+      managedConfig.status == "deactivated-changed" && integration.status == "none"
+  }
+}
+
 public struct IntegrationToggleState {
   public let isEnabled: Bool
   public let canChange: Bool
   public let needsSetupUpgrade: Bool
   public let canReviewSetup: Bool
+  public let canReviewLegacyPausedConfiguration: Bool
   public let label: String
   public let guidance: String
 
@@ -14,22 +22,30 @@ public struct IntegrationToggleState {
       canChange = false
       needsSetupUpgrade = false
       canReviewSetup = false
+      canReviewLegacyPausedConfiguration = false
       label = "Checking installation"
       guidance = "Check status in Config or open Help before enabling PickerMux."
       return
     }
     let active = snapshot.integration.status == "pickermux" &&
       ["installed", "installed-marker-recovered"].contains(snapshot.managedConfig.status)
-    let inactive = ["none", "ollama", "foreign"].contains(snapshot.integration.status) &&
-      ["not-installed", "deactivated"].contains(snapshot.managedConfig.status)
+    let inactive = snapshot.hasPausedConfigurationChanges ||
+      (["none", "ollama", "foreign"].contains(snapshot.integration.status) &&
+        ["not-installed", "deactivated"].contains(snapshot.managedConfig.status))
+    let legacyPausedConflict = !snapshot.usesBundledBackend && snapshot.installation.status == "installed" &&
+      snapshot.state == "configuration-conflict" && snapshot.managedConfig.status == "suspension-conflict" &&
+      snapshot.integration.status == "conflict" && snapshot.service.status == "stopped"
     let knownRecovery = ["idle", "completed"].contains(snapshot.recovery.status)
     let closed = ["stopped", "closed"].contains(snapshot.desktop.status)
     let knownInstallation = ["installed", "not-installed"].contains(snapshot.installation.status)
     isEnabled = active
     needsSetupUpgrade = snapshot.installation.status == "installed" && snapshot.usesBundledBackend
+    let accountReady = ["ready", "valid"].contains(snapshot.accountCache.status)
     canReviewSetup = !busy && knownRecovery && closed && knownInstallation && (active || inactive) &&
-      ["ready", "valid"].contains(snapshot.accountCache.status) &&
-      snapshot.actions.contains(.configurationPreview) && snapshot.actions.contains(.configurationApply)
+      accountReady && snapshot.actions.contains(.configurationPreview) && snapshot.actions.contains(.configurationApply)
+    // This opens a read-only preview from a newer pinned backend. The installed
+    // conflict itself does not authorize a change or an automatic upgrade.
+    canReviewLegacyPausedConfiguration = !busy && legacyPausedConflict && knownRecovery && closed && accountReady
     canChange = !busy && knownRecovery && closed && knownInstallation && (active || inactive) &&
       (active ? snapshot.actions.contains(.integrationDeactivate) :
         canReviewSetup)
@@ -40,6 +56,10 @@ public struct IntegrationToggleState {
     } else if !knownRecovery {
       label = "Repair needs attention"
       guidance = "Review and complete the pending repair before changing the integration."
+    } else if legacyPausedConflict {
+      label = "Integration needs review"
+      guidance = closed ? "Review any available backend update in Config to check the paused Codex settings." :
+        "Fully quit Codex and review the paused integration in Config."
     } else if !knownInstallation || (!active && !inactive) {
       label = "Integration needs review"
       guidance = "The current integration could not be verified. Check status in Config and open Help before changing it."
@@ -58,9 +78,12 @@ public struct IntegrationToggleState {
     } else if !closed {
       label = "Not enabled in Codex"
       guidance = "Fully quit Codex with Command-Q before installing or activating PickerMux."
-    } else if !canChange && !["ready", "valid"].contains(snapshot.accountCache.status) {
+    } else if !canChange && !accountReady {
       label = "Codex setup required"
       guidance = "Open Codex while signed in and wait for its native model picker to load. Fully quit Codex, then check status in Config again."
+    } else if snapshot.hasPausedConfigurationChanges {
+      label = "Installed, configuration changed"
+      guidance = "Turn on to review the Codex settings changed while PickerMux was off."
     } else if snapshot.integration.status == "ollama" || snapshot.integration.status == "foreign" {
       label = "Another integration is active"
       guidance = "Turning on installs PickerMux and replaces the current picker integration after a verified backup. Setup may send certification test prompts to configured provider models."
@@ -130,6 +153,8 @@ public func changePickerMuxIntegration(_ enabled: Bool, reviewInstalledSetup: Bo
   let result = try await client.run(.configurationPreview, confirmed: false, previewToken: nil)
   guard result.ok else { return .completed(result) }
   guard let preview = result.preview, preview.canApply, let token = preview.previewToken else { return .blocked }
+  let reviewingPausedConfiguration = preview.reviewsPausedConfigurationChanges
+  guard reviewingPausedConfiguration == snapshot.hasPausedConfigurationChanges else { return .blocked }
   if automaticUpgrade {
     guard preview.status == "pickermux" else { return .blocked }
     try Task.checkCancellation()
@@ -138,7 +163,8 @@ public func changePickerMuxIntegration(_ enabled: Bool, reviewInstalledSetup: Bo
     guard canAutomaticallyReviewBackendSetup(current) else { return .blocked }
   }
   let replacing = ["ollama", "foreign"].contains(preview.status)
-  let title = automaticUpgrade ? "Update installed PickerMux backend?" :
+  let title = reviewingPausedConfiguration ? "Review changes and enable PickerMux?" :
+    automaticUpgrade ? "Update installed PickerMux backend?" :
     upgrading ? "Update PickerMux setup for this app?" :
     snapshot.installation.status == "installed" ? "Enable PickerMux in Codex?" : "Install and enable PickerMux?"
   let replacement = replacing ? "The current picker integration will be replaced after a verified backup. " : ""
@@ -146,10 +172,19 @@ public func changePickerMuxIntegration(_ enabled: Bool, reviewInstalledSetup: Bo
     upgrading ? "This app's verified bundled backend will install its CLI and bridge. If PickerMux is currently off, this also enables it in Codex. " : ""
   let operation = automaticUpgrade ? "PickerMux will update its active integration so configured provider models remain available alongside native Codex models. " :
     "PickerMux will install or activate its CLI and bridge so configured provider models appear alongside native Codex models. New installations use LM Studio by default. "
+  let settingsReview: String
+  if reviewingPausedConfiguration {
+    let fields = preview.pausedPickerSettings.joined(separator: ", ")
+    let managed = fields.isEmpty ? "" : "PickerMux will manage these changed settings again: \(fields). "
+    settingsReview = "\(managed)Your other Codex changes and PickerMux provider settings are preserved. Standard CLI uninstall restores the original picker settings. "
+  } else {
+    settingsReview = "Existing provider settings are preserved and the earlier configuration remains restorable. "
+  }
   let review = IntegrationReview(title: title,
-    text: "\(upgrade)\(replacement)\(operation)Existing provider settings are preserved and the earlier configuration remains restorable. Keep Codex fully closed and provider models available. Setup can send live certification test prompts to those models. Reopen Codex after setup finishes.",
-    button: automaticUpgrade ? "Update backend" : upgrading ? "Update setup" : snapshot.installation.status == "installed" ? "Enable PickerMux" : "Install and enable", preview: preview)
-  if consent == .review || automaticUpgrade {
+    text: "\(upgrade)\(replacement)\(operation)\(settingsReview)Keep Codex fully closed and provider models available. Setup can send live certification test prompts to those models. Reopen Codex after setup finishes.",
+    button: reviewingPausedConfiguration ? "Enable PickerMux" :
+      automaticUpgrade ? "Update backend" : upgrading ? "Update setup" : snapshot.installation.status == "installed" ? "Enable PickerMux" : "Install and enable", preview: preview)
+  if consent == .review || automaticUpgrade || reviewingPausedConfiguration {
     guard await confirm(review) else { return .cancelled }
   }
   try Task.checkCancellation()

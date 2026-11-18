@@ -1,6 +1,6 @@
 # PickerMux Architecture
 
-This document describes PickerMux v0.40.3.
+This document describes PickerMux v0.41.0.
 It is intended for contributors, security reviewers, and users who want to
 understand what runs on their Mac.
 
@@ -1143,16 +1143,29 @@ TOML, certification files, receipts, or LaunchAgents. Node.js 22.15+ remains an
 external prerequisite.
 
 The Codex integration toggle reads its value from verified configuration
-ownership. Turning it on is explicit activation consent: it obtains a fresh
-preview and sends the exact token without a second modal dialog. Turning it
-off supplies the separate deactivation consent field and invokes
+ownership. Turning it on obtains a fresh preview and sends the exact token.
+Turning it off supplies the separate deactivation consent field and invokes
 the installed lifecycle under the existing lock. It retains the private
 configuration receipt, provider settings, runtime, certifications, CLI and
 original backup, and stops the service. A receipt-bound `integration-toggle-v1`
 suspension contains native root configuration plus the exact inert historical
-provider alias. Reactivation rejects edited suspension bytes and preserves the
-original eventual-uninstall baseline. This suspension does not authorize the
-full-refresh helper or replace its checkpoint.
+provider alias.
+
+If native settings change while the toggle is off, `deactivated-changed`
+identifies an edited configuration eligible for review. The exact alias and
+unambiguous native routing still have to validate. Preview verifies the
+original backup and identifies any native picker settings that activation
+will manage again. The companion requires a separate confirmation for this
+preview, and setup requires the exact current token. The transaction
+preserves unrelated settings, the retained runtime and the original
+eventual-uninstall baseline. Changed ownership evidence, a stale preview or
+a concurrent edit prevents activation. A full-refresh suspension remains
+bound to its original exact configuration and checkpoint.
+
+The companion can open a manual backend upgrade review when a verified older
+backend reports the legacy suspended configuration conflict. The newer
+manifest-pinned bundled backend must independently recognize the eligible
+state before it can offer the fresh preview.
 
 When status proves an exact native-only installed configuration, the Config UI
 offers **Enable LM Studio models…**. It displays the fixed redacted preview in

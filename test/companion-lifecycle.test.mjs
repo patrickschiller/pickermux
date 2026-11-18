@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { Readable } from "node:stream";
 import test from "node:test";
 
 import { validateBridgeConfig } from "../src/bridge-config.mjs";
@@ -11,6 +12,7 @@ import {
   resolveIntegrationReactivationRuntime,
   assertRetainedIntegrationRuntime,
   reactivatePickerMuxAfterFullRefresh,
+  runPickerMuxCompanion,
   setupPickerMux,
   suspendPickerMuxForFullRefresh,
 } from "../src/cli.mjs";
@@ -428,6 +430,83 @@ test("OFF retains service settings, runtime capability and compaction key across
   assert.deepEqual(await readFile(fixture.paths.runtimePath), runtimeBytes);
   await uninstallConfig(fixture.configPaths());
   assert.equal(await readFile(fixture.paths.configPath, "utf8"), fixture.original);
+});
+
+test("bundled review reactivates an edited paused configuration with the original service identity", async (t) => {
+  const fixture = await makeFixture(t);
+  await installForeignPicker(fixture);
+  await writeRuntime(fixture.paths.runtimePath, fixture.runtime);
+  await deactivatePickerMuxIntegration(deactivationOptions(fixture));
+  const { paths, sourceRoot } = fixture;
+  const serviceConfig = Buffer.from(JSON.stringify(fixture.config));
+  await writeFile(paths.serviceConfigPath, serviceConfig, { mode: 0o600 });
+  const paused = await readFile(paths.configPath, "utf8");
+  const edited = 'approval_policy = "on-request"\n' + paused;
+  await writeFile(paths.configPath, edited);
+  const stateBefore = await readFile(paths.statePath);
+  let setups = 0;
+  let installs = 0;
+  await assert.rejects(suspendPickerMuxForFullRefresh({
+    ...fixture.lifecycle(), stopServiceImpl: async () => assert.fail("Full refresh must leave paused state alone"),
+  }), { code: "CONFIGURATION_CONFLICT" });
+  await assert.rejects(reactivatePickerMuxAfterFullRefresh({
+    ...fixture.lifecycle(), installImpl: async () => assert.fail("Only reviewed setup can reactivate"),
+  }), { code: "CONFIGURATION_CONFLICT" });
+
+  const run = (action, additional = {}) => runPickerMuxCompanion(["run"], {
+    paths, sourceRoot, distributionPaths: {}, codexPath: "/fixture/codex",
+    input: Readable.from([JSON.stringify({ schemaVersion: 1, action, ...additional })]),
+    output: { write() {} }, progressOutput: { write() {} },
+    statusImpl: async () => ({
+      actions: ["configuration-preview", "configuration-apply"],
+      managedConfig: await getConfigStatus(fixture.configPaths()),
+      desktop: { status: "stopped" },
+      recovery: { status: "idle" },
+    }),
+    assertNoPendingFullRefreshImpl: async () => null,
+    withLockImpl: async () => assert.fail("Setup owns the installation lock"),
+    setupImpl: (options) => setupPickerMux({
+      ...options,
+      desktopRunningImpl: async () => false, accountCacheImpl: async () => ({ status: "ready" }),
+      loadConfigImpl: async () => assert.fail("The retained service config must be read as a private snapshot"),
+      discoverImpl: async () => ({ models: [], providers: [] }),
+      setupImpl: async ({ beforeControlCommit, activate }) => {
+        setups += 1;
+        await beforeControlCommit();
+        await activate({ distributionRoot: sourceRoot, version: "0.41.0" });
+        return { version: "0.41.0" };
+      },
+      installImpl: async ({ reactivationReceipt, expectedServiceConfig, beforeConfigCommit }) => {
+        assert.deepEqual(expectedServiceConfig, serviceConfig);
+        installs += 1;
+        const runtime = await resolveIntegrationReactivationRuntime({
+          paths, status: await getConfigStatus(fixture.configPaths()), reactivationReceipt,
+        });
+        assert.deepEqual(runtime, fixture.runtime);
+        return installConfig(fixture.installOptions({ reactivationReceipt, runtime, beforeConfigCommit }));
+      },
+    }),
+  });
+  const preview = await run("configuration-preview");
+  assert.equal(preview.ok, true);
+  assert.equal(preview.data.requiresConfirmation, true);
+  assert.ok(preview.data.changes.includes("review-paused-config-changes"));
+  const confirmation = { replaceIntegration: true };
+  const previewToken = preview.data.previewToken;
+  assert.equal((await run("configuration-apply", { previewToken })).code, "CONFIRMATION_REQUIRED");
+  await writeFile(paths.configPath, "# concurrent edit\n" + edited);
+  assert.equal((await run("configuration-apply", { confirmation, previewToken })).code, "CONFIGURATION_CONFLICT");
+  assert.equal(setups, 0);
+  assert.equal(installs, 0);
+  assert.deepEqual(await readFile(paths.statePath), stateBefore);
+
+  const refreshed = await run("configuration-preview");
+  const applied = await run("configuration-apply", { confirmation, previewToken: refreshed.data.previewToken });
+  assert.equal(applied.ok, true);
+  assert.equal(setups, 1);
+  assert.equal(installs, 1);
+  assert.equal((await getConfigStatus(fixture.configPaths())).status, "installed");
+  assert.match(await readFile(paths.configPath, "utf8"), /^approval_policy = "on-request"$/mu);
 });
 
 test("failed OFF rolls back configuration before restoring the same runtime and service", async (t) => {

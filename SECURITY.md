@@ -473,13 +473,23 @@ runtime/capability record, provider settings, certification receipts and
 original backup, while stopping the managed service and exposing native Codex
 root configuration. The exact inert historical provider alias keeps old chats
 readable. A distinct `integration-toggle-v1` suspension digest binds those
-bytes; edited aliases/configuration and foreign lifecycle suspensions cannot
-authorize reactivation. Deactivation requires Codex to be fully stopped,
-receipt-owned runtime/source validation and the installation lock. Service
-or configuration failures use the existing rollback boundary. Turning the
-toggle on or off supplies explicit consent without a second modal dialog;
-activation still obtains and revalidates a fresh exact preview token. GUI consent
-does not bypass any of these checks.
+bytes. Deactivation requires Codex to be fully stopped, receipt-owned
+runtime/source validation and the installation lock. Service or configuration
+failures use the existing rollback boundary.
+
+When the native configuration changed while the toggle was off, reactivation
+requires the exact inert historical alias, an unambiguous native picker,
+a validated original backup and explicit confirmation of a fresh preview.
+The preview reports fixed labels for existing native picker assignments that
+activation will replace. Apply revalidates the current config, private receipt
+and original backup and uses compare-and-swap checks to protect the reviewed
+state. Unrelated settings remain in place and standard uninstall retains the
+original picker restoration baseline. Edited aliases, foreign routing, an
+active full-refresh checkpoint and stale or concurrent changes still block
+reactivation. An older backend's conflict status can open a manual upgrade
+review through the verified newer bundled backend. Only that backend can
+prove that the state qualifies, and the legacy status grants no mutation
+authority.
 
 The normal `pickermux uninstall` lifecycle restores Codex configuration and
 removes the managed bridge runtime while deliberately retaining verified

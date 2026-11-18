@@ -54,6 +54,10 @@ export const COMPANION_CONFIGURATION_CHANGES = Object.freeze([
   "retain-explicit-provider",
   "normalize-owned-blocks",
   "reactivate-integration",
+  "review-paused-config-changes",
+  "replace-paused-native-model",
+  "replace-paused-native-provider",
+  "replace-paused-native-reasoning-effort",
 ]);
 
 // Root-only configuration inherits transport defaults that cannot express the
@@ -85,7 +89,7 @@ const PREVIEW_TOKEN_PATTERN = /^[0-9a-f]{64}$/u;
 const STATUS_ENUMS = Object.freeze({
   desktop: ["running", "stopped", "unknown"],
   installation: ["installed", "not-installed", "invalid", "unknown"],
-  managedConfig: ["installed", "installed-marker-recovered", "not-installed", "deactivated", "suspended", "suspension-conflict", "integration-conflict", "modified", "inconsistent", "invalid-state", "unreadable-config", "orphaned-managed-block", "unknown"],
+  managedConfig: ["installed", "installed-marker-recovered", "not-installed", "deactivated", "deactivated-changed", "suspended", "suspension-conflict", "integration-conflict", "modified", "inconsistent", "invalid-state", "unreadable-config", "orphaned-managed-block", "unknown"],
   service: ["running", "stopped", "not-installed", "runtime-missing", "unhealthy", "unreachable", "update-required", "unavailable", "unknown"],
   compatibility: ["not-installed", "compatible", "update-required", "unavailable", "unknown"],
   accountCache: ["ready", "refresh-required", "unavailable", "unknown"],
@@ -135,6 +139,7 @@ const ERROR_MESSAGES = Object.freeze({
   NO_LOADED_MODELS: "No usable external model is loaded. Load a model in the configured provider, then retry activation.",
   DEACTIVATION_FAILED: "Deactivation failed. The previous integration was retained or restored.",
   DEACTIVATION_ROLLBACK_FAILED: "Deactivation could not safely restore the previous integration. Keep Codex closed and inspect status before retrying.",
+  REACTIVATION_ROLLBACK_FAILED: "Reactivation could not safely restore the paused integration. Keep Codex closed and inspect status before retrying.",
   UNINSTALL_CONFLICT: "The reviewed removal changed or configuration ownership needs review. Check status and review removal again.",
   UNINSTALL_PREFLIGHT_FAILED: "PickerMux removal ownership could not be verified. Keep Codex closed and review the installation.",
   PURGE_INCOMPLETE: "Full removal did not complete. Some provider credentials may already be absent. Keep Codex closed and review recovery before retrying.",
@@ -427,11 +432,13 @@ export async function collectCompanionStatus({ probes = {}, probeTimeoutMs = 5_0
   const knownRecovery = ["idle", "completed"].includes(snapshot.recovery.status);
   const safeToMutate = installed && healthyConfig && knownDesktop && knownRecovery && !configurationConflict;
   const ready = safeToMutate && snapshot.service.status === "running" && snapshot.compatibility.status === "compatible" && snapshot.accountCache.status === "ready";
-  const deactivated = installed && snapshot.managedConfig.status === "deactivated" && snapshot.integration.status === "none" && knownRecovery;
+  const paused = installed && ["deactivated", "deactivated-changed"].includes(snapshot.managedConfig.status) &&
+    snapshot.integration.status === "none" && knownRecovery;
+  const pausedWithEdits = paused && snapshot.managedConfig.status === "deactivated-changed";
   const notInstalled = snapshot.installation.status === "not-installed" && snapshot.managedConfig.status === "not-installed";
   // A fresh native home has no account cache yet. Initialization still blocks
   // activation, but does not imply an installed bridge needs an update.
-  snapshot.state = pendingRecovery ? "recovery-pending" : configurationConflict ? "configuration-conflict" : deactivated ? "inactive" :
+  snapshot.state = pendingRecovery ? "recovery-pending" : configurationConflict ? "configuration-conflict" : paused ? "inactive" :
     notInstalled ? "not-installed" : updateRequired || refreshRequired ? "update-required" : ready ? "ready" : "degraded";
   snapshot.actions = ["diagnose", "update-check", "configuration-preview"];
   if (safeToMutate && !updateRequired && !refreshRequired) {
@@ -449,14 +456,15 @@ export async function collectCompanionStatus({ probes = {}, probeTimeoutMs = 5_0
   }
   if (snapshot.desktop.status === "stopped" && knownRecovery && snapshot.accountCache.status === "ready" &&
     ["installed", "not-installed"].includes(snapshot.installation.status) &&
-    ["installed", "installed-marker-recovered", "not-installed", "deactivated"].includes(snapshot.managedConfig.status) &&
-    ["pickermux", "ollama", "foreign", "none"].includes(snapshot.integration.status)) snapshot.actions.push("configuration-apply");
+    ((["installed", "installed-marker-recovered", "not-installed", "deactivated"].includes(snapshot.managedConfig.status) &&
+    ["pickermux", "ollama", "foreign", "none"].includes(snapshot.integration.status)) ||
+    pausedWithEdits)) snapshot.actions.push("configuration-apply");
   if (ready && snapshot.desktop.status === "stopped" && snapshot.integration.status === "pickermux" &&
     snapshot.providerConfiguration.status === "native-only") {
     snapshot.actions.push("lmstudio-default-preview", "lmstudio-default-apply");
   }
   if (installed && snapshot.desktop.status === "stopped" && knownRecovery && !configurationConflict &&
-    ((healthyConfig && snapshot.integration.status === "pickermux") || deactivated)) {
+    ((healthyConfig && snapshot.integration.status === "pickermux") || (paused && !pausedWithEdits))) {
     snapshot.actions.push("uninstall-preview", "uninstall");
   }
   snapshot.issues = issues;
@@ -475,7 +483,8 @@ export function createCompanionReadOnlyProbes({ paths, distributionPaths, fullRe
   let installationPromise;
   const loadConfig = () => configPromise ??= config === undefined ? loadCompanionServiceConfig({ paths }) : Promise.resolve(config);
   const client = () => clientPromise ??= loadCodexClientVersion({ codexPath, execFileImpl: executeReadOnlyProbe });
-  const managed = () => managedPromise ??= getConfigStatus({ configPath: paths.configPath, statePath: paths.statePath });
+  const configurationPaths = () => ({ configPath: paths.configPath, statePath: paths.statePath, backupDirectory: paths.backupDirectory });
+  const managed = () => managedPromise ??= getConfigStatus(configurationPaths());
   const installation = () => installationPromise ??= (async () => {
     try { await lstat(distributionPaths.applicationDirectory); } catch (error) {
       if (error?.code === "ENOENT") return { installed: false };
@@ -499,12 +508,12 @@ export function createCompanionReadOnlyProbes({ paths, distributionPaths, fullRe
     managedConfig: managed,
     service: async () => {
       const status = await managed();
-      if (status.healthy === true && ["not-installed", "deactivated"].includes(status.status)) return { status: "not-installed" };
+      if (status.healthy === true && ["not-installed", "deactivated", "deactivated-changed"].includes(status.status)) return { status: "not-installed" };
       return getBridgeServiceStatus({ config: await loadConfig(), runtimePath: paths.runtimePath, launchAgentLabel: paths.launchAgentLabel, execFileImpl: executeReadOnlyProbe });
     },
     compatibility: async () => {
       const status = await managed();
-      if (status.healthy === true && ["not-installed", "deactivated"].includes(status.status)) return { status: "not-installed" };
+      if (status.healthy === true && ["not-installed", "deactivated", "deactivated-changed"].includes(status.status)) return { status: "not-installed" };
       const [codexClientVersion, bundledCatalog] = await Promise.all([client(), loadBundledCatalog({ codexPath, execFileImpl: executeReadOnlyProbe })]);
       return checkCurrentCompatibility({
         manifestPath: paths.compatibilityPath,
@@ -518,7 +527,7 @@ export function createCompanionReadOnlyProbes({ paths, distributionPaths, fullRe
     },
     accountCache: async () => inspectCodexAccountCache({ codexHome: paths.codexHome, codexPath, codexClientVersion: await client() }),
     recovery: () => readFullRefreshCheckpoint({ installDirectory: fullRefreshPaths.installDirectory, checkpointPath: fullRefreshPaths.checkpointPath, allowMissing: true }),
-    integration: async () => ({ status: (await previewConfigIntegration({ configPath: paths.configPath, statePath: paths.statePath })).status }),
+    integration: async () => ({ status: (await previewConfigIntegration(configurationPaths())).status }),
   };
 }
 
