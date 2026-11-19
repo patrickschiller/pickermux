@@ -251,6 +251,8 @@ an existing chat on model_bridge. Native provider recovery:
 ${HISTORICAL_CHAT_RECOVERY_DOC}
 The bundled Codex executable is detected in the current or legacy Desktop layout.
 CODEX_BINARY overrides discovery for this command; it is not saved to the service.
+bridge.limits.decodedResponsesBodyBytes sets the decoded Responses request limit
+(default: at least 32 MiB). bridge.limits.requestBodyBytes caps bytes on the wire.
 
 Install and refresh enable shared Codex web search unless explicitly disabled.
 External models still require tool certification; search uses the native Codex backend.

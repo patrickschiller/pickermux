@@ -653,6 +653,32 @@ test("0.41.0 publishes reviewed paused integration recovery for 0.40.3 installat
   });
 });
 
+test("0.41.1 offers a checksum-bound DMG update with the decoded request limits", async (t) => {
+  const version = "0.41.1";
+  const tag = `v${version}`;
+  const value = await fixture(t, version);
+  const result = await prepareDmgRelease({ ...value, tag });
+  const body = await readFile(path.join(value.outputDirectory, "release-notes.md"), "utf8");
+  assert.match(body, /Changes in v0\.41\.1/u);
+  assert.match(body, /Responses and compaction to at least 32 MiB by default/u);
+  assert.match(body, /bridge\.limits\.decodedResponsesBodyBytes up to 64 MiB/u);
+  assert.match(body, /Incoming wire bytes and rebuilt provider requests keep their existing limits/u);
+  assert.match(body, /\*\*Config → Update installed backend…\*\*/u);
+  assert.deepEqual(await verifyDmgPublication({ directory: value.outputDirectory, tag }), result);
+
+  const downloadUrl = `https://github.com/patrickschiller/pickermux/releases/download/${tag}/${PICKERMUX_DMG_ASSET}`;
+  const release = {
+    tag_name: tag, draft: false, prerelease: false, body,
+    assets: [{ name: PICKERMUX_DMG_ASSET, browser_download_url: downloadUrl }],
+  };
+  assert.deepEqual(await checkForCompanionUpdate({
+    currentVersion: "0.41.0", fetchImpl: async () => Response.json(release),
+  }), {
+    status: "available", distribution: "dmg", currentVersion: "0.41.0", targetVersion: version,
+    assets: { [PICKERMUX_DMG_ASSET]: downloadUrl }, diskImageSha256: result.sha256,
+  });
+});
+
 test("later publication guidance keeps the Config navigation name", async (t) => {
   const value = await fixture(t, "0.24.7");
   await prepareDmgRelease({ ...value, tag: "v0.24.7" });

@@ -31,7 +31,6 @@ const BRIDGE_KEYS = new Set([
   "reasoningEffort",
   "limits",
 ]);
-const LIMIT_KEYS = new Set(Object.keys(BRIDGE_DEFAULTS.limits));
 const PROVIDER_KEYS = new Set([
   "id",
   "kind",
@@ -82,11 +81,13 @@ const DEFAULT_DISCOVERY = Object.freeze({ mode: "allowlist", maxModels: 64 });
 
 const LIMIT_RANGES = Object.freeze({
   requestBodyBytes: [1_024, 64 * 1024 * 1024],
+  decodedResponsesBodyBytes: [1_024, 64 * 1024 * 1024],
   responseHeaderBytes: [1_024, 1024 * 1024],
   upstreamHeadersTimeoutMs: [1_000, 60 * 60_000],
   streamIdleTimeoutMs: [1_000, 60 * 60_000],
   upstreamTotalTimeoutMs: [1_000, 24 * 60 * 60_000],
 });
+const LIMIT_KEYS = new Set(Object.keys(LIMIT_RANGES));
 
 function isPlainObject(value) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {

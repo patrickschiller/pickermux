@@ -67,6 +67,7 @@ import {
 
 const DEFAULT_NATIVE_BASE_URL = "https://chatgpt.com/backend-api/codex";
 const RESPONSE_PATHS = new Set(["/v1/responses", "/v1/responses/compact"]);
+const DEFAULT_DECODED_RESPONSES_BODY_BYTES = 32 * 1024 * 1024;
 const LM_STUDIO_RESPONSES_REASONING_EFFORTS = new Set([
   "none",
   "minimal",
@@ -1853,6 +1854,11 @@ export function createResponsesProxy({
     throw new TypeError("onTokenUsage must be a function");
   }
   const limits = normalizeLimits(configuredLimits);
+  const decodedResponsesBodyBytes = positiveInteger(
+    configuredLimits?.decodedResponsesBodyBytes,
+    Math.max(DEFAULT_DECODED_RESPONSES_BODY_BYTES, limits.requestBodyBytes),
+    "decodedResponsesBodyBytes",
+  );
   const nativeBase = assertApiBaseUrl(nativeBaseUrl);
   const transports = { http: httpTransport, https: httpsTransport };
   const compactionCodec = compactionSecret === undefined
@@ -1878,7 +1884,7 @@ export function createResponsesProxy({
         maxBytes: limits.requestBodyBytes,
       });
       const decoded = await decodeJsonBody(rawBody, request.headers["content-encoding"], {
-        maxBytes: limits.requestBodyBytes,
+        maxBytes: decodedResponsesBodyBytes,
       });
       if (typeof decoded.model !== "string" || !decoded.model) {
         throw new BodyCodecError("Request body must contain a model", {

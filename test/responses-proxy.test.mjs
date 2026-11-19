@@ -313,6 +313,102 @@ test("native route relays compressed request bytes, approved headers and SSE byt
   assert.equal(observed.headers["proxy-authorization"], undefined);
 });
 
+test("native Responses transfers use separate wire and decoded body limits", async (t) => {
+  const observed = [];
+  const upstream = http.createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    observed.push({
+      path: request.url,
+      encoding: request.headers["content-encoding"],
+      body: Buffer.concat(chunks),
+    });
+    response.end("{}");
+  });
+  const upstreamPort = await listen(upstream);
+  t.after(() => close(upstream));
+
+  const models = [];
+  const registry = {
+    resolve(model) {
+      models.push(model);
+      return { kind: "native-openai", slug: model, upstreamModel: model };
+    },
+  };
+  const nativeBaseUrl = `http://127.0.0.1:${upstreamPort}/backend-api/codex`;
+  const plain = Buffer.from('{"model":"native"}'.padEnd(2048));
+  const gzip = zlib.gzipSync(plain);
+  const headers = { "content-encoding": "gzip" };
+  assert.ok(gzip.length <= 1024);
+
+  // Normalized configurations from previous versions only have the wire limit.
+  const legacy = await createProxyHarness({ registry, nativeBaseUrl, limits: { requestBodyBytes: 1024 } });
+  t.after(() => close(legacy.server));
+  for (const path of ["/v1/responses", "/v1/responses/compact"]) {
+    const result = await httpRequest({ port: legacy.port, path, body: gzip, headers });
+    assert.equal(result.statusCode, 200);
+  }
+  assert.deepEqual(observed, [
+    { path: "/backend-api/codex/responses", encoding: "gzip", body: gzip },
+    { path: "/backend-api/codex/responses/compact", encoding: "gzip", body: gzip },
+  ]);
+  const wireError = await httpRequest({ port: legacy.port, body: plain });
+  assert.equal(wireError.statusCode, 413);
+  assert.equal(JSON.parse(wireError.body).error.code, "BODY_TOO_LARGE");
+
+  const bounded = await createProxyHarness({
+    registry,
+    nativeBaseUrl,
+    limits: { requestBodyBytes: 4096, decodedResponsesBodyBytes: plain.length },
+  });
+  t.after(() => close(bounded.server));
+  const overLimit = Buffer.concat([plain, Buffer.from(" ")]);
+  for (const path of ["/v1/responses", "/v1/responses/compact"]) {
+    const atLimit = await httpRequest({ port: bounded.port, path, body: gzip, headers });
+    assert.equal(atLimit.statusCode, 200);
+    for (const [body, requestHeaders] of [[zlib.gzipSync(overLimit), headers], [overLimit, {}]]) {
+      const result = await httpRequest({ port: bounded.port, path, body, headers: requestHeaders });
+      assert.equal(result.statusCode, 413);
+      assert.equal(JSON.parse(result.body).error.code, "DECODED_BODY_TOO_LARGE");
+    }
+  }
+  assert.deepEqual(models, ["native", "native", "native", "native"]);
+  assert.equal(observed.length, 4);
+});
+
+test("the decoded Responses budget does not expand external outbound requests", async (t) => {
+  let resolutions = 0;
+  let credentialReads = 0;
+  const proxy = await createProxyHarness({
+    registry: {
+      resolve() {
+        resolutions += 1;
+        return {
+          kind: "external",
+          providerId: "vendor",
+          providerKind: "openai-responses",
+          baseUrl: "http://127.0.0.1:1/v1",
+          allowPrivateNetwork: true,
+          upstreamModel: "model",
+        };
+      },
+    },
+    limits: { requestBodyBytes: 1024, decodedResponsesBodyBytes: 4096 },
+    credentialResolver: async () => { credentialReads += 1; },
+  });
+  t.after(() => close(proxy.server));
+  const body = zlib.gzipSync(JSON.stringify({ model: "vendor/model", input: "x".repeat(2048) }));
+  const result = await httpRequest({
+    port: proxy.port,
+    body,
+    headers: { "content-encoding": "gzip" },
+  });
+  assert.equal(result.statusCode, 413);
+  assert.equal(JSON.parse(result.body).error.code, "BODY_TOO_LARGE");
+  assert.equal(resolutions, 1);
+  assert.equal(credentialReads, 0);
+});
+
 test("external route rewrites model and effort while replacing all caller credentials", async (t) => {
   let observed;
   const upstream = http.createServer((request, response) => {

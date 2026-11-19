@@ -77,6 +77,27 @@ test("normalizes a strict schema-v2 bridge config without secrets", () => {
   assert.equal(JSON.stringify(normalized).includes("Bearer "), false);
 });
 
+test("preserves an optional bounded decoded Responses body limit", () => {
+  const input = validConfig();
+  const legacy = JSON.parse(JSON.stringify(validateBridgeConfig(input)));
+  assert.equal(Object.hasOwn(legacy.bridge.limits, "decodedResponsesBodyBytes"), false);
+
+  const maximum = 64 * 1024 * 1024;
+  for (const value of [1024, maximum]) {
+    input.bridge.limits.decodedResponsesBodyBytes = value;
+    const { limits } = validateBridgeConfig(input).bridge;
+    assert.equal(limits.decodedResponsesBodyBytes, value);
+    assert.equal(limits.requestBodyBytes, 2_000_000);
+  }
+  for (const value of [1023, maximum + 1, 2048.5, "2048", null]) {
+    input.bridge.limits.decodedResponsesBodyBytes = value;
+    assert.throws(
+      () => validateBridgeConfig(input),
+      /bridge\.limits\.decodedResponsesBodyBytes must be an integer between/u,
+    );
+  }
+});
+
 test("web search model is an optional exact native slug independent from external inference", () => {
   const input = validConfig();
   input.bridge.webSearchModel = "gpt-5.4-mini";
