@@ -13,6 +13,11 @@ const HASH = /^[a-f0-9]{64}$/u;
 const ASSETS = [PICKERMUX_DMG_ASSET, "release-notes.md", "SHA256SUMS"];
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const RELEASE_HIGHLIGHTS = Object.freeze({
+  "0.41.1": [
+    "- Raise the decoded request limit for Codex Responses and compaction to at least 32 MiB by default. Existing configurations get the new default after the installed backend is upgraded.",
+    "- Configure bridge.limits.decodedResponsesBodyBytes up to 64 MiB. Incoming wire bytes and rebuilt provider requests keep their existing limits. Requests above the applicable limit still return HTTP 413.",
+    "- Upgrade both PickerMux.app and the installed backend, then restart Codex and retry the affected chat.",
+  ],
   "0.41.0": [
     "- Fix the menu-bar upgrade path when an older backend reports an integration conflict after Codex settings changed while PickerMux was off. Fully quit Codex, then use **Config → Update installed backend…** to open a review with the verified bundled backend.",
     "- Reactivate after explicitly reviewing a fresh preview. It lists the native model, provider or reasoning settings that PickerMux will manage again and preserves unrelated Codex settings, retained provider configuration and runtime identity, and the original uninstall baseline.",
