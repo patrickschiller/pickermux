@@ -274,6 +274,20 @@ The explicit Qwen entry acts as a display-name and reasoning override. In
 The configured fallback must exist in the account-visible native catalog and
 support the selected reasoning level at install time.
 
+`bridge.limits.requestBodyBytes` caps incoming wire bodies and requests rebuilt
+by PickerMux. It also caps decoded web search and voice requests.
+`bridge.limits.decodedResponsesBodyBytes` caps decoded request bodies for
+`/v1/responses` and `/v1/responses/compact` before model routing. These two
+Responses endpoints check the wire limit first, then the decoded limit, including
+for uncompressed bodies.
+
+Specify `decodedResponsesBodyBytes` in bytes, from 1,024 through 67,108,864
+(1 KiB through 64 MiB). When omitted, it defaults to the greater of 32 MiB and
+`requestBodyBytes`. The updated backend uses this default for existing
+configurations that omit the field. To apply an explicit override, edit your
+source configuration and follow the
+[configuration refresh procedure](#provider-configuration-changes).
+
 `webSearchModel` must be a native ID without a provider namespace. The search
 route also verifies that the configured ID resolves to a native model in the
 active registry; an absent or external selection fails with

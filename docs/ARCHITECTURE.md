@@ -540,9 +540,15 @@ Successful tool certification restores the full donor coding-agent prompt and
 preserves its annotated context because those models can use the corresponding
 Codex tool surface. Certification traffic itself receives the same treatment.
 
-Request decompression supports gzip, deflate, Brotli, and Zstandard. Decoded
-body size, response header size, header wait, stream idle time, and total
-upstream duration are all bounded. The 0.7.2 candidate defers transformed
+Request decompression supports gzip, deflate, Brotli, and Zstandard. Both
+Responses endpoints enforce the wire budget first and a separate decoded
+budget before parsing JSON or resolving the model. The decoded budget applies
+to each decompression step and to uncompressed bodies. Native passthrough
+still forwards the original bytes. Rebuilt provider requests and decoded
+web search and voice requests use the `requestBodyBytes` budget.
+
+Response header size, header wait, stream idle time, and total upstream
+duration are all bounded. The 0.7.2 candidate defers transformed
 external response headers until it has validated output to send, preserving a
 structured error response when validation or a timeout fails first. Native
 response handling remains byte preserving. Once transformed external SSE

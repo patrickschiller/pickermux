@@ -128,12 +128,12 @@ export async function decodeBody(
   // HTTP content codings are applied in listed order and removed in reverse.
   for (const encoding of encodings.toReversed()) {
     decoded = await decompressOne(decoded, encoding, maxBytes);
-    if (decoded.length > maxBytes) {
-      throw new BodyCodecError("Decoded request body is too large", {
-        statusCode: 413,
-        code: "DECODED_BODY_TOO_LARGE",
-      });
-    }
+  }
+  if (decoded.length > maxBytes) {
+    throw new BodyCodecError("Decoded request body is too large", {
+      statusCode: 413,
+      code: "DECODED_BODY_TOO_LARGE",
+    });
   }
   return decoded;
 }

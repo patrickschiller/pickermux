@@ -14,6 +14,13 @@ The 0.23.x and 0.24.x entries are local milestones included in the public
 
 ## [Unreleased]
 
+### Fixed
+
+- Accept larger decoded Codex requests on both Responses endpoints before
+  model routing. The separate decoded limit defaults to at least 32 MiB
+  after backend upgrades, while incoming wire and rebuilt upstream requests
+  retain their existing size limits.
+
 ## [0.41.0] - 2026-11-18
 
 ### Fixed

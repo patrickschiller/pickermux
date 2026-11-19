@@ -1270,6 +1270,24 @@ answer instead. [Compaction behavior and limits](CONFIGURATION.md#lm-studio-cont
 | `INVALID_COMPACTION_STATE` | Restore the original installation/model configuration or start a new task. Full refresh and reinstallation invalidate previous state. |
 | `COMPACTION_STATE_ROUTE_MISMATCH` | Continue on the original external model or start a new task for the different provider. |
 
+## Long Codex chat fails with HTTP 413
+
+`Decoded request body is too large` on PickerMux's local Responses endpoint
+means the bridge reached its decoded byte limit before selecting a model.
+Fully quit Codex, apply the
+[reviewed backend upgrade](TECHNICAL_GUIDE.md#installation-and-upgrades), then
+reopen Codex and retry the turn in the same chat. The updated backend defaults
+to at least 32 MiB for decoded Responses requests, including when it reuses an
+existing configuration without an explicit decoded limit.
+
+If the error persists, check
+[`bridge.limits.decodedResponsesBodyBytes`](CONFIGURATION.md#bridge-fields).
+Requests that exceed the configured limit still return HTTP 413. The wire
+body and any request rebuilt for a provider have a separate size limit.
+Providers can also enforce their own body and context limits. For a smaller
+request, continue in a new chat with a brief handoff and references to
+existing project files.
+
 ## LM Studio context compaction fails with HTTP 502
 
 `COMPACTION_FAILED` means the selected model did not produce a complete valid

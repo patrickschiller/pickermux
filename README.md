@@ -81,6 +81,10 @@ Load the models you want, fully quit Codex, choose **Refresh picker**, and reope
 Codex. Models appear in Codex's picker; the PickerMux menu shows provider usage.
 New models need **Certify models…** before using tools.
 
+For `Decoded request body is too large` in a long chat, install a backend
+that includes the larger decoded Responses limit, then retry the turn.
+[HTTP 413 troubleshooting](docs/TROUBLESHOOTING.md#long-codex-chat-fails-with-http-413).
+
 Certified models receive guidance for sandbox-related command failures, including
 macOS Simulator connections. They can request the specific command through
 Codex's approval flow when permitted. Individual approvals may still be needed;
