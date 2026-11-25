@@ -679,6 +679,30 @@ test("0.41.1 offers a checksum-bound DMG update with the decoded request limits"
   });
 });
 
+test("0.41.2 offers the LM Studio compatibility fix as a verified DMG update from 0.41.1", async (t) => {
+  const version = "0.41.2";
+  const tag = `v${version}`;
+  const value = await fixture(t, version);
+  const result = await prepareDmgRelease({ ...value, tag });
+  const body = await readFile(path.join(value.outputDirectory, "release-notes.md"), "utf8");
+  assert.match(body, /invalid_union.*configuration_update/u);
+  assert.match(body, /request-level reasoning effort/u);
+  assert.match(body, /Refresh picker.*retry the same chat/u);
+  assert.deepEqual(await verifyDmgPublication({ directory: value.outputDirectory, tag }), result);
+
+  const downloadUrl = `https://github.com/patrickschiller/pickermux/releases/download/${tag}/${PICKERMUX_DMG_ASSET}`;
+  const release = {
+    tag_name: tag, draft: false, prerelease: false, body,
+    assets: [{ name: PICKERMUX_DMG_ASSET, browser_download_url: downloadUrl }],
+  };
+  assert.deepEqual(await checkForCompanionUpdate({
+    currentVersion: "0.41.1", fetchImpl: async () => Response.json(release),
+  }), {
+    status: "available", distribution: "dmg", currentVersion: "0.41.1", targetVersion: version,
+    assets: { [PICKERMUX_DMG_ASSET]: downloadUrl }, diskImageSha256: result.sha256,
+  });
+});
+
 test("later publication guidance keeps the Config navigation name", async (t) => {
   const value = await fixture(t, "0.24.7");
   await prepareDmgRelease({ ...value, tag: "v0.24.7" });

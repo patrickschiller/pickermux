@@ -229,7 +229,7 @@ test("MLX catalog ignores all certification claims and publishes only compact te
   });
 });
 
-test("MLX catalog blocks donor reasoning control claims while preserving native and LM Studio descriptors", () => {
+test("Local adapters override unsupported donor reasoning controls while preserving native descriptors", () => {
   const native = nativeCatalog();
   Object.assign(native.models[0], {
     supports_reasoning_effort_updates: true,
@@ -254,7 +254,7 @@ test("MLX catalog blocks donor reasoning control claims while preserving native 
   assert.deepEqual(mixed.models[0], before.models[0]);
   assert.deepEqual(native, before);
   const lmstudio = mixed.models.find((model) => model.slug === "lmstudio/example");
-  assert.equal(lmstudio.supports_reasoning_effort_updates, true);
+  assert.equal(lmstudio.supports_reasoning_effort_updates, false);
   assert.equal(lmstudio.supports_reasoning_summary_parameter, true);
 });
 

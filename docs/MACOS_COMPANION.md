@@ -1,6 +1,6 @@
 # macOS companion
 
-PickerMux 0.41.1 includes a SwiftUI menu-bar app with native macOS controls for inspecting and
+PickerMux 0.41.2 includes a SwiftUI menu-bar app with native macOS controls for inspecting and
 operating the existing PickerMux installation. It requires macOS 13 or newer,
 Apple silicon or Intel, and Node.js 22.15.0 or newer. The supported Node
 locations are `/opt/homebrew/bin/node`, `/usr/local/bin/node`, and
@@ -599,8 +599,8 @@ node scripts/build-companion.mjs --output /tmp/pickermux-companion-development
 
 Choose a new output directory for each build; the builder refuses to replace
 one. The output contains `PickerMux.app`,
-`PickerMux-v0.41.1-macos-universal.tar.gz`,
-`PickerMux-v0.41.1-macos-universal.dmg`, `companion-manifest.json`, and
+`PickerMux-v0.41.2-macos-universal.tar.gz`,
+`PickerMux-v0.41.2-macos-universal.dmg`, `companion-manifest.json`, and
 `SHA256SUMS`. The universal binary contains `arm64` and `x86_64` slices
 targeting macOS 13. The manifest distinguishes `unsigned-development`,
 `apple-development` and `developer-id-notarized` artifacts and binds the bundled backend manifest,

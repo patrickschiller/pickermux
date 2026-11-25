@@ -14,6 +14,14 @@ The 0.23.x and 0.24.x entries are local milestones included in the public
 
 ## [Unreleased]
 
+## [0.41.2] - 2026-11-25
+
+### Fixed
+
+- Publish LM Studio picker entries without native reasoning-effort history
+  updates. Codex sends the selected effort at request level, avoiding the
+  immediate `invalid_union` input error.
+
 ## [0.41.1] - 2026-11-19
 
 ### Fixed
@@ -1216,7 +1224,8 @@ confirm the release date before tagging. See the
   paths and file types, refuses root execution and foreign launchers, and
   restores the previous distribution state when activation fails.
 
-[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.41.1...HEAD
+[Unreleased]: https://github.com/patrickschiller/pickermux/compare/v0.41.2...HEAD
+[0.41.2]: https://github.com/patrickschiller/pickermux/releases/tag/v0.41.2
 [0.41.1]: https://github.com/patrickschiller/pickermux/releases/tag/v0.41.1
 [0.41.0]: https://github.com/patrickschiller/pickermux/releases/tag/v0.41.0
 [0.40.3]: https://github.com/patrickschiller/pickermux/releases/tag/v0.40.3

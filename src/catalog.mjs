@@ -388,15 +388,20 @@ function catalogEntry(
   const entry = cloneJson(donor);
   const mlx = model.providerKind === "mlx-chat-completions" ||
     model.source === "mlx-chat-completions";
+  if (
+    mlx || model.providerKind === "lmstudio-responses" ||
+    LM_STUDIO_MODEL_SOURCES.has(model.source)
+  ) {
+    // Codex omits native configuration_update history for these adapters
+    // and sends the selected effort as an ordinary request parameter.
+    entry.supports_reasoning_effort_updates = false;
+  }
   if (mlx) {
     // A receipt cannot expand an unreviewed or legacy server protocol.
     if (!supportsMlxTools(model.capabilities)) {
       certifiedForTools = false;
       certifiedForEfficientFidelity = false;
     }
-    // Native donor flags can make Codex emit controls this text adapter does
-    // not implement, even when the only advertised reasoning level is none.
-    entry.supports_reasoning_effort_updates = false;
     entry.supports_reasoning_summary_parameter = false;
     model.reasoningEffort = "none";
     model.reasoningEfforts = ["none"];

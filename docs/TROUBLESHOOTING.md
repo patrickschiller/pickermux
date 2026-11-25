@@ -474,6 +474,23 @@ Codex and retry. Replacing the app alone does not update an older installed
 backend. Matching model certifications and sealed compaction history remain
 valid; no recertification, history deletion or replay-setting change is needed.
 
+## LM Studio immediately reports invalid type for input
+
+`Invalid type for 'input'` with code `invalid_union` can come from
+the native `configuration_update` item Codex 0.171 sends when a picker model
+advertises support for changing reasoning effort within the conversation
+history. Older PickerMux catalogs can pass this flag from the native donor to
+an LM Studio model. LM Studio 0.4.28+2 can reject the first turn at input
+validation before any inference.
+
+Fully quit Codex, apply the 0.41.2 or newer
+[backend upgrade](TECHNICAL_GUIDE.md#installation-and-upgrades), and use
+**Refresh picker** with Codex closed. Reopen Codex and retry the failed turn in
+the same chat. With the corrected catalog, Codex filters these items from the
+request and uses the selected effort directly. Existing matching model
+certifications remain valid. If the error occurs after a tool call, also see
+[the compaction-specific failure](#lm-studio-reports-invalid-type-for-input-after-a-tool-call).
+
 ## LM Studio reports `Channel Error` or a context-length failure
 
 `Channel Error` can wrap different inference failures. Read the nested error

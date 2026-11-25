@@ -267,6 +267,7 @@ Projected review response checks and stream failures include fixed REVIEW_* diag
 Automatic review sends that context to OpenAI even when the task model is local.
 After a backend upgrade, refresh the picker and reopen Codex to load updated model guidance.
 LM Studio requests omit native encrypted reasoning and output-token replay selectors.
+LM Studio picker entries use request-level reasoning effort for Codex compatibility.
 LM Studio certification tests full tool-result replay with a fresh result marker.
 Mandatory-reasoning models receive bounded reasoning headroom in every base probe.
 After a certification-probe upgrade, stale LM Studio receipts require recertification.

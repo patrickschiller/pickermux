@@ -13,6 +13,11 @@ const HASH = /^[a-f0-9]{64}$/u;
 const ASSETS = [PICKERMUX_DMG_ASSET, "release-notes.md", "SHA256SUMS"];
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const RELEASE_HIGHLIGHTS = Object.freeze({
+  "0.41.2": [
+    "- Fix the immediate LM Studio `invalid_union` error for `input` when Codex 0.171 attempts to send a native `configuration_update` history item.",
+    "- Publish LM Studio picker entries with request-level reasoning effort. Codex filters those control items from the outgoing copy of saved history. Matching model certifications and compaction identity remain valid.",
+    "- Upgrade both PickerMux.app and the installed backend, choose **Refresh picker** with Codex fully closed, then reopen Codex and retry the same chat.",
+  ],
   "0.41.1": [
     "- Raise the decoded request limit for Codex Responses and compaction to at least 32 MiB by default. Existing configurations get the new default after the installed backend is upgraded.",
     "- Configure bridge.limits.decodedResponsesBodyBytes up to 64 MiB. Incoming wire bytes and rebuilt provider requests keep their existing limits. Requests above the applicable limit still return HTTP 413.",

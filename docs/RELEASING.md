@@ -6,7 +6,7 @@ an external prerequisite. Earlier CLI archive releases remain available at
 their immutable version-pinned URLs. PickerMux is not published to npm.
 
 The maintainer tested the 0.30.0 candidate and authorized PR merge, tagging,
-and publication on 6 October 2026. The commands below use the 0.41.1 candidate;
+and publication on 6 October 2026. The commands below use the 0.41.2 candidate;
 every production signing and verification gate still applies.
 
 ## Preflight
@@ -46,7 +46,7 @@ https://github.com/patrickschiller/pickermux/releases/latest/download/PickerMux-
 The release tag still makes a download immutable:
 
 ```text
-https://github.com/patrickschiller/pickermux/releases/download/v0.41.1/PickerMux-macos-universal.dmg
+https://github.com/patrickschiller/pickermux/releases/download/v0.41.2/PickerMux-macos-universal.dmg
 ```
 
 The build retains its versioned DMG, app archive, backend manifest, companion
@@ -69,9 +69,9 @@ key available to `codesign`; the profile must already be usable by `notarytool`.
 Use fresh output directories, since the tools refuse to replace existing ones:
 
 ```bash
-node scripts/build-companion.mjs --release --output /tmp/pickermux-signed-0.41.1
-node scripts/prepare-dmg-release.mjs --source /tmp/pickermux-signed-0.41.1 --output /tmp/pickermux-public-0.41.1 --tag v0.41.1
-node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.41.1 --tag v0.41.1
+node scripts/build-companion.mjs --release --output /tmp/pickermux-signed-0.41.2
+node scripts/prepare-dmg-release.mjs --source /tmp/pickermux-signed-0.41.2 --output /tmp/pickermux-public-0.41.2 --tag v0.41.2
+node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.41.2 --tag v0.41.2
 ```
 
 The release builder signs and notarizes the app and DMG separately, staples
@@ -121,8 +121,8 @@ maintainer's Mac when using the local production route.
 After the exact approved commit is on main and all gates are ready:
 
 ```bash
-git tag -a v0.41.1 -m "PickerMux v0.41.1"
-git push origin v0.41.1
+git tag -a v0.41.2 -m "PickerMux v0.41.2"
+git push origin v0.41.2
 ```
 
 Watch the workflow through publication. If a candidate is wrong, fix the
@@ -146,10 +146,10 @@ production signing requirements above remain mandatory.
    replace its assets.
 
 ```bash
-node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.41.1 --tag v0.41.1
-gh release create v0.41.1 /tmp/pickermux-public-0.41.1/PickerMux-macos-universal.dmg \
-  --verify-tag --title "PickerMux v0.41.1" \
-  --notes-file /tmp/pickermux-public-0.41.1/release-notes.md
+node scripts/prepare-dmg-release.mjs --verify /tmp/pickermux-public-0.41.2 --tag v0.41.2
+gh release create v0.41.2 /tmp/pickermux-public-0.41.2/PickerMux-macos-universal.dmg \
+  --verify-tag --title "PickerMux v0.41.2" \
+  --notes-file /tmp/pickermux-public-0.41.2/release-notes.md
 ```
 
 Complete the independent public-download verification below before announcing
@@ -178,6 +178,15 @@ pinned backend upgrades through the existing setup transaction, preserving
 installed provider settings. Cancellation and failed activation must retain
 usable prior state; ordinary removal and deactivation continue using the
 validated installed backend.
+
+## 0.41.2 LM Studio reasoning-effort acceptance
+
+Verify recognition of the signed DMG update from 0.41.1. After replacing the
+app, apply its reviewed backend upgrade with Codex fully closed and refresh
+the picker. Reopen Codex and send a short text prompt through an LM Studio
+model in both a new chat and a chat that previously hit `invalid_union` on
+`input`. Verify a completed response at the selected reasoning effort and
+confirm that the updated picker retains existing matching certifications.
 
 ## 0.41.1 decoded Responses request acceptance
 
