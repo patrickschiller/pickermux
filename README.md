@@ -85,6 +85,11 @@ For `Decoded request body is too large` in a long chat, install a backend
 that includes the larger decoded Responses limit, then retry the turn.
 [HTTP 413 troubleshooting](docs/TROUBLESHOOTING.md#long-codex-chat-fails-with-http-413).
 
+If LM Studio immediately returns `Invalid type for 'input'` after a Codex
+update, upgrade the app and installed backend to 0.41.2 or newer, choose **Refresh
+picker** with Codex closed, then reopen Codex and retry the turn.
+[LM Studio input troubleshooting](docs/TROUBLESHOOTING.md#lm-studio-immediately-reports-invalid-type-for-input).
+
 Certified models receive guidance for sandbox-related command failures, including
 macOS Simulator connections. They can request the specific command through
 Codex's approval flow when permitted. Individual approvals may still be needed;

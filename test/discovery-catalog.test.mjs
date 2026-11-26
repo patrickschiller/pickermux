@@ -599,7 +599,7 @@ test("normalizes the embedded Codex prerelease to its account-cache version", as
 });
 
 test("builds complete conservative entries without mutating the donor", () => {
-  const bundledCatalog = { models: [donor] };
+  const bundledCatalog = { models: [{ ...donor, supports_reasoning_effort_updates: true }] };
   const before = JSON.stringify(bundledCatalog);
   const catalog = buildCodexCatalog({
     bundledCatalog,
@@ -647,6 +647,7 @@ test("builds complete conservative entries without mutating the donor", () => {
   assert.equal(model.context_window, 42_496);
   assert.equal(model.max_context_window, 42_496);
   assert.equal(model.supports_search_tool, false);
+  assert.equal(model.supports_reasoning_effort_updates, false);
   assert.equal(model.apply_patch_tool_type, null);
   assert.equal(model.shell_type, "disabled");
   assert.equal(model.tool_mode, null);
@@ -657,6 +658,7 @@ test("builds complete conservative entries without mutating the donor", () => {
   assert.equal(model.include_skills_usage_instructions, false);
   assert.equal(model.include_plugin_usage_instructions, false);
   assert.equal(model.include_apps_usage_instructions, false);
+  assert.equal(catalog.models[1].supports_reasoning_effort_updates, false);
   assert.deepEqual(catalog.models[1].model_messages, {
     instructions_template: TEXT_ONLY_MODEL_INSTRUCTIONS,
     instructions_variables: null,
@@ -671,6 +673,8 @@ test("enables only direct unified-exec after an exact model certification", () =
       type: "llm",
       contextWindow: 32_768,
       source: "lmstudio-rest",
+      reasoningEffort: "high",
+      reasoningEfforts: ["low", "high"],
     },
     {
       id: "lmstudio/gemma/text-only",
@@ -681,7 +685,7 @@ test("enables only direct unified-exec after an exact model certification", () =
     },
   ];
   const catalog = buildCodexCatalog({
-    bundledCatalog: { models: [donor] },
+    bundledCatalog: { models: [{ ...donor, supports_reasoning_effort_updates: true }] },
     discoveredModels,
     certifiedModelSlugs: ["lmstudio/qwen/certified"],
   });
@@ -689,6 +693,12 @@ test("enables only direct unified-exec after an exact model certification", () =
 
   assert.equal(certified.tool_mode, "direct");
   assert.equal(certified.shell_type, "unified_exec");
+  assert.equal(certified.supports_reasoning_effort_updates, false);
+  assert.equal(certified.default_reasoning_level, "high");
+  assert.deepEqual(
+    certified.supported_reasoning_levels.map(({ effort }) => effort),
+    ["low", "high"],
+  );
   assert.equal(certified.apply_patch_tool_type, null);
   assert.equal(certified.supports_search_tool, false);
   assert.deepEqual(certified.experimental_supported_tools, []);

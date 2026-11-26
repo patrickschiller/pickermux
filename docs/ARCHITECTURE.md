@@ -167,6 +167,14 @@ External slugs must begin with their provider namespace, such as
 `lmstudio/qwen/qwen3.8-27b`. An unknown, differently cased, or prefix-only slug
 fails before an upstream request is opened.
 
+LM Studio catalog entries set `supports_reasoning_effort_updates` to false,
+independently of tool certification. Codex uses the selected reasoning effort
+on the request and filters `configuration_update` items from the outgoing
+copy of saved history. LM Studio can then validate the input without the
+native reasoning control. The provider effort mapping and compaction identity
+stay stable. See the [Codex request builder](https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/core/src/client.rs#L1143-L1147)
+and [effort selection](https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/core/src/session/reasoning_effort.rs#L89-L105).
+
 ## Routing boundary
 
 The bridge binds to IPv4 loopback only. Its URL contains a high-entropy random
